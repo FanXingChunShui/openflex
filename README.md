@@ -170,7 +170,7 @@ cargo clippy --workspace --all-targets
 cargo fmt --all
 ```
 
-设计说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，净室证据见
+未完成功能与迭代计划见 [docs/BACKLOG.md](docs/BACKLOG.md)。设计说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，净室证据见
 [docs/research/evidence.md](docs/research/evidence.md)，行为规格见 [docs/spec/](docs/spec/)。
 
 ## 许可证
