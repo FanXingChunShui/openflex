@@ -136,6 +136,27 @@ OpenFlex 的目标是：用 Rust 实现一个与 FlexSim 核心建模语义一�
 - 复现 `i` 的 seed 由 SplitMix64 从基础 seed 派生，因此复现之间独立，且整组结果可由基础 seed 重放。
 - 同一模型、同一 seed、同一版本 → 逐位相同的结果。
 
+## 语义决策（FlexSim 文档未定义、由 OpenFlex 规定）
+
+FlexSim 的公开帮助没有定义下面几项行为，但任何离散事件引擎都必须给出确定答案。OpenFlex 的规定如下，
+并在此公开，便于模型作者预期结果：
+
+1. **同一时刻的事件顺序**：事件按 `(time, seq)` 排序，`seq` 是调度顺序。因此同一时刻的事件按“谁先被调度”
+   执行；同一模型、同一版本、同一 seed 的结果完全确定。
+2. **故障是否打断在制品**：是。故障立即打断正在进行的 setup/process，修复后**补足剩余加工时间**，
+   而不是重新开始；加工计时与 MTBF 计时分离。
+3. **Separator 的 `split_count`**：默认 `separate_mode = "unpack"`，`split_count = qty` 表示释放
+   `qty` 个零件 **加容器本身**（共 qty+1）；`split` 模式释放 qty 个零件（复制/拆分，不含容器）。
+   0 在 unpack 模式下表示拆出容器内全部组件。
+4. **Source 的首次到达**：`first_arrival`（默认 0）是首件的模型时间；后续间隔从“上一批**全部离开** Source”
+   开始计时（与 FlexSim 的 inter-arrivaltime 定义一致），下游阻塞会推迟后续到达。
+5. **停止边界**：`stop_time` 是开区间上界——`time >= stop_time` 的事件不会被处理；`Source.stop_time`
+   同样是 `now >= stop` 时不再创建。
+6. **班次与停机**：班次窗口外对象进入 `off_shift`，暂停加工并拒绝进件；窗口恢复后补足剩余加工时间，
+   不重置已完成的 setup。
+7. **统计窗口**：`warmup` 之前的计数与时间加权量在 warmup 时刻清零；`created/completed` 只统计
+   warmup 之后创建的项。
+
 ## 统计口径
 
 | 指标 | 定义 |
