@@ -34,6 +34,11 @@ pub fn to_json(report: &SimReport) -> Result<String, ReportError> {
 /// The labels follow `OPENFLEX_LANG`; the numbers and their formatting do not,
 /// so a translated report can still be diffed against an English one.
 pub fn to_table(report: &SimReport) -> String {
+    to_table_with_flow(report, false)
+}
+
+/// Table including the process-flow section when `include_flow` is set.
+pub fn to_table_with_flow(report: &SimReport, include_flow: bool) -> String {
     let mut out = String::new();
     let unit = i18n::unit(report.time_unit);
     let _ = writeln!(
@@ -89,6 +94,9 @@ pub fn to_table(report: &SimReport) -> String {
         total_row(i18n::t("items_completed"), &report.completed)
     );
     let _ = writeln!(out, "{}", total_row(i18n::t("items_in_system"), &in_system));
+    if include_flow {
+        out.push_str(&flow_table(report));
+    }
     out
 }
 
@@ -114,6 +122,11 @@ fn total_row(label: &str, aggregate: &Aggregate) -> String {
 
 /// CSV with one row per object; multi-replication values are means.
 pub fn to_csv(report: &SimReport) -> String {
+    to_csv_with_flow(report, false)
+}
+
+/// CSV including a process-flow section when `include_flow` is set.
+pub fn to_csv_with_flow(report: &SimReport, include_flow: bool) -> String {
     let mut out = String::new();
     let unit = report.time_unit.label();
     let _ = writeln!(
@@ -137,6 +150,9 @@ pub fn to_csv(report: &SimReport) -> String {
             stats.blocked_fraction.mean,
             stats.down_fraction.mean
         );
+    }
+    if include_flow {
+        out.push_str(&flow_csv(report));
     }
     out
 }
@@ -184,6 +200,11 @@ pub fn to_replications_csv(report: &SimReport) -> String {
 /// in the "how to reproduce" block never do, so a localised report still runs
 /// as written.
 pub fn to_markdown(report: &SimReport) -> String {
+    to_markdown_with_flow(report, false)
+}
+
+/// Markdown including the process-flow section when `include_flow` is set.
+pub fn to_markdown_with_flow(report: &SimReport, include_flow: bool) -> String {
     let mut out = String::new();
     let unit = i18n::unit(report.time_unit);
     let _ = writeln!(
@@ -280,12 +301,141 @@ pub fn to_markdown(report: &SimReport) -> String {
     let _ = writeln!(out, "{}", reproduce_command(report));
     let _ = writeln!(out, "openflex report report.json --format markdown");
     let _ = writeln!(out, "```");
+    if include_flow {
+        out.push_str(&flow_markdown(report));
+    }
+    out
+}
+
+/// Process-flow table section, appended when the report has flow statistics.
+fn flow_table(report: &SimReport) -> String {
+    let Some(flow) = &report.process_flow else {
+        return String::new();
+    };
+    let unit = i18n::unit(report.time_unit);
+    let mut out = String::new();
+    let _ = writeln!(out, "\n{}", i18n::t("process_flow"));
+    let _ = writeln!(
+        out,
+        "{} {:.1}, {} {:.1}",
+        i18n::t("tokens_created"),
+        flow.tokens_created,
+        i18n::t("tokens_completed"),
+        flow.tokens_completed
+    );
+    let _ = writeln!(
+        out,
+        "{:<22} {:<12} {:>9} {:>9} {:>12} {:>12}",
+        i18n::t("block"),
+        "kind",
+        i18n::t("in"),
+        i18n::t("out"),
+        i18n::t("content_avg"),
+        format!("{} ({unit})", i18n::t("avg_stay"))
+    );
+    let _ = writeln!(out, "{}", "-".repeat(WIDTH));
+    for block in &flow.blocks {
+        let _ = writeln!(
+            out,
+            "{:<22} {:<12} {:>9.1} {:>9.1} {:>12.2} {:>12.2}",
+            block.id,
+            block.kind,
+            block.input_count,
+            block.output_count,
+            block.content_avg,
+            block.avg_stay_time
+        );
+    }
+    out
+}
+
+/// Process-flow section for CSV: a comment line with the token totals and a
+/// second table keyed by block. Kept at the end so existing object parsers see
+/// their usual prefix.
+fn flow_csv(report: &SimReport) -> String {
+    let Some(flow) = &report.process_flow else {
+        return String::new();
+    };
+    let unit = report.time_unit.label();
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "\n# process_flow: tokens_created={:.1}, tokens_completed={:.1}",
+        flow.tokens_created, flow.tokens_completed
+    );
+    let _ = writeln!(
+        out,
+        "flow_block,kind,input,output,content_avg,avg_stay_{unit}"
+    );
+    for block in &flow.blocks {
+        let _ = writeln!(
+            out,
+            "{},{},{:.3},{:.3},{:.3},{:.3}",
+            block.id,
+            block.kind,
+            block.input_count,
+            block.output_count,
+            block.content_avg,
+            block.avg_stay_time
+        );
+    }
+    out
+}
+
+/// Process-flow section for Markdown.
+fn flow_markdown(report: &SimReport) -> String {
+    let Some(flow) = &report.process_flow else {
+        return String::new();
+    };
+    let unit = i18n::unit(report.time_unit);
+    let mut out = String::new();
+    let _ = writeln!(out, "\n## {}\n", i18n::t("process_flow"));
+    let _ = writeln!(
+        out,
+        "- {}: {:.1}\n- {}: {:.1}\n",
+        i18n::t("tokens_created"),
+        flow.tokens_created,
+        i18n::t("tokens_completed"),
+        flow.tokens_completed
+    );
+    let _ = writeln!(
+        out,
+        "| {} | Kind | {} | {} | {} | {} ({unit}) |",
+        i18n::t("block"),
+        i18n::t("in"),
+        i18n::t("out"),
+        i18n::t("content_avg"),
+        i18n::t("avg_stay")
+    );
+    let _ = writeln!(out, "|---|---|---:|---:|---:|---:|");
+    for block in &flow.blocks {
+        let _ = writeln!(
+            out,
+            "| {} | {} | {:.1} | {:.1} | {:.2} | {:.2} |",
+            block.id,
+            block.kind,
+            block.input_count,
+            block.output_count,
+            block.content_avg,
+            block.avg_stay_time
+        );
+    }
     out
 }
 
 /// Write `report.json`, `report.csv` and `report.md` into `directory`, plus
 /// `replications.csv` when the report has more than one replication.
 pub fn write_reports(report: &SimReport, directory: &Path) -> Result<Vec<PathBuf>, ReportError> {
+    write_reports_with_flow(report, directory, false)
+}
+
+/// Like [`write_reports`], optionally including the process-flow section in the
+/// archived CSV and Markdown files.
+pub fn write_reports_with_flow(
+    report: &SimReport,
+    directory: &Path,
+    include_flow: bool,
+) -> Result<Vec<PathBuf>, ReportError> {
     let mut written = Vec::new();
 
     let json_path = directory.join(REPORT_JSON);
@@ -293,11 +443,11 @@ pub fn write_reports(report: &SimReport, directory: &Path) -> Result<Vec<PathBuf
     written.push(json_path);
 
     let csv_path = directory.join(REPORT_CSV);
-    write_file(&csv_path, &to_csv(report))?;
+    write_file(&csv_path, &to_csv_with_flow(report, include_flow))?;
     written.push(csv_path);
 
     let markdown_path = directory.join(REPORT_MARKDOWN);
-    write_file(&markdown_path, &to_markdown(report))?;
+    write_file(&markdown_path, &to_markdown_with_flow(report, include_flow))?;
     written.push(markdown_path);
 
     if report.replications.len() > 1 {

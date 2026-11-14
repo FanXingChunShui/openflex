@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.7.0 — 2026-11-15
+
+### Fluid 对象族（B5 最小）
+
+- 新增 `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_sink`，参数 `flow_rate`、`capacity`、
+  `initial_level`、`max_outflow`、`open`/`ratio`；`Model.fluid_step`（默认 0.1）与 `Connection.flow_rate` 限幅。
+- 固定步长拓扑结算：tank 同一步收放、溢出统计、valve 无缓冲、sink 全收；`SimReport.fluid` 给出
+  每对象 level_avg/level_max/throughput/overflow 与系统总量；检查点覆盖液位与累计量。
+- fluid 与离散对象禁止互连，二者可同模型并行；纯离散模型零额外事件。
+- 示例 `fluid-line.ofm`：10/s → tank(100, max_outflow 5) → valve 0.5 → sink；level_max 100、avg 82.92、overflow 200、sink 2.50/s。
+
+### 预览与报告
+
+- **交互式 HTML 预览**：`layout --html out.html [--dimension 3d] [--animate N]`，自包含（内联 CSS/JS/SVG），
+  拖拽旋转/缩放、Play/Pause 帧播放；无 CDN、无新依赖。
+- **Process Flow 报告**：`run --flow` 在 table/markdown/csv 中展示 tokens created/completed 与每块统计。
+
+### 验证
+
+- 267 个测试全绿（core 120：golden 10、objects 45、p0 16、checkpoint 6、process_flow 6、fluid 5）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.7.0 三平台产物发布并 SHA256 校验。
+
 ## v0.6.0 — 2026-11-15
 
 ### Process Flow token 运行时（B7 最小子集）

@@ -34,7 +34,9 @@ pub use engine::{
 };
 pub use error::SimError;
 pub use stats::{
-    Aggregate, LittleCheck, LittleEntry, ObjectAggregate, ObjectStats, ReplicationResult,
-    SimConfig, SimReport, StateTimes, t_critical_95,
+    Aggregate, FlowBlockReport, FlowReport, FluidObjectReport, FluidReport, LittleCheck,
+    LittleEntry, ObjectAggregate, ObjectStats, ReplicationFlow, ReplicationFlowBlock,
+    ReplicationFluid, ReplicationFluidObject, ReplicationResult, SimConfig, SimReport, StateTimes,
+    t_critical_95,
 };
 pub use trace::{MAX_TRACE_EVENTS, TraceEvent, TraceLog};

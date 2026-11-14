@@ -194,6 +194,19 @@ token 是带 id/标签/创建时间的轻量实体，沿块流转；引擎新增
 
 示例：`examples/objects/process-flow-equivalent.ofm`。若要实现真正的 token 运行时，前置工作是补 Processor 的 `on_entry/on_exit` 触发点与零延迟消息动作。
 
+## Fluid 子系统
+
+模型含 fluid 对象（`fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_sink`）时，引擎启用固定步长事件
+`FluidStep`（`Model.fluid_step`，默认 0.1）；纯离散模型不产生任何额外事件。
+
+每步按 Kahn 拓扑序结算：generator 产流（可设 `stop_time`）；节点出流平均分配到各出边并受
+`Connection.flow_rate` 限幅；tank 同一步先收后放（超容量部分计入 overflow，`max_outflow` 限制出流）；
+valve 按 `open`/`ratio` 通过（无缓冲，超出丢弃）；sink 全收。`SimReport.fluid` 给出每对象
+level_avg/level_max/throughput/overflow 与系统 total_inflow/total_throughput/total_overflow。
+
+fluid 对象永不接收 flow item，fluid 与离散对象之间的连接在校验阶段被拒绝；二者可在同一模型中并行。
+简化：不可压缩、无温度/压力/管道延迟；固定步长积分；fluid 不触发对象触发器、不支持 shifts/timetable。
+
 ## 统计口径
 
 | 指标 | 定义 |

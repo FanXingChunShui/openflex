@@ -431,3 +431,21 @@ FlexSim 用**独立工具对象 + 成员列表**，同一对象可被多个 MTBF
 1. **同刻事件排序**：建议 `(time, priority, 创建序号)` 全序，并在 `check` 中对同刻敏感模型提示。
 2. **停机打断在制品的处理**：建议"立即打断 + 恢复后继续剩余加工时间"，并统计 `preemption_events`。
 3. **随机数生成器与流派生**：建议 PCG64 + `derive(seed, replication, stream_index)`，并声明**不与 FlexSim 数值对齐**。
+
+
+## 附录：openflex 扩展字段（非 FlexSim 原生）
+
+| 字段 | 位置 | 说明 |
+|---|---|---|
+| `fluid_step` | model | Fluid 固定步长（默认 0.1） |
+| `connection.flow_rate` | connection | Fluid 链路流量上限 |
+| `photo_eyes` / `stations` / `join_inputs` | conveyor | 光电门 / 工位 / 汇入 |
+| `rack_type` / `channels` / `depth` | rack | 货架类型与通道/深度 |
+| `network` | transporter | 路网距离表 |
+| `channels` / `depth` | rack | 见上 |
+| `process_flow` | model | token 流程图（create/delay/assign/decision/sink） |
+| `channels` | rack | 见上 |
+| `separate_mode` | separator | unpack / split |
+| `timetable` | 对象 | 可用性窗口（与 shifts 取交集） |
+| `operator_preempt` | processor | 操作员抢占 |
+| checkpoint / trace / optimize | CLI | OpenFlex 自有能力 |

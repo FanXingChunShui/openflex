@@ -37,6 +37,40 @@ const MODEL: &str = r#"{
 }
 "#;
 
+/// Process-flow model: 10 tokens through Create -> Delay -> Assign -> Decision
+/// -> two sinks. Mirrors `examples/objects/process-flow-token.ofm`.
+const FLOW_MODEL: &str = r#"{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "flow-demo",
+  "time_unit": "seconds",
+  "run": { "stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [],
+  "process_flow": {
+    "blocks": [
+      { "id": "Create1", "kind": "create", "first_arrival": 0.0,
+        "interarrival": { "distribution": "constant", "value": 1000.0 },
+        "quantity": 10, "max_creations": 1 },
+      { "id": "Delay1", "kind": "delay", "time": { "distribution": "constant", "value": 2.0 } },
+      { "id": "Assign1", "kind": "assign", "actions": [
+          { "action": "set_label", "name": "urgent", "value": "item.id % 2" } ] },
+      { "id": "Decide", "kind": "decision", "conditions": [
+          { "condition": "item.label.urgent == 1", "port": 0 },
+          { "condition": "item.label.urgent == 0", "port": 1 } ] },
+      { "id": "SinkUrgent", "kind": "sink" },
+      { "id": "SinkNormal", "kind": "sink" }
+    ],
+    "connections": [
+      { "from": "Create1", "to": "Delay1" },
+      { "from": "Delay1", "to": "Assign1" },
+      { "from": "Assign1", "to": "Decide" },
+      { "from": "Decide", "to": "SinkUrgent", "port": 0 },
+      { "from": "Decide", "to": "SinkNormal", "port": 1 }
+    ]
+  }
+}
+"#;
+
 /// Model with an experiment that has a baseline and a faster scenario.
 const EXPERIMENT_MODEL: &str = r#"{
   "format": "openflex-model",
@@ -2135,4 +2169,158 @@ fn optimize_samples_a_large_grid_and_renders_table_and_csv() {
     assert_eq!(code(&serial), 0, "stderr: {}", stderr(&serial));
     assert_eq!(code(&parallel), 0, "stderr: {}", stderr(&parallel));
     assert_eq!(json(&stdout(&serial)), json(&stdout(&parallel)));
+}
+
+// ---------------------------------------------------------------------------
+// B8: interactive HTML preview
+// ---------------------------------------------------------------------------
+
+#[test]
+fn layout_html_embeds_svg_and_animation_frames() {
+    let dir = TempDir::new("layout-html");
+    let model = dir.write("demo.ofm", MODEL);
+    let page = dir.join("preview.html");
+
+    let output = openflex(&[
+        "layout",
+        &path_str(&model),
+        "--dimension",
+        "3d",
+        "--html",
+        &path_str(&page),
+        "--animate",
+        "3",
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let html = fs::read_to_string(&page).expect("preview.html was not written");
+
+    assert!(html.contains("<!DOCTYPE html>"));
+    assert!(html.contains("data-projection=\"isometric\""));
+    for name in ["Source1", "Queue1", "Processor1", "Sink1"] {
+        assert!(html.contains(name), "missing object {name} in the HTML");
+    }
+    assert!(
+        html.contains("<script>"),
+        "the interaction script is missing"
+    );
+    assert!(
+        html.contains("type=\"application/json\" id=\"frames\""),
+        "the frames array is missing"
+    );
+    assert!(html.contains("id=\"play\""), "play/pause control missing");
+    assert!(!html.contains("https://cdn"), "no external CDN allowed");
+
+    // The embedded JSON array has one entry per frame.
+    let start = html
+        .find("id=\"frames\">")
+        .map(|index| index + "id=\"frames\">".len())
+        .expect("frames script");
+    let end = html[start..]
+        .find("</script>")
+        .map(|offset| start + offset)
+        .expect("frames script end");
+    let frames: Vec<f64> = serde_json::from_str(&html[start..end]).expect("frame array");
+    assert_eq!(frames.len(), 3);
+
+    // 2D HTML is supported too and has a single frame.
+    let flat = dir.join("flat.html");
+    let output = openflex(&[
+        "layout",
+        &path_str(&model),
+        "--html",
+        &path_str(&flat),
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let html = fs::read_to_string(&flat).expect("flat.html was not written");
+    assert!(html.contains("data-projection=\"flat\""));
+    assert!(!html.contains("id=\"play\""));
+
+    // --svg and --html are mutually exclusive.
+    let conflict = openflex(&[
+        "layout",
+        &path_str(&model),
+        "--html",
+        &path_str(&page),
+        "--svg",
+        &path_str(&dir.join("x.svg")),
+    ]);
+    assert_eq!(code(&conflict), 2, "stderr: {}", stderr(&conflict));
+}
+
+// ---------------------------------------------------------------------------
+// B7: process-flow report section
+// ---------------------------------------------------------------------------
+
+#[test]
+fn flow_is_added_to_table_markdown_and_csv() {
+    let dir = TempDir::new("flow-report");
+    let model = dir.write("flow.ofm", FLOW_MODEL);
+
+    let table = openflex(&["run", &path_str(&model), "--flow", "--quiet"]);
+    assert_eq!(code(&table), 0, "stderr: {}", stderr(&table));
+    let text = stdout(&table);
+    for expected in [
+        "Process Flow",
+        "Tokens created",
+        "Create1",
+        "Delay1",
+        "SinkUrgent",
+    ] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+
+    let markdown = openflex(&[
+        "run",
+        &path_str(&model),
+        "--flow",
+        "--format",
+        "markdown",
+        "--quiet",
+    ]);
+    assert_eq!(code(&markdown), 0, "stderr: {}", stderr(&markdown));
+    let text = stdout(&markdown);
+    assert!(text.contains("## Process Flow"), "markdown: {text}");
+    assert!(text.contains("| Create1 | create |"), "markdown: {text}");
+
+    let csv = openflex(&[
+        "run",
+        &path_str(&model),
+        "--flow",
+        "--format",
+        "csv",
+        "--quiet",
+    ]);
+    assert_eq!(code(&csv), 0, "stderr: {}", stderr(&csv));
+    let text = stdout(&csv);
+    assert!(
+        text.contains("flow_block,kind,input,output,content_avg,avg_stay_s"),
+        "csv: {text}"
+    );
+    assert!(text.contains("Create1,create"), "csv: {text}");
+
+    // JSON always carries the structured field, with or without --flow.
+    let json_output = openflex(&["run", &path_str(&model), "--format", "json", "--quiet"]);
+    assert_eq!(code(&json_output), 0, "stderr: {}", stderr(&json_output));
+    let report = json(&stdout(&json_output));
+    assert!(report["process_flow"]["blocks"].is_array());
+}
+
+#[test]
+fn flow_flag_on_a_model_without_process_flow_is_harmless() {
+    let dir = TempDir::new("flow-none");
+    let model = dir.write("demo.ofm", MODEL);
+
+    let output = openflex(&["run", &path_str(&model), "--flow", "--quiet"]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert!(
+        !stdout(&output).contains("Process Flow"),
+        "stdout: {}",
+        stdout(&output)
+    );
+
+    // The flag is documented in --help.
+    let help = openflex(&["run", "--help"]);
+    assert!(stdout(&help).contains("--flow"), "run --help lacks --flow");
 }

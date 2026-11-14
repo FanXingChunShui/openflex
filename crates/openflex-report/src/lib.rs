@@ -31,8 +31,9 @@ mod xlsx;
 pub use compare::{Comparison, MetricComparison, ObjectComparison, ReportRef, compare_reports};
 pub use experiment::{ExperimentReport, ScenarioReport, sanitize, write_experiment_reports};
 pub use sim::{
-    REPLICATIONS_CSV, REPORT_CSV, REPORT_JSON, REPORT_MARKDOWN, to_csv, to_json, to_markdown,
-    to_replications_csv, to_table, write_reports,
+    REPLICATIONS_CSV, REPORT_CSV, REPORT_JSON, REPORT_MARKDOWN, to_csv, to_csv_with_flow, to_json,
+    to_markdown, to_markdown_with_flow, to_replications_csv, to_table, to_table_with_flow,
+    write_reports, write_reports_with_flow,
 };
 pub use xlsx::write_xlsx;
 
@@ -86,11 +87,23 @@ pub enum ReportError {
 
 /// Render one simulation report in the requested format.
 pub fn render_sim(report: &SimReport, format: Format) -> Result<String, ReportError> {
+    render_sim_with_flow(report, format, false)
+}
+
+/// Render one simulation report, optionally with the process-flow section.
+///
+/// JSON always carries the structured `process_flow` field; `include_flow`
+/// only affects the human-readable table, Markdown and CSV renderings.
+pub fn render_sim_with_flow(
+    report: &SimReport,
+    format: Format,
+    include_flow: bool,
+) -> Result<String, ReportError> {
     Ok(match format {
-        Format::Table => to_table(report),
+        Format::Table => to_table_with_flow(report, include_flow),
         Format::Json => to_json(report)?,
-        Format::Csv => to_csv(report),
-        Format::Markdown => to_markdown(report),
+        Format::Csv => to_csv_with_flow(report, include_flow),
+        Format::Markdown => to_markdown_with_flow(report, include_flow),
     })
 }
 
@@ -308,6 +321,7 @@ mod tests {
             created: Aggregate::from_samples(&[100.0]),
             little_check: None,
             process_flow: None,
+            fluid: None,
         }
     }
 

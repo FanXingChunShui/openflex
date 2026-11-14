@@ -382,6 +382,29 @@ fn definitions() -> Value {
         })),
     );
     defs.insert(
+        "fluid_generator_params".into(),
+        params_schema(json!({
+            "flow_rate": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
+            "stop_time": { "type": ["number", "null"], "exclusiveMinimum": 0 }
+        })),
+    );
+    defs.insert(
+        "fluid_tank_params".into(),
+        params_schema(json!({
+            "capacity": { "type": "number", "exclusiveMinimum": 0, "default": 100.0 },
+            "initial_level": { "type": "number", "minimum": 0, "default": 0.0 },
+            "max_outflow": { "type": ["number", "null"], "minimum": 0 }
+        })),
+    );
+    defs.insert(
+        "fluid_valve_params".into(),
+        params_schema(json!({
+            "open": { "type": "boolean", "default": true },
+            "ratio": { "type": "number", "minimum": 0, "maximum": 1, "default": 1.0 }
+        })),
+    );
+    defs.insert("fluid_sink_params".into(), params_schema(json!({})));
+    defs.insert(
         "queue_order".into(),
         json!({
             "oneOf": [
@@ -519,6 +542,7 @@ fn model_schema() -> Value {
                 "items": { "$ref": "#/$defs/experiment" }
             },
             "process_flow": { "$ref": "#/$defs/process_flow" },
+            "fluid_step": { "type": ["number", "null"], "exclusiveMinimum": 0 },
             "metadata": { "type": "object" }
         },
         "required": ["name"],
@@ -544,6 +568,10 @@ fn object_schema() -> Value {
         "rack",
         "basic_fr",
         "basic_te",
+        "fluid_generator",
+        "fluid_tank",
+        "fluid_valve",
+        "fluid_sink",
     ];
     let param_defs = [
         "source_params",
@@ -562,6 +590,10 @@ fn object_schema() -> Value {
         "rack_params",
         "basic_fr_params",
         "basic_te_params",
+        "fluid_generator_params",
+        "fluid_tank_params",
+        "fluid_valve_params",
+        "fluid_sink_params",
     ];
     let links: Vec<Value> = kinds
         .iter()
@@ -600,7 +632,8 @@ fn connection_schema() -> Value {
             "from": { "type": "string" },
             "to": { "type": "string" },
             "port": { "type": ["integer", "null"], "minimum": 0 },
-            "strategy": { "$ref": "#/$defs/port_strategy" }
+            "strategy": { "$ref": "#/$defs/port_strategy" },
+            "flow_rate": { "type": ["number", "null"], "exclusiveMinimum": 0 }
         },
         "required": ["from", "to"],
         "additionalProperties": false

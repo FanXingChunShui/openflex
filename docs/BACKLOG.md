@@ -9,7 +9,7 @@
 | 组 | 状态 |
 |---|---|
 | P0 A1–A13 | ✅ 全部完成（A10 抢占已实现；A4 用 `PortStrategy::Hold` 表达 −1） |
-| P1 | B1 MultiProcessor、B10 分布扩展、B11 Time Table、B12 trace/检查点、B2 Rack 全部类型（floor/gravity/push_back/drive_in）、B3 Conveyor（PhotoEye/Station/Join）、B4 路网+两段任务 ✅；B7 Process Flow 最小 token 运行时（模型级 create/delay/assign/decision/sink + trace + report + checkpoint）✅，对象级绑定与 transfer 留 TODO；B9 字符串表达式与 .fsm 概念导出 ✅；B5 Fluid、B6 People/AGV、B8 3D/GUI（等距 SVG 进行中）未完成 |
+| P1 | B1 MultiProcessor、B10 分布扩展、B11 Time Table、B12 trace/检查点、B2 Rack 全部类型（floor/gravity/push_back/drive_in）、B3 Conveyor（PhotoEye/Station/Join）、B4 路网+两段任务 ✅；B7 Process Flow 最小 token 运行时（模型级 create/delay/assign/decision/sink + trace + report + checkpoint）✅，对象级绑定与 transfer 留 TODO；B9 字符串表达式与 .fsm 概念导出 ✅；B5 Fluid 最小族 ✅（Generator/Tank/Valve/Sink + 液位/溢出/吞吐 + 检查点；pipe/压力 TODO）；B6 People/AGV/电梯、B8 完整交互 GUI（HTML 预览已做）未完成 |
 | P2 | C4 CLI 完整性、C5 并行复现与基准、C6 JSON Schema、C7 质量工程（含 wasm job）、C8 i18n 基础 ✅；C1/C2/C3 的脚本与 CI 配置完成（Windows/Linux 真机安装与签名证书待环境） |
 | P3 | D1 对照工具（含双报告模式）✅；D3 core 的 wasm32 编译与 CI job ✅（CLI 可编译但不可运行，文档已声明）；D2 `.fsm`、D4 优化未做 |
 

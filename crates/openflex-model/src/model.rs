@@ -116,6 +116,10 @@ pub enum ObjectKind {
     Rack,
     BasicFr,
     BasicTe,
+    FluidGenerator,
+    FluidTank,
+    FluidValve,
+    FluidSink,
 }
 
 impl ObjectKind {
@@ -137,6 +141,10 @@ impl ObjectKind {
             ObjectKind::Rack => "rack",
             ObjectKind::BasicFr => "basic_fr",
             ObjectKind::BasicTe => "basic_te",
+            ObjectKind::FluidGenerator => "fluid_generator",
+            ObjectKind::FluidTank => "fluid_tank",
+            ObjectKind::FluidValve => "fluid_valve",
+            ObjectKind::FluidSink => "fluid_sink",
         }
     }
 
@@ -158,6 +166,10 @@ impl ObjectKind {
             "rack" => ObjectKind::Rack,
             "basic_fr" => ObjectKind::BasicFr,
             "basic_te" => ObjectKind::BasicTe,
+            "fluid_generator" => ObjectKind::FluidGenerator,
+            "fluid_tank" => ObjectKind::FluidTank,
+            "fluid_valve" => ObjectKind::FluidValve,
+            "fluid_sink" => ObjectKind::FluidSink,
             _ => return None,
         })
     }
@@ -181,6 +193,10 @@ impl ObjectKind {
             ObjectKind::Rack,
             ObjectKind::BasicFr,
             ObjectKind::BasicTe,
+            ObjectKind::FluidGenerator,
+            ObjectKind::FluidTank,
+            ObjectKind::FluidValve,
+            ObjectKind::FluidSink,
         ]
     }
 }
@@ -296,6 +312,10 @@ pub enum ObjectParams {
     Rack(RackParams),
     BasicFr(BasicFrParams),
     BasicTe(BasicTeParams),
+    FluidGenerator(FluidGeneratorParams),
+    FluidTank(FluidTankParams),
+    FluidValve(FluidValveParams),
+    FluidSink(FluidSinkParams),
 }
 
 fn decode<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, String> {
@@ -321,6 +341,10 @@ impl ObjectParams {
             ObjectParams::Rack(_) => ObjectKind::Rack,
             ObjectParams::BasicFr(_) => ObjectKind::BasicFr,
             ObjectParams::BasicTe(_) => ObjectKind::BasicTe,
+            ObjectParams::FluidGenerator(_) => ObjectKind::FluidGenerator,
+            ObjectParams::FluidTank(_) => ObjectKind::FluidTank,
+            ObjectParams::FluidValve(_) => ObjectKind::FluidValve,
+            ObjectParams::FluidSink(_) => ObjectKind::FluidSink,
         }
     }
 
@@ -343,6 +367,10 @@ impl ObjectParams {
             ObjectParams::Rack(p) => &p.triggers,
             ObjectParams::BasicFr(p) => &p.triggers,
             ObjectParams::BasicTe(p) => &p.triggers,
+            ObjectParams::FluidGenerator(p) => &p.triggers,
+            ObjectParams::FluidTank(p) => &p.triggers,
+            ObjectParams::FluidValve(p) => &p.triggers,
+            ObjectParams::FluidSink(p) => &p.triggers,
         }
     }
 
@@ -365,6 +393,10 @@ impl ObjectParams {
             ObjectParams::Rack(p) => p.timetable.as_ref(),
             ObjectParams::BasicFr(p) => p.timetable.as_ref(),
             ObjectParams::BasicTe(p) => p.timetable.as_ref(),
+            ObjectParams::FluidGenerator(_)
+            | ObjectParams::FluidTank(_)
+            | ObjectParams::FluidValve(_)
+            | ObjectParams::FluidSink(_) => None,
         }
     }
 
@@ -387,6 +419,10 @@ impl ObjectParams {
             ObjectParams::Rack(p) => p.pull.as_ref(),
             ObjectParams::BasicFr(p) => p.pull.as_ref(),
             ObjectParams::BasicTe(p) => p.pull.as_ref(),
+            ObjectParams::FluidGenerator(_)
+            | ObjectParams::FluidTank(_)
+            | ObjectParams::FluidValve(_)
+            | ObjectParams::FluidSink(_) => None,
         }
     }
 
@@ -409,6 +445,10 @@ impl ObjectParams {
             ObjectParams::Rack(p) => &p.shifts,
             ObjectParams::BasicFr(p) => &p.shifts,
             ObjectParams::BasicTe(p) => &p.shifts,
+            ObjectParams::FluidGenerator(_)
+            | ObjectParams::FluidTank(_)
+            | ObjectParams::FluidValve(_)
+            | ObjectParams::FluidSink(_) => &[],
         }
     }
 
@@ -431,6 +471,10 @@ impl ObjectParams {
             ObjectKind::Rack => ObjectParams::Rack(decode(value)?),
             ObjectKind::BasicFr => ObjectParams::BasicFr(decode(value)?),
             ObjectKind::BasicTe => ObjectParams::BasicTe(decode(value)?),
+            ObjectKind::FluidGenerator => ObjectParams::FluidGenerator(decode(value)?),
+            ObjectKind::FluidTank => ObjectParams::FluidTank(decode(value)?),
+            ObjectKind::FluidValve => ObjectParams::FluidValve(decode(value)?),
+            ObjectKind::FluidSink => ObjectParams::FluidSink(decode(value)?),
         })
     }
 }
@@ -455,6 +499,10 @@ impl Serialize for ObjectParams {
             ObjectParams::Rack(p) => p.serialize(serializer),
             ObjectParams::BasicFr(p) => p.serialize(serializer),
             ObjectParams::BasicTe(p) => p.serialize(serializer),
+            ObjectParams::FluidGenerator(p) => p.serialize(serializer),
+            ObjectParams::FluidTank(p) => p.serialize(serializer),
+            ObjectParams::FluidValve(p) => p.serialize(serializer),
+            ObjectParams::FluidSink(p) => p.serialize(serializer),
         }
     }
 }
@@ -1510,6 +1558,97 @@ pub struct BasicTeParams {
 // Connections and routing
 // ---------------------------------------------------------------------------
 
+/// A fluid source (`fluid_generator`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FluidGeneratorParams {
+    /// Produced volume per time unit.
+    #[serde(default = "one_f64")]
+    pub flow_rate: f64,
+    /// Stop producing after this model time.
+    #[serde(default)]
+    pub stop_time: Option<f64>,
+    #[serde(default)]
+    pub triggers: Triggers,
+}
+
+impl Default for FluidGeneratorParams {
+    fn default() -> Self {
+        Self {
+            flow_rate: 1.0,
+            stop_time: None,
+            triggers: Triggers::default(),
+        }
+    }
+}
+
+/// A fluid tank (`fluid_tank`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FluidTankParams {
+    /// Maximum stored volume.
+    #[serde(default = "hundred_f64")]
+    pub capacity: f64,
+    /// Volume present when the run starts.
+    #[serde(default)]
+    pub initial_level: f64,
+    /// Maximum released volume per time unit (default: unlimited).
+    #[serde(default)]
+    pub max_outflow: Option<f64>,
+    #[serde(default)]
+    pub triggers: Triggers,
+}
+
+impl Default for FluidTankParams {
+    fn default() -> Self {
+        Self {
+            capacity: 100.0,
+            initial_level: 0.0,
+            max_outflow: None,
+            triggers: Triggers::default(),
+        }
+    }
+}
+
+/// A fluid valve (`fluid_valve`): passes `ratio` of the incoming flow when open.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FluidValveParams {
+    #[serde(default = "default_true")]
+    pub open: bool,
+    /// Fraction of the incoming flow that passes through (0..1).
+    #[serde(default = "one_f64")]
+    pub ratio: f64,
+    #[serde(default)]
+    pub triggers: Triggers,
+}
+
+impl Default for FluidValveParams {
+    fn default() -> Self {
+        Self {
+            open: true,
+            ratio: 1.0,
+            triggers: Triggers::default(),
+        }
+    }
+}
+
+/// A fluid sink (`fluid_sink`): absorbs everything it receives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct FluidSinkParams {
+    #[serde(default)]
+    pub triggers: Triggers,
+}
+
+fn hundred_f64() -> f64 {
+    100.0
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Connection {
@@ -1521,6 +1660,10 @@ pub struct Connection {
     /// Routing rule used to pick among the object's output connections.
     #[serde(default)]
     pub strategy: Option<PortStrategy>,
+    /// Fluid link capacity in volume per time unit (fluid connections only);
+    /// `None` means "no additional limit".
+    #[serde(default)]
+    pub flow_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1849,6 +1992,10 @@ pub struct Model {
     pub experiments: Vec<Experiment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_flow: Option<ProcessFlow>,
+    /// Fixed integration step (model time units) for the fluid objects
+    /// (default 0.1). Ignored by models without fluid objects.
+    #[serde(default)]
+    pub fluid_step: Option<f64>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
 }

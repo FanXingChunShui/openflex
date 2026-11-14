@@ -67,6 +67,19 @@ pub fn describe_kind(kind: ObjectKind) -> (&'static str, &'static str) {
             "A generic fixed resource.",
             "pull: { enabled, strategy, requirement }",
         ),
+        ObjectKind::FluidGenerator => (
+            "Produces a continuous fluid volume at a fixed rate.",
+            "flow_rate: volume per time unit, default 1\nstop_time: optional time after which production stops",
+        ),
+        ObjectKind::FluidTank => (
+            "Stores fluid with a capacity and an optional outflow limit.",
+            "capacity: volume, default 100\ninitial_level: volume, default 0\nmax_outflow: volume per time unit, default unlimited",
+        ),
+        ObjectKind::FluidValve => (
+            "Passes a fraction of the incoming fluid volume.",
+            "open: boolean, default true\nratio: 0..1, default 1",
+        ),
+        ObjectKind::FluidSink => ("Absorbs every fluid volume it receives.", ""),
         ObjectKind::BasicTe => (
             "A generic task executer.",
             "speed: distance per time unit, default 1\ncapacity: integer, default 1",

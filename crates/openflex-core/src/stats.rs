@@ -176,6 +176,28 @@ pub struct ReplicationFlow {
     pub blocks: Vec<ReplicationFlowBlock>,
 }
 
+/// Fluid statistics of one object in one replication (B5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplicationFluidObject {
+    pub name: String,
+    pub kind: String,
+    pub level_avg: f64,
+    pub level_max: f64,
+    /// Volume moved per time unit.
+    pub throughput: f64,
+    /// Volume lost to overflow (tanks only).
+    pub overflow: f64,
+}
+
+/// Fluid statistics of one replication.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplicationFluid {
+    pub objects: Vec<ReplicationFluidObject>,
+    pub total_throughput: f64,
+    pub total_overflow: f64,
+    pub total_inflow: f64,
+}
+
 /// Result of one replication.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReplicationResult {
@@ -193,6 +215,9 @@ pub struct ReplicationResult {
     /// Process Flow statistics; `None` when the model has no process flow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_flow: Option<ReplicationFlow>,
+    /// Fluid statistics; `None` when the model has no fluid objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fluid: Option<ReplicationFluid>,
 }
 
 /// Aggregated metric across replications.
@@ -379,6 +404,26 @@ impl LittleCheck {
     }
 }
 
+/// Aggregated fluid statistics of one object.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FluidObjectReport {
+    pub name: String,
+    pub kind: String,
+    pub level_avg: f64,
+    pub level_max: f64,
+    pub throughput: f64,
+    pub overflow: f64,
+}
+
+/// Aggregated fluid statistics of the whole run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FluidReport {
+    pub objects: Vec<FluidObjectReport>,
+    pub total_throughput: f64,
+    pub total_overflow: f64,
+    pub total_inflow: f64,
+}
+
 /// Aggregated Process Flow block statistics.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlowBlockReport {
@@ -416,6 +461,9 @@ pub struct SimReport {
     /// Process Flow statistics; `None` when the model has no process flow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_flow: Option<FlowReport>,
+    /// Fluid statistics; `None` when the model has no fluid objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fluid: Option<FluidReport>,
     /// Little's law (`L = λW`) self-check; `None` only for reports built by
     /// hand that do not want the check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -443,6 +491,7 @@ impl SimReport {
         );
         let little_check = Some(LittleCheck::from_objects(&objects));
         let process_flow = aggregate_flow(&replications);
+        let fluid = aggregate_fluid(&replications);
         Self {
             model: model.name.clone(),
             description: model.description.clone(),
@@ -455,6 +504,7 @@ impl SimReport {
             completed,
             created,
             process_flow,
+            fluid,
             little_check,
         }
     }
@@ -517,6 +567,58 @@ fn aggregate_flow(replications: &[ReplicationResult]) -> Option<FlowReport> {
         tokens_created,
         tokens_completed,
         blocks,
+    })
+}
+
+/// Average the fluid statistics over the replications.
+fn aggregate_fluid(replications: &[ReplicationResult]) -> Option<FluidReport> {
+    let runs: Vec<&ReplicationFluid> = replications
+        .iter()
+        .filter_map(|replication| replication.fluid.as_ref())
+        .collect();
+    if runs.is_empty() {
+        return None;
+    }
+    let mean = |pick: fn(&ReplicationFluid) -> f64| {
+        runs.iter().map(|run| pick(run)).sum::<f64>() / runs.len() as f64
+    };
+    let mut names: Vec<(String, String)> = Vec::new();
+    for run in &runs {
+        for object in &run.objects {
+            if !names.iter().any(|(name, _)| *name == object.name) {
+                names.push((object.name.clone(), object.kind.clone()));
+            }
+        }
+    }
+    let objects = names
+        .into_iter()
+        .map(|(name, kind)| {
+            let samples: Vec<&ReplicationFluidObject> = runs
+                .iter()
+                .flat_map(|run| run.objects.iter().filter(|object| object.name == name))
+                .collect();
+            let sample_mean = |pick: fn(&ReplicationFluidObject) -> f64| {
+                if samples.is_empty() {
+                    0.0
+                } else {
+                    samples.iter().map(|object| pick(object)).sum::<f64>() / samples.len() as f64
+                }
+            };
+            FluidObjectReport {
+                name,
+                kind,
+                level_avg: sample_mean(|object| object.level_avg),
+                level_max: sample_mean(|object| object.level_max),
+                throughput: sample_mean(|object| object.throughput),
+                overflow: sample_mean(|object| object.overflow),
+            }
+        })
+        .collect();
+    Some(FluidReport {
+        objects,
+        total_throughput: mean(|run| run.total_throughput),
+        total_overflow: mean(|run| run.total_overflow),
+        total_inflow: mean(|run| run.total_inflow),
     })
 }
 

@@ -52,7 +52,7 @@
 use rand_chacha::ChaCha12Rng;
 use serde::{Deserialize, Serialize};
 
-use crate::engine::{Event, FlowRuntime, ObjectRt};
+use crate::engine::{Event, FlowRuntime, FluidRuntime, ObjectRt};
 use crate::error::SimError;
 use crate::stats::SimConfig;
 
@@ -96,6 +96,9 @@ pub struct Checkpoint {
     /// Process-flow token runtime (B7); `None` when the model has no flow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) process_flow: Option<FlowRuntime>,
+    /// Fluid sub-system (B5); `None` when the model has no fluid objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) fluid: Option<FluidRuntime>,
     /// Run settings of the saved run.
     pub(crate) config: SimConfig,
 }

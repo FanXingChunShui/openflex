@@ -28,7 +28,7 @@
 //! | `split` | round-robin or by-item-type distribution over the output ports |
 //! | `transporter`/`dispatcher` | two-leg operator tasks (travel to the home pickup point → load → travel to the requester → unload), euclidean or road-network travel, capacity (B4) |
 //! | `rack` | queue storage (B2); `gravity`/`push_back` release LIFO, `drive_in` is FIFO; `channels`/`depth` narrow the usable capacity |
-//! | `resource` | counted resource pool with downtime windows |
+//! | `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_sink` | fixed-step incompressible fluid network (B5): rates, tank level/overflow, valve ratio, link `flow_rate` caps |
 //! | any | optional `shifts` plan: off-shift pauses work and accumulates `off_shift` time |
 //!
 //! # Simplifications (documented, not FlexSim behaviour)
@@ -73,6 +73,17 @@
 //! * An item leaving an object runs that object's `on_exit` trigger before the
 //!   receiver's `on_entry`/`on_receive` logic (Processor included); the sink
 //!   still runs its own `on_exit` when it destroys the item.
+//! * The fluid family (B5) is incompressible: there is no pressure, temperature,
+//!   density or pipe delay. Integration uses a fixed step (`Model.fluid_step`,
+//!   default 0.1) that only exists while fluid objects are present; only steps
+//!   strictly before `stop_time` move volume, and the last partial step only
+//!   updates the time-weighted level. A node splits its outflow equally over
+//!   its outgoing links (each capped by the link's `flow_rate`), a tank releases
+//!   at most `max_outflow` per step right after receiving, a closed valve
+//!   passes nothing, and volumes that cannot be forwarded are dropped (only
+//!   tank overflow is counted).
+//! * A fluid object never accepts flow items and cannot be connected to a
+//!   discrete object; the two sub-systems simply coexist in one model.
 //! * Repeating arrival schedules treat later passes' row times as offsets from
 //!   the previous pass's last row (the first row's time only applies once).
 //! * A released queue batch is committed at once: the items count as leaving
@@ -97,8 +108,8 @@ use crate::conveyor::Belt;
 use crate::error::SimError;
 use crate::shifts;
 use crate::stats::{
-    ObjectStats, ReplicationFlow, ReplicationFlowBlock, ReplicationResult, SimConfig, SimReport,
-    StateTimes,
+    ObjectStats, ReplicationFlow, ReplicationFlowBlock, ReplicationFluid, ReplicationFluidObject,
+    ReplicationResult, SimConfig, SimReport, StateTimes,
 };
 use crate::trace::{TraceEvent, TraceLog};
 
@@ -222,6 +233,8 @@ pub(crate) enum EventKind {
     FlowAdvance(usize),
     /// A token finished its delay block (B7).
     FlowDelayDone(usize, u64),
+    /// Fixed-step fluid integration tick (B5).
+    FluidStep,
     /// Warm-up boundary: reset the statistics accumulators.
     ResetStats,
 }
@@ -284,6 +297,58 @@ pub(crate) struct FlowRuntime {
     pub next_token_id: u64,
     pub tokens_created: u64,
     pub tokens_completed: u64,
+}
+
+/// Runtime state and statistics of one fluid object (B5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct FluidObjectRt {
+    pub level: f64,
+    pub level_integral: f64,
+    pub level_max: f64,
+    /// Cumulative volume moved out (or received, for sinks).
+    pub throughput: f64,
+    /// Cumulative overflow volume (tanks only).
+    pub overflow: f64,
+    /// Cumulative volume entering the object.
+    pub inflow: f64,
+}
+
+impl FluidObjectRt {
+    fn new(level: f64) -> Self {
+        Self {
+            level,
+            level_integral: 0.0,
+            level_max: level,
+            throughput: 0.0,
+            overflow: 0.0,
+            inflow: 0.0,
+        }
+    }
+}
+
+/// One resolved fluid link.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct FluidLinkRt {
+    pub to: usize,
+    pub flow_rate: Option<f64>,
+}
+
+/// The fluid sub-system of a model (B5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct FluidRuntime {
+    /// Model object indices of the fluid objects.
+    pub objects: Vec<usize>,
+    pub state: Vec<FluidObjectRt>,
+    pub links: Vec<FluidLinkRt>,
+    /// Link indices leaving each fluid object (position order).
+    pub outgoing: Vec<Vec<usize>>,
+    /// Topological processing order (fluid positions).
+    pub order: Vec<usize>,
+    pub step: f64,
+    pub last_time: f64,
+    pub total_inflow: f64,
+    pub total_throughput: f64,
+    pub total_overflow: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1028,6 +1093,7 @@ fn simulate_run(
         items_completed,
         objects,
         process_flow: sim.flow_replication(elapsed),
+        fluid: sim.fluid_replication(elapsed),
     };
     Ok((result, checkpoint, sim.trace.unwrap_or_default()))
 }
@@ -1071,6 +1137,8 @@ struct Simulation<'m> {
     event_count: u64,
     /// B7: the optional process-flow token runtime.
     process_flow: Option<FlowRuntime>,
+    /// B5: the optional fluid sub-system.
+    fluid: Option<FluidRuntime>,
     /// B12: recorded events when tracing is enabled.
     trace: Option<TraceLog>,
 }
@@ -1179,6 +1247,8 @@ impl<'m> Simulation<'m> {
             }
         });
 
+        let fluid = build_fluid_runtime(model);
+
         let seed = config.seed;
         let mut sim = Self {
             model,
@@ -1199,6 +1269,7 @@ impl<'m> Simulation<'m> {
             stats_completed: 0,
             event_count: 0,
             process_flow,
+            fluid,
             trace: if trace {
                 Some(TraceLog::default())
             } else {
@@ -1260,6 +1331,11 @@ impl<'m> Simulation<'m> {
         // A3: a puller starts empty, so it must ask for work at t = 0.
         for index in 0..self.model.objects.len() {
             self.schedule_pull(index);
+        }
+        // B5: fluid models integrate on a fixed step.
+        if let Some(fluid) = self.fluid.as_ref() {
+            let first = fluid.step;
+            self.schedule(first, EventKind::FluidStep);
         }
         // B7: create blocks start producing tokens.
         if self.process_flow.is_some() {
@@ -1555,6 +1631,7 @@ impl<'m> Simulation<'m> {
             object.finalize(now);
         }
         self.finalize_flow();
+        self.finalize_fluid();
     }
 
     /// Capture the current state (B12); called at the stop time, before the
@@ -1583,6 +1660,7 @@ impl<'m> Simulation<'m> {
             stats_completed: self.stats_completed,
             event_count: self.event_count,
             process_flow: self.process_flow.clone(),
+            fluid: self.fluid.clone(),
             config: self.config.clone(),
         }
     }
@@ -1658,6 +1736,14 @@ impl<'m> Simulation<'m> {
             ));
         }
         self.process_flow = checkpoint.process_flow.clone();
+        if let (Some(saved), Some(current)) = (checkpoint.fluid.as_ref(), self.fluid.as_ref())
+            && saved.objects.len() != current.objects.len()
+        {
+            return Err(SimError::Config(
+                "checkpoint fluid object count does not match the model".into(),
+            ));
+        }
+        self.fluid = checkpoint.fluid.clone();
         // A resumed run does not replay the trace of the saved segment.
         self.trace = None;
         Ok(())
@@ -1680,6 +1766,7 @@ impl<'m> Simulation<'m> {
             EventKind::FlowCreate(block) => self.handle_flow_create(block),
             EventKind::FlowAdvance(block) => self.handle_flow_advance(block),
             EventKind::FlowDelayDone(block, token) => self.handle_flow_delay_done(block, token),
+            EventKind::FluidStep => self.handle_fluid_step(),
             EventKind::TransportPickup(transporter, requester) => {
                 self.handle_transport_pickup(transporter, requester)
             }
@@ -2245,6 +2332,10 @@ impl<'m> Simulation<'m> {
             | ObjectParams::Resource(_) => false,
             ObjectParams::BasicFr(_) => object.content.is_empty(),
             ObjectParams::BasicTe(params) => (object.effective_content() as u32) < params.capacity,
+            ObjectParams::FluidGenerator(_)
+            | ObjectParams::FluidTank(_)
+            | ObjectParams::FluidValve(_)
+            | ObjectParams::FluidSink(_) => false,
         }
     }
 
@@ -2273,7 +2364,11 @@ impl<'m> Simulation<'m> {
             | ObjectKind::Sink
             | ObjectKind::Transporter
             | ObjectKind::Dispatcher
-            | ObjectKind::Resource => {}
+            | ObjectKind::Resource
+            | ObjectKind::FluidGenerator
+            | ObjectKind::FluidTank
+            | ObjectKind::FluidValve
+            | ObjectKind::FluidSink => {}
             _ => self.flow_generic(index)?,
         }
         // Some handlers (combiner, merge, separator) produce output into
@@ -3677,6 +3772,176 @@ impl<'m> Simulation<'m> {
             tokens_created: flow.tokens_created,
             tokens_completed: flow.tokens_completed,
             blocks,
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Fluid family (B5)
+    // -----------------------------------------------------------------------
+
+    fn handle_fluid_step(&mut self) -> Result<(), SimError> {
+        let Some(step) = self.fluid.as_ref().map(|fluid| fluid.step) else {
+            return Ok(());
+        };
+        let now = self.now;
+        self.fluid_advance(now);
+        // Keep the fixed step on the calendar; events past the stop time stay
+        // for checkpoint/resume, the run loop stops at the stop time.
+        self.schedule(now + step, EventKind::FluidStep);
+        Ok(())
+    }
+
+    /// Integrate one fixed fluid step ending at `now`.
+    fn fluid_advance(&mut self, now: f64) {
+        let Some(fluid) = self.fluid.as_ref() else {
+            return;
+        };
+        let dt = (now - fluid.last_time).max(0.0);
+        if dt <= 0.0 {
+            return;
+        }
+        let count = fluid.objects.len();
+        let order = fluid.order.clone();
+        let links = fluid.links.clone();
+        let outgoing = fluid.outgoing.clone();
+        let model_indices = fluid.objects.clone();
+        let kinds: Vec<ObjectKind> = model_indices
+            .iter()
+            .map(|&index| self.model.objects[index].kind)
+            .collect();
+        let mut influx = vec![0.0f64; count];
+
+        // Time-weighted level uses the level at the start of the step.
+        if let Some(fluid) = self.fluid.as_mut() {
+            for state in &mut fluid.state {
+                state.level_integral += state.level * dt;
+                state.level_max = state.level_max.max(state.level);
+            }
+        }
+
+        for &position in &order {
+            match kinds[position] {
+                ObjectKind::FluidGenerator => {
+                    let params = match &self.model.objects[model_indices[position]].params {
+                        ObjectParams::FluidGenerator(params) => params.clone(),
+                        _ => continue,
+                    };
+                    let produced = generator_volume(&params, now, dt);
+                    if let Some(fluid) = self.fluid.as_mut() {
+                        fluid.total_inflow += produced;
+                    }
+                    let sent =
+                        distribute_fluid(&links, &outgoing[position], produced, dt, &mut influx);
+                    if let Some(fluid) = self.fluid.as_mut() {
+                        fluid.state[position].throughput += sent;
+                    }
+                }
+                ObjectKind::FluidTank => {
+                    let params = match &self.model.objects[model_indices[position]].params {
+                        ObjectParams::FluidTank(params) => params.clone(),
+                        _ => continue,
+                    };
+                    let level = self
+                        .fluid
+                        .as_ref()
+                        .map_or(0.0, |fluid| fluid.state[position].level);
+                    let entering = influx[position];
+                    let available = level + entering;
+                    let overflow = (available - params.capacity).max(0.0);
+                    let level_after = available.min(params.capacity);
+                    let offered = match params.max_outflow {
+                        Some(rate) => level_after.min(rate * dt),
+                        None => level_after,
+                    };
+                    let sent =
+                        distribute_fluid(&links, &outgoing[position], offered, dt, &mut influx);
+                    if let Some(fluid) = self.fluid.as_mut() {
+                        let state = &mut fluid.state[position];
+                        state.level = (level_after - sent).max(0.0);
+                        // The peak of the step is the level before releasing.
+                        state.level_max = state.level_max.max(level_after);
+                        state.inflow += entering;
+                        state.overflow += overflow;
+                        state.throughput += sent;
+                        fluid.total_overflow += overflow;
+                    }
+                }
+                ObjectKind::FluidValve => {
+                    let params = match &self.model.objects[model_indices[position]].params {
+                        ObjectParams::FluidValve(params) => params.clone(),
+                        _ => continue,
+                    };
+                    let entering = influx[position];
+                    let offered = if params.open {
+                        entering * params.ratio.clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let sent =
+                        distribute_fluid(&links, &outgoing[position], offered, dt, &mut influx);
+                    if let Some(fluid) = self.fluid.as_mut() {
+                        let state = &mut fluid.state[position];
+                        state.inflow += entering;
+                        state.throughput += sent;
+                    }
+                }
+                ObjectKind::FluidSink => {
+                    let received = influx[position];
+                    if let Some(fluid) = self.fluid.as_mut() {
+                        let state = &mut fluid.state[position];
+                        state.inflow += received;
+                        state.throughput += received;
+                        fluid.total_throughput += received;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(fluid) = self.fluid.as_mut() {
+            fluid.last_time = now;
+        }
+    }
+
+    /// Integrate the level from the last step to the stop time.
+    fn finalize_fluid(&mut self) {
+        let now = self.now;
+        let Some(fluid) = self.fluid.as_mut() else {
+            return;
+        };
+        let dt = (now - fluid.last_time).max(0.0);
+        for state in &mut fluid.state {
+            state.level_integral += state.level * dt;
+            state.level_max = state.level_max.max(state.level);
+        }
+        fluid.last_time = now;
+    }
+
+    /// Build the reported fluid statistics of this replication.
+    fn fluid_replication(&self, elapsed: f64) -> Option<ReplicationFluid> {
+        let fluid = self.fluid.as_ref()?;
+        let denom = elapsed.max(1e-12);
+        let objects = fluid
+            .objects
+            .iter()
+            .enumerate()
+            .map(|(position, &model_index)| {
+                let definition = &self.model.objects[model_index];
+                let state = &fluid.state[position];
+                ReplicationFluidObject {
+                    name: definition.name.clone(),
+                    kind: fluid_kind_name(definition.kind).to_string(),
+                    level_avg: state.level_integral / denom,
+                    level_max: state.level_max,
+                    throughput: state.throughput / denom,
+                    overflow: state.overflow,
+                }
+            })
+            .collect();
+        Some(ReplicationFluid {
+            objects,
+            total_throughput: fluid.total_throughput / denom,
+            total_overflow: fluid.total_overflow,
+            total_inflow: fluid.total_inflow / denom,
         })
     }
 
@@ -5149,6 +5414,19 @@ impl<'m> Simulation<'m> {
                 block.last_content_change = self.now;
             }
         }
+        if let Some(fluid) = self.fluid.as_mut() {
+            fluid.total_inflow = 0.0;
+            fluid.total_throughput = 0.0;
+            fluid.total_overflow = 0.0;
+            fluid.last_time = self.now;
+            for state in &mut fluid.state {
+                state.level_integral = 0.0;
+                state.level_max = state.level;
+                state.throughput = 0.0;
+                state.overflow = 0.0;
+                state.inflow = 0.0;
+            }
+        }
         for object in &mut self.objects {
             object.slot_busy = 0.0;
             object.acc = Accum::default();
@@ -5214,6 +5492,7 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
         EventKind::FlowDelayDone(block, _) => {
             (None, "flow_delay_done", Some(("block", *block as f64)))
         }
+        EventKind::FluidStep => (None, "fluid_step", None),
         EventKind::ResetStats => (None, "reset_stats", None),
     }
 }
@@ -5370,6 +5649,157 @@ fn object_field(sim: &Simulation<'_>, index: usize, field: &str) -> Option<Value
         "on_shift" => Some(Value::Bool(object.on_shift)),
         _ => None,
     }
+}
+
+/// Whether an object kind belongs to the fluid family (B5).
+fn is_fluid_kind(kind: ObjectKind) -> bool {
+    matches!(
+        kind,
+        ObjectKind::FluidGenerator
+            | ObjectKind::FluidTank
+            | ObjectKind::FluidValve
+            | ObjectKind::FluidSink
+    )
+}
+
+fn fluid_kind_name(kind: ObjectKind) -> &'static str {
+    match kind {
+        ObjectKind::FluidGenerator => "fluid_generator",
+        ObjectKind::FluidTank => "fluid_tank",
+        ObjectKind::FluidValve => "fluid_valve",
+        ObjectKind::FluidSink => "fluid_sink",
+        _ => "fluid",
+    }
+}
+
+/// Volume a generator produces in one step, honouring its stop time.
+fn generator_volume(params: &openflex_model::FluidGeneratorParams, now: f64, dt: f64) -> f64 {
+    let rate = params.flow_rate.max(0.0);
+    match params.stop_time {
+        None => rate * dt,
+        Some(stop) => {
+            let start = now - dt;
+            if start >= stop {
+                0.0
+            } else {
+                rate * (stop.min(now) - start).max(0.0)
+            }
+        }
+    }
+}
+
+/// Split `volume` equally over the outgoing fluid links, capped by each link's
+/// `flow_rate`; returns the volume actually sent and adds it to the targets.
+fn distribute_fluid(
+    links: &[FluidLinkRt],
+    outgoing: &[usize],
+    volume: f64,
+    dt: f64,
+    influx: &mut [f64],
+) -> f64 {
+    if outgoing.is_empty() || volume <= 0.0 {
+        return 0.0;
+    }
+    let share = volume / outgoing.len() as f64;
+    let mut sent = 0.0;
+    for &link in outgoing {
+        let target = links[link].to;
+        let capacity = links[link]
+            .flow_rate
+            .map(|rate| rate * dt)
+            .unwrap_or(f64::INFINITY);
+        let amount = share.min(capacity);
+        if let Some(slot) = influx.get_mut(target) {
+            *slot += amount;
+        }
+        sent += amount;
+    }
+    sent
+}
+
+/// Resolve the fluid sub-graph once at start-up (B5).
+fn build_fluid_runtime(model: &Model) -> Option<FluidRuntime> {
+    let fluid_indices: Vec<usize> = model
+        .objects
+        .iter()
+        .enumerate()
+        .filter(|(_, object)| is_fluid_kind(object.kind))
+        .map(|(index, _)| index)
+        .collect();
+    if fluid_indices.is_empty() {
+        return None;
+    }
+    let mut position_of: HashMap<usize, usize> = HashMap::new();
+    for (position, &index) in fluid_indices.iter().enumerate() {
+        position_of.insert(index, position);
+    }
+    let by_name: HashMap<&str, usize> = model
+        .objects
+        .iter()
+        .enumerate()
+        .map(|(index, object)| (object.name.as_str(), index))
+        .collect();
+    let count = fluid_indices.len();
+    let mut state = Vec::with_capacity(count);
+    for &index in &fluid_indices {
+        let initial = match &model.objects[index].params {
+            ObjectParams::FluidTank(params) => params.initial_level.max(0.0),
+            _ => 0.0,
+        };
+        state.push(FluidObjectRt::new(initial));
+    }
+    let mut links = Vec::new();
+    let mut outgoing: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for connection in &model.connections {
+        let (Some(&from_index), Some(&to_index)) = (
+            by_name.get(connection.from.as_str()),
+            by_name.get(connection.to.as_str()),
+        ) else {
+            continue;
+        };
+        let (Some(&from), Some(&to)) = (position_of.get(&from_index), position_of.get(&to_index))
+        else {
+            continue;
+        };
+        outgoing[from].push(links.len());
+        links.push(FluidLinkRt {
+            to,
+            flow_rate: connection.flow_rate,
+        });
+    }
+    // Kahn topological order; validation guarantees a DAG.
+    let mut indegree = vec![0usize; count];
+    for link in &links {
+        indegree[link.to] += 1;
+    }
+    let mut queue: VecDeque<usize> = (0..count).filter(|index| indegree[*index] == 0).collect();
+    let mut order = Vec::with_capacity(count);
+    while let Some(position) = queue.pop_front() {
+        order.push(position);
+        for &link in &outgoing[position] {
+            let target = links[link].to;
+            indegree[target] = indegree[target].saturating_sub(1);
+            if indegree[target] == 0 {
+                queue.push_back(target);
+            }
+        }
+    }
+    if order.len() != count {
+        // Should not happen (validation rejects cycles); fall back to model order.
+        order = (0..count).collect();
+    }
+    Some(FluidRuntime {
+        objects: fluid_indices,
+        state,
+        links,
+        outgoing,
+        order,
+        step: model.fluid_step.unwrap_or(0.1).max(EPS),
+        last_time: 0.0,
+        total_inflow: 0.0,
+        total_throughput: 0.0,
+        total_overflow: 0.0,
+    })
 }
 
 /// Stable label of a process-flow block kind (B7).

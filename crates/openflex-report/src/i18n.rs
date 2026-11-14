@@ -95,6 +95,8 @@ fn english(key: &str) -> &'static str {
              openflex experiment basic.ofm --report-dir experiments --trace\n  \
              openflex import --objects objects.csv --connections connections.csv --out model.ofm\n  \
              openflex optimize basic.ofm --param Proc1.process_time.mean=2..6 --objective throughput --steps 5\n  \
+             openflex layout basic.ofm --dimension 3d --html preview.html --animate 10\n  \
+             openflex run basic.ofm --flow --format markdown\n  \
              cargo run --release -p openflex-cli --example bench_mm1 -- --model examples/mm1.ofm --stop 100000"
         }
         "error_prefix" => "error:",
@@ -149,6 +151,12 @@ fn english(key: &str) -> &'static str {
         "util_short" => "Util",
         "avg_utilization_md" => "Avg utilisation",
         "scenario_prefix" => "scenario:",
+        "process_flow" => "Process Flow",
+        "tokens_created" => "Tokens created",
+        "tokens_completed" => "Tokens completed",
+        "block" => "Block",
+        "content_avg" => "Avg content",
+        "avg_stay" => "Avg stay",
         _ => "",
     }
 }
@@ -177,6 +185,8 @@ fn chinese(key: &str) -> &'static str {
              openflex experiment basic.ofm --report-dir experiments --trace\n  \
              openflex import --objects objects.csv --connections connections.csv --out model.ofm\n  \
              openflex optimize basic.ofm --param Proc1.process_time.mean=2..6 --objective throughput --steps 5\n  \
+             openflex layout basic.ofm --dimension 3d --html preview.html --animate 10\n  \
+             openflex run basic.ofm --flow --format markdown\n  \
              cargo run --release -p openflex-cli --example bench_mm1 -- --model examples/mm1.ofm --stop 100000"
         }
         "error_prefix" => "错误：",
@@ -231,6 +241,12 @@ fn chinese(key: &str) -> &'static str {
         "util_short" => "利用率",
         "avg_utilization_md" => "平均利用率",
         "scenario_prefix" => "场景：",
+        "process_flow" => "流程统计",
+        "tokens_created" => "令牌创建",
+        "tokens_completed" => "令牌完成",
+        "block" => "块",
+        "content_avg" => "平均内容",
+        "avg_stay" => "平均停留",
         _ => "",
     }
 }
@@ -342,6 +358,12 @@ mod tests {
             "util_short",
             "avg_utilization_md",
             "scenario_prefix",
+            "process_flow",
+            "tokens_created",
+            "tokens_completed",
+            "block",
+            "content_avg",
+            "avg_stay",
         ];
         for key in keys {
             assert!(!english(key).is_empty(), "missing English key {key}");

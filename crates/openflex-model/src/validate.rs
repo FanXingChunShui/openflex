@@ -162,10 +162,14 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
         }
     }
 
-    // A process-flow-only model has no source/sink objects; mixed models may
-    // still rely on the flow for tokens, so the object requirements only apply
-    // when no process flow is declared.
-    if model.process_flow.is_none() {
+    // A process-flow-only or fluid-only model has no source/sink objects; mixed
+    // models may still rely on those subsystems, so the object requirements
+    // only apply when neither is declared.
+    let has_fluid = model
+        .objects
+        .iter()
+        .any(|object| is_fluid_kind(object.kind));
+    if model.process_flow.is_none() && !has_fluid {
         if !model
             .objects
             .iter()
@@ -183,6 +187,7 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
     }
 
     issues.extend(validate_process_flow(model));
+    issues.extend(validate_fluid(model));
 
     issues
 }
@@ -680,6 +685,56 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
                 ));
             }
         }
+        crate::model::ObjectParams::FluidGenerator(params) => {
+            if !params.flow_rate.is_finite() || params.flow_rate <= 0.0 {
+                issues.push(ValidationIssue::new(
+                    location("flow_rate"),
+                    "must be positive",
+                ));
+            }
+            if let Some(stop) = params.stop_time
+                && (!stop.is_finite() || stop <= 0.0)
+            {
+                issues.push(ValidationIssue::new(
+                    location("stop_time"),
+                    "must be positive when present",
+                ));
+            }
+        }
+        crate::model::ObjectParams::FluidTank(params) => {
+            if !params.capacity.is_finite() || params.capacity <= 0.0 {
+                issues.push(ValidationIssue::new(
+                    location("capacity"),
+                    "must be positive",
+                ));
+            }
+            if !params.initial_level.is_finite()
+                || params.initial_level < 0.0
+                || params.initial_level > params.capacity
+            {
+                issues.push(ValidationIssue::new(
+                    location("initial_level"),
+                    "must be between 0 and capacity",
+                ));
+            }
+            if let Some(outflow) = params.max_outflow
+                && (!outflow.is_finite() || outflow < 0.0)
+            {
+                issues.push(ValidationIssue::new(
+                    location("max_outflow"),
+                    "must be non-negative when present",
+                ));
+            }
+        }
+        crate::model::ObjectParams::FluidValve(params) => {
+            if !params.ratio.is_finite() || !(0.0..=1.0).contains(&params.ratio) {
+                issues.push(ValidationIssue::new(
+                    location("ratio"),
+                    "must be between 0 and 1",
+                ));
+            }
+        }
+        crate::model::ObjectParams::FluidSink(_) => {}
         crate::model::ObjectParams::Sink(_)
         | crate::model::ObjectParams::Merge(_)
         | crate::model::ObjectParams::Split(_)
@@ -925,6 +980,132 @@ fn has_cycle(
     (0..count).any(|node| state[node] == 0 && visit(node, &adjacency, &mut state))
 }
 
+/// Whether an object kind belongs to the fluid family.
+pub fn is_fluid_kind(kind: ObjectKind) -> bool {
+    matches!(
+        kind,
+        ObjectKind::FluidGenerator
+            | ObjectKind::FluidTank
+            | ObjectKind::FluidValve
+            | ObjectKind::FluidSink
+    )
+}
+
+/// Validate the fluid sub-graph (B5).
+fn validate_fluid(model: &Model) -> Vec<ValidationIssue> {
+    let mut issues = Vec::new();
+    if let Some(step) = model.fluid_step
+        && (!step.is_finite() || step <= 0.0)
+    {
+        issues.push(ValidationIssue::new(
+            "fluid_step",
+            "must be a positive number of time units",
+        ));
+    }
+    let fluid_objects: Vec<&Object> = model
+        .objects
+        .iter()
+        .filter(|object| is_fluid_kind(object.kind))
+        .collect();
+    if fluid_objects.is_empty() {
+        return issues;
+    }
+
+    let fluid_names: std::collections::BTreeSet<&str> = fluid_objects
+        .iter()
+        .map(|object| object.name.as_str())
+        .collect();
+    let mut adjacency: std::collections::BTreeMap<&str, Vec<&str>> =
+        std::collections::BTreeMap::new();
+    for connection in &model.connections {
+        let from_fluid = fluid_names.contains(connection.from.as_str());
+        let to_fluid = fluid_names.contains(connection.to.as_str());
+        let location = format!("connections {} -> {}", connection.from, connection.to);
+        if from_fluid != to_fluid {
+            issues.push(ValidationIssue::new(
+                &location,
+                "fluid and discrete objects cannot be connected to each other",
+            ));
+            continue;
+        }
+        if !from_fluid {
+            continue;
+        }
+        let Some(from) = model.object(&connection.from) else {
+            continue;
+        };
+        let Some(to) = model.object(&connection.to) else {
+            continue;
+        };
+        if let Some(rate) = connection.flow_rate
+            && (!rate.is_finite() || rate <= 0.0)
+        {
+            issues.push(ValidationIssue::new(
+                &location,
+                "fluid flow_rate must be positive when present",
+            ));
+        }
+        if from.kind == ObjectKind::FluidGenerator
+            && model
+                .inputs(&connection.from)
+                .iter()
+                .any(|link| fluid_names.contains(link.from.as_str()))
+        {
+            issues.push(ValidationIssue::new(
+                format!("objects.{}", connection.from),
+                "a fluid generator has no fluid inputs",
+            ));
+        }
+        if to.kind == ObjectKind::FluidSink
+            && model
+                .outputs(&connection.to)
+                .iter()
+                .any(|link| fluid_names.contains(link.to.as_str()))
+        {
+            issues.push(ValidationIssue::new(
+                format!("objects.{}", connection.to),
+                "a fluid sink has no fluid outputs",
+            ));
+        }
+        adjacency
+            .entry(connection.from.as_str())
+            .or_default()
+            .push(connection.to.as_str());
+    }
+
+    // Pipe graphs must be acyclic so a fixed-step update has a topological order.
+    fn visit<'a>(
+        node: &'a str,
+        adjacency: &std::collections::BTreeMap<&'a str, Vec<&'a str>>,
+        state: &mut std::collections::BTreeMap<&'a str, u8>,
+    ) -> bool {
+        state.insert(node, 1);
+        if let Some(next_nodes) = adjacency.get(node) {
+            for &next in next_nodes {
+                let next_state = state.get(next).copied().unwrap_or(0);
+                if next_state == 1 {
+                    return true;
+                }
+                if next_state == 0 && visit(next, adjacency, state) {
+                    return true;
+                }
+            }
+        }
+        state.insert(node, 2);
+        false
+    }
+    let mut state = std::collections::BTreeMap::new();
+    if fluid_names.iter().any(|name| {
+        state.get(name).copied().unwrap_or(0) == 0 && visit(name, &adjacency, &mut state)
+    }) {
+        issues.push(ValidationIssue::new(
+            "connections",
+            "the fluid pipe graph must be acyclic",
+        ));
+    }
+    issues
+}
+
 fn is_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
@@ -962,10 +1143,12 @@ mod tests {
                 from: "Source1".into(),
                 to: "Sink1".into(),
                 port: None,
+                flow_rate: None,
                 strategy: None,
             }],
             experiments: Vec::new(),
             process_flow: None,
+            fluid_step: None,
             metadata: Default::default(),
         }
     }
@@ -998,6 +1181,7 @@ mod tests {
             from: "Source1".into(),
             to: "Ghost".into(),
             port: None,
+            flow_rate: None,
             strategy: None,
         });
         let issues = validate_collect(&model);
@@ -1020,6 +1204,7 @@ mod tests {
             from: "Source1".into(),
             to: "Sink1".into(),
             port: None,
+            flow_rate: None,
             strategy: Some(PortStrategy::ByPercentage {
                 percentages: vec![50.0, 40.0],
             }),
@@ -1028,6 +1213,7 @@ mod tests {
             from: "Source1".into(),
             to: "Sink2".into(),
             port: None,
+            flow_rate: None,
             strategy: None,
         });
         let issues = validate_collect(&model);

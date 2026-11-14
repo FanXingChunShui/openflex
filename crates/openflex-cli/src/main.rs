@@ -23,6 +23,7 @@
 //! `openflex run model.ofm --format json 2>/dev/null | jq` keeps working.
 
 mod checkpoint;
+mod html;
 mod import;
 mod layout;
 mod objects;
@@ -128,6 +129,9 @@ enum Command {
         /// Resume from a checkpoint written by --save-checkpoint (single replication; cannot be combined with --parallel > 1, several --seed values, --trace or --set).
         #[arg(long, value_name = "FILE")]
         resume: Option<PathBuf>,
+        /// Show process-flow statistics in table/CSV/Markdown (JSON always carries them).
+        #[arg(long)]
+        flow: bool,
         /// Validate the model and print the run plan without simulating.
         #[arg(long)]
         dry_run: bool,
@@ -206,8 +210,11 @@ enum Command {
         /// Path to the model file.
         model: PathBuf,
         /// Write the SVG here instead of standard output.
-        #[arg(long, value_name = "FILE")]
+        #[arg(long, value_name = "FILE", conflicts_with = "html")]
         svg: Option<PathBuf>,
+        /// Write a self-contained interactive HTML preview instead.
+        #[arg(long, value_name = "FILE", conflicts_with = "svg")]
+        html: Option<PathBuf>,
         /// SVG width in pixels.
         #[arg(long, default_value_t = 1200)]
         width: u32,
@@ -217,8 +224,8 @@ enum Command {
         /// Projection: flat 2d (default) or isometric 3d.
         #[arg(long, value_enum, default_value_t = Dimension::Flat2d)]
         dimension: Dimension,
-        /// Generate N animation frames (requires --svg); writes out-0.svg, out-1.svg, …
-        #[arg(long, value_name = "N", requires = "svg")]
+        /// Generate N animation frames (requires --svg or --html); SVG writes out-0.svg, …, HTML embeds them.
+        #[arg(long, value_name = "N")]
         animate: Option<u32>,
     },
     /// Search parameter combinations for the best system objective (D4).
@@ -573,6 +580,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             trace,
             save_checkpoint,
             resume,
+            flow,
             dry_run,
         } => {
             let mut model = load_model(&path)?;
@@ -624,6 +632,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                         format,
                         report_dir: report_dir.as_deref(),
                         xlsx: xlsx.as_deref(),
+                        flow,
                         quiet,
                     },
                     progress,
@@ -639,6 +648,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                     format,
                     report_dir: report_dir.as_deref(),
                     xlsx: xlsx.as_deref(),
+                    flow,
                     quiet,
                 },
             )
@@ -737,19 +747,32 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
         Command::Layout {
             model,
             svg,
+            html,
             width,
             height,
             dimension,
             animate,
         } => {
             let model = load_model(&model)?;
+            if let Some(path) = html {
+                let frames = animate.unwrap_or(1);
+                if frames == 0 {
+                    return Err(Failure::usage(anyhow!("--animate must be at least 1")));
+                }
+                let projection = match dimension {
+                    Dimension::Flat2d => html::Projection::Flat,
+                    Dimension::Iso3d => html::Projection::Isometric,
+                };
+                let document = html::to_html(&model, width, height, projection, frames);
+                return emit(&document, Some(&path), quiet);
+            }
             if let Some(frames) = animate {
                 if frames == 0 {
                     return Err(Failure::usage(anyhow!("--animate must be at least 1")));
                 }
                 let base = svg
                     .as_deref()
-                    .ok_or_else(|| Failure::usage(anyhow!("--animate requires --svg")))?;
+                    .ok_or_else(|| Failure::usage(anyhow!("--animate requires --svg or --html")))?;
                 for index in 0..frames {
                     let frame = layout::Frame {
                         index,
@@ -1131,15 +1154,22 @@ struct RunOutput<'a> {
     format: Format,
     report_dir: Option<&'a Path>,
     xlsx: Option<&'a Path>,
+    flow: bool,
     quiet: bool,
 }
 
 /// Render and export a report (shared by plain, traced and checkpoint runs).
 fn finish_run(report: &SimReport, output: &RunOutput<'_>) -> Result<(), Failure> {
-    let text = report::render_sim(report, output.format.into())?;
+    if output.flow && report.process_flow.is_none() {
+        note(
+            output.quiet,
+            "note: the model has no process flow; nothing to add to the report",
+        );
+    }
+    let text = report::render_sim_with_flow(report, output.format.into(), output.flow)?;
     emit(&text, None, output.quiet)?;
     if let Some(directory) = output.report_dir {
-        let files = report::write_reports(report, directory)?;
+        let files = report::write_reports_with_flow(report, directory, output.flow)?;
         note(
             output.quiet,
             &format!("{} {}", i18n::t("wrote"), join_paths(&files)),

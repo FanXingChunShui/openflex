@@ -30,7 +30,7 @@
 | Time Table | `params.timetable` | ✅ | `{windows:[{start,end}]}`，与 shifts 取交集 |
 | BasicFR / BasicTE | `basic_fr` / `basic_te` | ✅ | 通用固定资源与执行器 |
 | MultiProcessor | `multiprocessor` | ✅ | 多槽并行加工，每槽 setup/process，操作员按忙碌期申请 |
-| Fluid（流体） | — | ⛔ | 未实现 |
+| Fluid（流体） | `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_sink` | 🟡 | 最小族：固定步长、液位/溢出/吞吐、连接 flow_rate 限幅；无 pipe/压力/温度 |
 | People / A* 行走 | — | ⛔ | 未实现 |
 | AGV / 交通控制 | — | ⛔ | 未实现 |
 | Elevator / 电梯 | — | ⛔ | 未实现 |
