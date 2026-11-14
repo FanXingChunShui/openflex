@@ -123,6 +123,8 @@ openflex run model.ofm --report-dir out/     # 写出 report.json / report.csv /
 openflex run model.ofm --xlsx out.xlsx       # 导出 Excel（Summary / Objects / Replications）
 openflex run model.ofm --parallel 4          # 并行复现（结果与串行逐位一致）
 openflex run model.ofm --progress            # stderr 显示复现进度
+openflex run model.ofm --trace events.jsonl  # 逐事件 JSONL（多复现写 .repN.jsonl）
+openflex run model.ofm --until 500           # --stop-time 的别名
 openflex experiment model.ofm --format json  # 运行模型里声明的实验
 openflex report out/report.json              # 读回报告并重新渲染
 openflex compare a.json b.json               # A/B 对比两个报告
@@ -135,6 +137,9 @@ openflex objects list                        # 列出所有对象类型
 openflex objects describe processor          # 查看对象参数
 openflex distributions                       # 列出 20 种统计分布
 openflex new mymodel --template line         # 生成模板模型
+
+# 性能基准（release）
+cargo run --release -p openflex-cli --example bench_mm1 -- --stop 100000
 ```
 
 - 退出码：`0` 成功，`1` 运行错误，`2` 模型校验失败。
