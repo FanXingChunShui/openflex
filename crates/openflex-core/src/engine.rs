@@ -48,7 +48,7 @@ use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 
 use openflex_model::{
     Action, CombinerMode, Distribution, DowntimeWindow, EvalContext, Model, Object, ObjectKind,
-    ObjectParams, PortStrategy, QueueOrder, SimTrigger, Value,
+    ObjectParams, PortStrategy, PullParams, QueueOrder, SimTrigger, Value,
 };
 use rand::prelude::*;
 use rand_distr::{Distribution as _, Exp, Gamma, LogNormal, Normal};
@@ -122,7 +122,9 @@ enum EventKind {
     Flow(usize),
     SetupDone(usize, u64),
     ProcessDone(usize, u64),
-    Breakdown(usize),
+    /// A failure clock reached its threshold; the generation guards against
+    /// events armed for a state the object already left (A8).
+    Breakdown(usize, u64),
     RepairDone(usize),
     /// A user message reaches an object.
     Message(usize),
@@ -142,6 +144,8 @@ enum EventKind {
     TransportHome(usize),
     /// A resource pool period ended; pending requests are retried.
     ResourceRetry(usize),
+    /// A3: a downstream object asks its upstream objects for an item.
+    Pull(usize),
     /// Warm-up boundary: reset the statistics accumulators.
     ResetStats,
 }
@@ -182,6 +186,18 @@ struct Accum {
     stay_count: u64,
     max_content: u32,
     states: StateTimes,
+    /// Details of the state times: `setup` / `processing` subdivide `busy`,
+    /// `waiting_operator` / `waiting_transport` subdivide `blocked`.
+    detail: StateDetail,
+}
+
+/// Sub-state accumulators reported inside [`StateTimes`].
+#[derive(Debug, Default, Clone, Copy)]
+struct StateDetail {
+    setup: f64,
+    processing: f64,
+    waiting_operator: f64,
+    waiting_transport: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,6 +206,66 @@ enum Phase {
     Setup,
     Processing,
     WaitingForOutput,
+}
+
+/// Why a blocked object is blocked. Only the two waits with a dedicated
+/// statistic are named; blocking on a full downstream object is plain
+/// `blocked`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum BlockReason {
+    /// Waiting for a downstream object to free capacity (no detail statistic).
+    #[default]
+    Output,
+    /// Waiting for an operator from a resource pool.
+    Operator,
+    /// Waiting for an operator that has to travel to the object.
+    Transport,
+}
+
+/// A reason for an object to be down.
+///
+/// FlexSim lets several downtime sources overlap (a breakdown during planned
+/// maintenance during a shift break). The engine keeps a stack in
+/// [`ObjectRt::downtime`]: the object is `Down` while the stack is non-empty
+/// and recovers only when the **last** request is cleared, which is what the
+/// spec requires (`logic.md` §8.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DowntimeSource {
+    /// A random failure (MTBF/MTTR).
+    Breakdown,
+    /// Planned maintenance.
+    ScheduledMaintenance,
+    /// The shift plan put the object off shift while it was working.
+    Shift,
+    /// A model-driven (`send_message`/trigger or host API) downtime request.
+    Manual,
+}
+
+/// Failure clock of one processor (A8).
+///
+/// With an empty `count_states` the MTBF clock runs on the wall clock, which is
+/// the FlexSim default and the v0.1.0 behaviour. When `count_time_in_states` is
+/// given only those states advance the clock, so a machine that fails after
+/// 100 hours of *processing* keeps its clock paused while it waits for work.
+#[derive(Debug, Clone)]
+struct FailureRt {
+    /// State names that advance the clock; empty = wall clock.
+    count_states: Vec<String>,
+    /// Counted time accumulated since the last repair.
+    up_time: f64,
+    /// Threshold sampled for the next failure.
+    threshold: f64,
+    /// Bumped on every state change; stale `Breakdown` events are ignored.
+    generation: u64,
+}
+
+/// A3: where a pulled item currently sits in the upstream object.
+#[derive(Debug, Clone, Copy)]
+enum UpstreamSlot {
+    /// The upstream object's `out_pending` head (items it finished).
+    OutPending,
+    /// An index into the upstream object's `content`.
+    Content(usize),
 }
 
 /// Which phase of a processor an operator is requested for.
@@ -229,9 +305,32 @@ struct ObjectRt {
     out_pending_accounted: bool,
     state: State,
     phase: Phase,
+    /// Model time the current phase began; feeds the setup/processing detail.
+    phase_start: f64,
+    /// Why the object is `Blocked`; only meaningful while `state == Blocked`.
+    block_reason: BlockReason,
     last_state_change: f64,
     last_content_change: f64,
     acc: Accum,
+    /// Items promised to (or in transport towards) this object but not yet
+    /// inside it. Counted against capacity by [`Simulation::can_accept`].
+    in_transit: u32,
+    /// Failure clock (A8); `None` for objects without a `failure` parameter.
+    failure: Option<FailureRt>,
+    /// A4: the object holds finished items until an explicit `release_item`.
+    hold_release: bool,
+    /// A4: the next delivery ignores the `hold` strategy (set by
+    /// `release_item`) and routes to the first available output instead.
+    release_bypass: bool,
+    /// A3: pull bookkeeping — round-robin cursor and a de-duplicating flag for
+    /// the pending `Pull` event.
+    pull_cursor: usize,
+    pull_scheduled: bool,
+    /// Model time the failure clock was last settled (A8).
+    up_time_checkpoint: f64,
+    /// Downtime requests currently active, oldest first (A9). The object is
+    /// down while this is non-empty and recovers when it drains.
+    downtime: Vec<DowntimeSource>,
     /// Round-robin cursor for routing and for splitters.
     rr: usize,
     split_cursor: usize,
@@ -244,10 +343,12 @@ struct ObjectRt {
     phase_end: f64,
     paused_remaining: f64,
     ready_for_process: bool,
-    /// Operator bookkeeping.
-    operator_held: bool,
+    /// Operator bookkeeping (A10): how many operators are held, how many were
+    /// requested but not granted yet, and where each held one came from.
+    operator_held: u32,
+    operators_pending: u32,
     requesting_operator: bool,
-    operator_source: Option<OperatorSource>,
+    operator_sources: Vec<OperatorSource>,
     /// Conveyor runtime.
     belt: Option<Belt>,
     belt_items: Vec<FlowItem>,
@@ -289,9 +390,19 @@ impl ObjectRt {
             out_pending_accounted: false,
             state: State::Idle,
             phase: Phase::Idle,
+            phase_start: now,
+            block_reason: BlockReason::Output,
             last_state_change: now,
             last_content_change: now,
             acc: Accum::default(),
+            in_transit: 0,
+            failure: None,
+            hold_release: false,
+            release_bypass: false,
+            pull_cursor: 0,
+            pull_scheduled: false,
+            up_time_checkpoint: now,
+            downtime: Vec::new(),
             rr: 0,
             split_cursor: 0,
             arrivals: 0,
@@ -301,9 +412,10 @@ impl ObjectRt {
             phase_end: f64::INFINITY,
             paused_remaining: 0.0,
             ready_for_process: false,
-            operator_held: false,
+            operator_held: 0,
+            operators_pending: 0,
             requesting_operator: false,
-            operator_source: None,
+            operator_sources: Vec::new(),
             belt: None,
             belt_items: Vec::new(),
             belt_last_update: now,
@@ -373,6 +485,13 @@ impl ObjectRt {
         }
     }
 
+    /// `held()` plus the items that are still on their way here (A5). Capacity
+    /// checks use this so a model cannot over-commit an object by having many
+    /// transports in flight.
+    fn effective_content(&self) -> usize {
+        self.held() + self.in_transit as usize
+    }
+
     /// Integrate the content integral up to `now`. Must be called *before*
     /// changing what the object holds, so the previous interval is charged with
     /// the previous content.
@@ -409,8 +528,88 @@ impl ObjectRt {
             return;
         }
         self.accumulate_state(now);
+        self.accrue_up_time(now);
+        // Settle the phase detail with the *old* state: leaving `busy` must stop
+        // the setup/processing clock, entering it restarts it from now.
+        self.charge_phase(now);
         self.state = state;
         self.last_state_change = now;
+        if state != State::Blocked {
+            self.block_reason = BlockReason::Output;
+        }
+    }
+
+    /// Change the processor phase, settling the detail timer at the boundary.
+    fn set_phase(&mut self, now: f64, phase: Phase) {
+        if self.phase == phase {
+            return;
+        }
+        self.accrue_up_time(now);
+        self.charge_phase(now);
+        self.phase = phase;
+    }
+
+    /// Charge the time since the last phase boundary to the current phase.
+    ///
+    /// Only busy time counts: a processor that is down or off shift keeps its
+    /// phase (so it can resume) but must not accrue setup/processing time.
+    fn charge_phase(&mut self, now: f64) {
+        let dt = (now - self.phase_start).max(0.0);
+        self.phase_start = now;
+        if dt <= 0.0 || self.state != State::Busy {
+            return;
+        }
+        match self.phase {
+            Phase::Setup => self.acc.detail.setup += dt,
+            Phase::Processing => self.acc.detail.processing += dt,
+            _ => {}
+        }
+    }
+
+    /// Enter the blocked state with a reason that feeds the detail statistics.
+    /// The reason is set before the state change so the interval is charged to
+    /// the right bucket.
+    fn block(&mut self, now: f64, reason: BlockReason) {
+        if self.state != State::Blocked {
+            self.block_reason = reason;
+        }
+        self.set_state(now, State::Blocked);
+    }
+
+    /// Charge the interval that just ended to the failure clock (A8) and
+    /// invalidate the events armed for the old state.
+    fn accrue_up_time(&mut self, now: f64) {
+        let dt = (now - self.up_time_checkpoint).max(0.0);
+        self.up_time_checkpoint = now;
+        let counted = self
+            .failure
+            .as_ref()
+            .is_some_and(|failure| Self::counts_up_time(failure, self.state, self.phase));
+        if let Some(failure) = self.failure.as_mut() {
+            if counted {
+                failure.up_time += dt;
+            }
+            if !failure.count_states.is_empty() {
+                failure.generation = failure.generation.wrapping_add(1);
+            }
+        }
+    }
+
+    /// Whether `state` (with `phase`) advances the failure clock.
+    fn counts_up_time(failure: &FailureRt, state: State, phase: Phase) -> bool {
+        if failure.count_states.is_empty() {
+            return false;
+        }
+        failure.count_states.iter().any(|name| match name.as_str() {
+            "idle" => state == State::Idle,
+            "busy" => state == State::Busy,
+            "setup" => state == State::Busy && phase == Phase::Setup,
+            "processing" => state == State::Busy && phase == Phase::Processing,
+            "blocked" => state == State::Blocked,
+            "down" => state == State::Down,
+            "off_shift" => state == State::OffShift,
+            _ => false,
+        })
     }
 
     fn accumulate_state(&mut self, now: f64) {
@@ -418,7 +617,14 @@ impl ObjectRt {
         match self.state {
             State::Idle => self.acc.states.idle += dt,
             State::Busy => self.acc.states.busy += dt,
-            State::Blocked => self.acc.states.blocked += dt,
+            State::Blocked => {
+                self.acc.states.blocked += dt;
+                match self.block_reason {
+                    BlockReason::Operator => self.acc.detail.waiting_operator += dt,
+                    BlockReason::Transport => self.acc.detail.waiting_transport += dt,
+                    BlockReason::Output => {}
+                }
+            }
             State::Down => self.acc.states.down += dt,
             State::OffShift => self.acc.states.off_shift += dt,
         }
@@ -428,10 +634,16 @@ impl ObjectRt {
     fn finalize(&mut self, now: f64) {
         self.note_content(now);
         self.accumulate_state(now);
+        self.charge_phase(now);
     }
 
     fn stats(&self, elapsed: f64) -> ObjectStats {
         let denom = elapsed.max(1e-12);
+        let mut state_times = self.acc.states;
+        state_times.setup = self.acc.detail.setup;
+        state_times.processing = self.acc.detail.processing;
+        state_times.waiting_for_operator = self.acc.detail.waiting_operator;
+        state_times.waiting_for_transport = self.acc.detail.waiting_transport;
         ObjectStats {
             kind: self.kind,
             input_count: self.acc.input,
@@ -443,7 +655,7 @@ impl ObjectRt {
             } else {
                 0.0
             },
-            state_times: self.acc.states,
+            state_times,
             utilization: self.acc.states.busy / denom,
             throughput: self.acc.output as f64 / denom,
         }
@@ -634,6 +846,22 @@ impl<'m> Simulation<'m> {
     }
 
     fn initialize(&mut self) -> Result<(), SimError> {
+        // A2 guard: the engine only implements inter-arrival-time sources. A
+        // table-driven source would silently fall back to the default
+        // `constant 0` inter-arrival and spin at t = 0, so it is refused here
+        // with an explicit message. Remove this check when A2 (arrival
+        // schedule / arrival sequence) is implemented.
+        for (index, object) in self.model.objects.iter().enumerate() {
+            if let ObjectParams::Source(params) = &object.params
+                && !params.uses_interarrival()
+            {
+                return Err(SimError::Config(format!(
+                    "object {}: arrival_schedule/arrival_sequence are not implemented by the \
+                     engine yet; use interarrival or remove the table",
+                    self.objects[index].name
+                )));
+            }
+        }
         if self.config.warmup > 0.0 {
             self.schedule(self.config.warmup, EventKind::ResetStats);
         }
@@ -645,7 +873,8 @@ impl<'m> Simulation<'m> {
             }
             if !shifts::is_active(&shifts, 0.0) {
                 self.objects[index].on_shift = false;
-                self.objects[index].set_state(0.0, State::OffShift);
+                self.objects[index].downtime.push(DowntimeSource::Shift);
+                self.set_state(index, State::OffShift);
             }
             if let Some(next) = shifts::next_transition(&shifts, 0.0)
                 && next < self.config.stop_time
@@ -664,12 +893,17 @@ impl<'m> Simulation<'m> {
                 }
                 ObjectParams::Processor(params) => {
                     if let Some(failure) = &params.failure {
-                        let mtbf = self.sample(&failure.mtbf).max(EPS);
-                        self.schedule(self.now + mtbf, EventKind::Breakdown(index));
+                        // A8: `first_failure_time` overrides the first MTBF
+                        // draw; negative values mean "ignore".
+                        self.schedule_next_failure(index, failure.first_failure_time);
                     }
                 }
                 _ => {}
             }
+        }
+        // A3: a puller starts empty, so it must ask for work at t = 0.
+        for index in 0..self.model.objects.len() {
+            self.schedule_pull(index);
         }
         Ok(())
     }
@@ -688,6 +922,21 @@ impl<'m> Simulation<'m> {
     fn sample_arrival(&mut self, distribution: &Distribution) -> f64 {
         sample_distribution(&mut self.arrival_rng, distribution)
     }
+}
+
+/// A10: how many operators a setup or process phase needs.
+///
+/// `use_same_num_operators` makes the process phase reuse the setup count, so a
+/// model only declares the crew size once.
+fn operators_needed(params: &openflex_model::ProcessorParams, phase: OperatorPhase) -> u32 {
+    let count = match (phase, params.use_same_num_operators) {
+        (OperatorPhase::Process, true) => {
+            params.num_setup_operators.or(params.num_process_operators)
+        }
+        (OperatorPhase::Setup, _) => params.num_setup_operators,
+        (OperatorPhase::Process, false) => params.num_process_operators,
+    };
+    count.unwrap_or(1).max(1)
 }
 
 fn sample_distribution(rng: &mut StdRng, distribution: &Distribution) -> f64 {
@@ -757,6 +1006,94 @@ fn sample_distribution(rng: &mut StdRng, distribution: &Distribution) -> f64 {
                 if x + y > 0.0 { x / (x + y) } else { 0.5 }
             }
             Distribution::IntegerUniform { min, max } => rng.r#gen_range(*min..=*max) as f64,
+            Distribution::Pareto { shape, scale } => {
+                // Inverse CDF: scale / U^(1/shape).
+                let u: f64 = rng.r#gen::<f64>().clamp(1e-12, 1.0);
+                scale / u.powf(1.0 / shape)
+            }
+            Distribution::LogLogistic { alpha, beta } => {
+                // Inverse CDF: alpha * (U / (1 - U))^(1/beta).
+                let u: f64 = rng.r#gen::<f64>().clamp(1e-12, 1.0 - 1e-12);
+                alpha * (u / (1.0 - u)).powf(1.0 / beta)
+            }
+            Distribution::Rayleigh { sigma } => {
+                // Inverse CDF: sigma * sqrt(-2 ln U).
+                let u: f64 = rng.r#gen::<f64>().clamp(1e-12, 1.0);
+                sigma * (-2.0 * u.ln()).sqrt()
+            }
+            Distribution::Binomial { n, p } => {
+                let n_f = f64::from(*n);
+                let mean = n_f * p;
+                let variance = n_f * p * (1.0 - p);
+                if *n > 100 {
+                    // Normal approximation keeps the cost independent of `n`.
+                    let sample = Normal::new(mean, variance.sqrt().max(EPS))
+                        .map(|d| d.sample(&mut *rng))
+                        .unwrap_or(mean);
+                    sample.round().clamp(0.0, n_f)
+                } else {
+                    let mut successes = 0.0;
+                    for _ in 0..*n {
+                        if rng.r#gen::<f64>() < *p {
+                            successes += 1.0;
+                        }
+                    }
+                    successes
+                }
+            }
+            Distribution::Poisson { mean } => {
+                if *mean <= 0.0 {
+                    0.0
+                } else if *mean < 30.0 {
+                    // Knuth's product method.
+                    let limit = (-mean).exp();
+                    let mut count = 0.0;
+                    let mut product = 1.0;
+                    loop {
+                        count += 1.0;
+                        product *= rng.r#gen::<f64>().max(1e-300);
+                        if product <= limit || count > 1_000_000.0 {
+                            break;
+                        }
+                    }
+                    count - 1.0
+                } else {
+                    // Normal approximation for the large-rate case.
+                    let sample = Normal::new(*mean, mean.sqrt())
+                        .map(|d| d.sample(&mut *rng))
+                        .unwrap_or(*mean);
+                    sample.round().max(0.0)
+                }
+            }
+            Distribution::Geometric { p } => {
+                // Failures before the first success: floor(ln U / ln(1 - p)).
+                if *p >= 1.0 {
+                    0.0
+                } else {
+                    let u: f64 = rng.r#gen::<f64>().clamp(1e-12, 1.0);
+                    (u.ln() / (1.0 - p).ln()).floor().max(0.0)
+                }
+            }
+            Distribution::NegativeBinomial { r, p } => {
+                // Sum of `r` geometric (failure count) samples.
+                if *p >= 1.0 {
+                    0.0
+                } else {
+                    let mut failures = 0.0;
+                    for _ in 0..*r {
+                        let u: f64 = rng.r#gen::<f64>().clamp(1e-12, 1.0);
+                        failures += (u.ln() / (1.0 - p).ln()).floor().max(0.0);
+                    }
+                    failures
+                }
+            }
+            Distribution::Bernoulli { p } => {
+                if rng.r#gen::<f64>() < *p {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             Distribution::Empirical { values, weights } => {
                 if values.is_empty() {
                     return 0.0;
@@ -813,7 +1150,7 @@ impl<'m> Simulation<'m> {
             EventKind::Flow(index) => self.flow(index),
             EventKind::SetupDone(index, token) => self.handle_setup_done(index, token),
             EventKind::ProcessDone(index, token) => self.handle_process_done(index, token),
-            EventKind::Breakdown(index) => self.handle_breakdown(index),
+            EventKind::Breakdown(index, generation) => self.handle_breakdown(index, generation),
             EventKind::RepairDone(index) => self.handle_repair(index),
             EventKind::Message(index) => self.handle_message(index),
             EventKind::BeltTick(index) => self.handle_belt_tick(index),
@@ -830,6 +1167,7 @@ impl<'m> Simulation<'m> {
             }
             EventKind::TransportHome(transporter) => self.handle_transport_home(transporter),
             EventKind::ResourceRetry(resource) => self.handle_resource_retry(resource),
+            EventKind::Pull(index) => self.handle_pull(index),
             EventKind::ResetStats => {
                 self.reset_stats();
                 Ok(())
@@ -843,6 +1181,115 @@ impl<'m> Simulation<'m> {
 
     fn set_state(&mut self, index: usize, state: State) {
         self.objects[index].set_state(self.now, state);
+        self.reschedule_failure(index);
+    }
+
+    fn set_phase(&mut self, index: usize, phase: Phase) {
+        let now = self.now;
+        self.objects[index].set_phase(now, phase);
+        self.reschedule_failure(index);
+    }
+
+    /// Enter the blocked state with a statistics reason (A12).
+    fn block(&mut self, index: usize, reason: BlockReason) {
+        let now = self.now;
+        self.objects[index].block(now, reason);
+        self.reschedule_failure(index);
+    }
+
+    /// Push a downtime request (A9). The object goes down immediately and only
+    /// recovers when the stack is empty again.
+    fn add_downtime(&mut self, index: usize, source: DowntimeSource) {
+        if !self.objects[index].downtime.contains(&source) {
+            self.objects[index].downtime.push(source);
+        }
+        self.pause_phase(index);
+        self.set_state(index, State::Down);
+    }
+
+    /// Remove one downtime request from the stack.
+    fn clear_downtime(&mut self, index: usize, source: DowntimeSource) {
+        self.objects[index]
+            .downtime
+            .retain(|active| *active != source);
+    }
+
+    /// Recompute the state after one downtime request cleared: the object only
+    /// recovers when no request is left, otherwise it stays down (A9).
+    fn settle_downtime(&mut self, index: usize) -> Result<(), SimError> {
+        let still_down = self.objects[index]
+            .downtime
+            .iter()
+            .any(|source| *source != DowntimeSource::Shift);
+        if still_down {
+            self.set_state(index, State::Down);
+            return Ok(());
+        }
+        if !self.objects[index].on_shift {
+            self.set_state(index, State::OffShift);
+            return Ok(());
+        }
+        if self.resume_phase(index)? {
+            return Ok(());
+        }
+        self.set_state(index, State::Idle);
+        self.flow(index)?;
+        Ok(())
+    }
+
+    /// Sample the next failure and arm the failure clock (A8).
+    ///
+    /// `first_failure_time` replaces the first MTBF draw; a negative value is
+    /// ignored, which is what FlexSim documents.
+    fn schedule_next_failure(&mut self, index: usize, first_failure_time: Option<f64>) {
+        let Some(failure) = self
+            .processor_params(index)
+            .and_then(|params| params.failure)
+        else {
+            return;
+        };
+        let threshold = match first_failure_time {
+            Some(time) if time >= 0.0 => time,
+            _ => self.sample(&failure.mtbf).max(EPS),
+        };
+        let generation = self.objects[index]
+            .failure
+            .as_ref()
+            .map(|clock| clock.generation)
+            .unwrap_or(0);
+        let count_states = failure.count_time_in_states.clone();
+        self.objects[index].failure = Some(FailureRt {
+            count_states: count_states.clone(),
+            up_time: 0.0,
+            threshold,
+            generation,
+        });
+        if count_states.is_empty() {
+            self.schedule(
+                self.now + threshold.max(EPS),
+                EventKind::Breakdown(index, generation),
+            );
+            return;
+        }
+        self.reschedule_failure(index);
+    }
+
+    /// Arm a failure event when the object currently accumulates up time (A8).
+    fn reschedule_failure(&mut self, index: usize) {
+        let Some(clock) = self.objects[index].failure.clone() else {
+            return;
+        };
+        if clock.count_states.is_empty() {
+            return;
+        }
+        if !ObjectRt::counts_up_time(&clock, self.objects[index].state, self.objects[index].phase) {
+            return;
+        }
+        let remaining = (clock.threshold - clock.up_time).max(0.0);
+        self.schedule(
+            self.now + remaining,
+            EventKind::Breakdown(index, clock.generation),
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -898,6 +1345,16 @@ impl<'m> Simulation<'m> {
             return Ok(());
         }
         let interval = self.sample_arrival(&params.interarrival).max(0.0);
+        // A safety net for zero-time loops: a source that samples a zero
+        // inter-arrival time without an arrival cap would create items at the
+        // same instant forever and never advance the clock.
+        if interval <= EPS && params.max_arrivals.is_none() {
+            return Err(SimError::Config(format!(
+                "object {}: interarrival samples must be positive (got {}); set max_arrivals, \
+                 stop_time or a positive interarrival distribution",
+                self.objects[index].name, interval
+            )));
+        }
         let next = self.now + interval;
         let horizon = match params.stop_time {
             Some(stop) => stop.min(self.config.stop_time),
@@ -973,9 +1430,11 @@ impl<'m> Simulation<'m> {
         match &self.model.objects[index].params {
             ObjectParams::Source(_) => false,
             ObjectParams::Sink(_) => true,
-            ObjectParams::Queue(params) => (object.content.len() as u32) < params.max_content,
-            ObjectParams::Rack(params) => (object.content.len() as u32) < params.capacity,
-            ObjectParams::Processor(params) => (object.held() as u32) < params.max_content,
+            ObjectParams::Queue(params) => (object.effective_content() as u32) < params.max_content,
+            ObjectParams::Rack(params) => (object.effective_content() as u32) < params.capacity,
+            ObjectParams::Processor(params) => {
+                (object.effective_content() as u32) < params.max_content
+            }
             ObjectParams::Conveyor(params) => object
                 .belt
                 .as_ref()
@@ -1007,7 +1466,7 @@ impl<'m> Simulation<'m> {
             | ObjectParams::Dispatcher(_)
             | ObjectParams::Resource(_) => false,
             ObjectParams::BasicFr(_) => object.content.is_empty(),
-            ObjectParams::BasicTe(params) => (object.content.len() as u32) < params.capacity,
+            ObjectParams::BasicTe(params) => (object.effective_content() as u32) < params.capacity,
         }
     }
 
@@ -1017,6 +1476,9 @@ impl<'m> Simulation<'m> {
         if !self.objects[index].on_shift {
             return Ok(());
         }
+        // A3: a downstream object that pulls is never pushed into, so flow has
+        // to tell it that items are waiting here.
+        self.notify_pullers(index);
         if !self.drain_out_pending(index)? {
             return Ok(());
         }
@@ -1038,19 +1500,28 @@ impl<'m> Simulation<'m> {
         // Some handlers (combiner, merge, separator) produce output into
         // `out_pending`; deliver it in the same step.
         self.drain_out_pending(index)?;
+        // A3: an object that pulls asks its upstream for more work whenever it
+        // may have room again.
+        self.schedule_pull(index);
         Ok(())
     }
 
     /// Deliver `out_pending` items. Returns `false` when the object blocked.
     fn drain_out_pending(&mut self, index: usize) -> Result<bool, SimError> {
+        // A4: `send_to_port == -1` kept the item here; only `release_item`
+        // clears the hold, so this is not a capacity block.
+        if self.objects[index].hold_release && !self.objects[index].release_bypass {
+            self.set_state(index, State::Blocked);
+            return Ok(false);
+        }
         while let Some(item) = self.objects[index].out_pending.first().cloned() {
             let Some(conn) = self.route(index, &item)? else {
-                self.objects[index].set_state(self.now, State::Blocked);
+                self.set_state(index, State::Blocked);
                 self.objects[index].phase = Phase::WaitingForOutput;
                 return Ok(false);
             };
             if !self.deliver(index, conn, item.clone())? {
-                self.objects[index].set_state(self.now, State::Blocked);
+                self.set_state(index, State::Blocked);
                 self.objects[index].phase = Phase::WaitingForOutput;
                 return Ok(false);
             }
@@ -1062,6 +1533,8 @@ impl<'m> Simulation<'m> {
             }
         }
         self.objects[index].out_pending_accounted = false;
+        // `hold_release` / `release_bypass` are owned by `route` (which consumes
+        // the bypass) and by `release_item`; nothing to reset here.
         // The source schedules its next arrival when the previous batch has
         // left the object.
         if self.objects[index].kind == ObjectKind::Source
@@ -1074,7 +1547,13 @@ impl<'m> Simulation<'m> {
     }
 
     fn route(&mut self, from: usize, item: &FlowItem) -> Result<Option<usize>, SimError> {
-        let outputs = self.outputs[from].clone();
+        // A3: a downstream object that pulls its input is never pushed into,
+        // otherwise the item would be delivered twice.
+        let outputs: Vec<usize> = self.outputs[from]
+            .iter()
+            .copied()
+            .filter(|&conn| !self.pull_enabled(self.conns[conn].to))
+            .collect();
         if outputs.is_empty() {
             return Ok(None);
         }
@@ -1150,6 +1629,25 @@ impl<'m> Simulation<'m> {
                 let port = item.labels.get(&label).copied().unwrap_or(0.0).max(0.0) as usize;
                 outputs.get(port).copied()
             }
+            // A4: `send_to_port == -1`. The item is not offered to any output;
+            // it stays with the object until an explicit `release_item`.
+            PortStrategy::Hold => {
+                if self.objects[from].release_bypass {
+                    // A4: `release_item` re-runs the send with the hold
+                    // lifted, i.e. it falls back to the first free output.
+                    // The bypass is single-shot: after this attempt the object
+                    // holds again.
+                    self.objects[from].release_bypass = false;
+                    self.objects[from].hold_release = false;
+                    outputs
+                        .iter()
+                        .copied()
+                        .find(|&conn| self.conn_accepts(conn))
+                } else {
+                    self.objects[from].hold_release = true;
+                    None
+                }
+            }
         };
         Ok(chosen)
     }
@@ -1190,7 +1688,7 @@ impl<'m> Simulation<'m> {
             }
             ObjectKind::Queue | ObjectKind::Rack => {
                 self.objects[target].push_content(now, item);
-                self.objects[target].set_state(now, State::Busy);
+                self.set_state(target, State::Busy);
                 self.schedule(now, EventKind::Flow(target));
             }
             ObjectKind::Processor => {
@@ -1210,7 +1708,7 @@ impl<'m> Simulation<'m> {
                 self.objects[target].belt_items.push(item);
                 self.objects[target].belt_last_update = now;
                 self.objects[target].touch();
-                self.objects[target].set_state(now, State::Busy);
+                self.set_state(target, State::Busy);
                 self.schedule(now, EventKind::Flow(target));
             }
             ObjectKind::Combiner => {
@@ -1238,7 +1736,7 @@ impl<'m> Simulation<'m> {
                     *slot = Some(item);
                 }
                 self.objects[target].touch();
-                self.objects[target].set_state(now, State::Busy);
+                self.set_state(target, State::Busy);
                 self.schedule(now, EventKind::Flow(target));
             }
             ObjectKind::Split => {
@@ -1265,7 +1763,243 @@ impl<'m> Simulation<'m> {
                 self.schedule(self.now, EventKind::Flow(from));
             }
         }
+        // A3: items became available here, so pulling neighbours may proceed.
+        self.notify_pullers(index);
         Ok(())
+    }
+
+    /// Wake every downstream object that pulls its input from `index`.
+    fn notify_pullers(&mut self, index: usize) {
+        let outputs = self.outputs[index].clone();
+        for conn in outputs {
+            let to = self.conns[conn].to;
+            if self.pull_enabled(to) {
+                self.schedule_pull(to);
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Pull mode (A3)
+    // -----------------------------------------------------------------------
+
+    /// A4: whether the object currently holds an item that `release_item` can
+    /// send (a finished item or a buffered queue item).
+    fn has_held_item(&self, index: usize) -> bool {
+        if !self.objects[index].out_pending.is_empty() {
+            return true;
+        }
+        matches!(
+            self.objects[index].kind,
+            ObjectKind::Queue | ObjectKind::Rack
+        ) && !self.objects[index].content.is_empty()
+    }
+
+    /// Whether an object pulls its input instead of being pushed into.
+    fn pull_enabled(&self, index: usize) -> bool {
+        self.model.objects[index]
+            .pull()
+            .is_some_and(|pull| pull.enabled)
+    }
+
+    /// Ask an object to pull once the current event finishes. The flag makes
+    /// the request idempotent inside one instant.
+    fn schedule_pull(&mut self, index: usize) {
+        if !self.pull_enabled(index) || self.objects[index].pull_scheduled {
+            return;
+        }
+        self.objects[index].pull_scheduled = true;
+        self.schedule(self.now, EventKind::Pull(index));
+    }
+
+    fn handle_pull(&mut self, index: usize) -> Result<(), SimError> {
+        self.objects[index].pull_scheduled = false;
+        self.pull_into(index)
+    }
+
+    /// Take as many items as the object can accept from its upstream objects.
+    ///
+    /// The upstream gives up its item exactly like a successful push: the item
+    /// leaves the upstream `content`/`out_pending`, counts as upstream output
+    /// and is delivered through the normal `deliver` path, so entry triggers
+    /// and input statistics stay identical.
+    fn pull_into(&mut self, index: usize) -> Result<(), SimError> {
+        let Some(pull) = self.model.objects[index].pull().cloned() else {
+            return Ok(());
+        };
+        if !pull.enabled || !self.objects[index].on_shift {
+            return Ok(());
+        }
+        let inputs = self.inputs[index].clone();
+        if inputs.is_empty() {
+            return Ok(());
+        }
+        let now = self.now;
+        let order = self.pull_order(index, &inputs, &pull);
+        for conn in order {
+            let (from, to_port) = {
+                let connection = &self.conns[conn];
+                (connection.from, connection.to_port)
+            };
+            if !self.can_accept(index, to_port) {
+                break;
+            }
+            let mut delivered = false;
+            for slot in self.pull_candidates(from) {
+                let item = match slot {
+                    UpstreamSlot::OutPending => self.objects[from].out_pending[0].clone(),
+                    UpstreamSlot::Content(at) => self.objects[from].content[at].clone(),
+                };
+                if !self.pull_requirement_met(index, &pull, &item)? {
+                    continue;
+                }
+                match slot {
+                    UpstreamSlot::OutPending => {
+                        self.objects[from].out_pending.remove(0);
+                        if !self.objects[from].out_pending_accounted {
+                            self.objects[from].acc.output += 1;
+                            self.objects[from].acc.stay_sum += now - item.entry_time;
+                            self.objects[from].acc.stay_count += 1;
+                        }
+                    }
+                    UpstreamSlot::Content(at) => {
+                        self.objects[from].take_content(now, at);
+                        self.objects[from].acc.output += 1;
+                        self.objects[from].acc.stay_sum += now - item.entry_time;
+                        self.objects[from].acc.stay_count += 1;
+                    }
+                }
+                if !self.deliver(from, conn, item)? {
+                    break;
+                }
+                delivered = true;
+                break;
+            }
+            if delivered {
+                // A source measures its inter-arrival time from the moment its
+                // batch left, and a pull takes the item out of the out-buffer
+                // without going through `drain_out_pending`.
+                if self.objects[from].kind == ObjectKind::Source
+                    && self.objects[from].next_arrival_pending
+                    && self.objects[from].out_pending.is_empty()
+                {
+                    self.objects[from].next_arrival_pending = false;
+                    self.schedule_next_arrival(from)?;
+                }
+                // The upstream object lost an item: let it and its neighbours
+                // settle (it may now accept work or become idle).
+                self.schedule(now, EventKind::Flow(from));
+                self.notify_upstreams(from)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Evaluate the per-item pull requirement; `None` accepts everything.
+    fn pull_requirement_met(
+        &self,
+        index: usize,
+        pull: &PullParams,
+        item: &FlowItem,
+    ) -> Result<bool, SimError> {
+        let Some(requirement) = &pull.requirement else {
+            return Ok(true);
+        };
+        let name = self.objects[index].name.clone();
+        let context = ExprContext::new(self, Some(item));
+        requirement
+            .eval(&context)
+            .map(|value| value.as_bool())
+            .map_err(|err| SimError::Expression {
+                location: format!("{name} pull requirement"),
+                detail: err.to_string(),
+            })
+    }
+
+    /// Connection order in which this object tries to pull.
+    fn pull_order(&mut self, index: usize, inputs: &[usize], pull: &PullParams) -> Vec<usize> {
+        match &pull.strategy {
+            None | Some(PortStrategy::FirstAvailable) => inputs.to_vec(),
+            Some(PortStrategy::RoundRobin) => {
+                let start = self.objects[index].pull_cursor % inputs.len().max(1);
+                self.objects[index].pull_cursor = self.objects[index].pull_cursor.wrapping_add(1);
+                (0..inputs.len())
+                    .map(|offset| inputs[(start + offset) % inputs.len()])
+                    .collect()
+            }
+            Some(PortStrategy::Random) => {
+                let mut order = inputs.to_vec();
+                for i in (1..order.len()).rev() {
+                    let j = self.rng.r#gen_range(0..=i);
+                    order.swap(i, j);
+                }
+                order
+            }
+            Some(PortStrategy::ByPercentage { percentages }) => self
+                .pick_pull_percentage(inputs, percentages)
+                .into_iter()
+                .collect(),
+            Some(PortStrategy::ByCondition { conditions }) => {
+                let mut order = Vec::new();
+                for condition in conditions {
+                    let matched = {
+                        let context = ExprContext::new(self, None);
+                        condition
+                            .condition
+                            .eval(&context)
+                            .map(|value| value.as_bool())
+                            .unwrap_or(false)
+                    };
+                    if matched {
+                        if let Some(&conn) = inputs.get(condition.port as usize) {
+                            order.push(conn);
+                        }
+                        break;
+                    }
+                }
+                order
+            }
+            Some(PortStrategy::ByItemType) | Some(PortStrategy::ByLabel { .. }) => inputs.to_vec(),
+            // A held pull strategy never takes anything.
+            Some(PortStrategy::Hold) => Vec::new(),
+        }
+    }
+
+    fn pick_pull_percentage(&mut self, inputs: &[usize], percentages: &[f64]) -> Option<usize> {
+        if percentages.len() != inputs.len() || inputs.is_empty() {
+            return inputs.first().copied();
+        }
+        let total: f64 = percentages.iter().sum();
+        if total <= 0.0 {
+            return inputs.first().copied();
+        }
+        let mut pick = self.rng.r#gen::<f64>() * total;
+        for (conn, weight) in inputs.iter().zip(percentages) {
+            if pick <= *weight {
+                return Some(*conn);
+            }
+            pick -= *weight;
+        }
+        inputs.last().copied()
+    }
+
+    /// Items an upstream object can hand over. Finished items come first; a
+    /// queue, rack or source also offers its buffered content, while a
+    /// processor never gives up half-processed work.
+    fn pull_candidates(&self, from: usize) -> Vec<UpstreamSlot> {
+        let mut slots = Vec::new();
+        if !self.objects[from].out_pending.is_empty() {
+            slots.push(UpstreamSlot::OutPending);
+        }
+        match self.objects[from].kind {
+            ObjectKind::Queue | ObjectKind::Rack | ObjectKind::Source => {
+                for at in 0..self.objects[from].content.len() {
+                    slots.push(UpstreamSlot::Content(at));
+                }
+            }
+            _ => {}
+        }
+        slots
     }
 
     // -----------------------------------------------------------------------
@@ -1278,13 +2012,13 @@ impl<'m> Simulation<'m> {
             if self.objects[index].content.is_empty() {
                 self.objects[index].force_release = false;
                 self.objects[index].batch_anchor = None;
-                self.objects[index].set_state(self.now, State::Idle);
+                self.set_state(index, State::Idle);
                 return Ok(());
             }
             if let Some(batch_size) = params.batch_size {
                 let enough = self.objects[index].content.len() >= batch_size as usize;
                 if !enough && !self.objects[index].force_release {
-                    self.objects[index].set_state(self.now, State::Blocked);
+                    self.set_state(index, State::Blocked);
                     self.arm_batch_timeout(index, &params);
                     return Ok(());
                 }
@@ -1328,7 +2062,7 @@ impl<'m> Simulation<'m> {
         let at = position.min(self.objects[index].content.len());
         self.objects[index].note_content(self.now);
         self.objects[index].content.insert(at, item);
-        self.objects[index].set_state(self.now, State::Blocked);
+        self.set_state(index, State::Blocked);
     }
 
     /// Arm the batching timeout for a queue that is waiting for a full batch.
@@ -1420,11 +2154,11 @@ impl<'m> Simulation<'m> {
             }
             self.objects[index].ready_for_process = false;
             let process = self.sample(&params.process_time).max(0.0);
-            self.objects[index].phase = Phase::Processing;
+            self.set_phase(index, Phase::Processing);
             self.objects[index].phase_token += 1;
             let token = self.objects[index].phase_token;
             self.objects[index].phase_end = self.now + process;
-            self.objects[index].set_state(self.now, State::Busy);
+            self.set_state(index, State::Busy);
             self.schedule(self.now + process, EventKind::ProcessDone(index, token));
             return Ok(());
         }
@@ -1435,8 +2169,8 @@ impl<'m> Simulation<'m> {
             return Ok(());
         }
         if self.objects[index].content.is_empty() {
-            self.objects[index].set_state(self.now, State::Idle);
-            self.objects[index].phase = Phase::Idle;
+            self.set_phase(index, Phase::Idle);
+            self.set_state(index, State::Idle);
             return Ok(());
         }
         let setup = self.sample(&params.setup_time).max(0.0);
@@ -1452,18 +2186,20 @@ impl<'m> Simulation<'m> {
             return Ok(());
         };
         self.objects[index].processing_item = Some(item);
-        self.objects[index].set_state(self.now, State::Busy);
         self.objects[index].phase_token += 1;
         let token = self.objects[index].phase_token;
+        let now = self.now;
         if setup > 0.0 {
-            self.objects[index].phase = Phase::Setup;
-            self.objects[index].phase_end = self.now + setup;
-            self.schedule(self.now + setup, EventKind::SetupDone(index, token));
+            self.set_phase(index, Phase::Setup);
+            self.objects[index].phase_end = now + setup;
+            self.set_state(index, State::Busy);
+            self.schedule(now + setup, EventKind::SetupDone(index, token));
         } else {
             let process = self.sample(&params.process_time).max(0.0);
-            self.objects[index].phase = Phase::Processing;
-            self.objects[index].phase_end = self.now + process;
-            self.schedule(self.now + process, EventKind::ProcessDone(index, token));
+            self.set_phase(index, Phase::Processing);
+            self.objects[index].phase_end = now + process;
+            self.set_state(index, State::Busy);
+            self.schedule(now + process, EventKind::ProcessDone(index, token));
         }
         Ok(())
     }
@@ -1480,7 +2216,7 @@ impl<'m> Simulation<'m> {
         if !same_operator {
             self.release_operator(index)?;
         }
-        self.objects[index].phase = Phase::Idle;
+        self.set_phase(index, Phase::Idle);
         self.objects[index].ready_for_process = true;
         self.flow_processor(index)
     }
@@ -1491,13 +2227,13 @@ impl<'m> Simulation<'m> {
         }
         self.objects[index].note_content(self.now);
         let Some(item) = self.objects[index].processing_item.take() else {
-            self.objects[index].phase = Phase::Idle;
-            self.objects[index].set_state(self.now, State::Idle);
+            self.set_phase(index, Phase::Idle);
+            self.set_state(index, State::Idle);
             return Ok(());
         };
         self.objects[index].out_pending.push(item);
         self.objects[index].touch();
-        self.objects[index].phase = Phase::WaitingForOutput;
+        self.set_phase(index, Phase::WaitingForOutput);
         self.release_operator(index)?;
         // `flow` delivers the finished item and, when there is another item
         // waiting, starts the next setup/process step.
@@ -1506,8 +2242,8 @@ impl<'m> Simulation<'m> {
             && self.objects[index].content.is_empty()
             && !matches!(self.objects[index].phase, Phase::Setup | Phase::Processing)
         {
-            self.objects[index].phase = Phase::Idle;
-            self.objects[index].set_state(self.now, State::Idle);
+            self.set_phase(index, Phase::Idle);
+            self.set_state(index, State::Idle);
         }
         // A finished item frees a slot: upstream objects may now flow.
         self.notify_upstreams(index)?;
@@ -1540,7 +2276,7 @@ impl<'m> Simulation<'m> {
             Phase::Setup => EventKind::SetupDone(index, token),
             _ => EventKind::ProcessDone(index, token),
         };
-        self.objects[index].set_state(self.now, State::Busy);
+        self.set_state(index, State::Busy);
         self.schedule(self.now + remaining, event);
         Ok(true)
     }
@@ -1549,15 +2285,16 @@ impl<'m> Simulation<'m> {
     // Operators, dispatchers, transporters and resource pools
     // -----------------------------------------------------------------------
 
-    /// Make sure the operator required for `phase` is held. Returns `false`
-    /// when the processor has to wait (its state is then `Blocked`).
+    /// Make sure the operators required for `phase` are held (A10). Returns
+    /// `false` when the processor has to wait (its state is then `Blocked`).
     fn ensure_operator(
         &mut self,
         index: usize,
         phase: OperatorPhase,
         params: &openflex_model::ProcessorParams,
     ) -> Result<bool, SimError> {
-        if self.objects[index].operator_held {
+        let needed = operators_needed(params, phase);
+        if self.objects[index].operator_held >= needed {
             return Ok(true);
         }
         let name = match phase {
@@ -1569,94 +2306,152 @@ impl<'m> Simulation<'m> {
             // Unknown reference: no operator constraint.
             return Ok(true);
         };
-        if self.objects[index].requesting_operator {
+        let kind = self.objects[target].kind;
+        if !matches!(kind, ObjectKind::Dispatcher | ObjectKind::Resource) {
+            // Not a task executer or pool: treat as always available.
+            return Ok(true);
+        }
+        // How many operators are still missing (held + already requested)?
+        let missing = needed.saturating_sub(
+            self.objects[index].operator_held + self.objects[index].operators_pending,
+        );
+        if missing == 0 {
             return Ok(false);
         }
         self.objects[index].requesting_operator = true;
-        self.set_state(index, State::Blocked);
-        match self.objects[target].kind {
-            ObjectKind::Dispatcher => {
-                self.objects[target].requests.push_back(index);
-                self.dispatch(target)?;
-            }
-            ObjectKind::Resource => {
-                self.resource_request(target, index)?;
-            }
-            _ => {
-                // Not a task executer or pool: treat as always available.
-                self.objects[index].requesting_operator = false;
-                return Ok(true);
+        self.objects[index].operators_pending += missing;
+        // A request served by a dispatcher means the operator has to travel;
+        // a pool hands a unit over immediately. The distinction feeds the
+        // `waiting_for_operator` / `waiting_for_transport` statistics.
+        let reason = if kind == ObjectKind::Dispatcher && !self.transporters[target].is_empty() {
+            BlockReason::Transport
+        } else {
+            BlockReason::Operator
+        };
+        self.block(index, reason);
+        for _ in 0..missing {
+            match kind {
+                ObjectKind::Dispatcher => self.objects[target].requests.push_back(index),
+                ObjectKind::Resource => self.resource_request(target, index)?,
+                _ => {}
             }
         }
-        Ok(self.objects[index].operator_held)
+        if kind == ObjectKind::Dispatcher {
+            self.dispatch(target)?;
+        }
+        Ok(self.objects[index].operator_held >= needed)
     }
 
-    /// Hand an operator to a waiting processor and let it continue.
+    /// Hand one operator to a waiting processor and let it continue.
     fn grant_operator(&mut self, index: usize, source: OperatorSource) {
-        self.objects[index].operator_held = true;
-        self.objects[index].requesting_operator = false;
-        self.objects[index].operator_source = Some(source);
+        self.objects[index].operator_held += 1;
+        self.objects[index].operator_sources.push(source);
+        self.objects[index].operators_pending =
+            self.objects[index].operators_pending.saturating_sub(1);
+        self.objects[index].requesting_operator = self.objects[index].operators_pending > 0;
         self.schedule(self.now, EventKind::Flow(index));
     }
 
-    /// Release the operator currently held by a processor.
+    /// Release every operator held by a processor.
     fn release_operator(&mut self, index: usize) -> Result<(), SimError> {
-        if !self.objects[index].operator_held {
-            return Ok(());
-        }
-        self.objects[index].operator_held = false;
-        let source = self.objects[index].operator_source.take();
-        match source {
-            Some(OperatorSource::Resource(resource)) => {
-                if self.objects[resource].resource_in_use > 0 {
-                    self.objects[resource].resource_in_use -= 1;
+        let sources = std::mem::take(&mut self.objects[index].operator_sources);
+        self.objects[index].operator_held = 0;
+        self.objects[index].operators_pending = 0;
+        self.objects[index].requesting_operator = false;
+        for source in sources {
+            match source {
+                OperatorSource::Resource(resource) => {
+                    if self.objects[resource].resource_in_use > 0 {
+                        self.objects[resource].resource_in_use -= 1;
+                    }
+                    if self.objects[resource].resource_in_use == 0 {
+                        self.set_state(resource, State::Idle);
+                    }
+                    self.grant_waiting_resource(resource)?;
                 }
-                if self.objects[resource].resource_in_use == 0 {
-                    self.set_state(resource, State::Idle);
+                OperatorSource::Transporter(transporter) => {
+                    let unload_distribution = match &self.model.objects[transporter].params {
+                        ObjectParams::Transporter(params) => params.unload_time.clone(),
+                        _ => Distribution::Constant { value: 0.0 },
+                    };
+                    let unload = self.sample(&unload_distribution).max(0.0);
+                    self.schedule(
+                        self.now + unload,
+                        EventKind::OperatorReleased(transporter, index),
+                    );
                 }
-                self.grant_waiting_resource(resource)?;
             }
-            Some(OperatorSource::Transporter(transporter)) => {
-                let unload_distribution = match &self.model.objects[transporter].params {
-                    ObjectParams::Transporter(params) => params.unload_time.clone(),
-                    _ => Distribution::Constant { value: 0.0 },
-                };
-                let unload = self.sample(&unload_distribution).max(0.0);
-                self.schedule(
-                    self.now + unload,
-                    EventKind::OperatorReleased(transporter, index),
-                );
-            }
-            None => {}
         }
         Ok(())
     }
 
     /// Assign queued requests to idle transporters of a dispatcher.
+    ///
+    /// A10: requests are served highest `operator_priority` first; ties keep
+    /// the arrival order, so a model without priorities behaves exactly like
+    /// v0.1.0.
+    ///
+    /// TODO(A10): `operator_preempt` is parsed and validated by the model layer
+    /// but not enforced here. Preemption needs a task-revocation path (a
+    /// transporter abandoning a load and re-queueing the request) which is out
+    /// of scope for this iteration; see docs/BACKLOG.md A10.
     fn dispatch(&mut self, dispatcher: usize) -> Result<(), SimError> {
         if !self.objects[dispatcher].on_shift {
             return Ok(());
         }
-        while let Some(&requester) = self.objects[dispatcher].requests.front() {
-            if !self.objects[requester].requesting_operator {
-                self.objects[dispatcher].requests.pop_front();
-                continue;
-            }
+        while let Some(position) = self.pick_request(dispatcher) {
+            let requester = self.objects[dispatcher].requests[position];
             let Some((transporter, travel)) = self.pick_transporter(dispatcher, requester) else {
                 break;
             };
-            self.objects[dispatcher].requests.pop_front();
+            self.objects[dispatcher].requests.remove(position);
             self.objects[transporter].tasks += 1;
             self.objects[transporter].acc.input += 1;
+            // A5: the operator is on its way; the destination counts it as an
+            // in-transit item until it arrives.
+            self.objects[requester].in_transit += 1;
             self.set_state(transporter, State::Busy);
             self.schedule(
                 self.now + travel,
                 EventKind::TransportArrive(transporter, requester),
             );
         }
+        // Forget requests whose requester already got what it needed.
+        let stale: Vec<usize> = self.objects[dispatcher]
+            .requests
+            .iter()
+            .copied()
+            .filter(|&requester| !self.objects[requester].requesting_operator)
+            .collect();
+        if !stale.is_empty() {
+            self.objects[dispatcher]
+                .requests
+                .retain(|requester| !stale.contains(requester));
+        }
         let busy = !self.objects[dispatcher].requests.is_empty();
         self.set_state(dispatcher, if busy { State::Blocked } else { State::Idle });
         Ok(())
+    }
+
+    /// Position of the pending request with the highest operator priority
+    /// (A10). Requests out of the queue keep their relative order.
+    fn pick_request(&self, dispatcher: usize) -> Option<usize> {
+        let mut best: Option<(usize, u32)> = None;
+        for (position, &requester) in self.objects[dispatcher].requests.iter().enumerate() {
+            if !self.objects[requester].requesting_operator {
+                continue;
+            }
+            let priority = self
+                .processor_params(requester)
+                .map(|params| params.operator_priority)
+                .unwrap_or(0);
+            match best {
+                None => best = Some((position, priority)),
+                Some((_, current)) if priority > current => best = Some((position, priority)),
+                _ => {}
+            }
+        }
+        best.map(|(position, _)| position)
     }
 
     /// Pick an idle transporter for a request, with the travel time to the
@@ -1706,6 +2501,10 @@ impl<'m> Simulation<'m> {
         transporter: usize,
         requester: usize,
     ) -> Result<(), SimError> {
+        // A5: the operator reached the requester, so it stops occupying a slot.
+        if self.objects[requester].in_transit > 0 {
+            self.objects[requester].in_transit -= 1;
+        }
         if self.objects[requester].requesting_operator {
             self.grant_operator(requester, OperatorSource::Transporter(transporter));
         }
@@ -1894,12 +2693,12 @@ impl<'m> Simulation<'m> {
                 break;
             };
             let Some(conn) = self.route(index, &item)? else {
-                self.objects[index].set_state(self.now, State::Blocked);
+                self.set_state(index, State::Blocked);
                 self.schedule_belt_tick(index);
                 return Ok(());
             };
             if !self.deliver(index, conn, item.clone())? {
-                self.objects[index].set_state(self.now, State::Blocked);
+                self.set_state(index, State::Blocked);
                 self.schedule_belt_tick(index);
                 return Ok(());
             }
@@ -1918,10 +2717,10 @@ impl<'m> Simulation<'m> {
             self.notify_upstreams(index)?;
         }
         if self.objects[index].belt_items.is_empty() {
-            self.objects[index].set_state(self.now, State::Idle);
+            self.set_state(index, State::Idle);
             self.objects[index].belt_tick_at = f64::INFINITY;
         } else {
-            self.objects[index].set_state(self.now, State::Busy);
+            self.set_state(index, State::Busy);
             self.schedule_belt_tick(index);
         }
         Ok(())
@@ -1938,12 +2737,12 @@ impl<'m> Simulation<'m> {
         };
         if self.objects[index].pack_mode {
             if self.objects[index].container.is_none() {
-                self.objects[index].set_state(self.now, State::Idle);
+                self.set_state(index, State::Idle);
                 return Ok(());
             }
             if (self.objects[index].components.len() as u32) < params.components_per_container {
                 // Waiting for the remaining components.
-                self.objects[index].set_state(self.now, State::Blocked);
+                self.set_state(index, State::Blocked);
                 return Ok(());
             }
             let now = self.now;
@@ -1963,7 +2762,7 @@ impl<'m> Simulation<'m> {
                 .insert(COMPONENTS_LABEL.to_string(), count as f64);
             self.objects[index].out_pending.push(container);
             self.objects[index].touch();
-            self.objects[index].set_state(now, State::Idle);
+            self.set_state(index, State::Idle);
             Ok(())
         } else {
             let all = self.objects[index].join_slots.iter().all(Option::is_some);
@@ -1998,7 +2797,7 @@ impl<'m> Simulation<'m> {
                 self.objects[index].out_pending.push(merged);
             }
             self.objects[index].touch();
-            self.objects[index].set_state(now, State::Idle);
+            self.set_state(index, State::Idle);
             Ok(())
         }
     }
@@ -2020,7 +2819,7 @@ impl<'m> Simulation<'m> {
             let outputs = self.outputs[index].len();
             if outputs == 0 {
                 self.objects[index].push_content(now, container);
-                self.objects[index].set_state(now, State::Blocked);
+                self.set_state(index, State::Blocked);
                 return Ok(());
             }
             let components = container
@@ -2050,11 +2849,11 @@ impl<'m> Simulation<'m> {
         let now = self.now;
         while let Some((item, port)) = self.objects[index].pending_parts.first().cloned() {
             let Some(conn) = self.conn_at_port(index, port) else {
-                self.objects[index].set_state(now, State::Blocked);
+                self.set_state(index, State::Blocked);
                 return Ok(());
             };
             if !self.deliver(index, conn, item.clone())? {
-                self.objects[index].set_state(now, State::Blocked);
+                self.set_state(index, State::Blocked);
                 return Ok(());
             }
             self.objects[index].note_content(now);
@@ -2065,7 +2864,7 @@ impl<'m> Simulation<'m> {
             self.objects[index].acc.stay_count += 1;
         }
         if self.objects[index].content.is_empty() && self.objects[index].pending_parts.is_empty() {
-            self.objects[index].set_state(now, State::Idle);
+            self.set_state(index, State::Idle);
         }
         Ok(())
     }
@@ -2091,8 +2890,8 @@ impl<'m> Simulation<'m> {
             filled > 0
         };
         if !ready {
-            self.objects[index].set_state(
-                self.now,
+            self.set_state(
+                index,
                 if filled > 0 {
                     State::Blocked
                 } else {
@@ -2126,7 +2925,7 @@ impl<'m> Simulation<'m> {
             self.objects[index].out_pending.push(merged);
         }
         self.objects[index].touch();
-        self.objects[index].set_state(now, State::Idle);
+        self.set_state(index, State::Idle);
         Ok(())
     }
 
@@ -2149,7 +2948,7 @@ impl<'m> Simulation<'m> {
                 break;
             };
             if !self.deliver(index, conn, item.clone())? {
-                self.objects[index].set_state(self.now, State::Blocked);
+                self.set_state(index, State::Blocked);
                 return Ok(());
             }
             if !by_item_type {
@@ -2161,7 +2960,7 @@ impl<'m> Simulation<'m> {
             self.objects[index].acc.stay_sum += now - item.entry_time;
             self.objects[index].acc.stay_count += 1;
         }
-        self.objects[index].set_state(self.now, State::Idle);
+        self.set_state(index, State::Idle);
         Ok(())
     }
 
@@ -2170,11 +2969,11 @@ impl<'m> Simulation<'m> {
     fn flow_generic(&mut self, index: usize) -> Result<(), SimError> {
         while let Some(item) = self.objects[index].content.first().cloned() {
             let Some(conn) = self.route(index, &item)? else {
-                self.objects[index].set_state(self.now, State::Blocked);
+                self.set_state(index, State::Blocked);
                 return Ok(());
             };
             if !self.deliver(index, conn, item.clone())? {
-                self.objects[index].set_state(self.now, State::Blocked);
+                self.set_state(index, State::Blocked);
                 return Ok(());
             }
             let now = self.now;
@@ -2183,7 +2982,7 @@ impl<'m> Simulation<'m> {
             self.objects[index].acc.stay_sum += now - item.entry_time;
             self.objects[index].acc.stay_count += 1;
         }
-        self.objects[index].set_state(self.now, State::Idle);
+        self.set_state(index, State::Idle);
         Ok(())
     }
 
@@ -2191,7 +2990,7 @@ impl<'m> Simulation<'m> {
     // Failures
     // -----------------------------------------------------------------------
 
-    fn handle_breakdown(&mut self, index: usize) -> Result<(), SimError> {
+    fn handle_breakdown(&mut self, index: usize, generation: u64) -> Result<(), SimError> {
         let Some(params) = self.processor_params(index) else {
             return Ok(());
         };
@@ -2201,30 +3000,44 @@ impl<'m> Simulation<'m> {
         if self.objects[index].state == State::Down {
             return Ok(());
         }
+        // A8: with a state-based clock the event can be stale (the object left
+        // the counted states) or early (it was paused in between).
+        if let Some(clock) = self.objects[index].failure.clone()
+            && !clock.count_states.is_empty()
+        {
+            if clock.generation != generation {
+                return Ok(());
+            }
+            if clock.up_time + EPS < clock.threshold {
+                let remaining = (clock.threshold - clock.up_time).max(EPS);
+                self.schedule(
+                    self.now + remaining,
+                    EventKind::Breakdown(index, generation),
+                );
+                return Ok(());
+            }
+        }
         self.fire_trigger(index, SimTrigger::OnBreakdown)?;
         self.pause_phase(index);
-        self.set_state(index, State::Down);
+        // A9: a breakdown is one downtime request among possibly several.
+        self.add_downtime(index, DowntimeSource::Breakdown);
         let repair = self.sample(&failure.mttr).max(0.0);
         self.schedule(self.now + repair, EventKind::RepairDone(index));
         Ok(())
     }
 
     fn handle_repair(&mut self, index: usize) -> Result<(), SimError> {
-        let Some(params) = self.processor_params(index) else {
+        if self.processor_params(index).is_none() {
             return Ok(());
-        };
+        }
         self.fire_trigger(index, SimTrigger::OnRepair)?;
-        if self.objects[index].on_shift {
-            if !self.resume_phase(index)? {
-                self.set_state(index, State::Idle);
-            }
-        } else {
-            self.set_state(index, State::OffShift);
-        }
-        if let Some(failure) = &params.failure {
-            let mtbf = self.sample(&failure.mtbf).max(EPS);
-            self.schedule(self.now + mtbf, EventKind::Breakdown(index));
-        }
+        // Re-arm the failure clock before the object recovers: the old clock is
+        // exhausted and must not fire again immediately.
+        self.schedule_next_failure(index, None);
+        // A9: only the breakdown request clears here; other sources (shift,
+        // maintenance, manual) keep the object down.
+        self.clear_downtime(index, DowntimeSource::Breakdown);
+        self.settle_downtime(index)?;
         self.flow(index)?;
         Ok(())
     }
@@ -2263,14 +3076,29 @@ impl<'m> Simulation<'m> {
         }
         self.objects[index].on_shift = active;
         if !active {
+            // A9: going off shift is itself a downtime request.
+            if !self.objects[index]
+                .downtime
+                .contains(&DowntimeSource::Shift)
+            {
+                self.objects[index].downtime.push(DowntimeSource::Shift);
+            }
             self.pause_phase(index);
             if self.objects[index].state != State::Down {
                 self.set_state(index, State::OffShift);
             }
             return Ok(());
         }
-        // Back on shift.
-        if self.objects[index].state == State::Down {
+        // Back on shift: only recover when no other request keeps the object
+        // down.
+        self.objects[index]
+            .downtime
+            .retain(|source| *source != DowntimeSource::Shift);
+        if self.objects[index]
+            .downtime
+            .iter()
+            .any(|source| *source != DowntimeSource::Shift)
+        {
             return Ok(());
         }
         if self.resume_phase(index)? {
@@ -2352,6 +3180,17 @@ impl<'m> Simulation<'m> {
                     // Removing an item outside the normal flow is only safe at
                     // receive time; the item is simply dropped here.
                 }
+                Action::ReleaseItem => {
+                    // A4: clear the hold and retry the delivery in the same
+                    // instant, exactly like `sendToPort` after `releaseitem`.
+                    // The bypass is only armed when there is something to
+                    // release, so it cannot leak into a later item.
+                    self.objects[index].hold_release = false;
+                    if self.has_held_item(index) {
+                        self.objects[index].release_bypass = true;
+                    }
+                    self.schedule(self.now, EventKind::Flow(index));
+                }
             }
         }
         Ok(())
@@ -2381,6 +3220,7 @@ impl<'m> Simulation<'m> {
             object.acc = Accum::default();
             object.last_state_change = self.now;
             object.last_content_change = self.now;
+            object.phase_start = self.now;
         }
     }
 }
@@ -2481,5 +3321,87 @@ fn queue_params_of(object: &Object) -> openflex_model::QueueParams {
             ..Default::default()
         },
         _ => openflex_model::QueueParams::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn capacity_model() -> Model {
+        Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "capacity",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "P", "kind": "processor", "params": { "max_content": 10 } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "P" }, { "from": "P", "to": "K" } ]
+        }"#,
+        )
+        .expect("model")
+    }
+
+    fn item() -> FlowItem {
+        FlowItem {
+            id: 1,
+            item_type: 0,
+            labels: BTreeMap::new(),
+            created: 0.0,
+            entry_time: 0.0,
+        }
+    }
+
+    /// A5: items in transit occupy capacity slots, so a downstream object is
+    /// closed before the transports physically arrive.
+    #[test]
+    fn in_transit_items_count_against_capacity() {
+        let model = capacity_model();
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config).expect("simulation");
+        let processor = sim.by_name["P"];
+        assert!(sim.can_accept(processor, 0));
+
+        // Five items inside and four on their way: 9 of 10 slots are taken.
+        for _ in 0..5 {
+            sim.objects[processor].content.push(item());
+        }
+        sim.objects[processor].in_transit = 4;
+        assert!(sim.can_accept(processor, 0), "9 of 10 slots taken");
+
+        // The fifth transport closes the input although the content did not
+        // change: this is the whole point of A5.
+        sim.objects[processor].in_transit = 5;
+        assert!(!sim.can_accept(processor, 0), "10 of 10 slots taken");
+
+        // Releasing the transit slot opens the input again.
+        sim.objects[processor].in_transit = 4;
+        assert!(sim.can_accept(processor, 0));
+    }
+
+    /// A5: the peak content statistic ignores in-transit items (they are not
+    /// inside the object yet).
+    #[test]
+    fn in_transit_is_not_counted_as_content() {
+        let model = capacity_model();
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config).expect("simulation");
+        let processor = sim.by_name["P"];
+        sim.objects[processor].content.push(item());
+        sim.objects[processor].in_transit = 3;
+        sim.objects[processor].touch();
+        assert_eq!(sim.objects[processor].held(), 1);
+        assert_eq!(sim.objects[processor].effective_content(), 4);
+        assert_eq!(sim.objects[processor].acc.max_content, 1);
     }
 }

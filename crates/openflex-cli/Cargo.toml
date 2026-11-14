@@ -19,6 +19,8 @@ openflex-model = { workspace = true }
 openflex-core = { workspace = true }
 openflex-report = { workspace = true }
 clap = { workspace = true }
+clap_complete = { workspace = true }
+rayon = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

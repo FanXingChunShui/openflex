@@ -2,6 +2,10 @@ name: release
 
 # Cut a release by pushing a tag (v0.1.0, v0.2.0-rc.1, ...) or run this
 # workflow manually. See docs/releasing.md for the full process.
+#
+# Code signing (macOS notarisation, Windows Authenticode, GPG-signed checksums)
+# is optional: every signing step is skipped unless the matching repository
+# secret is configured. See docs/releasing.md section 7 for the secret names.
 on:
   push:
     tags:
@@ -136,6 +140,18 @@ jobs:
     needs: [meta, test]
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.optional }}
+    # Signing secrets are optional: each signing step is skipped when its
+    # secret is empty, so an unsigned release keeps working exactly as before.
+    env:
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+      MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
     strategy:
       fail-fast: false
       matrix:
@@ -213,6 +229,39 @@ jobs:
             target/x86_64-apple-darwin/release/openflex \
             -output dist/openflex
           lipo -info dist/openflex
+
+      # Optional: codesign + notarise + staple. Signing happens *before*
+      # packaging so the published archive contains the signed binary and its
+      # checksum is computed over the signed bytes.
+      - name: Sign and notarise the macOS binary (optional)
+        if: matrix.platform == 'universal-apple-darwin' && env.MACOS_CERTIFICATE != ''
+        run: |
+          set -euo pipefail
+          cert="$RUNNER_TEMP/macos-signing.p12"
+          printf '%s' "$MACOS_CERTIFICATE" > "$RUNNER_TEMP/macos-signing.b64"
+          openssl base64 -d -in "$RUNNER_TEMP/macos-signing.b64" -out "$cert"
+          bash scripts/sign-macos.sh \
+            --identity "$MACOS_SIGNING_IDENTITY" \
+            --path dist/openflex \
+            --p12 "$cert" \
+            --p12-password "$MACOS_CERTIFICATE_PASSWORD" \
+            --keychain-password "${MACOS_KEYCHAIN_PASSWORD:-temporary-keychain}" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --zip-out "$RUNNER_TEMP/openflex-notarize.zip"
+          rm -f "$cert" "$RUNNER_TEMP/macos-signing.b64"
+
+      # Optional: Authenticode-sign openflex.exe before it is zipped.
+      - name: Sign the Windows binary (optional)
+        if: runner.os == 'Windows' && env.WINDOWS_CERTIFICATE != ''
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pfx = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
+          [System.IO.File]::WriteAllBytes($pfx, [System.Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          ./scripts/sign-windows.ps1 -Path "target/${{ matrix.platform }}/release/openflex.exe" -CertificatePath $pfx -CertificatePassword $env:WINDOWS_CERTIFICATE_PASSWORD
+          Remove-Item -LiteralPath $pfx -Force
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
@@ -364,6 +413,9 @@ jobs:
     needs: [meta, test]
     runs-on: windows-2022
     continue-on-error: true
+    env:
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -379,6 +431,17 @@ jobs:
 
       - name: Build
         run: cargo build --release --locked -p openflex-cli
+
+      # Optional: sign the binary before WiX embeds it into the MSI.
+      - name: Sign the Windows binary (optional)
+        if: env.WINDOWS_CERTIFICATE != ''
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pfx = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
+          [System.IO.File]::WriteAllBytes($pfx, [System.Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          ./scripts/sign-windows.ps1 -Path 'target\release\openflex.exe' -CertificatePath $pfx -CertificatePassword $env:WINDOWS_CERTIFICATE_PASSWORD
+          Remove-Item -LiteralPath $pfx -Force
 
       - name: Install WiX
         shell: pwsh
@@ -404,8 +467,30 @@ jobs:
             -d "BinaryPath=$bin" `
             -arch x64 `
             -o "dist\openflex-$env:VERSION-windows-x64.msi"
+
+      # Optional: sign the MSI itself. Runs before the checksum is taken so
+      # SHA256SUMS-msi.txt describes the signed file.
+      - name: Sign the MSI (optional)
+        if: env.WINDOWS_CERTIFICATE != ''
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pfx = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
+          [System.IO.File]::WriteAllBytes($pfx, [System.Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          ./scripts/sign-windows.ps1 -Path "dist\openflex-$env:VERSION-windows-x64.msi" -CertificatePath $pfx -CertificatePassword $env:WINDOWS_CERTIFICATE_PASSWORD
+          Remove-Item -LiteralPath $pfx -Force
+
+      - name: Record MSI checksum
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "dist\openflex-$env:VERSION-windows-x64.msi").Hash.ToLowerInvariant()
           Add-Content -LiteralPath 'dist\SHA256SUMS-msi.txt' -Value "$hash  openflex-$env:VERSION-windows-x64.msi"
+          Write-Host "$hash  openflex-$env:VERSION-windows-x64.msi"
 
       - name: Upload MSI
         uses: actions/upload-artifact@v4
@@ -427,6 +512,9 @@ jobs:
     needs: [meta, build, packages, msi]
     if: always() && needs.meta.result == 'success'
     runs-on: ubuntu-22.04
+    env:
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
     steps:
       - uses: actions/checkout@v4
 
@@ -475,6 +563,18 @@ jobs:
             exit 1
           fi
 
+      # Optional: detached GPG signature over SHA256SUMS.txt, so users can tell
+      # integrity (sha256) apart from provenance (who signed it). Skipped when
+      # no GPG_PRIVATE_KEY secret is configured.
+      - name: Sign SHA256SUMS.txt with GPG (optional)
+        if: env.GPG_PRIVATE_KEY != ''
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$(mktemp -d)"
+          printf '%s' "$GPG_PRIVATE_KEY" | base64 -d | gpg --batch --import
+          bash scripts/sign-checksums.sh --file dist/SHA256SUMS.txt --passphrase-env
+          ls -l dist/SHA256SUMS.txt.asc
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -492,3 +592,4 @@ jobs:
             dist/*.rpm
             dist/*.msi
             dist/SHA256SUMS.txt
+            dist/SHA256SUMS.txt.asc

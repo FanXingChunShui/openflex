@@ -1,0 +1,41 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+#
+# winget 清单模板 — installer 文件。
+#
+# 需要替换的占位符（每个版本都要改）：
+#   PackageVersion          版本号
+#   InstallerUrl            GitHub Release 的 MSI 直链（v<version>）
+#   InstallerSha256         SHA256SUMS.txt 里 MSI 那一行的 64 位小写十六进制值
+#   ProductCode             （可选）见下面的说明
+#
+# 说明：
+#   * MSI 由 packaging/windows/openflex.wxs 用 WiX 5 生成，perUser 安装到
+#     %LOCALAPPDATA%\OpenFlex\bin 并写入用户 PATH，所以 Scope 是 user。
+#   * 当前 wxs 没有固定 ProductCode（WiX 每次构建自动生成），因此这里省略了
+#     ProductCode。若要让 winget 能准确检测“已安装”并支持升级，应先在
+#     openflex.wxs 里固定 ProductCode（WiX 允许通过 -d ProductCode=... 传入），
+#     再把该 GUID 填到这里。
+#   * InstallerSha256 必须是 *签名之后* 的 MSI 的哈希：release.yml 在签名步骤
+#     之后才计算 SHA256SUMS-msi.txt，直接取那一行即可。
+PackageIdentifier: FanXingChunShui.OpenFlex
+PackageVersion: 0.1.0
+InstallerLocale: en-US
+Platform:
+  - Windows.Desktop
+MinimumOSVersion: 10.0.0.0
+InstallerType: wix
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+UpgradeBehavior: install
+Commands:
+  - openflex
+ReleaseDate: 2026-11-14
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/FanXingChunShui/openflex/releases/download/v0.1.0/openflex-0.1.0-windows-x64.msi
+    InstallerSha256: REPLACE_WITH_SHA256_OF_THE_MSI
+ManifestType: installer
+ManifestVersion: 1.6.0

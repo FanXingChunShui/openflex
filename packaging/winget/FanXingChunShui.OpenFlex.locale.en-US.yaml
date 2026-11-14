@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+#
+# winget 清单模板 — locale 文件（展示信息）。
+#
+# 只有 PackageVersion 需要随版本更新；其余字段是产品元数据。
+# 发布到 winget-pkgs 前请确认 URL 可访问、License 与仓库一致。
+PackageIdentifier: FanXingChunShui.OpenFlex
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: OpenFlex contributors
+PublisherUrl: https://github.com/FanXingChunShui/openflex
+PublisherSupportUrl: https://github.com/FanXingChunShui/openflex/issues
+PackageName: OpenFlex
+PackageUrl: https://github.com/FanXingChunShui/openflex
+License: MIT OR Apache-2.0
+LicenseUrl: https://github.com/FanXingChunShui/openflex/blob/main/LICENSE
+Copyright: OpenFlex contributors
+ShortDescription: Clean-room, cross-platform discrete-event simulation engine and CLI.
+Description: |-
+  OpenFlex is a discrete-event simulation engine with a JSON model format and a
+  single-binary CLI. It implements a FlexSim-compatible subset of objects
+  (source, queue, processor, conveyor, combiner, separator, sink, rack,
+  transporter, dispatcher, resource, ...), deterministic seeded replications,
+  experiments and JSON/CSV/Markdown reports.
+Moniker: openflex
+Tags:
+  - simulation
+  - discrete-event
+  - simulation-modeling
+  - cli
+  - flexsim
+ReleaseNotesUrl: https://github.com/FanXingChunShui/openflex/releases
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

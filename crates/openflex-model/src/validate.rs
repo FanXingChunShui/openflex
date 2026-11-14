@@ -6,7 +6,8 @@
 //! because of a typo.
 
 use crate::model::{
-    Connection, Model, ModelError, Object, ObjectKind, PortStrategy, ValidationIssue,
+    ArrivalStyle, CombinerMode, Connection, Model, ModelError, Object, ObjectKind, PortStrategy,
+    SeparateMode, ValidationIssue,
 };
 use crate::model::{FORMAT_NAME, FORMAT_VERSION};
 
@@ -100,6 +101,33 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
 
     for experiment in &model.experiments {
         for scenario in &experiment.scenarios {
+            let location = format!("experiments.{}.{}", experiment.name, scenario.name);
+            if let Some(stop) = scenario.stop_time
+                && stop <= 0.0
+            {
+                issues.push(ValidationIssue::new(
+                    format!("{location}.stop_time"),
+                    "must be positive",
+                ));
+            }
+            if let Some(warmup) = scenario.warmup
+                && warmup < 0.0
+            {
+                issues.push(ValidationIssue::new(
+                    format!("{location}.warmup"),
+                    "cannot be negative",
+                ));
+            }
+            let effective_stop = scenario.stop_time.unwrap_or(model.run.stop_time);
+            let effective_warmup = scenario.warmup.unwrap_or(model.run.warmup);
+            if effective_warmup >= effective_stop {
+                issues.push(ValidationIssue::new(
+                    format!("{location}.warmup"),
+                    format!(
+                        "warmup ({effective_warmup}) must be shorter than the effective stop_time ({effective_stop})"
+                    ),
+                ));
+            }
             for over in &scenario.overrides {
                 if model.object(&over.object).is_none() {
                     issues.push(ValidationIssue::new(
@@ -234,7 +262,10 @@ fn validate_connection(
                     ));
                 }
             }
-            PortStrategy::FirstAvailable | PortStrategy::RoundRobin | PortStrategy::Random => {}
+            PortStrategy::FirstAvailable
+            | PortStrategy::RoundRobin
+            | PortStrategy::Random
+            | PortStrategy::Hold => {}
         }
     }
 
@@ -254,7 +285,84 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
 
     match &object.params {
         crate::model::ObjectParams::Source(params) => {
-            distribution!("interarrival", &params.interarrival);
+            let interarrival_set =
+                params.interarrival != crate::distribution::Distribution::default();
+            let style = params.effective_arrival_style();
+            if params.arrival_schedule.is_some() && params.arrival_sequence.is_some() {
+                issues.push(ValidationIssue::new(
+                    location("arrival_sequence"),
+                    "arrival_schedule and arrival_sequence are mutually exclusive",
+                ));
+            }
+            if style != ArrivalStyle::InterArrivalTime && interarrival_set {
+                issues.push(ValidationIssue::new(
+                    location("interarrival"),
+                    "interarrival cannot be combined with arrival_schedule or arrival_sequence",
+                ));
+            }
+            match style {
+                ArrivalStyle::InterArrivalTime => {
+                    if params.arrival_schedule.is_some() || params.arrival_sequence.is_some() {
+                        issues.push(ValidationIssue::new(
+                            location("arrival_style"),
+                            "arrival_style is inter_arrival_time but a table arrival mode is configured",
+                        ));
+                    }
+                    distribution!("interarrival", &params.interarrival);
+                }
+                ArrivalStyle::ArrivalSchedule => {
+                    if let Some(schedule) = &params.arrival_schedule {
+                        if schedule.rows.is_empty() {
+                            issues.push(ValidationIssue::new(
+                                location("arrival_schedule.rows"),
+                                "must contain at least one row",
+                            ));
+                        }
+                        let mut previous = f64::NEG_INFINITY;
+                        for (index, row) in schedule.rows.iter().enumerate() {
+                            if !row.time.is_finite() || row.time < 0.0 {
+                                issues.push(ValidationIssue::new(
+                                    location(&format!("arrival_schedule.rows[{index}].time")),
+                                    "must be a non-negative finite time",
+                                ));
+                            } else if row.time < previous {
+                                issues.push(ValidationIssue::new(
+                                    location(&format!("arrival_schedule.rows[{index}].time")),
+                                    "arrival times must be non-decreasing",
+                                ));
+                            } else {
+                                previous = row.time;
+                            }
+                        }
+                        if schedule.repeat && schedule.rows.iter().all(|row| row.quantity == 0) {
+                            issues.push(ValidationIssue::new(
+                                location("arrival_schedule"),
+                                "a repeating schedule needs at least one row with quantity > 0",
+                            ));
+                        }
+                    } else {
+                        issues.push(ValidationIssue::new(
+                            location("arrival_schedule"),
+                            "arrival_style is arrival_schedule but arrival_schedule is missing",
+                        ));
+                    }
+                }
+                ArrivalStyle::ArrivalSequence => {
+                    if let Some(sequence) = &params.arrival_sequence {
+                        if sequence.is_empty() {
+                            issues.push(ValidationIssue::new(
+                                location("arrival_sequence"),
+                                "must contain at least one row",
+                            ));
+                        }
+                    } else {
+                        issues.push(ValidationIssue::new(
+                            location("arrival_sequence"),
+                            "arrival_style is arrival_sequence but arrival_sequence is missing",
+                        ));
+                    }
+                }
+            }
             if params.items_per_arrival == 0 {
                 issues.push(ValidationIssue::new(
                     location("items_per_arrival"),
@@ -316,9 +424,46 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
                     "must be at least 1",
                 ));
             }
+            for (field, value) in [
+                ("num_setup_operators", params.num_setup_operators),
+                ("num_process_operators", params.num_process_operators),
+            ] {
+                if value == Some(0) {
+                    issues.push(ValidationIssue::new(
+                        location(field),
+                        "must be at least 1 when given",
+                    ));
+                }
+            }
+            if params.use_same_num_operators
+                && params.num_process_operators.is_some()
+                && params.num_setup_operators.is_some()
+                && params.num_process_operators != params.num_setup_operators
+            {
+                issues.push(ValidationIssue::new(
+                    location("num_process_operators"),
+                    "must match num_setup_operators when use_same_num_operators is true",
+                ));
+            }
             if let Some(failure) = &params.failure {
                 distribution!("failure.mtbf", &failure.mtbf);
                 distribution!("failure.mttr", &failure.mttr);
+                if let Some(first) = failure.first_failure_time
+                    && !first.is_finite()
+                {
+                    issues.push(ValidationIssue::new(
+                        location("failure.first_failure_time"),
+                        "must be a finite time (negative values mean ignore)",
+                    ));
+                }
+                for state in &failure.count_time_in_states {
+                    if !is_runtime_state(state) {
+                        issues.push(ValidationIssue::new(
+                            location("failure.count_time_in_states"),
+                            format!("unknown runtime state '{state}'"),
+                        ));
+                    }
+                }
             }
         }
         crate::model::ObjectParams::Conveyor(params) => {
@@ -342,10 +487,18 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
             }
         }
         crate::model::ObjectParams::Combiner(params) => {
+            distribution!("setup_time", &params.setup_time);
+            distribution!("process_time", &params.process_time);
             if params.components_per_container == 0 {
                 issues.push(ValidationIssue::new(
                     location("components_per_container"),
                     "must be at least 1",
+                ));
+            }
+            if params.mode == CombinerMode::Batch && params.components_per_container == 0 {
+                issues.push(ValidationIssue::new(
+                    location("components_per_container"),
+                    "batch mode needs at least one component per batch",
                 ));
             }
         }
@@ -403,15 +556,37 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
                 ));
             }
         }
+        crate::model::ObjectParams::Separator(params) => {
+            if params.separate_mode == SeparateMode::Split && params.split_count == 0 {
+                issues.push(ValidationIssue::new(
+                    location("split_count"),
+                    "split mode needs at least one item (split_count >= 1)",
+                ));
+            }
+        }
         crate::model::ObjectParams::Sink(_)
         | crate::model::ObjectParams::Merge(_)
         | crate::model::ObjectParams::Split(_)
         | crate::model::ObjectParams::Dispatcher(_)
-        | crate::model::ObjectParams::BasicFr(_)
-        | crate::model::ObjectParams::Separator(_) => {}
+        | crate::model::ObjectParams::BasicFr(_) => {}
     }
 
     issues
+}
+
+/// Runtime states a `failure.count_time_in_states` entry may name (A8).
+fn is_runtime_state(name: &str) -> bool {
+    matches!(
+        name,
+        "idle"
+            | "setup"
+            | "processing"
+            | "blocked"
+            | "waiting_for_operator"
+            | "waiting_for_transport"
+            | "down"
+            | "off_shift"
+    )
 }
 
 fn is_identifier(name: &str) -> bool {

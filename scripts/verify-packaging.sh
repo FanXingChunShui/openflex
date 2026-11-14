@@ -12,7 +12,7 @@
 #
 # Exit code: 0 when every check passed; 1 when at least one check failed.
 # SKIP lines mean the check needs a tool that is not installed here (pwsh,
-# docker, shellcheck) and is exercised in CI instead.
+# docker, shellcheck, gpg) and is exercised in CI instead.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -111,13 +111,20 @@ printf '  target:  %s\n' "$PLATFORM"
 
 # ---------------------------------------------------------------- static checks
 section "Shell syntax (bash -n)"
-for script in \
-  "$ROOT_DIR/packaging/install.sh" \
-  "$ROOT_DIR/packaging/uninstall.sh" \
-  "$ROOT_DIR/packaging/deb/build-deb.sh" \
-  "$ROOT_DIR/packaging/rpm/build-rpm.sh" \
-  "$ROOT_DIR/scripts/package-release.sh" \
-  "$ROOT_DIR/scripts/verify-packaging.sh"; do
+SHELL_SCRIPTS=(
+  "$ROOT_DIR/packaging/install.sh"
+  "$ROOT_DIR/packaging/uninstall.sh"
+  "$ROOT_DIR/packaging/deb/build-deb.sh"
+  "$ROOT_DIR/packaging/rpm/build-rpm.sh"
+  "$ROOT_DIR/scripts/package-release.sh"
+  "$ROOT_DIR/scripts/verify-packaging.sh"
+  "$ROOT_DIR/scripts/verify-install.sh"
+  "$ROOT_DIR/scripts/sign-macos.sh"
+  "$ROOT_DIR/scripts/sign-checksums.sh"
+  "$ROOT_DIR/scripts/compare-flexsim.sh"
+  "$ROOT_DIR/scripts/fuzz-smoke.sh"
+)
+for script in "${SHELL_SCRIPTS[@]}"; do
   if [ -f "$script" ]; then
     run_ok "bash -n $(basename "$script")" bash -n "$script"
   else
@@ -127,17 +134,7 @@ done
 
 section "ShellCheck (optional)"
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck_files=()
-  for script in \
-    "$ROOT_DIR/packaging/install.sh" \
-    "$ROOT_DIR/packaging/uninstall.sh" \
-    "$ROOT_DIR/packaging/deb/build-deb.sh" \
-    "$ROOT_DIR/packaging/rpm/build-rpm.sh" \
-    "$ROOT_DIR/scripts/package-release.sh" \
-    "$ROOT_DIR/scripts/verify-packaging.sh"; do
-    shellcheck_files+=("$script")
-  done
-  run_ok "shellcheck -S warning (all shell scripts)" shellcheck -S warning "${shellcheck_files[@]}"
+  run_ok "shellcheck -S warning (all shell scripts)" shellcheck -S warning "${SHELL_SCRIPTS[@]}"
 else
   skip "shellcheck not installed"
 fi
@@ -148,7 +145,15 @@ if command -v ruby >/dev/null 2>&1; then
     ARGV.each { |file| YAML.load_file(file); puts "ok: #{file}" }
   ' "$ROOT_DIR/packaging/deb/nfpm.yaml" "$ROOT_DIR/packaging/rpm/nfpm.yaml"
   run_ok "Homebrew formula ruby syntax" ruby -c "$ROOT_DIR/packaging/homebrew/openflex.rb"
-  run_ok "release workflow YAML parses" ruby -ryaml -e 'YAML.load_file(ARGV[0]); puts "ok"' "$ROOT_DIR/.github/workflows/release.yml"
+  run_ok "GitHub workflows YAML parse" ruby -ryaml -e '
+    ARGV.each { |file| YAML.load_file(file); puts "ok: #{file}" }
+  ' "$ROOT_DIR/.github/workflows/ci.yml" \
+    "$ROOT_DIR/.github/workflows/container.yml" \
+    "$ROOT_DIR/.github/workflows/release.yml" \
+    "$ROOT_DIR/.github/dependabot.yml"
+  run_ok "winget manifests YAML parse" ruby -ryaml -e '
+    ARGV.each { |file| YAML.load_file(file); puts "ok: #{file}" }
+  ' "$ROOT_DIR"/packaging/winget/*.yaml
 else
   skip "ruby not installed (skipping YAML/Homebrew checks)"
 fi
@@ -163,12 +168,34 @@ else
   skip "python3 not installed (skipping XML check)"
 fi
 
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import tomllib' 2>/dev/null; then
+  run_ok "deny.toml and fuzz/Cargo.toml parse as TOML" python3 -c '
+import sys, tomllib
+for path in sys.argv[1:]:
+    with open(path, "rb") as handle:
+        tomllib.load(handle)
+    print("ok:", path)
+' "$ROOT_DIR/deny.toml" "$ROOT_DIR/fuzz/Cargo.toml"
+else
+  skip "python3 < 3.11 (no tomllib); skipping TOML checks"
+fi
+
 for file in \
   "$ROOT_DIR/packaging/Dockerfile" \
   "$ROOT_DIR/packaging/Dockerfile.dockerignore" \
   "$ROOT_DIR/packaging/README.md" \
+  "$ROOT_DIR/packaging/homebrew/README.md" \
+  "$ROOT_DIR/packaging/winget/FanXingChunShui.OpenFlex.yaml" \
+  "$ROOT_DIR/packaging/winget/FanXingChunShui.OpenFlex.installer.yaml" \
+  "$ROOT_DIR/packaging/winget/FanXingChunShui.OpenFlex.locale.en-US.yaml" \
+  "$ROOT_DIR/packaging/scoop/openflex.json" \
+  "$ROOT_DIR/deny.toml" \
+  "$ROOT_DIR/fuzz/Cargo.toml" \
   "$ROOT_DIR/docs/install.md" \
-  "$ROOT_DIR/docs/releasing.md"; do
+  "$ROOT_DIR/docs/releasing.md" \
+  "$ROOT_DIR/docs/verification/install-matrix.md" \
+  "$ROOT_DIR/docs/verification/flexsim-comparison.md" \
+  "$ROOT_DIR/docs/verification/flexsim-mm1-example.csv"; do
   if [ -f "$file" ]; then
     pass "exists: ${file#"$ROOT_DIR"/}"
   else
@@ -185,7 +212,11 @@ fi
 
 section "PowerShell syntax (optional)"
 if command -v pwsh >/dev/null 2>&1; then
-  for ps in "$ROOT_DIR/packaging/install.ps1" "$ROOT_DIR/packaging/uninstall.ps1"; do
+  for ps in \
+    "$ROOT_DIR/packaging/install.ps1" \
+    "$ROOT_DIR/packaging/uninstall.ps1" \
+    "$ROOT_DIR/scripts/verify-install.ps1" \
+    "$ROOT_DIR/scripts/sign-windows.ps1"; do
     : >"$LOG"
     if pwsh -NoProfile -NonInteractive -Command "
       [void][System.Management.Automation.Language.Parser]::ParseFile('$ps', [ref]\$null, [ref]\$errors)
@@ -566,6 +597,32 @@ else
   skip "uninstall (binary not installed)"
 fi
 
+# ---------------------------------------------------------------- release tooling
+section "Release tooling (help and dry-run)"
+for tool in \
+  "$ROOT_DIR/scripts/verify-install.sh" \
+  "$ROOT_DIR/scripts/sign-macos.sh" \
+  "$ROOT_DIR/scripts/sign-checksums.sh" \
+  "$ROOT_DIR/scripts/compare-flexsim.sh" \
+  "$ROOT_DIR/scripts/fuzz-smoke.sh"; do
+  run_ok "$(basename "$tool") --help exits 0" bash "$tool" --help
+done
+
+if [ -x "$BINARY" ]; then
+  run_ok "sign-macos.sh --dry-run --skip-notarize" \
+    bash "$ROOT_DIR/scripts/sign-macos.sh" \
+    --identity "Developer ID Application: Verify Only (TEAMID)" \
+    --path "$BINARY" --dry-run --skip-notarize
+  run_ok "sign-checksums.sh --dry-run" \
+    bash "$ROOT_DIR/scripts/sign-checksums.sh" --file "$ROOT_DIR/Cargo.toml" --dry-run
+  run_ok "compare-flexsim.sh --help lists --tolerance" \
+    bash -c "bash '$ROOT_DIR/scripts/compare-flexsim.sh' --help | grep -q -- --tolerance"
+  run_ok "fuzz-smoke.sh --dry-run" \
+    bash "$ROOT_DIR/scripts/fuzz-smoke.sh" --dry-run --mode fallback --iterations 5
+else
+  skip "release tooling dry-runs (no binary)"
+fi
+
 # ---------------------------------------------------------------- summary
 section "Summary"
 printf '  passed:  %d\n' "$PASSED"
@@ -582,7 +639,10 @@ printf '  [x] uninstall.sh (dry-run, real, idempotent)\n'
 printf '  [ ] GitHub Actions matrix (macOS universal, Windows x64/arm64, Linux x64/arm64) — CI only\n'
 printf '  [ ] .deb/.rpm via nfpm and .msi via WiX — CI only (tools not installed here)\n'
 printf '  [ ] Docker image build — CI only (set OPENFLEX_VERIFY_DOCKER=1 with docker installed)\n'
-printf '  [ ] Code signing and macOS notarisation — TODO, see docs/releasing.md\n'
+printf '  [x] new release tooling parses and answers --help (verify-install, sign-*, compare-flexsim, fuzz-smoke)\n'
+printf '  [x] workflows / dependabot / winget manifests parse; deny.toml and fuzz/Cargo.toml parse\n'
+printf '  [ ] Code signing and macOS notarisation — scripts ready, certificates/secrets not configured (docs/releasing.md 6)\n'
+printf '  [ ] Real-machine MSI/deb/rpm install — scripts/verify-install.{sh,ps1} (docs/verification/install-matrix.md)\n'
 
 if [ "$FAILED" -gt 0 ]; then
   printf '\nRESULT: FAIL (%d failed check(s))\n' "$FAILED" >&2

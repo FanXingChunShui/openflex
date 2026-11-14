@@ -24,7 +24,9 @@ use openflex_core::{Aggregate, SimReport};
 
 mod compare;
 mod experiment;
+pub mod i18n;
 mod sim;
+mod xlsx;
 
 pub use compare::{Comparison, MetricComparison, ObjectComparison, ReportRef, compare_reports};
 pub use experiment::{ExperimentReport, ScenarioReport, write_experiment_reports};
@@ -32,6 +34,7 @@ pub use sim::{
     REPLICATIONS_CSV, REPORT_CSV, REPORT_JSON, REPORT_MARKDOWN, to_csv, to_json, to_markdown,
     to_replications_csv, to_table, write_reports,
 };
+pub use xlsx::write_xlsx;
 
 /// Output formats offered by the CLI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +63,13 @@ pub enum ReportError {
     Io {
         path: String,
         source: std::io::Error,
+    },
+    #[error("could not build the Excel workbook: {0}")]
+    Xlsx(#[from] rust_xlsxwriter::XlsxError),
+    #[error("could not write {path}: {source}")]
+    XlsxFile {
+        path: String,
+        source: rust_xlsxwriter::XlsxError,
     },
     #[error(
         "no experiment report found in {path}; expected experiment.json or \
@@ -296,6 +306,7 @@ mod tests {
             objects,
             completed: Aggregate::from_samples(&[99.0]),
             created: Aggregate::from_samples(&[100.0]),
+            little_check: None,
         }
     }
 

@@ -1,0 +1,26 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "arrival-sequence",
+  "description": "Row driven arrivals without times (A2): a row starts once every item of the previous row has left the source.",
+  "time_unit": "seconds",
+  "run": {"stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1},
+  "objects": [
+    {"name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+      "max_arrivals": 100,
+      "arrival_sequence": [
+        {"quantity": 1},
+        {"quantity": 2}
+      ]
+    }},
+    {"name": "Proc1", "kind": "processor", "pos": [10, 0], "params": {
+      "process_time": {"distribution": "constant", "value": 5.0},
+      "max_content": 1
+    }},
+    {"name": "Sink1", "kind": "sink", "pos": [20, 0], "params": {}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Proc1"},
+    {"from": "Proc1", "to": "Sink1"}
+  ]
+}

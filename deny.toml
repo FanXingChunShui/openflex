@@ -1,0 +1,65 @@
+# cargo-deny configuration for OpenFlex.
+#
+# Used by the `deny` job in .github/workflows/ci.yml:
+#   cargo deny check
+#
+# Three independent gates:
+#   advisories  — known vulnerabilities in the dependency graph (RustSec DB)
+#   licenses    — only licences compatible with "MIT OR Apache-2.0" shipping
+#   sources     — dependencies must come from crates.io (no unknown registries)
+#
+# The project ships as MIT OR Apache-2.0, so every dependency has to be
+# compatible with at least one of those. The allow-list below covers the
+# permissive licences used by the current tree (serde, clap, rand, thiserror,
+# anyhow, and their proc-macro dependencies such as unicode-ident).
+#
+# If a new dependency trips the licence check, prefer replacing it over adding
+# an exception; when an exception is unavoidable, add it under
+# [[licenses.exceptions]] with a comment explaining why.
+
+[graph]
+all-features = false
+no-default-features = false
+
+[advisories]
+version = 2
+# A yanked crate is not necessarily vulnerable, but it is unpublishable and
+# should never enter a release build.
+yanked = "deny"
+# Empty on purpose: every advisory is a bug we want to see. If an advisory has
+# no fix and is not exploitable here, add `{ id = "RUSTSEC-...", reason = "..." }`
+# instead of disabling the check.
+ignore = []
+
+[licenses]
+version = 2
+allow = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "Unlicense",
+  "CC0-1.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+# Duplicate versions are allowed (they only cost binary size); wildcard
+# requirements are rejected by review, not by CI.
+multiple-versions = "allow"
+wildcards = "allow"
+highlight = "all"
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

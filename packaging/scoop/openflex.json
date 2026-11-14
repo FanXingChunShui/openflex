@@ -1,0 +1,48 @@
+{
+  "$comment": "Scoop manifest template for OpenFlex. Not published yet: move this file to a bucket (e.g. scoop-bucket/bucket/openflex.json) and replace version/hash/extract_dir for every release. Hashes come from the release SHA256SUMS.txt.",
+  "version": "0.1.0",
+  "description": "Clean-room, cross-platform discrete-event simulation engine and CLI",
+  "homepage": "https://github.com/FanXingChunShui/openflex",
+  "license": "MIT OR Apache-2.0",
+  "notes": [
+    "OpenFlex is a single-binary CLI: `openflex --help`.",
+    "Models are plain JSON files (.ofm); `openflex new demo --template mm1` generates one."
+  ],
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/FanXingChunShui/openflex/releases/download/v0.1.0/openflex-0.1.0-x86_64-pc-windows-msvc.zip",
+      "hash": "REPLACE_WITH_SHA256_OF_THE_X86_64_ZIP",
+      "extract_dir": "openflex-0.1.0-x86_64-pc-windows-msvc"
+    },
+    "arm64": {
+      "url": "https://github.com/FanXingChunShui/openflex/releases/download/v0.1.0/openflex-0.1.0-aarch64-pc-windows-msvc.zip",
+      "hash": "REPLACE_WITH_SHA256_OF_THE_AARCH64_ZIP",
+      "extract_dir": "openflex-0.1.0-aarch64-pc-windows-msvc"
+    }
+  },
+  "bin": "openflex.exe",
+  "checkver": {
+    "github": "https://github.com/FanXingChunShui/openflex",
+    "regex": "v([\\d.]+)"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/FanXingChunShui/openflex/releases/download/v$version/openflex-$version-x86_64-pc-windows-msvc.zip",
+        "hash": {
+          "url": "https://github.com/FanXingChunShui/openflex/releases/download/v$version/SHA256SUMS.txt",
+          "regex": "$sha256\\s+openflex-$version-x86_64-pc-windows-msvc\\.zip"
+        },
+        "extract_dir": "openflex-$version-x86_64-pc-windows-msvc"
+      },
+      "arm64": {
+        "url": "https://github.com/FanXingChunShui/openflex/releases/download/v$version/openflex-$version-aarch64-pc-windows-msvc.zip",
+        "hash": {
+          "url": "https://github.com/FanXingChunShui/openflex/releases/download/v$version/SHA256SUMS.txt",
+          "regex": "$sha256\\s+openflex-$version-aarch64-pc-windows-msvc\\.zip"
+        },
+        "extract_dir": "openflex-$version-aarch64-pc-windows-msvc"
+      }
+    }
+  }
+}

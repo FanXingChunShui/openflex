@@ -1,0 +1,37 @@
+[package]
+name = "openflex-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# This crate is deliberately *outside* the main workspace: cargo-fuzz needs a
+# nightly toolchain and a libFuzzer runtime, which regular builds and
+# `cargo test --workspace` must not require.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+[dependencies.openflex-model]
+path = "../crates/openflex-model"
+
+# The fuzz targets are in fuzz/fuzz_targets/*.rs; one [[bin]] per target is how
+# cargo-fuzz wires them up.
+[[bin]]
+name = "model_json"
+path = "fuzz_targets/model_json.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "expr_parse"
+path = "fuzz_targets/expr_parse.rs"
+test = false
+doc = false
+
+[profile.release]
+debug = 1

@@ -8,10 +8,12 @@ pub mod action;
 pub mod distribution;
 pub mod expr;
 pub mod model;
+pub mod schema;
 pub mod validate;
 
 pub use action::{Action, SimTrigger, Triggers};
 pub use distribution::Distribution;
 pub use expr::{EvalContext, Expr, ExprError, Value, condition};
 pub use model::*;
+pub use schema::json_schema;
 pub use validate::{validate, validate_collect};

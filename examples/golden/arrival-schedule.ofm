@@ -1,0 +1,25 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "arrival-schedule",
+  "description": "Table driven arrivals (A2): absolute arrival times, per-row quantity, item type and labels.",
+  "time_unit": "seconds",
+  "run": {"stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1},
+  "objects": [
+    {"name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+      "max_arrivals": 100,
+      "arrival_schedule": {
+        "repeat": false,
+        "rows": [
+          {"time": 0.0, "quantity": 2},
+          {"time": 15.0, "quantity": 1, "item_type": 1},
+          {"time": 40.0, "quantity": 3, "labels": {"priority": 2.0}}
+        ]
+      }
+    }},
+    {"name": "Sink1", "kind": "sink", "pos": [10, 0], "params": {}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Sink1"}
+  ]
+}

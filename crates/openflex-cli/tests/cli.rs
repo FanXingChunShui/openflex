@@ -5,8 +5,10 @@
 //! exit codes and the JSON contract at the same time.
 
 use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const BIN: &str = env!("CARGO_BIN_EXE_openflex");
@@ -101,6 +103,18 @@ impl Drop for TempDir {
 fn openflex(args: &[&str]) -> Output {
     Command::new(BIN)
         .args(args)
+        .output()
+        .expect("could not start the openflex binary")
+}
+
+/// Run the binary with extra environment variables (used for `OPENFLEX_LANG`).
+fn openflex_env(args: &[&str], env: &[(&str, &str)]) -> Output {
+    let mut command = Command::new(BIN);
+    command.args(args);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command
         .output()
         .expect("could not start the openflex binary")
 }
@@ -574,4 +588,519 @@ fn no_color_is_accepted() {
         "--quiet",
     ]);
     assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+}
+
+// ---------------------------------------------------------------------------
+// C4: completions, progress, structured errors, layout, serve
+// ---------------------------------------------------------------------------
+
+#[test]
+fn completions_emit_a_script_for_every_supported_shell() {
+    for shell in ["bash", "zsh", "fish", "powershell"] {
+        let output = openflex(&["completions", shell]);
+        assert_eq!(code(&output), 0, "{shell}: {}", stderr(&output));
+        let script = stdout(&output);
+        assert!(
+            script.contains("openflex"),
+            "{shell} completions do not mention the binary"
+        );
+        assert!(
+            script.len() > 200,
+            "{shell} completions look truncated: {} bytes",
+            script.len()
+        );
+    }
+
+    let unknown = openflex(&["completions", "tcsh"]);
+    assert_eq!(code(&unknown), 2, "unknown shells are a usage error");
+}
+
+#[test]
+fn progress_goes_to_stderr_and_keeps_stdout_parseable() {
+    let dir = TempDir::new("progress");
+    let model = dir.write("demo.ofm", MODEL);
+
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "4",
+        "--parallel",
+        "2",
+        "--progress",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    // The report on stdout must stay pure JSON.
+    let report = json(&stdout(&output));
+    assert_eq!(report["replications"].as_array().map(Vec::len), Some(4));
+    let progress = stderr(&output);
+    assert!(
+        progress.contains("replication"),
+        "progress must be reported on stderr: {progress}"
+    );
+
+    // --quiet disables progress, exactly like the other notes.
+    let quiet = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "2",
+        "--progress",
+        "--quiet",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code(&quiet), 0, "stderr: {}", stderr(&quiet));
+    assert!(
+        !stderr(&quiet).contains("replication"),
+        "stderr: {}",
+        stderr(&quiet)
+    );
+    json(&stdout(&quiet));
+}
+
+#[test]
+fn json_output_turns_errors_into_structured_objects() {
+    let dir = TempDir::new("json-error");
+    let model = dir.write(
+        "broken.ofm",
+        "{\n  \"format\": \"openflex-model\",\n  \"name\": \"broken\",\n",
+    );
+
+    let output = openflex(&["run", &path_str(&model), "--format", "json"]);
+    assert_eq!(code(&output), 2, "stderr: {}", stderr(&output));
+    assert!(
+        stdout(&output).is_empty(),
+        "an error must not print a report: {}",
+        stdout(&output)
+    );
+
+    let error = json(stderr(&output).trim());
+    assert_eq!(error["error"]["code"], "model_invalid");
+    let message = error["error"]["message"]
+        .as_str()
+        .expect("error message must be a string");
+    assert!(message.contains("invalid model"), "message: {message}");
+    assert!(
+        error["error"]["path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("broken.ofm")),
+        "the path must be part of the error object: {error}"
+    );
+}
+
+#[test]
+fn error_format_json_flag_works_without_format_json() {
+    let dir = TempDir::new("error-format");
+    let model = dir.write("broken.ofm", "{\n  \"name\": \"broken\",\n");
+
+    let output = openflex(&["validate", &path_str(&model), "--error-format", "json"]);
+    assert_eq!(code(&output), 2, "stderr: {}", stderr(&output));
+    let error = json(stderr(&output).trim());
+    assert_eq!(error["error"]["code"], "model_invalid");
+
+    // The default remains a human-readable prefix.
+    let text = openflex(&["validate", &path_str(&model)]);
+    assert_eq!(code(&text), 2);
+    assert!(
+        stderr(&text).starts_with("error:"),
+        "stderr: {}",
+        stderr(&text)
+    );
+}
+
+#[test]
+fn layout_writes_an_svg_with_object_names_and_connections() {
+    let dir = TempDir::new("layout");
+    let model = dir.write("demo.ofm", MODEL);
+    let svg = dir.join("layout.svg");
+
+    let output = openflex(&[
+        "layout",
+        &path_str(&model),
+        "--svg",
+        &path_str(&svg),
+        "--width",
+        "900",
+        "--height",
+        "600",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert!(
+        stdout(&output).is_empty(),
+        "--svg must write to the file, not stdout"
+    );
+
+    let text = fs::read_to_string(&svg).expect("layout.svg was not written");
+    assert!(text.contains("<svg"), "not an SVG document");
+    assert!(text.contains("width=\"900\""));
+    assert!(text.contains("height=\"600\""));
+    for name in ["Source1", "Queue1", "Processor1", "Sink1"] {
+        assert!(text.contains(name), "missing object {name} in the SVG");
+    }
+    assert!(text.contains("class=\"link\""), "connections must be drawn");
+
+    let to_stdout = openflex(&["layout", &path_str(&model)]);
+    assert_eq!(code(&to_stdout), 0, "stderr: {}", stderr(&to_stdout));
+    assert!(stdout(&to_stdout).starts_with("<?xml"));
+}
+
+#[test]
+fn dry_run_validates_and_describes_the_run_without_simulating() {
+    let dir = TempDir::new("dry-run");
+    let model = dir.write("demo.ofm", MODEL);
+
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "3",
+        "--parallel",
+        "2",
+        "--dry-run",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.contains("dry run: demo"), "stdout: {text}");
+    assert!(text.contains("replications 3"), "stdout: {text}");
+    assert!(text.contains("workers: 2"), "stdout: {text}");
+}
+
+/// A child process that is killed when the test ends, even on panic.
+struct ServerChild {
+    child: Child,
+}
+
+impl Drop for ServerChild {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn http_get(address: &str, path: &str) -> String {
+    let mut stream = TcpStream::connect(address).expect("could not connect to the server");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+    )
+    .expect("request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("could not read the response");
+    response
+}
+
+#[test]
+fn serve_exposes_health_and_objects_on_localhost() {
+    let mut child = Command::new(BIN)
+        .args(["serve", "--port", "0"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("could not start `openflex serve`");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let mut reader = BufReader::new(stderr);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .expect("could not read the listening address");
+    let server = ServerChild { child };
+    let _ = &server;
+
+    let port = line
+        .trim()
+        .rsplit(':')
+        .next()
+        .and_then(|port| port.trim().parse::<u16>().ok())
+        .unwrap_or_else(|| panic!("no port in {line:?}"));
+    let address = format!("127.0.0.1:{port}");
+
+    let health = http_get(&address, "/health");
+    assert!(health.starts_with("HTTP/1.1 200 OK"), "health: {health}");
+    assert!(health.contains("\"status\":\"ok\""), "health: {health}");
+
+    let objects = http_get(&address, "/objects");
+    assert!(objects.starts_with("HTTP/1.1 200 OK"), "objects: {objects}");
+    assert!(objects.contains("\"processor\""), "objects: {objects}");
+
+    let missing = http_get(&address, "/nope");
+    assert!(
+        missing.starts_with("HTTP/1.1 404 Not Found"),
+        "missing: {missing}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// C5: parallel replications
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parallel_replications_match_the_serial_report_exactly() {
+    let dir = TempDir::new("parallel");
+    let model = dir.write("demo.ofm", MODEL);
+
+    let serial = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "4",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code(&serial), 0, "stderr: {}", stderr(&serial));
+    let parallel = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "4",
+        "--parallel",
+        "4",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code(&parallel), 0, "stderr: {}", stderr(&parallel));
+    assert_eq!(
+        json(&stdout(&serial)),
+        json(&stdout(&parallel)),
+        "--parallel must not change the report"
+    );
+}
+
+#[test]
+fn parallel_replications_keep_the_multi_seed_semantics() {
+    let dir = TempDir::new("parallel-seeds");
+    let model = dir.write("demo.ofm", MODEL);
+
+    let serial = openflex(&[
+        "run",
+        &path_str(&model),
+        "--seed",
+        "1",
+        "--seed",
+        "2",
+        "--seed",
+        "3",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code(&serial), 0, "stderr: {}", stderr(&serial));
+    let parallel = openflex(&[
+        "run",
+        &path_str(&model),
+        "--seed",
+        "1",
+        "--seed",
+        "2",
+        "--seed",
+        "3",
+        "--parallel",
+        "3",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code(&parallel), 0, "stderr: {}", stderr(&parallel));
+    let serial_report = json(&stdout(&serial));
+    let parallel_report = json(&stdout(&parallel));
+    assert_eq!(serial_report["base_seed"], 1);
+    assert_eq!(
+        serial_report["replications"].as_array().map(Vec::len),
+        Some(3)
+    );
+    assert_eq!(serial_report, parallel_report);
+}
+
+// ---------------------------------------------------------------------------
+// C8: i18n
+// ---------------------------------------------------------------------------
+
+#[test]
+fn openflex_lang_switches_help_and_report_headers() {
+    let english = openflex_env(&["--help"], &[("OPENFLEX_LANG", "en")]);
+    assert_eq!(code(&english), 0, "stderr: {}", stderr(&english));
+    assert!(
+        stdout(&english).contains("clean-room"),
+        "English help: {}",
+        stdout(&english)
+    );
+
+    let chinese = openflex_env(&["--help"], &[("OPENFLEX_LANG", "zh")]);
+    assert_eq!(code(&chinese), 0, "stderr: {}", stderr(&chinese));
+    assert!(
+        stdout(&chinese).contains("净室实现"),
+        "Chinese help: {}",
+        stdout(&chinese)
+    );
+
+    let dir = TempDir::new("i18n");
+    let model = dir.write("demo.ofm", MODEL);
+    let reports = dir.join("reports");
+    let run = openflex_env(
+        &[
+            "run",
+            &path_str(&model),
+            "--report-dir",
+            &path_str(&reports),
+            "--quiet",
+        ],
+        &[("OPENFLEX_LANG", "en")],
+    );
+    assert_eq!(code(&run), 0, "stderr: {}", stderr(&run));
+
+    let chinese_table = openflex_env(
+        &["report", &path_str(&reports.join("report.json"))],
+        &[("OPENFLEX_LANG", "zh")],
+    );
+    assert_eq!(
+        code(&chinese_table),
+        0,
+        "stderr: {}",
+        stderr(&chinese_table)
+    );
+    let table = stdout(&chinese_table);
+    for expected in ["对象", "平均在制品", "利用率", "创建数", "完成数"] {
+        assert!(table.contains(expected), "missing {expected}: {table}");
+    }
+    assert!(table.contains("停留 (秒)"));
+
+    let english_table = openflex_env(
+        &["report", &path_str(&reports.join("report.json"))],
+        &[("OPENFLEX_LANG", "en")],
+    );
+    assert!(stdout(&english_table).contains("Stay (s)"));
+
+    // JSON and CSV stay machine readable and untranslated.
+    let csv = openflex_env(
+        &[
+            "report",
+            &path_str(&reports.join("report.json")),
+            "--format",
+            "csv",
+        ],
+        &[("OPENFLEX_LANG", "zh")],
+    );
+    assert_eq!(code(&csv), 0, "stderr: {}", stderr(&csv));
+    assert!(stdout(&csv).starts_with("object,kind"));
+}
+
+// ---------------------------------------------------------------------------
+// B9: Excel export and CSV import
+// ---------------------------------------------------------------------------
+
+#[test]
+fn run_writes_an_excel_workbook_when_asked() {
+    let dir = TempDir::new("xlsx");
+    let model = dir.write("demo.ofm", MODEL);
+    let workbook = dir.join("report.xlsx");
+
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "2",
+        "--xlsx",
+        &path_str(&workbook),
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+
+    let bytes = fs::read(&workbook).expect("report.xlsx was not written");
+    assert_eq!(&bytes[..4], b"PK\x03\x04", "an xlsx file is a zip archive");
+    assert!(bytes.len() > 1_000, "the workbook looks empty");
+    // The zip's local file headers are stored uncompressed, so the workbook
+    // entry point and the first worksheet are visible without unpacking.
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("xl/workbook.xml"), "missing workbook part");
+    assert!(
+        text.contains("xl/worksheets/sheet1.xml"),
+        "missing sheet part"
+    );
+}
+
+#[test]
+fn import_turns_a_csv_of_arrivals_into_a_runnable_model() {
+    let dir = TempDir::new("import");
+    let csv = dir.write(
+        "arrivals.csv",
+        "time,quantity,item_type\n0,1,0\n4,2,1\n7.5,1,0\n12,3,0\n",
+    );
+    let model = dir.join("arrivals.ofm");
+
+    let output = openflex(&[
+        "import",
+        "--csv",
+        &path_str(&csv),
+        "--out",
+        &path_str(&model),
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert!(model.is_file(), "the model file was not written");
+    assert!(stdout(&output).contains("created"));
+
+    let text = fs::read_to_string(&model).expect("read the generated model");
+    assert!(text.contains("arrival_schedule"));
+    assert!(text.contains("\"Source1\""));
+    assert!(text.contains("\"Sink1\""));
+
+    let validate = openflex(&["validate", &path_str(&model)]);
+    assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
+
+    let run = openflex(&["run", &path_str(&model), "--format", "json"]);
+    assert_eq!(code(&run), 0, "stderr: {}", stderr(&run));
+    let report = json(&stdout(&run));
+    assert_eq!(report["model"], "arrivals");
+    assert_eq!(report["created"]["mean"], 7.0);
+}
+
+// ---------------------------------------------------------------------------
+// C6: schema export
+// ---------------------------------------------------------------------------
+
+#[test]
+fn schema_prints_or_writes_the_model_json_schema() {
+    let output = openflex(&["schema"]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let schema = json(&stdout(&output));
+    assert_eq!(
+        schema["$schema"],
+        "https://json-schema.org/draft/2020-12/schema"
+    );
+    assert_eq!(schema["$ref"], "#/$defs/model");
+    assert!(schema["$defs"]["model"].is_object());
+    assert!(schema["$defs"]["distribution"]["oneOf"].is_array());
+
+    let dir = TempDir::new("schema");
+    let path = dir.join("openflex-model.schema.json");
+    let written = openflex(&["schema", "--out", &path_str(&path)]);
+    assert_eq!(code(&written), 0, "stderr: {}", stderr(&written));
+    assert!(
+        stdout(&written).is_empty(),
+        "--out must not duplicate the schema on stdout"
+    );
+    let text = fs::read_to_string(&path).expect("schema file was not written");
+    assert_eq!(json(&text)["title"], "OpenFlex model");
+}
+
+#[test]
+fn distributions_lists_every_distribution_the_model_supports() {
+    let output = openflex(&["distributions"]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    // 20 distributions as of the current model schema, including the ones
+    // added in this release.
+    for expected in ["pareto", "rayleigh", "poisson", "negative_binomial"] {
+        assert!(text.contains(expected), "missing distribution {expected}");
+    }
+    let rows = text
+        .lines()
+        .filter(|line| !line.starts_with("distribution") && !line.trim().is_empty())
+        .count();
+    assert!(rows >= 20, "only {rows} distributions listed");
 }

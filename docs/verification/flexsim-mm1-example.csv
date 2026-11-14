@@ -1,0 +1,6 @@
+object,metric,value
+Proc1,utilization,0.80
+Queue1,avg_content,3.2
+Queue1,avg_stay_time,16.0
+Proc1,avg_stay_time,4.0
+Proc1,throughput,0.20

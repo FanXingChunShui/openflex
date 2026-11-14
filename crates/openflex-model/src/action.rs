@@ -6,12 +6,17 @@
 //! action as structured JSON, so a model can be validated, diffed and rendered
 //! without executing arbitrary code.
 
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
 use crate::expr::Expr;
 
 /// One action executed by a trigger.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// The enum is internally tagged and serde cannot combine that with
+/// `deny_unknown_fields`; the hand-written [`Deserialize`] implementation
+/// rejects unknown keys explicitly (A1).
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Action {
     /// Set (or create) a numeric label on the item.
@@ -28,6 +33,115 @@ pub enum Action {
     },
     /// Destroy the item; only valid while the item is being received.
     DestroyItem,
+    /// Release an item the object is currently holding (A4, the counterpart of
+    /// `send_to_port: -1` / [`crate::model::PortStrategy::Hold`]).
+    ReleaseItem,
+}
+
+impl<'de> Deserialize<'de> for Action {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let mut map = value
+            .as_object()
+            .cloned()
+            .ok_or_else(|| de::Error::custom("an action must be a JSON object"))?;
+        let tag = map
+            .remove("action")
+            .ok_or_else(|| de::Error::custom("an action needs an \"action\" field"))?;
+        let name = tag
+            .as_str()
+            .ok_or_else(|| de::Error::custom("\"action\" must be a string"))?
+            .to_string();
+        let action = match name.as_str() {
+            "set_label" => {
+                check_keys(&map, &name, &["name", "value"]).map_err(de::Error::custom)?;
+                Action::SetLabel {
+                    name: field(&mut map, "name", &name).map_err(de::Error::custom)?,
+                    value: field(&mut map, "value", &name).map_err(de::Error::custom)?,
+                }
+            }
+            "set_item_type" => {
+                check_keys(&map, &name, &["value"]).map_err(de::Error::custom)?;
+                Action::SetItemType {
+                    value: field(&mut map, "value", &name).map_err(de::Error::custom)?,
+                }
+            }
+            "increment_label" => {
+                check_keys(&map, &name, &["name", "by"]).map_err(de::Error::custom)?;
+                Action::IncrementLabel {
+                    name: field(&mut map, "name", &name).map_err(de::Error::custom)?,
+                    by: field(&mut map, "by", &name).map_err(de::Error::custom)?,
+                }
+            }
+            "send_message" => {
+                check_keys(&map, &name, &["target", "delay"]).map_err(de::Error::custom)?;
+                Action::SendMessage {
+                    target: field(&mut map, "target", &name).map_err(de::Error::custom)?,
+                    delay: optional_field(&mut map, "delay", &name)
+                        .map_err(de::Error::custom)?
+                        .unwrap_or_else(zero_expr),
+                }
+            }
+            "destroy_item" => {
+                check_keys(&map, &name, &[]).map_err(de::Error::custom)?;
+                Action::DestroyItem
+            }
+            "release_item" => {
+                check_keys(&map, &name, &[]).map_err(de::Error::custom)?;
+                Action::ReleaseItem
+            }
+            other => {
+                return Err(de::Error::custom(format!(
+                    "unknown action '{other}' (expected one of: set_label, set_item_type, increment_label, send_message, destroy_item, release_item)"
+                )));
+            }
+        };
+        Ok(action)
+    }
+}
+
+fn check_keys(
+    map: &serde_json::Map<String, serde_json::Value>,
+    name: &str,
+    allowed: &[&str],
+) -> Result<(), String> {
+    for key in map.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(if allowed.is_empty() {
+                format!("action '{name}' has unknown key '{key}'")
+            } else {
+                format!(
+                    "action '{name}' has unknown key '{key}' (expected one of: {})",
+                    allowed.join(", ")
+                )
+            });
+        }
+    }
+    Ok(())
+}
+
+fn field<T: serde::de::DeserializeOwned>(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    name: &str,
+) -> Result<T, String> {
+    let value = map
+        .remove(key)
+        .ok_or_else(|| format!("action '{name}' requires '{key}'"))?;
+    serde_json::from_value(value).map_err(|err| format!("action '{name}.{key}': {err}"))
+}
+
+fn optional_field<T: serde::de::DeserializeOwned>(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    name: &str,
+) -> Result<Option<T>, String> {
+    match map.remove(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => serde_json::from_value(value)
+            .map(Some)
+            .map_err(|err| format!("action '{name}.{key}': {err}")),
+    }
 }
 
 fn zero_expr() -> Expr {
@@ -63,6 +177,7 @@ impl SimTrigger {
 
 /// Trigger lists attached to every object.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Triggers {
     #[serde(default)]
     pub on_create: Vec<Action>,

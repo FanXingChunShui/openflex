@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use openflex_core::{Aggregate, ObjectAggregate, SimReport};
 
 use crate::{
-    ReportError, fmt_ci, fmt_count, fmt_percent, fmt_rate, fmt_time, in_system, reproduce_command,
-    write_file,
+    ReportError, fmt_ci, fmt_count, fmt_percent, fmt_rate, fmt_time, i18n, in_system,
+    reproduce_command, write_file,
 };
 
 pub const REPORT_JSON: &str = "report.json";
@@ -30,32 +30,41 @@ pub fn to_json(report: &SimReport) -> Result<String, ReportError> {
 }
 
 /// Fixed-width terminal table of the key metrics.
+///
+/// The labels follow `OPENFLEX_LANG`; the numbers and their formatting do not,
+/// so a translated report can still be diffed against an English one.
 pub fn to_table(report: &SimReport) -> String {
     let mut out = String::new();
-    let unit = report.time_unit.label();
-    let _ = writeln!(out, "OpenFlex report: {}", report.model);
+    let unit = i18n::unit(report.time_unit);
+    let _ = writeln!(out, "{}: {}", i18n::t("report_title"), report.model);
     if !report.description.is_empty() {
         let _ = writeln!(out, "{}", report.description);
     }
     let _ = writeln!(
         out,
-        "stop time {} {unit}, warm-up {} {unit}, replications {}, base seed {}",
+        "{} {} {}, {} {} {}, {} {}, {} {}",
+        i18n::t("stop_time"),
         fmt_time(report.stop_time),
+        unit,
+        i18n::t("warmup"),
         fmt_time(report.warmup),
+        unit,
+        i18n::t("replications"),
         report.replications.len().max(1),
+        i18n::t("base_seed"),
         report.base_seed
     );
     let _ = writeln!(out);
     let _ = writeln!(
         out,
         "{:<22} {:>9} {:>9} {:>9} {:>9} {:>10} {:>8}",
-        "Object",
-        "In",
-        "Out",
-        "AvgWIP",
-        "MaxWIP",
-        format!("Stay ({unit})"),
-        "Util (%)"
+        i18n::t("object"),
+        i18n::t("in"),
+        i18n::t("out"),
+        i18n::t("avg_wip"),
+        i18n::t("max_wip"),
+        format!("{} ({unit})", i18n::t("stay")),
+        i18n::t("util")
     );
     let _ = writeln!(out, "{}", "-".repeat(WIDTH));
     for (name, stats) in &report.objects {
@@ -63,9 +72,17 @@ pub fn to_table(report: &SimReport) -> String {
     }
     let _ = writeln!(out, "{}", "-".repeat(WIDTH));
     let in_system = in_system(report);
-    let _ = writeln!(out, "{}", total_row("Items created", &report.created));
-    let _ = writeln!(out, "{}", total_row("Items completed", &report.completed));
-    let _ = writeln!(out, "{}", total_row("Items in system", &in_system));
+    let _ = writeln!(
+        out,
+        "{}",
+        total_row(i18n::t("items_created"), &report.created)
+    );
+    let _ = writeln!(
+        out,
+        "{}",
+        total_row(i18n::t("items_completed"), &report.completed)
+    );
+    let _ = writeln!(out, "{}", total_row(i18n::t("items_in_system"), &in_system));
     out
 }
 

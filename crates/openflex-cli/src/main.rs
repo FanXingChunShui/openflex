@@ -1,26 +1,47 @@
 //! OpenFlex command line interface.
 //!
 //! `openflex` is the headless front end to the engine: it validates a model,
-//! runs it with any number of replications, runs the experiments declared in
-//! the model, re-renders saved reports, compares two scenarios, and prints or
-//! exports the statistics.
+//! runs it with any number of replications (optionally in parallel), runs the
+//! experiments declared in the model, re-renders saved reports, compares two
+//! scenarios, visualises the object layout, imports CSV arrival tables, exports
+//! Excel workbooks and prints or exports the statistics.
 //!
 //! Exit codes are stable so the CLI can be scripted:
 //!
 //! - `0` success
 //! - `1` runtime error (unreadable file, simulation failure)
 //! - `2` usage error or invalid model (`validate` found a problem)
+//!
+//! Errors are plain text by default. With `--format json` (or the explicit
+//! `--error-format json`) they become a JSON object on stderr:
+//!
+//! ```json
+//! {"error":{"code":"model_invalid","message":"invalid model demo.ofm: …","path":"demo.ofm"}}
+//! ```
+//!
+//! The report itself still goes to stdout in the requested format, so
+//! `openflex run model.ofm --format json 2>/dev/null | jq` keeps working.
 
+mod import;
+mod layout;
+mod objects;
+mod progress;
+mod schema;
+mod serve;
 mod templates;
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, anyhow, bail};
-use clap::{Parser, Subcommand, ValueEnum};
-use openflex_core::{SimConfig, SimReport, derive_seed, run_model, simulate};
-use openflex_model::{Model, ObjectKind, Scenario};
-use openflex_report as report;
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
+use openflex_core::{SimConfig, SimReport, derive_seed, simulate};
+use openflex_model::{Model, ObjectKind, Scenario, TimeUnit};
+use openflex_report::{self as report, i18n};
+use report::i18n::Language;
+
+use progress::Progress;
 
 /// Exit code for runtime failures such as unreadable or malformed inputs.
 const EXIT_RUNTIME: i32 = 1;
@@ -36,9 +57,8 @@ const EXIT_USAGE: i32 = 2;
                   FlexSim: a 3D object library (source, queue, processor, sink, conveyor, \
                   combiner, separator, transporter, …), statistical distributions, object \
                   triggers, routing rules and an experimenter. Models are JSON files, runs are \
-                  deterministic for a given seed, and every report can be exported as JSON, CSV \
-                  or Markdown.",
-    after_help = "EXIT CODES:\n  0  success\n  1  runtime error (unreadable input, simulation failure)\n  2  usage error or invalid model\n\nEXAMPLES:\n  openflex new demo && cd demo && openflex validate basic.ofm\n  openflex run basic.ofm --stop-time 1000 --seed 7 --format json\n  openflex run basic.ofm --replications 10 --report-dir reports\n  openflex compare reports/report.json reports-faster/report.json\n  openflex report reports/report.json --format markdown --output summary.md\n  openflex experiment basic.ofm --format json --report-dir experiments",
+                  deterministic for a given seed, and every report can be exported as JSON, CSV, \
+                  Markdown or Excel.",
     propagate_version = true
 )]
 struct Cli {
@@ -48,6 +68,12 @@ struct Cli {
     /// Disable ANSI colours; accepted for compatibility, output is plain text today.
     #[arg(long = "no-color", global = true)]
     no_color: bool,
+    /// Print replication progress on stderr (throttled; disabled by --quiet).
+    #[arg(long, global = true)]
+    progress: bool,
+    /// How errors are rendered on stderr: plain text or a JSON object.
+    #[arg(long, value_enum, default_value_t = ErrorFormat::Text, global = true)]
+    error_format: ErrorFormat,
     #[command(subcommand)]
     command: Command,
 }
@@ -84,6 +110,15 @@ enum Command {
         /// Also write report.json, report.csv, report.md (and replications.csv) here.
         #[arg(long)]
         report_dir: Option<PathBuf>,
+        /// Run replications on N threads; the result is identical to a serial run.
+        #[arg(long, value_name = "N")]
+        parallel: Option<usize>,
+        /// Also write the report as an Excel workbook (.xlsx).
+        #[arg(long, value_name = "FILE")]
+        xlsx: Option<PathBuf>,
+        /// Validate the model and print the run plan without simulating.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Run the experiments declared in the model.
     Experiment {
@@ -145,6 +180,53 @@ enum Command {
     },
     /// List the statistical distributions and their parameters.
     Distributions,
+    /// Generate shell completion scripts (bash, zsh, fish or powershell).
+    Completions {
+        /// Shell to generate completions for.
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Export the model's 2D object layout as an SVG drawing.
+    Layout {
+        /// Path to the model file.
+        model: PathBuf,
+        /// Write the SVG here instead of standard output.
+        #[arg(long, value_name = "FILE")]
+        svg: Option<PathBuf>,
+        /// SVG width in pixels.
+        #[arg(long, default_value_t = 1200)]
+        width: u32,
+        /// SVG height in pixels.
+        #[arg(long, default_value_t = 800)]
+        height: u32,
+    },
+    /// Serve a minimal read-only HTTP API on 127.0.0.1 (`/health`, `/objects`).
+    Serve {
+        /// TCP port to bind (0 picks a free port).
+        #[arg(long, default_value_t = 8080)]
+        port: u16,
+    },
+    /// Import a CSV arrival table (`time,quantity[,item_type]`) as a model.
+    Import {
+        /// CSV file with arrival times.
+        #[arg(long, value_name = "CSV")]
+        csv: PathBuf,
+        /// Model file to write.
+        #[arg(long, value_name = "FILE")]
+        out: PathBuf,
+        /// Model name (defaults to the CSV file stem).
+        #[arg(long)]
+        name: Option<String>,
+        /// Time unit of the CSV timestamps.
+        #[arg(long, default_value = "seconds", value_name = "UNIT")]
+        time_unit: String,
+    },
+    /// Print the JSON Schema of the model format.
+    Schema {
+        /// Write the schema here instead of standard output.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -174,10 +256,43 @@ impl From<Format> for report::Format {
     }
 }
 
+/// How errors are rendered on stderr.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ErrorFormat {
+    /// `error: …` (localised prefix).
+    Text,
+    /// `{"error":{"code":…,"message":…,"path":…}}`.
+    Json,
+}
+
+/// The machine-readable class of a failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ErrorKind {
+    /// The model failed validation or could not be parsed (exit 2).
+    ModelInvalid,
+    /// The CLI was called incorrectly (exit 2).
+    Usage,
+    /// The environment or a run failed (exit 1).
+    Runtime,
+}
+
+impl ErrorKind {
+    fn code(self) -> &'static str {
+        match self {
+            ErrorKind::ModelInvalid => "model_invalid",
+            ErrorKind::Usage => "usage_error",
+            ErrorKind::Runtime => "runtime_error",
+        }
+    }
+}
+
 /// A CLI failure with the process exit code it should produce.
 struct Failure {
     code: i32,
+    kind: ErrorKind,
     error: anyhow::Error,
+    /// Input file the failure belongs to, surfaced as `path` in JSON errors.
+    path: Option<PathBuf>,
 }
 
 impl Failure {
@@ -185,7 +300,9 @@ impl Failure {
     fn runtime(error: impl Into<anyhow::Error>) -> Self {
         Self {
             code: EXIT_RUNTIME,
+            kind: ErrorKind::Runtime,
             error: error.into(),
+            path: None,
         }
     }
 
@@ -193,8 +310,26 @@ impl Failure {
     fn usage(error: impl Into<anyhow::Error>) -> Self {
         Self {
             code: EXIT_USAGE,
+            kind: ErrorKind::Usage,
             error: error.into(),
+            path: None,
         }
+    }
+
+    /// A model that could not be parsed or validated (exit 2).
+    fn model(path: &Path, error: impl Into<anyhow::Error>) -> Self {
+        Self {
+            code: EXIT_USAGE,
+            kind: ErrorKind::ModelInvalid,
+            error: error.into(),
+            path: Some(path.to_path_buf()),
+        }
+    }
+
+    /// Attach the input path for structured error output.
+    fn with_path(mut self, path: &Path) -> Self {
+        self.path = Some(path.to_path_buf());
+        self
     }
 }
 
@@ -223,27 +358,132 @@ impl From<openflex_model::ModelError> for Failure {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let args: Vec<OsString> = std::env::args_os().collect();
+    let json_errors = wants_json_errors(&args);
+    let cli = parse_cli(&args, json_errors);
     let quiet = cli.quiet;
-    // `--no-color` is accepted so scripts can pass it unconditionally; the
-    // renderers emit plain text, so nothing has to be stripped today.
-    let _ = cli.no_color;
-    if let Err(failure) = run(cli.command, quiet) {
-        eprintln!("error: {:#}", failure.error);
+    let progress = cli.progress && !quiet;
+    if let Err(failure) = run(cli.command, quiet, progress) {
+        emit_failure(&failure, json_errors);
         std::process::exit(failure.code);
     }
 }
 
-fn run(command: Command, quiet: bool) -> Result<(), Failure> {
+/// Build the clap command with translated `about` / `long_about` / `after_help`.
+fn build_command() -> clap::Command {
+    Cli::command()
+        .about(i18n::t("about"))
+        .long_about(i18n::t("long_about"))
+        .after_help(i18n::t("after_help"))
+}
+
+/// Parse the CLI, rendering help and usage errors in the selected style.
+fn parse_cli(args: &[OsString], json_errors: bool) -> Cli {
+    let mut command = build_command();
+    let matches = match command.try_get_matches_from_mut(args.iter().cloned()) {
+        Ok(matches) => matches,
+        Err(error) => exit_with_clap_error(error, json_errors),
+    };
+    match Cli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        Err(error) => exit_with_clap_error(error, json_errors),
+    }
+}
+
+fn exit_with_clap_error(error: clap::Error, json_errors: bool) -> ! {
+    let code = error.exit_code();
+    if error.use_stderr() {
+        if json_errors {
+            let message = error.to_string();
+            let payload = serde_json::json!({
+                "error": {
+                    "code": "usage_error",
+                    "message": message.trim_end(),
+                }
+            });
+            eprintln!("{payload}");
+        } else {
+            let _ = error.print();
+        }
+    } else {
+        // `--help` and `--version` are successful output.
+        let _ = error.print();
+    }
+    std::process::exit(code);
+}
+
+/// Whether the raw arguments ask for JSON diagnostics.
+///
+/// `--error-format json` is the explicit switch; `--format json` implies it
+/// because scripts that parse the report almost always parse errors too.
+fn wants_json_errors(args: &[OsString]) -> bool {
+    let value_of = |flag: &str| -> bool {
+        let mut iter = args
+            .iter()
+            .skip(1)
+            .map(|arg| arg.to_string_lossy().into_owned());
+        while let Some(argument) = iter.next() {
+            if argument == flag {
+                return iter.next().is_some_and(|value| value == "json");
+            }
+            if let Some(value) = argument
+                .strip_prefix(flag)
+                .and_then(|rest| rest.strip_prefix('='))
+            {
+                return value == "json";
+            }
+        }
+        false
+    };
+    value_of("--format") || value_of("--error-format")
+}
+
+fn emit_failure(failure: &Failure, json_errors: bool) {
+    if json_errors {
+        let mut body = serde_json::Map::new();
+        body.insert("code".into(), serde_json::Value::from(failure.kind.code()));
+        body.insert(
+            "message".into(),
+            serde_json::Value::from(format!("{:#}", failure.error)),
+        );
+        if let Some(path) = &failure.path {
+            body.insert(
+                "path".into(),
+                serde_json::Value::from(path.display().to_string()),
+            );
+        }
+        let payload = serde_json::json!({ "error": serde_json::Value::Object(body) });
+        // Serialising a map of strings cannot fail, but never panic in a
+        // diagnostics path if it somehow does.
+        match serde_json::to_string(&payload) {
+            Ok(text) => eprintln!("{text}"),
+            Err(_) => eprintln!("{} {:#}", i18n::t("error_prefix"), failure.error),
+        }
+    } else {
+        eprintln!("{} {:#}", i18n::t("error_prefix"), failure.error);
+    }
+}
+
+fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
     match command {
         Command::Validate { model } => {
             let model = load_model(&model)?;
-            println!(
-                "ok: {} ({} objects, {} connections)",
-                model.name,
-                model.objects.len(),
-                model.connections.len()
-            );
+            if i18n::language() == Language::Zh {
+                println!(
+                    "{}：{}（{} 个对象，{} 条连接）",
+                    i18n::t("ok"),
+                    model.name,
+                    model.objects.len(),
+                    model.connections.len()
+                );
+            } else {
+                println!(
+                    "ok: {} ({} objects, {} connections)",
+                    model.name,
+                    model.objects.len(),
+                    model.connections.len()
+                );
+            }
             Ok(())
         }
         Command::Run {
@@ -255,6 +495,9 @@ fn run(command: Command, quiet: bool) -> Result<(), Failure> {
             overrides,
             format,
             report_dir,
+            parallel,
+            xlsx,
+            dry_run,
         } => {
             let mut model = load_model(&path)?;
             apply_run_overrides(&mut model, stop_time, warmup, &seed, replications).map_err(
@@ -268,12 +511,28 @@ fn run(command: Command, quiet: bool) -> Result<(), Failure> {
                         Failure::usage(anyhow::Error::new(error).context(format!("--set {entry}")))
                     })?;
             }
-            let report = execute(&model, &seed)?;
+            if let Some(workers) = parallel
+                && workers == 0
+            {
+                return Err(Failure::usage(anyhow!("--parallel must be at least 1")));
+            }
+            if dry_run {
+                print_run_plan(&model, &seed, parallel);
+                return Ok(());
+            }
+            let report = execute(&model, &seed, parallel, progress)?;
             let text = report::render_sim(&report, format.into())?;
             emit(&text, None, quiet)?;
             if let Some(directory) = report_dir {
                 let files = report::write_reports(&report, &directory)?;
-                note(quiet, &format!("wrote {}", join_paths(&files)));
+                note(
+                    quiet,
+                    &format!("{} {}", i18n::t("wrote"), join_paths(&files)),
+                );
+            }
+            if let Some(path) = xlsx {
+                report::write_xlsx(&report, &path)?;
+                note(quiet, &format!("{} {}", i18n::t("wrote"), path.display()));
             }
             Ok(())
         }
@@ -300,11 +559,13 @@ fn run(command: Command, quiet: bool) -> Result<(), Failure> {
         } => {
             let text = match (path, experiment) {
                 (Some(path), None) => {
-                    let sim = report::read_report(&path)?;
+                    let sim = report::read_report(&path)
+                        .map_err(|error| Failure::from(error).with_path(&path))?;
                     report::render_sim(&sim, format.into())?
                 }
                 (None, Some(directory)) => {
-                    let experiment = report::read_experiment(&directory)?;
+                    let experiment = report::read_experiment(&directory)
+                        .map_err(|error| Failure::from(error).with_path(&directory))?;
                     report::render_experiment(&experiment, format.into())?
                 }
                 _ => {
@@ -321,8 +582,10 @@ fn run(command: Command, quiet: bool) -> Result<(), Failure> {
             format,
             output,
         } => {
-            let before = report::read_report(&baseline)?;
-            let after = report::read_report(&candidate)?;
+            let before = report::read_report(&baseline)
+                .map_err(|error| Failure::from(error).with_path(&baseline))?;
+            let after = report::read_report(&candidate)
+                .map_err(|error| Failure::from(error).with_path(&candidate))?;
             let comparison = report::compare_reports(&baseline, &before, &candidate, &after);
             let text = report::render_comparison(&comparison, format.into())?;
             emit(&text, output.as_deref(), quiet)
@@ -335,7 +598,7 @@ fn run(command: Command, quiet: bool) -> Result<(), Failure> {
         Command::Objects { command } => match command {
             ObjectCommand::List => {
                 for kind in ObjectKind::all() {
-                    let (summary, _) = describe_kind(*kind);
+                    let (summary, _) = objects::describe_kind(*kind);
                     println!("{:<12} {}", kind.as_str(), summary);
                 }
                 Ok(())
@@ -344,14 +607,48 @@ fn run(command: Command, quiet: bool) -> Result<(), Failure> {
                 let Some(kind) = ObjectKind::parse(&kind) else {
                     return Err(Failure::usage(anyhow!("unknown object kind '{kind}'")));
                 };
-                let (summary, parameters) = describe_kind(kind);
+                let (summary, parameters) = objects::describe_kind(kind);
                 println!("{}: {summary}\n\nParameters:\n{parameters}", kind.as_str());
                 Ok(())
             }
         },
         Command::Distributions => {
-            print_distributions();
+            println!("{:<20} parameters", "distribution");
+            for (name, parameters) in objects::distributions() {
+                println!("{name:<20} {parameters}");
+            }
+            println!("\nJSON form: {{\"distribution\": \"exponential\", \"mean\": 5.0}}");
             Ok(())
+        }
+        Command::Completions { shell } => {
+            let mut command = build_command();
+            clap_complete::generate(shell, &mut command, "openflex", &mut std::io::stdout());
+            Ok(())
+        }
+        Command::Layout {
+            model,
+            svg,
+            width,
+            height,
+        } => {
+            let model = load_model(&model)?;
+            let text = layout::to_svg(&model, width, height);
+            emit(&text, svg.as_deref(), quiet)
+        }
+        Command::Serve { port } => {
+            serve::serve(port, quiet).map_err(|error| Failure::runtime(anyhow!(error)))
+        }
+        Command::Import {
+            csv,
+            out,
+            name,
+            time_unit,
+        } => import_csv(&csv, &out, name.as_deref(), &time_unit, quiet),
+        Command::Schema { out } => {
+            let schema = schema::generate();
+            let text = serde_json::to_string_pretty(&schema)
+                .map_err(|error| Failure::runtime(anyhow!(error)))?;
+            emit(&(text + "\n"), out.as_deref(), quiet)
         }
     }
 }
@@ -360,9 +657,10 @@ fn run(command: Command, quiet: bool) -> Result<(), Failure> {
 fn load_model(path: &Path) -> Result<Model, Failure> {
     let text = fs::read_to_string(path).map_err(|error| {
         Failure::runtime(anyhow!("could not read model {}: {error}", path.display()))
+            .with_path(path)
     })?;
     Model::from_json(&text)
-        .map_err(|error| Failure::usage(anyhow!("invalid model {}: {error}", path.display())))
+        .map_err(|error| Failure::model(path, anyhow!("invalid model {}: {error}", path.display())))
 }
 
 fn apply_run_overrides(
@@ -424,23 +722,102 @@ fn parse_override(entry: &str) -> anyhow::Result<(String, String, serde_json::Va
     Ok((object.to_string(), param.to_string(), value))
 }
 
-/// Run a model, honouring repeated `--seed` flags.
+/// Describe the run that would happen, without running it (`--dry-run`).
+fn print_run_plan(model: &Model, seeds: &[u64], parallel: Option<usize>) {
+    let replications = if seeds.len() > 1 {
+        seeds.len() as u32
+    } else {
+        model.run.replications.max(1)
+    };
+    let unit = i18n::unit(model.time_unit);
+    println!("dry run: {}", model.name);
+    println!(
+        "  stop time {} {}, warm-up {} {}, replications {}, base seed {}",
+        model.run.stop_time, unit, model.run.warmup, unit, replications, model.run.seed
+    );
+    match parallel {
+        Some(workers) => println!("  workers: {workers}"),
+        None => println!("  workers: 1 (serial; pass --parallel N to use more)"),
+    }
+    println!(
+        "  objects: {}, connections: {}",
+        model.objects.len(),
+        model.connections.len()
+    );
+}
+
+/// Run a model, honouring repeated `--seed` flags and `--parallel`.
 ///
-/// One seed (or none) delegates to [`run_model`], which derives the seed of
-/// each replication from the base seed. Several seeds mean one replication per
-/// seed; the engine has no "list of seeds" entry point, so the CLI drives
-/// [`simulate`] directly and aggregates with the engine's own report builder.
-fn execute(model: &Model, seeds: &[u64]) -> Result<SimReport, Failure> {
-    if seeds.len() <= 1 {
-        return Ok(run_model(model)?);
-    }
-    let mut results = Vec::with_capacity(seeds.len());
-    for (index, seed) in seeds.iter().enumerate() {
-        let config = SimConfig::from_run_settings(&model.run, derive_seed(*seed, 0));
-        results.push(simulate(model, &config, index as u32)?);
-    }
+/// One seed (or none) runs `model.run.replications` replications, each with the
+/// seed derived by [`derive_seed`]. Several seeds mean one replication per seed.
+/// Replications are independent, so running them on a rayon pool cannot change
+/// the result: the samples are collected in replication order before they are
+/// aggregated by [`SimReport::from_replications`].
+fn execute(
+    model: &Model,
+    seeds: &[u64],
+    parallel: Option<usize>,
+    progress: bool,
+) -> Result<SimReport, Failure> {
+    let configs: Vec<(u32, SimConfig)> = if seeds.len() > 1 {
+        seeds
+            .iter()
+            .enumerate()
+            .map(|(index, seed)| {
+                (
+                    index as u32,
+                    SimConfig::from_run_settings(&model.run, derive_seed(*seed, 0)),
+                )
+            })
+            .collect()
+    } else {
+        let replications = model.run.replications.max(1);
+        (0..replications)
+            .map(|index| {
+                (
+                    index,
+                    SimConfig::from_run_settings(&model.run, derive_seed(model.run.seed, index)),
+                )
+            })
+            .collect()
+    };
+
+    let reporter = Progress::new(progress, configs.len());
+    let results = match (parallel, configs.len()) {
+        (Some(workers), count) if workers > 1 && count > 1 => {
+            use rayon::prelude::*;
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(workers)
+                .thread_name(|index| format!("openflex-rep-{index}"))
+                .build()
+                .map_err(|error| {
+                    Failure::runtime(anyhow!("could not start {workers} worker threads: {error}"))
+                })?;
+            pool.install(|| {
+                configs
+                    .par_iter()
+                    .map(|(index, config)| {
+                        let result = simulate(model, config, *index);
+                        reporter.tick();
+                        result
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })?
+        }
+        _ => {
+            let mut results = Vec::with_capacity(configs.len());
+            for (index, config) in &configs {
+                results.push(simulate(model, config, *index)?);
+                reporter.tick();
+            }
+            results
+        }
+    };
+
     let mut report = SimReport::from_replications(model, results);
-    report.base_seed = seeds[0];
+    if seeds.len() > 1 {
+        report.base_seed = seeds[0];
+    }
     Ok(report)
 }
 
@@ -465,7 +842,7 @@ fn run_experiments(
         let scenarios = if experiment.scenarios.is_empty() {
             vec![Scenario {
                 name: "baseline".into(),
-                overrides: Vec::new(),
+                ..Default::default()
             }]
         } else {
             experiment.scenarios.clone()
@@ -484,7 +861,13 @@ fn run_experiments(
                     })?;
             }
             scenario_model.run.replications = experiment.replications;
-            let report = execute(&scenario_model, &[])?;
+            if let Some(stop_time) = scenario.stop_time {
+                scenario_model.run.stop_time = stop_time;
+            }
+            if let Some(warmup) = scenario.warmup {
+                scenario_model.run.warmup = warmup;
+            }
+            let report = execute(&scenario_model, &[], None, false)?;
             scenario_reports.push(report::ScenarioReport {
                 name: scenario.name.clone(),
                 overrides: scenario.overrides.clone(),
@@ -501,7 +884,10 @@ fn run_experiments(
         emit(&text, None, quiet)?;
         if let Some(root) = report_dir {
             let files = report::write_experiment_reports(&experiment_report, root)?;
-            note(quiet, &format!("wrote {}", join_paths(&files)));
+            note(
+                quiet,
+                &format!("{} {}", i18n::t("wrote"), join_paths(&files)),
+            );
         }
     }
     Ok(())
@@ -521,7 +907,7 @@ fn emit(text: &str, output: Option<&Path>, quiet: bool) -> Result<(), Failure> {
             fs::write(path, text).map_err(|error| {
                 Failure::runtime(anyhow!("could not write {}: {error}", path.display()))
             })?;
-            note(quiet, &format!("wrote {}", path.display()));
+            note(quiet, &format!("{} {}", i18n::t("wrote"), path.display()));
         }
         None => print!("{text}"),
     }
@@ -575,7 +961,7 @@ fn create_model(directory: &Path, template: &str, force: bool, quiet: bool) -> R
     fs::write(&path, contents).map_err(|error| {
         Failure::runtime(anyhow!("could not write {}: {error}", path.display()))
     })?;
-    println!("created {}", path.display());
+    println!("{} {}", i18n::t("created"), path.display());
     note(
         quiet,
         &format!(
@@ -587,86 +973,61 @@ fn create_model(directory: &Path, template: &str, force: bool, quiet: bool) -> R
     Ok(())
 }
 
-fn describe_kind(kind: ObjectKind) -> (&'static str, &'static str) {
-    match kind {
-        ObjectKind::Source => (
-            "Creates flow items and releases them to the next object.",
-            "interarrival: distribution (default: constant 0)\nitems_per_arrival: integer, default 1\nmax_arrivals: optional integer\nfirst_arrival: time of the first arrival, default 0\nstop_time: optional time after which no items are created\nitem_type: integer label for new items, default 0\nlabels: map of label name to number\ntriggers: on_create, on_entry, on_exit, on_receive, on_message",
-        ),
-        ObjectKind::Queue => (
-            "Stores flow items until the next object can take them.",
-            "max_content: capacity, default 1000\norder: fifo | lifo | priority | by_label(<name>)\nbatch_size: optional integer (release items in batches)\nbatch_max_wait: time, default 0 (wait forever)",
-        ),
-        ObjectKind::Processor => (
-            "Processes one or more flow items with setup and process times.",
-            "setup_time: distribution, default constant 0\nprocess_time: distribution, default constant 1\nmax_content: capacity including the item in process, default 1\nchangeover_time: distribution, default constant 0\nfailure: { mtbf, mttr } optional failure/repair cycle\nsetup_operator / process_operator: dispatcher names (reserved)",
-        ),
-        ObjectKind::Sink => (
-            "Removes finished flow items and counts them.",
-            "No parameters.",
-        ),
-        ObjectKind::Combiner => (
-            "Combines components into one container or joins items together.",
-            "components_per_container: integer, default 2\nmode: pack | join",
-        ),
-        ObjectKind::Separator => (
-            "Splits a container or a batch into parts.",
-            "split_count: integer, 0 = split into all parts",
-        ),
-        ObjectKind::Conveyor => (
-            "Moves items along a belt with a fixed speed.",
-            "speed: distance per time unit, default 1\nlength: default 10\naccumulating: boolean, default false\nitem_spacing: default 1\nmax_content: default 1000",
-        ),
-        ObjectKind::Merge => (
-            "Merges several input flows into one output flow.",
-            "wait_for_all: boolean, default false",
-        ),
-        ObjectKind::Split => (
-            "Splits one input flow over several outputs.",
-            "by_item_type: boolean, default false (round robin otherwise)",
-        ),
-        ObjectKind::Transporter => (
-            "Carries flow items between objects (task executer).",
-            "capacity: integer, default 1\nspeed: distance per time unit, default 1\nload_time / unload_time: distributions\nhome: optional object name",
-        ),
-        ObjectKind::Dispatcher => (
-            "Hands out transport tasks to transporters.",
-            "max_tasks: integer, 0 = unlimited",
-        ),
-        ObjectKind::Resource => (
-            "A pool of operators or equipment that can be reserved.",
-            "capacity: integer, default 1\ndowntimes: list of { start, end } windows",
-        ),
-        ObjectKind::Rack => (
-            "Stores items in levels (a specialised queue).",
-            "capacity: integer, default 100\nlevels: integer, default 1",
-        ),
-        ObjectKind::BasicFr => ("A generic fixed resource.", "No parameters."),
-        ObjectKind::BasicTe => (
-            "A generic task executer.",
-            "speed: distance per time unit, default 1\ncapacity: integer, default 1",
-        ),
+fn parse_time_unit(value: &str) -> Result<&'static str, Failure> {
+    match value {
+        "seconds" | "second" | "s" => Ok("seconds"),
+        "minutes" | "minute" | "min" => Ok("minutes"),
+        "hours" | "hour" | "h" => Ok("hours"),
+        "days" | "day" | "d" => Ok("days"),
+        other => Err(Failure::usage(anyhow!(
+            "unknown time unit '{other}' (expected seconds, minutes, hours or days)"
+        ))),
     }
 }
 
-fn print_distributions() {
-    let rows = [
-        ("constant", "value"),
-        ("uniform", "min, max"),
-        ("normal", "mean, stddev"),
-        ("exponential", "mean"),
-        ("triangular", "min, mode, max"),
-        ("gamma", "shape, scale"),
-        ("weibull", "shape, scale"),
-        ("lognormal", "meanlog, sdlog"),
-        ("erlang", "shape, scale"),
-        ("beta", "alpha, beta"),
-        ("integer_uniform", "min, max"),
-        ("empirical", "values, weights (optional)"),
-    ];
-    println!("{:<16} parameters", "distribution");
-    for (name, parameters) in rows {
-        println!("{name:<16} {parameters}");
+fn import_csv(
+    csv: &Path,
+    out: &Path,
+    name: Option<&str>,
+    time_unit: &str,
+    quiet: bool,
+) -> Result<(), Failure> {
+    let unit = parse_time_unit(time_unit)?;
+    let text = fs::read_to_string(csv).map_err(|error| {
+        Failure::runtime(anyhow!("could not read {}: {error}", csv.display())).with_path(csv)
+    })?;
+    let rows = import::parse_csv(&text).map_err(|error| Failure::usage(anyhow!(error)))?;
+    let model_name = name.map(str::to_string).unwrap_or_else(|| {
+        csv.file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .filter(|stem| !stem.is_empty())
+            .unwrap_or_else(|| "imported".into())
+    });
+    let (model, stop_time) = import::build_model(&model_name, unit, &rows)
+        .map_err(|error| Failure::usage(anyhow!(error)))?;
+    if let Some(parent) = out.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            Failure::runtime(anyhow!("could not create {}: {error}", parent.display()))
+        })?;
     }
-    println!("\nJSON form: {{\"distribution\": \"exponential\", \"mean\": 5.0}}");
+    fs::write(out, model)
+        .map_err(|error| Failure::runtime(anyhow!("could not write {}: {error}", out.display())))?;
+    println!("{} {}", i18n::t("created"), out.display());
+    note(
+        quiet,
+        &format!(
+            "imported {} arrival rows, stop time {} {}",
+            rows.len(),
+            stop_time,
+            i18n::unit(match unit {
+                "minutes" => TimeUnit::Minutes,
+                "hours" => TimeUnit::Hours,
+                "days" => TimeUnit::Days,
+                _ => TimeUnit::Seconds,
+            })
+        ),
+    );
+    Ok(())
 }

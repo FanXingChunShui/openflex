@@ -42,6 +42,31 @@ jobs:
       - name: Tests
         run: cargo test --workspace --locked
 
+      # PowerShell cannot be parsed on Linux/macOS runners, so the Windows
+      # runner is the one that proves install.ps1 / uninstall.ps1 / the two new
+      # signing and verification scripts are syntactically valid.
+      - name: PowerShell syntax check (all .ps1)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $failed = $false
+          $files = Get-ChildItem -Path 'scripts', 'packaging' -Filter '*.ps1' -Recurse
+          foreach ($file in $files) {
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$parseErrors)
+            if ($parseErrors.Count -gt 0) {
+              foreach ($parseError in $parseErrors) {
+                Write-Host ("{0}:{1}: {2}" -f $file.Name, $parseError.Extent.StartLineNumber, $parseError.Message)
+              }
+              $failed = $true
+            }
+            else {
+              Write-Host ("ok: {0}" -f $file.Name)
+            }
+          }
+          if ($failed) { exit 1 }
+
   golden:
     name: golden acceptance
     runs-on: ubuntu-latest
@@ -62,3 +87,211 @@ jobs:
 
       - name: Golden cases against analytic values
         run: bash scripts/acceptance.sh
+
+  # ---------------------------------------------------------------------------
+  # Dependency policy: no yanked crates, no non-permissive licences, no
+  # unknown registries. Configuration lives in deny.toml at the repo root.
+  # ---------------------------------------------------------------------------
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: cargo deny check
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  # ---------------------------------------------------------------------------
+  # Security advisories are informational: a new RustSec advisory should not
+  # block an unrelated pull request, but the report must be visible and kept.
+  # ---------------------------------------------------------------------------
+  audit:
+    name: cargo-audit (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: cargo audit
+        run: |
+          set -uo pipefail
+          mkdir -p audit
+          cargo audit --json > audit/report.json 2> audit/stderr.log || true
+          cargo audit > audit/report.txt 2>&1 || true
+          cat audit/report.txt
+          {
+            echo "### cargo audit"
+            echo ""
+            echo '```'
+            tail -n 40 audit/report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if grep -qi '^error' audit/report.txt; then
+            echo "::warning::cargo audit reported an issue; see the cargo-audit artifact"
+          fi
+
+      - name: Upload the audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-audit
+          path: audit/
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Coverage baseline. No hard threshold yet: the number is recorded (artifact
+  # + job summary) so regressions are visible before a gate is introduced.
+  # ---------------------------------------------------------------------------
+  coverage:
+    name: coverage (llvm-cov baseline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust with llvm-tools
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Collect coverage
+        run: |
+          set -euo pipefail
+          mkdir -p coverage
+          cargo llvm-cov --workspace --locked --lcov --output-path coverage/lcov.info | tee coverage/run.log
+          cargo llvm-cov report --summary-only | tee coverage/summary.txt
+          {
+            echo "### Coverage baseline"
+            echo ""
+            echo "No hard threshold yet: this job records the number so it is visible"
+            echo "in the PR summary and can become a gate later."
+            echo ""
+            echo '```'
+            cat coverage/summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Optional 60-second fuzz run. Needs a nightly toolchain and libFuzzer, so it
+  # is allowed to fail without blocking: the point is to surface crashes, not
+  # to gate a PR on a stochastic process.
+  # ---------------------------------------------------------------------------
+  fuzz:
+    name: fuzz smoke (optional)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: fuzz
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Fuzz model JSON parsing (60s)
+        run: |
+          set -euo pipefail
+          cargo +nightly fuzz run model_json -- -max_total_time=60 -rss_limit_mb=2048
+
+      - name: Fuzz expression parsing (60s)
+        run: |
+          set -euo pipefail
+          cargo +nightly fuzz run expr_parse -- -max_total_time=60 -rss_limit_mb=2048
+
+      - name: Upload fuzz artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Optional native linux/arm64 test run. GitHub provides arm64 runners for
+  # public repositories; if that image is unavailable the job fails softly.
+  # ---------------------------------------------------------------------------
+  test-arm64:
+    name: test (linux arm64, optional)
+    runs-on: ubuntu-24.04-arm
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tests
+        run: cargo test --workspace --locked
+
+  # ---------------------------------------------------------------------------
+  # Repository hygiene: every shell script parses, is shellcheck-clean at
+  # warning level, and every YAML/TOML file the release pipeline consumes is
+  # syntactically valid.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: scripts and workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash -n every shell script
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(scripts/*.sh packaging/*.sh packaging/*/*.sh)
+          printf '%s\n' "${files[@]}"
+          for file in "${files[@]}"; do
+            bash -n "$file"
+          done
+
+      - name: shellcheck (warning level)
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(scripts/*.sh packaging/*.sh packaging/*/*.sh)
+          shellcheck -S warning "${files[@]}"
+
+      - name: YAML parses
+        run: |
+          set -euo pipefail
+          ruby -ryaml -e 'ARGV.each { |f| YAML.load_file(f); puts "yaml ok: #{f}" }' \
+            .github/workflows/*.yml \
+            .github/dependabot.yml \
+            packaging/winget/*.yaml
+
+      - name: TOML parses
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import tomllib
+          for path in ("deny.toml", "Cargo.toml", "fuzz/Cargo.toml"):
+              with open(path, "rb") as handle:
+                  tomllib.load(handle)
+              print("toml ok:", path)
+          PY

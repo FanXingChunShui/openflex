@@ -1,0 +1,19 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "separator-split-demo",
+  "description": "Split mode (A6): 10 containers are copied into 3 items each (30 items), the container is not kept as a separate item",
+  "time_unit": "seconds",
+  "run": { "stop_time": 500.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "constant", "value": 50.0 }, "first_arrival": 0.0 } },
+    { "name": "Separator1", "kind": "separator", "pos": [10, 0], "params": {
+        "separate_mode": "split", "split_count": 3 } },
+    { "name": "Sink1", "kind": "sink", "pos": [20, 0], "params": {} }
+  ],
+  "connections": [
+    { "from": "Source1", "to": "Separator1" },
+    { "from": "Separator1", "to": "Sink1" }
+  ]
+}

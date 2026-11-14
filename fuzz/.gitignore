@@ -1,0 +1,4 @@
+# cargo-fuzz build products; the targets and any seed corpus stay in git.
+target/
+artifacts/
+coverage/

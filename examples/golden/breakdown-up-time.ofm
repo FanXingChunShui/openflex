@@ -1,0 +1,30 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "breakdown-up-time",
+  "time_unit": "seconds",
+  "description": "A8: the MTBF clock runs only while the processor is processing, so starving the machine does not make it fail",
+  "run": {"stop_time": 600.0, "warmup": 0.0, "seed": 1, "replications": 1},
+  "objects": [
+    {"name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+      "interarrival": {"distribution": "constant", "value": 5.0},
+      "items_per_arrival": 1, "first_arrival": 0.0}},
+    {"name": "Queue1", "kind": "queue", "pos": [5, 0], "params": {
+      "max_content": 1000, "order": "fifo"}},
+    {"name": "Proc1", "kind": "processor", "pos": [10, 0], "params": {
+      "setup_time": {"distribution": "constant", "value": 10.0},
+      "process_time": {"distribution": "constant", "value": 10.0},
+      "max_content": 1,
+      "failure": {
+        "mtbf": {"distribution": "constant", "value": 25.0},
+        "mttr": {"distribution": "constant", "value": 10.0},
+        "first_failure_time": 25.0,
+        "count_time_in_states": ["processing"]}}},
+    {"name": "Sink1", "kind": "sink", "pos": [15, 0], "params": {}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Queue1"},
+    {"from": "Queue1", "to": "Proc1"},
+    {"from": "Proc1", "to": "Sink1"}
+  ]
+}

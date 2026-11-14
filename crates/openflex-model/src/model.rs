@@ -54,6 +54,7 @@ impl TimeUnit {
 
 /// Run configuration shared by every replication.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunSettings {
     /// Model time at which the run stops.
     #[serde(default = "default_stop_time")]
@@ -226,7 +227,26 @@ impl<'de> Deserialize<'de> for Object {
         fn empty_object() -> serde_json::Value {
             serde_json::json!({})
         }
-        let raw = Raw::deserialize(deserializer)?;
+        // Parse into a value first so unknown keys can be reported together
+        // with the object they belong to (A1): serde's own message has the key
+        // but not the object name.
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let object_name = value
+            .get("name")
+            .and_then(|name| name.as_str())
+            .unwrap_or("<unnamed>")
+            .to_string();
+        if let Some(map) = value.as_object() {
+            for key in map.keys() {
+                if !matches!(key.as_str(), "name" | "kind" | "pos" | "params") {
+                    return Err(de::Error::custom(format!(
+                        "object '{object_name}' has unknown key '{key}' (expected name, kind, pos, params)"
+                    )));
+                }
+            }
+        }
+        let raw: Raw = serde_json::from_value(value)
+            .map_err(|err| de::Error::custom(format!("object '{object_name}': {err}")))?;
         let kind = ObjectKind::parse(&raw.kind).ok_or_else(|| {
             de::Error::custom(format!(
                 "object '{}' has unknown kind '{}' (expected one of: {})",
@@ -254,6 +274,7 @@ impl<'de> Deserialize<'de> for Object {
 ///
 /// Serialised *without* a tag: the enclosing [`Object`] already names the kind.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum ObjectParams {
     Source(SourceParams),
     Queue(QueueParams),
@@ -315,6 +336,27 @@ impl ObjectParams {
             ObjectParams::Rack(p) => &p.triggers,
             ObjectParams::BasicFr(p) => &p.triggers,
             ObjectParams::BasicTe(p) => &p.triggers,
+        }
+    }
+
+    /// Pull configuration shared by every object kind (A3).
+    pub fn pull(&self) -> Option<&PullParams> {
+        match self {
+            ObjectParams::Source(p) => p.pull.as_ref(),
+            ObjectParams::Queue(p) => p.pull.as_ref(),
+            ObjectParams::Processor(p) => p.pull.as_ref(),
+            ObjectParams::Sink(p) => p.pull.as_ref(),
+            ObjectParams::Combiner(p) => p.pull.as_ref(),
+            ObjectParams::Separator(p) => p.pull.as_ref(),
+            ObjectParams::Conveyor(p) => p.pull.as_ref(),
+            ObjectParams::Merge(p) => p.pull.as_ref(),
+            ObjectParams::Split(p) => p.pull.as_ref(),
+            ObjectParams::Transporter(p) => p.pull.as_ref(),
+            ObjectParams::Dispatcher(p) => p.pull.as_ref(),
+            ObjectParams::Resource(p) => p.pull.as_ref(),
+            ObjectParams::Rack(p) => p.pull.as_ref(),
+            ObjectParams::BasicFr(p) => p.pull.as_ref(),
+            ObjectParams::BasicTe(p) => p.pull.as_ref(),
         }
     }
 
@@ -388,7 +430,112 @@ impl Serialize for ObjectParams {
 // Per-kind parameter structures
 // ---------------------------------------------------------------------------
 
+/// Pull configuration shared by every object kind (A3).
+///
+/// FlexSim lets a fixed resource actively pull from its upstream ports instead
+/// of waiting for a push. OpenFlex keeps the same four pieces of state but
+/// structures them so they can be validated and diffed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct PullParams {
+    /// Whether the object pulls instead of waiting for a push.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Routing rule that picks the *input* port to pull from; `None` means
+    /// "open every input and take the first ready item".
+    #[serde(default)]
+    pub strategy: Option<PortStrategy>,
+    /// Boolean expression evaluated per ready item: `1` accepts it, `0` skips
+    /// it and waits for the next released item. `None` means "accept".
+    #[serde(default)]
+    pub requirement: Option<Expr>,
+}
+
+/// How a Source decides when to create flow items (`ArrivalStyle` in FlexSim).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ArrivalStyle {
+    /// Wait one inter-arrival time after the previous batch left the source.
+    #[default]
+    InterArrivalTime,
+    /// Table driven: each row carries an absolute arrival time.
+    ArrivalSchedule,
+    /// Table driven without times: the next row starts once the previous batch
+    /// has completely left the source.
+    ArrivalSequence,
+}
+
+/// Table of absolute arrival times (`Arrival Schedule` in FlexSim).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ArrivalSchedule {
+    /// Arrival rows; times must be non-decreasing.
+    #[serde(default)]
+    pub rows: Vec<ArrivalRow>,
+    /// Restart the table when the last row has been scheduled. The first row's
+    /// time only applies to the first pass; later passes continue at the time
+    /// of the last row (FlexSim `Repeat Table`).
+    #[serde(default)]
+    pub repeat: bool,
+}
+
+/// One row of an arrival schedule.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArrivalRow {
+    /// Absolute model time of this arrival.
+    pub time: f64,
+    /// Number of flow items created; `0` is legal and adds a gap.
+    #[serde(default = "one_u32")]
+    pub quantity: u32,
+    /// Item type applied to the created items (overrides
+    /// [`SourceParams::item_type`]).
+    #[serde(default)]
+    pub item_type: Option<u32>,
+    /// Labels applied to the created items.
+    #[serde(default)]
+    pub labels: BTreeMap<String, f64>,
+}
+
+impl Default for ArrivalRow {
+    fn default() -> Self {
+        Self {
+            time: 0.0,
+            quantity: 1,
+            item_type: None,
+            labels: BTreeMap::new(),
+        }
+    }
+}
+
+/// One row of an arrival sequence (no times: rows advance when the previous
+/// batch has left the source).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SequenceRow {
+    /// Number of flow items created for this row.
+    #[serde(default = "one_u32")]
+    pub quantity: u32,
+    /// Item type applied to the created items.
+    #[serde(default)]
+    pub item_type: Option<u32>,
+    /// Labels applied to the created items.
+    #[serde(default)]
+    pub labels: BTreeMap<String, f64>,
+}
+
+impl Default for SequenceRow {
+    fn default() -> Self {
+        Self {
+            quantity: 1,
+            item_type: None,
+            labels: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceParams {
     /// Time between consecutive arrivals (or between arrival batches).
     #[serde(default)]
@@ -405,6 +552,22 @@ pub struct SourceParams {
     /// The source itself stops at this model time.
     #[serde(default)]
     pub stop_time: Option<f64>,
+    /// Explicit arrival style. When omitted it is inferred from the table
+    /// fields (`arrival_schedule` / `arrival_sequence`) and defaults to
+    /// [`ArrivalStyle::InterArrivalTime`].
+    #[serde(default)]
+    pub arrival_style: Option<ArrivalStyle>,
+    /// Table of absolute arrival times; mutually exclusive with
+    /// `interarrival` and `arrival_sequence`.
+    #[serde(default)]
+    pub arrival_schedule: Option<ArrivalSchedule>,
+    /// Table of arrival batches without times; mutually exclusive with
+    /// `interarrival` and `arrival_schedule`.
+    #[serde(default)]
+    pub arrival_sequence: Option<Vec<SequenceRow>>,
+    /// Pull configuration (A3).
+    #[serde(default)]
+    pub pull: Option<PullParams>,
     /// Item type given to every created flow item.
     #[serde(default)]
     pub item_type: u32,
@@ -424,6 +587,44 @@ pub struct SourceParams {
 // Defaults match the documented defaults used by serde when a field is
 // omitted in the JSON, so programmatic construction and JSON agree.
 
+impl SourceParams {
+    /// Effective arrival style: explicit `arrival_style` when present,
+    /// otherwise inferred from the table fields.
+    pub fn effective_arrival_style(&self) -> ArrivalStyle {
+        if let Some(style) = self.arrival_style {
+            return style;
+        }
+        if self.arrival_schedule.is_some() {
+            ArrivalStyle::ArrivalSchedule
+        } else if self.arrival_sequence.is_some() {
+            ArrivalStyle::ArrivalSequence
+        } else {
+            ArrivalStyle::InterArrivalTime
+        }
+    }
+
+    /// Whether the source is really using the inter-arrival distribution.
+    pub fn uses_interarrival(&self) -> bool {
+        self.effective_arrival_style() == ArrivalStyle::InterArrivalTime
+    }
+
+    /// The arrival schedule when the source is in that mode.
+    pub fn arrival_schedule(&self) -> Option<&ArrivalSchedule> {
+        match self.effective_arrival_style() {
+            ArrivalStyle::ArrivalSchedule => self.arrival_schedule.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// The arrival sequence rows when the source is in that mode.
+    pub fn arrival_sequence(&self) -> Option<&[SequenceRow]> {
+        match self.effective_arrival_style() {
+            ArrivalStyle::ArrivalSequence => self.arrival_sequence.as_deref(),
+            _ => None,
+        }
+    }
+}
+
 impl Default for SourceParams {
     fn default() -> Self {
         Self {
@@ -432,8 +633,12 @@ impl Default for SourceParams {
             max_arrivals: None,
             first_arrival: 0.0,
             stop_time: None,
+            arrival_style: None,
+            arrival_schedule: None,
+            arrival_sequence: None,
             item_type: 0,
             labels: BTreeMap::new(),
+            pull: None,
             shifts: Vec::new(),
             triggers: Triggers::default(),
         }
@@ -448,6 +653,7 @@ impl Default for QueueParams {
             batch_size: None,
             batch_max_wait: 0.0,
             shifts: Vec::new(),
+            pull: None,
             triggers: Triggers::default(),
         }
     }
@@ -461,9 +667,15 @@ impl Default for ProcessorParams {
             max_content: 1,
             setup_operator: None,
             process_operator: None,
+            num_setup_operators: None,
+            num_process_operators: None,
+            use_same_num_operators: false,
+            operator_priority: 0,
+            operator_preempt: false,
             failure: None,
             changeover_time: Distribution::default(),
             shifts: Vec::new(),
+            pull: None,
             triggers: Triggers::default(),
         }
     }
@@ -474,7 +686,12 @@ impl Default for CombinerParams {
         Self {
             components_per_container: 2,
             mode: CombinerMode::Pack,
+            setup_time: Distribution::default(),
+            process_time: Distribution::default(),
+            setup_operator: None,
+            process_operator: None,
             shifts: Vec::new(),
+            pull: None,
             triggers: Triggers::default(),
         }
     }
@@ -489,6 +706,7 @@ impl Default for TransporterParams {
             unload_time: Distribution::default(),
             home: None,
             shifts: Vec::new(),
+            pull: None,
             triggers: Triggers::default(),
         }
     }
@@ -500,6 +718,7 @@ impl Default for BasicTeParams {
             speed: 1.0,
             capacity: 1,
             shifts: Vec::new(),
+            pull: None,
             triggers: Triggers::default(),
         }
     }
@@ -524,6 +743,7 @@ pub enum QueueOrder {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QueueParams {
     #[serde(default = "default_max_content")]
     pub max_content: u32,
@@ -536,6 +756,10 @@ pub struct QueueParams {
     #[serde(default)]
     pub batch_max_wait: f64,
 
+    /// Pull configuration (A3); `None` keeps the documented push default.
+    #[serde(default)]
+    pub pull: Option<PullParams>,
+
     /// Object logic fired by the engine at the documented trigger points.
     #[serde(default)]
     pub triggers: Triggers,
@@ -546,6 +770,7 @@ pub struct QueueParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProcessorParams {
     #[serde(default)]
     pub setup_time: Distribution,
@@ -559,11 +784,32 @@ pub struct ProcessorParams {
     /// Ask this dispatcher for a resource during processing.
     #[serde(default)]
     pub process_operator: Option<String>,
+    /// Number of operators requested during setup (A10); `None` means "one
+    /// operator when `setup_operator` is set".
+    #[serde(default)]
+    pub num_setup_operators: Option<u32>,
+    /// Number of operators requested during processing (A10).
+    #[serde(default)]
+    pub num_process_operators: Option<u32>,
+    /// Reuse the setup operators for processing instead of releasing them and
+    /// requesting new ones (FlexSim "Same as Setup", A10).
+    #[serde(default)]
+    pub use_same_num_operators: bool,
+    /// Priority of the operator task sequence, higher first (A10).
+    #[serde(default)]
+    pub operator_priority: u32,
+    /// Preempt the operator task sequence (A10).
+    #[serde(default)]
+    pub operator_preempt: bool,
     #[serde(default)]
     pub failure: Option<FailureParams>,
     /// Time spent waiting before the processor can accept a new item (changeover).
     #[serde(default)]
     pub changeover_time: Distribution,
+
+    /// Pull configuration (A3); `None` keeps the documented push default.
+    #[serde(default)]
+    pub pull: Option<PullParams>,
 
     /// Object logic fired by the engine at the documented trigger points.
     #[serde(default)]
@@ -575,6 +821,7 @@ pub struct ProcessorParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FailureParams {
     /// Mean time between failures (or a full distribution).
     pub mtbf: Distribution,
@@ -583,10 +830,25 @@ pub struct FailureParams {
     /// Optional dispatcher used by the repair crew.
     #[serde(default)]
     pub repair_operator: Option<String>,
+    /// Absolute time of the first failure (A8). A negative value means
+    /// "ignore" and the first failure is sampled from `mtbf`.
+    #[serde(default)]
+    pub first_failure_time: Option<f64>,
+    /// Only time spent in these states counts towards `mtbf`; empty means wall
+    /// clock time (A8). Valid names are `idle`, `setup`, `processing`,
+    /// `blocked`, `waiting_for_operator`, `waiting_for_transport`, `down`,
+    /// `off_shift`.
+    #[serde(default)]
+    pub count_time_in_states: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct SinkParams {
+    /// Pull configuration (A3); `None` keeps the documented push default.
+    #[serde(default)]
+    pub pull: Option<PullParams>,
+
     /// Object logic fired by the engine at the documented trigger points.
     #[serde(default)]
     pub triggers: Triggers,
@@ -604,14 +866,36 @@ pub enum CombinerMode {
     Pack,
     /// Permanently join the items into one item.
     Join,
+    /// Collect a batch, run setup/process, then release every item of the
+    /// batch together (FlexSim `batch`, A7).
+    Batch,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CombinerParams {
     #[serde(default = "two_u32")]
     pub components_per_container: u32,
     #[serde(default)]
     pub mode: CombinerMode,
+    /// Setup delay before the first component of a batch is consumed
+    /// (inherited from Processor in FlexSim, A7). Default constant 0.
+    #[serde(default)]
+    pub setup_time: Distribution,
+    /// Process delay per batch (inherited from Processor in FlexSim, A7).
+    /// Default constant 0.
+    #[serde(default)]
+    pub process_time: Distribution,
+    /// Dispatcher asked for a resource during setup.
+    #[serde(default)]
+    pub setup_operator: Option<String>,
+    /// Dispatcher asked for a resource during processing.
+    #[serde(default)]
+    pub process_operator: Option<String>,
+
+    /// Pull configuration (A3); `None` keeps the documented push default.
+    #[serde(default)]
+    pub pull: Option<PullParams>,
 
     /// Object logic fired by the engine at the documented trigger points.
     #[serde(default)]
@@ -622,13 +906,37 @@ pub struct CombinerParams {
     pub shifts: Vec<Shift>,
 }
 
+/// Separation mode (`SeparateMode` in FlexSim, A6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SeparateMode {
+    /// Unpack the container: `split_count` parts **plus** the container, i.e.
+    /// `split_count + 1` released items (0 = every component).
+    #[default]
+    Unpack,
+    /// Split/copy: `split_count` items in total, the container is not kept as
+    /// a separate item.
+    Split,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct SeparatorParams {
     /// Unpack: split off this many parts plus the container (0 = every
     /// component inside the container). The FlexSim "unpack" semantics produce
     /// `split_count + 1` items.
+    ///
+    /// Split (see [`SeparateMode::Split`]): total number of released items, so
+    /// it must be at least 1.
     #[serde(default)]
     pub split_count: u32,
+    /// `unpack` (default) or `split`.
+    #[serde(default)]
+    pub separate_mode: SeparateMode,
+
+    /// Pull configuration (A3); `None` keeps the documented push default.
+    #[serde(default)]
+    pub pull: Option<PullParams>,
 
     /// Object logic fired by the engine at the documented trigger points.
     #[serde(default)]
@@ -640,6 +948,7 @@ pub struct SeparatorParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConveyorParams {
     #[serde(default = "one_f64")]
     pub speed: f64,
@@ -651,6 +960,10 @@ pub struct ConveyorParams {
     pub item_spacing: f64,
     #[serde(default = "default_max_content")]
     pub max_content: u32,
+
+    /// Pull configuration (A3); `None` keeps the documented push default.
+    #[serde(default)]
+    pub pull: Option<PullParams>,
 
     /// Object logic fired by the engine at the documented trigger points.
     #[serde(default)]
@@ -670,16 +983,22 @@ impl Default for ConveyorParams {
             item_spacing: 1.0,
             max_content: 1_000,
             shifts: Vec::new(),
+            pull: None,
             triggers: Triggers::default(),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct MergeParams {
     /// Merge waits until all input ports have an item available.
     #[serde(default)]
     pub wait_for_all: bool,
+
+    /// Pull configuration (A3); `None` keeps the documented push default.
+    #[serde(default)]
+    pub pull: Option<PullParams>,
 
     /// Object logic fired by the engine at the documented trigger points.
     #[serde(default)]
@@ -691,10 +1010,15 @@ pub struct MergeParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct SplitParams {
     /// Send items to output ports in round-robin order (default) or by item type.
     #[serde(default)]
     pub by_item_type: bool,
+
+    /// Pull configuration (A3); `None` keeps the documented push default.
+    #[serde(default)]
+    pub pull: Option<PullParams>,
 
     /// Object logic fired by the engine at the documented trigger points.
     #[serde(default)]
@@ -706,6 +1030,7 @@ pub struct SplitParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransporterParams {
     #[serde(default = "one_u32")]
     pub capacity: u32,
@@ -719,6 +1044,10 @@ pub struct TransporterParams {
     #[serde(default)]
     pub home: Option<String>,
 
+    /// Pull configuration (A3); `None` keeps the documented push default.
+    #[serde(default)]
+    pub pull: Option<PullParams>,
+
     /// Object logic fired by the engine at the documented trigger points.
     #[serde(default)]
     pub triggers: Triggers,
@@ -729,11 +1058,16 @@ pub struct TransporterParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct DispatcherParams {
     /// Dispatchers hand out tasks to transporters; the maximum number of tasks
     /// queued at once (0 = unlimited).
     #[serde(default)]
     pub max_tasks: u32,
+
+    /// Pull configuration (A3); `None` keeps the documented push default.
+    #[serde(default)]
+    pub pull: Option<PullParams>,
 
     /// Object logic fired by the engine at the documented trigger points.
     #[serde(default)]
@@ -745,12 +1079,17 @@ pub struct DispatcherParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResourceParams {
     #[serde(default = "one_u32")]
     pub capacity: u32,
     /// Optional schedule of unavailable periods.
     #[serde(default)]
     pub downtimes: Vec<DowntimeWindow>,
+
+    /// Pull configuration (A3); `None` keeps the documented push default.
+    #[serde(default)]
+    pub pull: Option<PullParams>,
 
     /// Object logic fired by the engine at the documented trigger points.
     #[serde(default)]
@@ -767,12 +1106,14 @@ impl Default for ResourceParams {
             capacity: 1,
             downtimes: Vec::new(),
             shifts: Vec::new(),
+            pull: None,
             triggers: Triggers::default(),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DowntimeWindow {
     pub start: f64,
     pub end: f64,
@@ -785,6 +1126,7 @@ pub struct DowntimeWindow {
 /// every window are off shift: they stop processing, do not accept flow items
 /// and accumulate `off_shift` time in the statistics.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Shift {
     /// Model time at which the first window begins.
     #[serde(default)]
@@ -812,11 +1154,16 @@ fn eight_hours() -> f64 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RackParams {
     #[serde(default = "default_max_content")]
     pub capacity: u32,
     #[serde(default = "one_u32")]
     pub levels: u32,
+
+    /// Pull configuration (A3); `None` keeps the documented push default.
+    #[serde(default)]
+    pub pull: Option<PullParams>,
 
     /// Object logic fired by the engine at the documented trigger points.
     #[serde(default)]
@@ -833,13 +1180,19 @@ impl Default for RackParams {
             capacity: 100,
             levels: 1,
             shifts: Vec::new(),
+            pull: None,
             triggers: Triggers::default(),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct BasicFrParams {
+    /// Pull configuration (A3); `None` keeps the documented push default.
+    #[serde(default)]
+    pub pull: Option<PullParams>,
+
     /// Object logic fired by the engine at the documented trigger points.
     #[serde(default)]
     pub triggers: Triggers,
@@ -850,11 +1203,16 @@ pub struct BasicFrParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BasicTeParams {
     #[serde(default = "one_f64")]
     pub speed: f64,
     #[serde(default = "one_u32")]
     pub capacity: u32,
+
+    /// Pull configuration (A3); `None` keeps the documented push default.
+    #[serde(default)]
+    pub pull: Option<PullParams>,
 
     /// Object logic fired by the engine at the documented trigger points.
     #[serde(default)]
@@ -870,6 +1228,7 @@ pub struct BasicTeParams {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Connection {
     pub from: String,
     pub to: String,
@@ -881,7 +1240,7 @@ pub struct Connection {
     pub strategy: Option<PortStrategy>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PortStrategy {
     /// Pick the first downstream object that can accept an item.
@@ -898,12 +1257,115 @@ pub enum PortStrategy {
     ByItemType,
     /// Use a numeric label as the output port index.
     ByLabel { label: String },
+    /// Hold the item: do not release it until a `release_item` action runs
+    /// (FlexSim `SendToPort` returning -1, A4).
+    Hold,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConditionalPort {
     pub condition: Expr,
     pub port: u32,
+}
+
+// Internally tagged enums cannot use `deny_unknown_fields` in serde, so the
+// strategy object is decoded by hand: this is also where a typo such as
+// `"percent"` instead of `"percentages"` is reported (A1).
+impl<'de> Deserialize<'de> for PortStrategy {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let mut map = value
+            .as_object()
+            .cloned()
+            .ok_or_else(|| de::Error::custom("a port strategy must be a JSON object"))?;
+        let tag = map
+            .remove("type")
+            .ok_or_else(|| de::Error::custom("a port strategy needs a \"type\" field"))?;
+        let name = tag
+            .as_str()
+            .ok_or_else(|| de::Error::custom("\"type\" must be a string"))?
+            .to_string();
+        let strategy = match name.as_str() {
+            "first_available" => {
+                check_strategy_keys(&map, &name, &[]).map_err(de::Error::custom)?;
+                PortStrategy::FirstAvailable
+            }
+            "round_robin" => {
+                check_strategy_keys(&map, &name, &[]).map_err(de::Error::custom)?;
+                PortStrategy::RoundRobin
+            }
+            "random" => {
+                check_strategy_keys(&map, &name, &[]).map_err(de::Error::custom)?;
+                PortStrategy::Random
+            }
+            "by_percentage" => {
+                check_strategy_keys(&map, &name, &["percentages"]).map_err(de::Error::custom)?;
+                PortStrategy::ByPercentage {
+                    percentages: strategy_field(&mut map, "percentages", &name)
+                        .map_err(de::Error::custom)?,
+                }
+            }
+            "by_condition" => {
+                check_strategy_keys(&map, &name, &["conditions"]).map_err(de::Error::custom)?;
+                PortStrategy::ByCondition {
+                    conditions: strategy_field(&mut map, "conditions", &name)
+                        .map_err(de::Error::custom)?,
+                }
+            }
+            "by_item_type" => {
+                check_strategy_keys(&map, &name, &[]).map_err(de::Error::custom)?;
+                PortStrategy::ByItemType
+            }
+            "by_label" => {
+                check_strategy_keys(&map, &name, &["label"]).map_err(de::Error::custom)?;
+                PortStrategy::ByLabel {
+                    label: strategy_field(&mut map, "label", &name).map_err(de::Error::custom)?,
+                }
+            }
+            "hold" => {
+                check_strategy_keys(&map, &name, &[]).map_err(de::Error::custom)?;
+                PortStrategy::Hold
+            }
+            other => {
+                return Err(de::Error::custom(format!(
+                    "unknown port strategy '{other}' (expected one of: first_available, round_robin, random, by_percentage, by_condition, by_item_type, by_label, hold)"
+                )));
+            }
+        };
+        Ok(strategy)
+    }
+}
+
+fn check_strategy_keys(
+    map: &serde_json::Map<String, serde_json::Value>,
+    name: &str,
+    allowed: &[&str],
+) -> Result<(), String> {
+    for key in map.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(if allowed.is_empty() {
+                format!("port strategy '{name}' has unknown key '{key}'")
+            } else {
+                format!(
+                    "port strategy '{name}' has unknown key '{key}' (expected one of: {})",
+                    allowed.join(", ")
+                )
+            });
+        }
+    }
+    Ok(())
+}
+
+fn strategy_field<T: serde::de::DeserializeOwned>(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    name: &str,
+) -> Result<T, String> {
+    let value = map
+        .remove(key)
+        .ok_or_else(|| format!("port strategy '{name}' requires '{key}'"))?;
+    serde_json::from_value(value).map_err(|err| format!("port strategy '{name}.{key}': {err}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -911,6 +1373,7 @@ pub struct ConditionalPort {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Experiment {
     pub name: String,
     #[serde(default = "default_replications")]
@@ -919,16 +1382,25 @@ pub struct Experiment {
     pub scenarios: Vec<Scenario>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Scenario {
     pub name: String,
     /// Parameters replaced before the run, e.g. `{"object": "Proc1",
     /// "param": "process_time", "value": {...}}`.
     #[serde(default)]
     pub overrides: Vec<Override>,
+    /// Replaces `run.stop_time` for this scenario (A13). Must be positive.
+    #[serde(default)]
+    pub stop_time: Option<f64>,
+    /// Replaces `run.warmup` for this scenario (A13). Must be non-negative and
+    /// shorter than the effective stop time.
+    #[serde(default)]
+    pub warmup: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Override {
     pub object: String,
     pub param: String,
@@ -940,6 +1412,7 @@ pub struct Override {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Model {
     #[serde(default = "default_format")]
     pub format: String,
@@ -971,10 +1444,43 @@ fn default_version() -> u32 {
 
 impl Model {
     pub fn from_json(text: &str) -> Result<Model, ModelError> {
-        let model: Model =
-            serde_json::from_str(text).map_err(|err| ModelError::Json(err.to_string()))?;
+        let model = Model::parse_json(text)?;
         model.validate()?;
         Ok(model)
+    }
+
+    /// Parse without running [`Model::validate`].
+    ///
+    /// Only useful for tools that want to report every validation issue of a
+    /// structurally valid document; `from_json` is the normal entry point.
+    ///
+    /// Unknown keys are rejected. Structs use `deny_unknown_fields`; the
+    /// internally tagged enums (`distribution`, `action`, port `strategy`) are
+    /// deserialized by serde with tag buffering, where serde cannot enforce
+    /// `deny_unknown_fields`, so the same guarantee is provided here by
+    /// observing the ignored keys (A1).
+    pub fn parse_json(text: &str) -> Result<Model, ModelError> {
+        let mut ignored: Vec<String> = Vec::new();
+        let mut deserializer = serde_json::Deserializer::from_str(text);
+        let model: Model =
+            serde_ignored::deserialize(&mut deserializer, |path| ignored.push(path.to_string()))
+                .map_err(|err| ModelError::Json(err.to_string()))?;
+        if ignored.is_empty() {
+            return Ok(model);
+        }
+        let names: Vec<&str> = model
+            .objects
+            .iter()
+            .map(|object| object.name.as_str())
+            .collect();
+        let unknown = ignored
+            .iter()
+            .map(|path| describe_ignored_path(path, &names))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(ModelError::Json(format!(
+            "unknown parameter(s) (the schema is strict): {unknown}"
+        )))
     }
 
     pub fn to_json(&self) -> Result<String, ModelError> {
@@ -1056,6 +1562,24 @@ fn format_issues(issues: &[ValidationIssue]) -> String {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Turn a `serde_ignored` path such as `objects[0].params.interarrival.rate`
+/// into a message that names the object and the offending key.
+fn describe_ignored_path(path: &str, names: &[&str]) -> String {
+    let mut result = path.to_string();
+    for (index, name) in names.iter().enumerate() {
+        let bracket = format!("objects[{index}]");
+        if result.contains(&bracket) {
+            result = result.replace(&bracket, &format!("objects.{name}"));
+        }
+        let dotted = format!("objects.{index}.");
+        if result.contains(&dotted) {
+            result = result.replace(&dotted, &format!("objects.{name}."));
+        }
+    }
+    let key = path.rsplit('.').next().unwrap_or(path);
+    format!("{result} (unknown key '{key}')")
+}
+
 fn one_u32() -> u32 {
     1
 }
@@ -1123,6 +1647,16 @@ impl Object {
             ObjectParams::Transporter(p) => Some(p),
             _ => None,
         }
+    }
+
+    /// Pull configuration of this object, whatever its kind (A3).
+    pub fn pull(&self) -> Option<&PullParams> {
+        self.params.pull()
+    }
+
+    /// Source-specific params, if this object is a source.
+    pub fn source_params(&self) -> Option<&SourceParams> {
+        self.source()
     }
 }
 

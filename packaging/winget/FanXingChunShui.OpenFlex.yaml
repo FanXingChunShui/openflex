@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.6.0.schema.json
+#
+# winget 清单模板 — version 文件。
+#
+# OpenFlex 还没有发布到 winget-pkgs。这是一个占位模板：
+# 发版后把 PackageVersion 改成实际版本，然后按照
+# https://learn.microsoft.com/windows/package-manager/package/manifest 的步骤
+# 把同目录的三个文件提交到 microsoft/winget-pkgs 的
+# manifests/f/FanXingChunShui/OpenFlex/<version>/ 下。
+#
+# 三个文件必须一起提交、PackageIdentifier/PackageVersion 必须完全一致：
+#   FanXingChunShui.OpenFlex.yaml              (本文件, ManifestType: version)
+#   FanXingChunShui.OpenFlex.installer.yaml    (安装器与 SHA256)
+#   FanXingChunShui.OpenFlex.locale.en-US.yaml (展示信息)
+PackageIdentifier: FanXingChunShui.OpenFlex
+PackageVersion: 0.1.0
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

@@ -172,28 +172,41 @@ macOS 第一次运行若被 Gatekeeper 拦下（提示「无法验证开发者�
 xattr -d com.apple.quarantine "$HOME/.local/bin/openflex"
 ```
 
-当前版本**没有做代码签名与公证**（见 [docs/releasing.md](releasing.md) 的待办清单），
-从浏览器下载解压后可能出现上述提示；用 `install.sh` 或 `curl` 下载一般不会触发。
+当前版本**尚未配置代码签名与公证**（签名脚本与 CI 步骤已就绪，但证书/Apple 账号还没接入，
+见 [docs/releasing.md](releasing.md) 第 6 节），从浏览器下载解压后可能出现上述提示；
+用 `install.sh` 或 `curl` 下载一般不会触发。接入签名后该提示会消失。
 
 ## 方式三：包管理器
 
-### Homebrew（macOS / Linux）
+### Homebrew（macOS / Linux）— 模板已就绪，tap 尚未发布
 
-仓库内提供了公式模板 [packaging/homebrew/openflex.rb](../packaging/homebrew/openflex.rb)。
-发布到 tap 之后可以这样安装：
+仓库内有公式模板 [packaging/homebrew/openflex.rb](../packaging/homebrew/openflex.rb)，
+但 **Homebrew tap 还没有发布**：`brew install openflex` 目前会失败（找不到公式）。
+下面是现在就能用的方式，以及 tap 发布后的命令。
 
-```sh
-brew install openflex/openflex/openflex
-```
-
-在 tap 发布之前，可以用本地模板安装：
+现在可用（从 clone 下来的仓库安装，走真实 release 包）：
 
 ```sh
+git clone https://github.com/FanXingChunShui/openflex.git
+cd openflex
 brew install --build-from-source ./packaging/homebrew/openflex.rb
+openflex --version
+brew uninstall openflex
 ```
 
-公式里的 `sha256` 需要在每次发版时替换成 `SHA256SUMS.txt` 中对应文件的值，
-详见 [docs/releasing.md](releasing.md)。
+> 模板里的 `sha256` 是占位符，直接从模板装会校验失败；先把三个占位符换成
+> 本次 release `SHA256SUMS.txt` 里的值（tap 发布步骤见
+> [packaging/homebrew/README.md](../packaging/homebrew/README.md)）。
+
+tap 发布后的命令（当前**不可用**，仅作预告）：
+
+```sh
+brew install fanxingchunshui/openflex/openflex
+```
+
+tap 的创建、公式更新、`brew audit` / `brew test` 校验步骤见
+[packaging/homebrew/README.md](../packaging/homebrew/README.md)；每次发版要改的
+`version` 与 `sha256` 见 [docs/releasing.md](releasing.md)。
 
 ### Debian / Ubuntu（.deb）
 
@@ -225,7 +238,10 @@ msiexec /i openflex-0.1.0-windows-x64.msi
 按用户安装（`perUser`），装到 `%LOCALAPPDATA%\OpenFlex\bin` 并自动加入用户 PATH，不需要管理员权限。
 卸载：设置 → 应用 → OpenFlex → 卸载，或 `msiexec /x openflex-0.1.0-windows-x64.msi`。
 
-### Docker
+### Docker — 本地可构建，GHCR 镜像尚未发布
+
+仓库里有[多阶段 Dockerfile](../packaging/Dockerfile)（`rust:1-slim-bookworm` 构建 →
+`debian:bookworm-slim` 运行），可以自己构建：
 
 ```sh
 docker build -f packaging/Dockerfile -t openflex:0.1.0 .
@@ -233,8 +249,54 @@ docker run --rm openflex:0.1.0 --version
 docker run --rm -v "$PWD:/workspace" openflex:0.1.0 run /workspace/model.ofm
 ```
 
-镜像默认入口是 `openflex`，不带参数时执行 `openflex --help`。容器内以非 root 用户运行，
-工作目录是 `/workspace`。
+镜像默认入口是 `openflex`，不带参数时执行 `openflex --help`。容器内以非 root 用户
+（uid 10001）运行，工作目录是 `/workspace`。
+
+GHCR 镜像（`ghcr.io/fanxingchunshui/openflex`）由
+[`.github/workflows/container.yml`](../.github/workflows/container.yml) 在**打 tag 时**
+构建并推送（linux/amd64 + linux/arm64，tag 版本与 `latest`），并会先在本机跑
+`--version` 与一次 M/M/1 模型冒烟。**镜像尚未发布**，所以下面这条命令现在会失败，
+发布后才是正确用法：
+
+```sh
+docker run --rm ghcr.io/fanxingchunshui/openflex:0.1.0 --version
+```
+
+推送依赖 GitHub Actions 的 `GITHUB_TOKEN`（`packages: write`），不需要额外 secrets；
+fork 仓库需要把 workflow 里的镜像名改成自己的 owner。
+
+### winget（Windows）— 清单模板，尚未提交
+
+`packaging/winget/` 下有 winget 的三件套清单模板（version / installer / locale），
+但**还没有提交到 microsoft/winget-pkgs**，所以 `winget install OpenFlex` 现在不存在。
+
+模板里需要按版本替换的字段、MSI 的 SHA256 来源、以及为什么暂时没有 `ProductCode`，
+都写在 [packaging/winget/FanXingChunShui.OpenFlex.installer.yaml](../packaging/winget/FanXingChunShui.OpenFlex.installer.yaml)
+的文件头注释里。清单提交后用户才能这样装：
+
+```powershell
+winget install FanXingChunShui.OpenFlex
+winget upgrade FanXingChunShui.OpenFlex
+```
+
+在提交之前，Windows 用户请用 [方式一](#方式一一键安装脚本推荐) 的 `install.ps1`，或
+直接下载 MSI（见下文「Windows MSI」）。
+
+### Scoop（Windows）— 清单模板，尚未发布 bucket
+
+`packaging/scoop/openflex.json` 是 Scoop 清单模板（含 `checkver` / `autoupdate`），
+但**没有发布到任何 bucket**，`scoop install openflex` 现在不可用。
+
+自建 bucket 后可以这样用（需要先把模板里的 `version`、`hash`、`extract_dir`
+替换成本次 release 的值）：
+
+```powershell
+scoop bucket add openflex https://github.com/FanXingChunShui/scoop-bucket
+scoop install openflex
+openflex --version
+```
+
+模板支持的架构是 `64bit` 与 `arm64`，`bin` 指向 zip 里的 `openflex.exe`。
 
 ## 方式四：从源码构建
 

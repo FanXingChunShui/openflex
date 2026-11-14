@@ -28,5 +28,6 @@ pub mod stats;
 pub use engine::{FlowItem, derive_seed, run_model, simulate};
 pub use error::SimError;
 pub use stats::{
-    Aggregate, ObjectAggregate, ObjectStats, ReplicationResult, SimConfig, SimReport, StateTimes,
+    Aggregate, LittleCheck, LittleEntry, ObjectAggregate, ObjectStats, ReplicationResult,
+    SimConfig, SimReport, StateTimes, t_critical_95,
 };
