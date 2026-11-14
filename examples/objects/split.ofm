@@ -1,0 +1,22 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "split-demo",
+  "description": "Round-robin distribution over three output ports",
+  "time_unit": "seconds",
+  "run": { "stop_time": 300.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+    { "name": "Split1", "kind": "split", "pos": [10, 0], "params": { "by_item_type": false } },
+    { "name": "SinkA", "kind": "sink", "pos": [20, 20], "params": {} },
+    { "name": "SinkB", "kind": "sink", "pos": [20, 0], "params": {} },
+    { "name": "SinkC", "kind": "sink", "pos": [20, -20], "params": {} }
+  ],
+  "connections": [
+    { "from": "Source1", "to": "Split1" },
+    { "from": "Split1", "to": "SinkA" },
+    { "from": "Split1", "to": "SinkB" },
+    { "from": "Split1", "to": "SinkC" }
+  ]
+}

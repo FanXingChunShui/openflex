@@ -55,7 +55,9 @@ impl Belt {
 
     /// The leading item has reached the exit and may be transferred.
     pub fn front_ready(&self) -> bool {
-        self.positions.first().is_some_and(|pos| *pos >= self.length - EPS)
+        self.positions
+            .first()
+            .is_some_and(|pos| *pos >= self.length - EPS)
     }
 
     /// A new item fits on the belt surface. `max_content` is the hard limit;
@@ -174,10 +176,14 @@ mod tests {
         assert!(belt.frozen());
         assert_eq!(belt.time_to_next_event(), None);
         belt.advance(0.5);
-        assert!((belt.positions[1] - 4.0).abs() < 1e-9, "the train must not move");
+        assert!(
+            (belt.positions[1] - 4.0).abs() < 1e-9,
+            "the train must not move"
+        );
         // Once the leader leaves, the train moves again.
         belt.remove_front();
-        assert!((belt.time_to_next_event().unwrap() - 6.0).abs() < 1e-9);
+        let next = belt.time_to_next_event().expect("the train moves again");
+        assert!((next - 6.0).abs() < 1e-9);
     }
 
     #[test]
@@ -188,7 +194,10 @@ mod tests {
         assert!(!belt.entry_free(4), "the entry point is occupied");
         belt.advance(1.0);
         assert!((belt.positions[0] - 1.0).abs() < 1e-9);
-        assert!(!belt.entry_free(4), "one unit is closer than the 2 unit spacing");
+        assert!(
+            !belt.entry_free(4),
+            "one unit is closer than the 2 unit spacing"
+        );
         belt.advance(1.0);
         assert!(belt.entry_free(4));
         belt.positions = vec![9.0, 8.0, 7.0, 6.0];
@@ -204,6 +213,7 @@ mod tests {
         assert_eq!(belt.time_to_next_event(), None);
         assert!(!belt.frozen(), "accumulating belts are not rigid");
         belt.remove_front();
-        assert!((belt.time_to_next_event().unwrap() - 1.0).abs() < 1e-9);
+        let next = belt.time_to_next_event().expect("the next item moves up");
+        assert!((next - 1.0).abs() < 1e-9);
     }
 }

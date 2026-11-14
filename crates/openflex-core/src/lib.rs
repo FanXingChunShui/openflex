@@ -19,8 +19,10 @@
 //! # }
 //! ```
 
+pub mod conveyor;
 pub mod engine;
 pub mod error;
+pub mod shifts;
 pub mod stats;
 
 pub use engine::{FlowItem, derive_seed, run_model, simulate};

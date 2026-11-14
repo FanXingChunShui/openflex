@@ -12,7 +12,11 @@ use crate::model::{FORMAT_NAME, FORMAT_VERSION};
 
 pub fn validate(model: &Model) -> Result<(), ModelError> {
     let issues = validate_collect(model);
-    if issues.is_empty() { Ok(()) } else { Err(ModelError::Invalid(issues)) }
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(ModelError::Invalid(issues))
+    }
 }
 
 /// Collect every validation issue instead of stopping at the first one.
@@ -28,7 +32,10 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
     if model.version > FORMAT_VERSION {
         issues.push(ValidationIssue::new(
             "version",
-            format!("model version {} is newer than this build supports ({FORMAT_VERSION})", model.version),
+            format!(
+                "model version {} is newer than this build supports ({FORMAT_VERSION})",
+                model.version
+            ),
         ));
     }
     if model.name.trim().is_empty() {
@@ -38,10 +45,16 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
         issues.push(ValidationIssue::new("objects", "the model has no objects"));
     }
     if model.run.stop_time <= 0.0 {
-        issues.push(ValidationIssue::new("run.stop_time", "stop_time must be positive"));
+        issues.push(ValidationIssue::new(
+            "run.stop_time",
+            "stop_time must be positive",
+        ));
     }
     if model.run.warmup < 0.0 {
-        issues.push(ValidationIssue::new("run.warmup", "warmup cannot be negative"));
+        issues.push(ValidationIssue::new(
+            "run.warmup",
+            "warmup cannot be negative",
+        ));
     }
     if model.run.warmup >= model.run.stop_time {
         issues.push(ValidationIssue::new(
@@ -50,7 +63,10 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
         ));
     }
     if model.run.replications == 0 {
-        issues.push(ValidationIssue::new("run.replications", "replications must be at least 1"));
+        issues.push(ValidationIssue::new(
+            "run.replications",
+            "replications must be at least 1",
+        ));
     }
 
     let mut seen = std::collections::BTreeMap::new();
@@ -101,10 +117,18 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
         }
     }
 
-    if !model.objects.iter().any(|object| object.kind == ObjectKind::Source) {
+    if !model
+        .objects
+        .iter()
+        .any(|object| object.kind == ObjectKind::Source)
+    {
         issues.push(ValidationIssue::new("objects", "the model has no source"));
     }
-    if !model.objects.iter().any(|object| object.kind == ObjectKind::Sink) {
+    if !model
+        .objects
+        .iter()
+        .any(|object| object.kind == ObjectKind::Sink)
+    {
         issues.push(ValidationIssue::new("objects", "the model has no sink"));
     }
 
@@ -119,27 +143,42 @@ fn validate_connection(
     let mut issues = Vec::new();
     let location = format!("connections {} -> {}", connection.from, connection.to);
     let Some(from) = model.object(&connection.from) else {
-        issues.push(ValidationIssue::new(&location, "connection starts at an unknown object"));
+        issues.push(ValidationIssue::new(
+            &location,
+            "connection starts at an unknown object",
+        ));
         return issues;
     };
     let Some(to) = model.object(&connection.to) else {
-        issues.push(ValidationIssue::new(&location, "connection ends at an unknown object"));
+        issues.push(ValidationIssue::new(
+            &location,
+            "connection ends at an unknown object",
+        ));
         return issues;
     };
     if connection.from == connection.to {
-        issues.push(ValidationIssue::new(&location, "an object cannot connect to itself"));
+        issues.push(ValidationIssue::new(
+            &location,
+            "an object cannot connect to itself",
+        ));
     }
     if from.kind == ObjectKind::Sink {
-        issues.push(ValidationIssue::new(&location, "a sink has no output connections"));
+        issues.push(ValidationIssue::new(
+            &location,
+            "a sink has no output connections",
+        ));
     }
     if to.kind == ObjectKind::Source {
-        issues.push(ValidationIssue::new(&location, "a source has no input connections"));
+        issues.push(ValidationIssue::new(
+            &location,
+            "a source has no input connections",
+        ));
     }
 
     // Port numbers must be unique per source object, and explicit ports must
     // leave room for the implicit ones.
     let set = output_ports.entry(connection.from.clone()).or_default();
-    let port = connection.port.unwrap_or_else(|| set.len() as u32);
+    let port = connection.port.unwrap_or(set.len() as u32);
     if !set.insert(port) {
         issues.push(ValidationIssue::new(
             &location,
@@ -168,7 +207,10 @@ fn validate_connection(
                     ));
                 }
                 if percentages.iter().any(|p| !p.is_finite() || *p < 0.0) {
-                    issues.push(ValidationIssue::new(&location, "percentages must be non-negative numbers"));
+                    issues.push(ValidationIssue::new(
+                        &location,
+                        "percentages must be non-negative numbers",
+                    ));
                 }
             }
             PortStrategy::ByCondition { conditions } => {
@@ -186,7 +228,10 @@ fn validate_connection(
             }
             PortStrategy::ByItemType | PortStrategy::ByLabel { .. } => {
                 if outputs == 0 {
-                    issues.push(ValidationIssue::new(&location, "routing needs at least one output"));
+                    issues.push(ValidationIssue::new(
+                        &location,
+                        "routing needs at least one output",
+                    ));
                 }
             }
             PortStrategy::FirstAvailable | PortStrategy::RoundRobin | PortStrategy::Random => {}
@@ -211,33 +256,54 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
         crate::model::ObjectParams::Source(params) => {
             distribution!("interarrival", &params.interarrival);
             if params.items_per_arrival == 0 {
-                issues.push(ValidationIssue::new(location("items_per_arrival"), "must be at least 1"));
+                issues.push(ValidationIssue::new(
+                    location("items_per_arrival"),
+                    "must be at least 1",
+                ));
             }
             if params.first_arrival < 0.0 {
-                issues.push(ValidationIssue::new(location("first_arrival"), "cannot be negative"));
+                issues.push(ValidationIssue::new(
+                    location("first_arrival"),
+                    "cannot be negative",
+                ));
             }
             if let Some(max) = params.max_arrivals
                 && max == 0
             {
-                issues.push(ValidationIssue::new(location("max_arrivals"), "must be at least 1"));
+                issues.push(ValidationIssue::new(
+                    location("max_arrivals"),
+                    "must be at least 1",
+                ));
             }
             if let Some(stop) = params.stop_time
                 && stop <= 0.0
             {
-                issues.push(ValidationIssue::new(location("stop_time"), "must be positive"));
+                issues.push(ValidationIssue::new(
+                    location("stop_time"),
+                    "must be positive",
+                ));
             }
         }
         crate::model::ObjectParams::Queue(params) => {
             if params.max_content == 0 {
-                issues.push(ValidationIssue::new(location("max_content"), "must be at least 1"));
+                issues.push(ValidationIssue::new(
+                    location("max_content"),
+                    "must be at least 1",
+                ));
             }
             if let Some(batch) = params.batch_size
                 && batch == 0
             {
-                issues.push(ValidationIssue::new(location("batch_size"), "must be at least 1"));
+                issues.push(ValidationIssue::new(
+                    location("batch_size"),
+                    "must be at least 1",
+                ));
             }
             if params.batch_max_wait < 0.0 {
-                issues.push(ValidationIssue::new(location("batch_max_wait"), "cannot be negative"));
+                issues.push(ValidationIssue::new(
+                    location("batch_max_wait"),
+                    "cannot be negative",
+                ));
             }
         }
         crate::model::ObjectParams::Processor(params) => {
@@ -245,7 +311,10 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
             distribution!("process_time", &params.process_time);
             distribution!("changeover_time", &params.changeover_time);
             if params.max_content == 0 {
-                issues.push(ValidationIssue::new(location("max_content"), "must be at least 1"));
+                issues.push(ValidationIssue::new(
+                    location("max_content"),
+                    "must be at least 1",
+                ));
             }
             if let Some(failure) = &params.failure {
                 distribution!("failure.mtbf", &failure.mtbf);
@@ -260,10 +329,16 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
                 issues.push(ValidationIssue::new(location("length"), "must be positive"));
             }
             if params.item_spacing <= 0.0 {
-                issues.push(ValidationIssue::new(location("item_spacing"), "must be positive"));
+                issues.push(ValidationIssue::new(
+                    location("item_spacing"),
+                    "must be positive",
+                ));
             }
             if params.max_content == 0 {
-                issues.push(ValidationIssue::new(location("max_content"), "must be at least 1"));
+                issues.push(ValidationIssue::new(
+                    location("max_content"),
+                    "must be at least 1",
+                ));
             }
         }
         crate::model::ObjectParams::Combiner(params) => {
@@ -276,7 +351,10 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
         }
         crate::model::ObjectParams::Transporter(params) => {
             if params.capacity == 0 {
-                issues.push(ValidationIssue::new(location("capacity"), "must be at least 1"));
+                issues.push(ValidationIssue::new(
+                    location("capacity"),
+                    "must be at least 1",
+                ));
             }
             if params.speed <= 0.0 {
                 issues.push(ValidationIssue::new(location("speed"), "must be positive"));
@@ -286,7 +364,10 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
         }
         crate::model::ObjectParams::Resource(params) => {
             if params.capacity == 0 {
-                issues.push(ValidationIssue::new(location("capacity"), "must be at least 1"));
+                issues.push(ValidationIssue::new(
+                    location("capacity"),
+                    "must be at least 1",
+                ));
             }
             for (i, window) in params.downtimes.iter().enumerate() {
                 if window.end <= window.start {
@@ -299,10 +380,16 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
         }
         crate::model::ObjectParams::Rack(params) => {
             if params.capacity == 0 {
-                issues.push(ValidationIssue::new(location("capacity"), "must be at least 1"));
+                issues.push(ValidationIssue::new(
+                    location("capacity"),
+                    "must be at least 1",
+                ));
             }
             if params.levels == 0 {
-                issues.push(ValidationIssue::new(location("levels"), "must be at least 1"));
+                issues.push(ValidationIssue::new(
+                    location("levels"),
+                    "must be at least 1",
+                ));
             }
         }
         crate::model::ObjectParams::BasicTe(params) => {
@@ -310,7 +397,10 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
                 issues.push(ValidationIssue::new(location("speed"), "must be positive"));
             }
             if params.capacity == 0 {
-                issues.push(ValidationIssue::new(location("capacity"), "must be at least 1"));
+                issues.push(ValidationIssue::new(
+                    location("capacity"),
+                    "must be at least 1",
+                ));
             }
         }
         crate::model::ObjectParams::Sink(_)
@@ -377,9 +467,16 @@ mod tests {
     #[test]
     fn rejects_duplicate_names() {
         let mut model = base_model();
-        model.objects.push(Object::new("Source1", ObjectParams::Sink(SinkParams::default())));
+        model.objects.push(Object::new(
+            "Source1",
+            ObjectParams::Sink(SinkParams::default()),
+        ));
         let issues = validate_collect(&model);
-        assert!(issues.iter().any(|issue| issue.message.contains("duplicate")));
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.message.contains("duplicate"))
+        );
     }
 
     #[test]
@@ -392,19 +489,28 @@ mod tests {
             strategy: None,
         });
         let issues = validate_collect(&model);
-        assert!(issues.iter().any(|issue| issue.message.contains("unknown object")));
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.message.contains("unknown object"))
+        );
     }
 
     #[test]
     fn rejects_bad_percentages() {
         let mut model = base_model();
-        model.objects.push(Object::new("Sink2", ObjectParams::Sink(SinkParams::default())));
+        model.objects.push(Object::new(
+            "Sink2",
+            ObjectParams::Sink(SinkParams::default()),
+        ));
         model.connections.clear();
         model.connections.push(Connection {
             from: "Source1".into(),
             to: "Sink1".into(),
             port: None,
-            strategy: Some(PortStrategy::ByPercentage { percentages: vec![50.0, 40.0] }),
+            strategy: Some(PortStrategy::ByPercentage {
+                percentages: vec![50.0, 40.0],
+            }),
         });
         model.connections.push(Connection {
             from: "Source1".into(),
@@ -413,6 +519,10 @@ mod tests {
             strategy: None,
         });
         let issues = validate_collect(&model);
-        assert!(issues.iter().any(|issue| issue.message.contains("sum to 100")));
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.message.contains("sum to 100"))
+        );
     }
 }

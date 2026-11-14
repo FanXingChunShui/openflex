@@ -1,0 +1,22 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "merge-demo",
+  "description": "Two input lines, one item per port, merged into a single item per pair",
+  "time_unit": "seconds",
+  "run": { "stop_time": 500.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "LineA", "kind": "source", "pos": [0, 20], "params": {
+        "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+    { "name": "LineB", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 5.0 } },
+    { "name": "Merge1", "kind": "merge", "pos": [10, 10], "params": {
+        "wait_for_all": true } },
+    { "name": "Sink1", "kind": "sink", "pos": [20, 10], "params": {} }
+  ],
+  "connections": [
+    { "from": "LineA", "to": "Merge1" },
+    { "from": "LineB", "to": "Merge1" },
+    { "from": "Merge1", "to": "Sink1" }
+  ]
+}

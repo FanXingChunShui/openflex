@@ -341,7 +341,7 @@ fn run(command: Command, quiet: bool) -> Result<(), Failure> {
                 Ok(())
             }
             ObjectCommand::Describe { kind } => {
-                let Some(kind) = ObjectKind::from_str(&kind) else {
+                let Some(kind) = ObjectKind::parse(&kind) else {
                     return Err(Failure::usage(anyhow!("unknown object kind '{kind}'")));
                 };
                 let (summary, parameters) = describe_kind(kind);

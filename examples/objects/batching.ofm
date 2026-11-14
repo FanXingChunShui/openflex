@@ -1,0 +1,22 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "batching-demo",
+  "description": "Queue batches of 5 with a 25s maximum wait",
+  "time_unit": "seconds",
+  "run": { "stop_time": 300.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+    { "name": "Queue1", "kind": "queue", "pos": [5, 0], "params": {
+        "batch_size": 5, "batch_max_wait": 25.0 } },
+    { "name": "Processor1", "kind": "processor", "pos": [10, 0], "params": {
+        "process_time": { "distribution": "constant", "value": 4.0 } } },
+    { "name": "Sink1", "kind": "sink", "pos": [15, 0], "params": {} }
+  ],
+  "connections": [
+    { "from": "Source1", "to": "Queue1" },
+    { "from": "Queue1", "to": "Processor1" },
+    { "from": "Processor1", "to": "Sink1" }
+  ]
+}

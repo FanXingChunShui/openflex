@@ -1,0 +1,29 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "resource-demo",
+  "description": "Two processors share a single operator resource; the resource is down 200-300",
+  "time_unit": "seconds",
+  "run": { "stop_time": 500.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "LineA", "kind": "source", "pos": [0, 20], "params": {
+        "interarrival": { "distribution": "constant", "value": 20.0 }, "first_arrival": 0.0 } },
+    { "name": "LineB", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "constant", "value": 20.0 }, "first_arrival": 10.0 } },
+    { "name": "ProcessorA", "kind": "processor", "pos": [10, 20], "params": {
+        "process_time": { "distribution": "constant", "value": 8.0 },
+        "process_operator": "Resource1" } },
+    { "name": "ProcessorB", "kind": "processor", "pos": [10, 0], "params": {
+        "process_time": { "distribution": "constant", "value": 8.0 },
+        "process_operator": "Resource1" } },
+    { "name": "Sink1", "kind": "sink", "pos": [20, 10], "params": {} },
+    { "name": "Resource1", "kind": "resource", "pos": [10, 10], "params": {
+        "capacity": 1, "downtimes": [{ "start": 200.0, "end": 300.0 }] } }
+  ],
+  "connections": [
+    { "from": "LineA", "to": "ProcessorA" },
+    { "from": "ProcessorA", "to": "Sink1" },
+    { "from": "LineB", "to": "ProcessorB" },
+    { "from": "ProcessorB", "to": "Sink1" }
+  ]
+}

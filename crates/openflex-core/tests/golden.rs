@@ -90,7 +90,10 @@ fn mm1_throughput_matches_arrival_rate() {
 fn same_seed_reproduces_exactly() {
     let first = run_model(&mm1()).expect("run");
     let second = run_model(&mm1()).expect("run");
-    assert_eq!(first, second, "the same model and seed must reproduce bit for bit");
+    assert_eq!(
+        first, second,
+        "the same model and seed must reproduce bit for bit"
+    );
 }
 
 #[test]
@@ -100,7 +103,10 @@ fn different_seed_changes_the_run() {
     let first = run_model(&model).expect("run");
     model.run.seed = 999;
     let second = run_model(&model).expect("run");
-    assert_ne!(first, second, "a different seed must produce a different run");
+    assert_ne!(
+        first, second,
+        "a different seed must produce a different run"
+    );
 }
 
 #[test]
@@ -188,5 +194,8 @@ fn model_with_invalid_routing_is_rejected() {
       ]
     }"#,
     );
-    assert!(err.is_err(), "percentages that do not sum to 100 must be rejected");
+    assert!(
+        err.is_err(),
+        "percentages that do not sum to 100 must be rejected"
+    );
 }

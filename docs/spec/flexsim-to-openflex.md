@@ -42,94 +42,87 @@
 
 ## 3. 参数映射（逐对象）
 
-### 3.1 Source
+> ⚠ **字段名以 `crates/openflex-model/src/model.rs` 的实现为准**（2026-11-14 核对）。
+> 本节给出的键名均可被当前 `openflex validate` 接受；任务书约定的核心键（`interarrival`/`items_per_arrival`/`max_content`/`order`/`setup_time`/`process_time`/`pos`/`connections`）与示例完全一致。
+> 标 **【约定】** = 与任务书 ofm 约定一致；**【已实现】** = 实现已存在但约定文档中未列出。
 
-| FlexSim 属性 | openflex `params` 键 | 类型 | 说明 |
+### 3.1 Source（`SourceParams`）
+
+| FlexSim 属性 | openflex 键 | 类型/默认 | 说明 |
 |---|---|---|---|
-| `ArrivalStyle` = Inter-Arrivaltime | 默认（不写） | — | v1 只支持 inter-arrival |
-| `InterArrivalTime` | `interarrival`【约定】 | distribution 对象 | 见 §6 |
-| `TimeZeroArrival` | `time_zero_arrival`【提案】 | bool（默认 true） | 勾选=0 时刻创建首件（E04 高） |
-| 每次到达件数（Arrivals 表 Quantity） | `items_per_arrival`【约定】 | int（默认 1） | — |
-| `ArrivalStyle` = Arrival Schedule / Sequence | *不实现* | — | `check` 报 `unsupported: arrival_schedule` |
-| `FlowItemClass` | 忽略（v1 单一 item 类型） | — | — |
+| `InterArrivalTime` | `interarrival`【约定】 | Distribution | 间隔定义是"**上一件离开 Source → 下一件到达**"（E03 高） |
+| Arrivals 表 Quantity | `items_per_arrival`【约定】 | u32 / 1 | 每次到达创建件数 |
+| `TimeZeroArrival` | `first_arrival`【约定】 | f64 / **0.0** | 首件时刻；0.0 即"0 时刻首发"（等价勾选 TimeZeroArrival，E04 高） |
+| — | `max_arrivals`【已实现】 | Option<u32> | 到达批数上限 |
+| — | `stop_time`【已实现】 | Option<f64> | Source 自身停止创建的时刻 |
+| FlowItemClass / itemtype | `item_type`【已实现】 | u32 / 0 | 创建件的 itemtype |
+| 件初始标签 | `labels`【已实现】 | map<string,f64> | 创建时附加的标签 |
+| `ArrivalStyle`=Schedule/Sequence | *不支持* | — | 应报错而非静默忽略 |
+| Arrival at time 0 | 由 `first_arrival=0` 表达 | — | 注意实现注释与实际默认值不一致（见 §13.4） |
 
-> **实现陷阱**：interarrival 的间隔是"上一件离开 Source → 下一件到达"（E03 高）。若 Queue 容量小导致 Source 阻塞，该间隔会叠加阻塞时间 ⇒ 实际到达率下降。**必须**实现为"离开后计时"，不能实现为"创建后计时"。
+### 3.2 Queue（`QueueParams`）
 
-### 3.2 Queue
-
-| FlexSim 属性 | openflex 键 | 类型 | 说明 |
+| FlexSim 属性 | openflex 键 | 类型/默认 | 说明 |
 |---|---|---|---|
-| `MaxContent` | `max_content`【约定】 | int | — |
-| `LIFO` | `order`【约定】 | `"fifo"\|"lifo"` | 默认 `fifo`（E06 高） |
-| `DoBatching` | `batching.enabled`【提案】 | bool | 默认 false |
-| `BatchSize` | `batching.batch_size`【提案】 | int | 批内逐件放行（E06 高） |
-| `MaxBatchTime` | `batching.max_wait_time`【提案】 | double | 0=无限（E06 高） |
-| `FlushContent` | `batching.flush_between_batches`【提案】 | bool | — |
-| `ItemPlacement` / `StackBaseZ` | 忽略（纯视觉，E06 高） | — | — |
+| `MaxContent` | `max_content`【约定】 | u32 | — |
+| `LIFO`（含排序变体） | `order`【约定】 | `fifo`(默认) / `lifo` / `priority` / `by_label` | 见 `QueueOrder` |
+| `DoBatching` | `batch_size`【已实现】 | `Option<u32>`（None=不攒批） | 攒够才释放（E06 高） |
+| `MaxBatchTime` | `batch_max_wait`【已实现】 | f64 / 0.0（0=无限等） | E06 高 |
+| `FlushContent` | *未实现* | — | 建议 v1.1 加 `flush_between_batches` |
+| `ItemPlacement`/`StackBaseZ` | 忽略（纯视觉） | — | E06 高 |
 
-### 3.3 Processor
+### 3.3 Processor（`ProcessorParams`）
 
-| FlexSim 属性 | openflex 键 | 类型 | 说明 |
+| FlexSim 属性 | openflex 键 | 类型/默认 | 说明 |
 |---|---|---|---|
-| `SetupTime` | `setup_time`【约定】 | distribution | 缺省 constant 0 |
-| `ProcessTime` | `process_time`【约定】 | distribution | — |
-| `MaxContent` | `max_content`【约定】 | int（默认 1） | >1 即并行处理 |
-| `UseSetupOperators`/`NumSetupOperators` | `setup_operators`【提案】 | int（默认 0） | 0=不要操作员 |
-| `UseProcessOperators`/`NumProcessOperators` | `process_operators`【提案】 | int（默认 0） | — |
-| `UseSameNumOperators`（Same as Setup） | `same_operators_for_process`【提案】 | bool（默认 true） | 对应 E07 高 语义 |
-| `OperatorRef`/`OperatorPriority`/`OperatorPreempt` | `operator_ref` / `operator_priority` / `operator_preempt`【提案】 | string/int/enum | 引用 Dispatcher/Operator 名 |
-| `AnimateItems` | 忽略（无渲染） | — | `check` 给 info |
-| 固定资源公共属性 | 见 §3.7 | — | — |
+| `SetupTime` | `setup_time`【约定】 | Distribution / 0 | — |
+| `ProcessTime` | `process_time`【约定】 | Distribution / 1 | — |
+| `MaxContent` | `max_content`【约定】 | u32 / 1 | >1 = 并行处理 |
+| `UseSetupOperators`+`OperatorRef` | `setup_operator`【已实现】 | Option<string> | 指向 dispatcher 名（简化：按数量而非优先级） |
+| `UseProcessOperators`+`OperatorRef` | `process_operator`【已实现】 | Option<string> | 同上 |
+| `UseSameNumOperators` | *未实现* | — | 需实现"process 复用 setup 的操作员"（E07 高） |
+| `OperatorPriority`/`OperatorPreempt` | *未实现* | — | E07 高 |
+| MTBF/MTTR | `failure: {mtbf, mttr, repair_operator?}`【已实现】 | 见 §7 | — |
+| — | `changeover_time`【已实现】 | Distribution / 0 | 换型时间（FlexSim 无独立字段，用 setup 表达） |
+| `AnimateItems` | 忽略（无渲染） | — | — |
 
-### 3.4 Sink
+### 3.4 Sink（`SinkParams`）
 
-无参数【约定】`params: {}`（E08 高）。`check` 应拒绝给 sink 传任何未知键。
+无参数；只有 `triggers` 与 `shifts`。`params: {}` 合法（E08 高）。
 
-### 3.5 Combiner
+### 3.5 Combiner（`CombinerParams`）
 
 | FlexSim 属性 | openflex 键 | 说明 |
 |---|---|---|
-| `CombineMode` | `combine_mode`【提案】= `pack`/`join`/`batch` | E09 高 |
-| `ComponentsList` | `components`【提案】= int[]，第 i 项对应端口 i+2 | E09 高 |
-| Processor 参数 | 同 §3.3 | setup/process/操作员 |
-| `PullStrategy` | **不适用**（combiner 自己处理拉取） | E09 高 |
+| `CombineMode` | `mode`【已实现】= `pack`(默认) / `join` | `batch` 模式**未实现**（E09 高） |
+| `ComponentsList`（逐端口一张表） | `components_per_container`【已实现】= u32 / 2 | **简化**：单一数字，非逐端口数组（E09 高 的"第 i 行↔端口 i+2"未保留） |
+| setup/process/操作员 | *不支持* | FlexSim 中 Combiner 是 Processor 子类，有 setup/process（E09 高）；openflex 未实现 |
+| `PullStrategy` | 不适用 | E09 高 |
 
-**硬约束（必须校验）**：输入端口 1 必须先收到容器件；否则端口 2+ 不得进件。`check` 应验证"该对象至少有一条指向它的连接且其端口 1 的上游存在"。
-
-### 3.6 Separator
+### 3.6 Separator（`SeparatorParams`）
 
 | FlexSim 属性 | openflex 键 | 说明 |
 |---|---|---|
-| `SeparateMode` | `separate_mode`【提案】= `unpack`/`split` | E10 高 |
-| `SeparateQty` | `separate_qty`【提案】= int | unpack ⇒ 产出 qty+1；split ⇒ 产出 qty（E10 高） |
-| Processor 参数 | 同 §3.3 | 拆分发生在 process 之后（E10 高） |
+| `SeparateMode` | *未实现* | FlexSim 的 `unpack`/`split` 二元语义丢失（E10 高） |
+| `SeparateQty` | `split_count`【已实现】= u32 / 0 | 0 = 全拆；**语义需明确**：是"分出 N 个"还是"总共 N 个"？两者差 1 件（E10 高） |
 
 ### 3.7 固定资源公共参数
 
-| FlexSim 属性 | openflex 键 | 说明 |
+| FlexSim 属性 | openflex 键 | 状态 |
 |---|---|---|
-| `Pull` | `pull`【提案】bool | 默认 false |
-| `PullStrategy` | `pull_strategy`【提案】表达式/简写 | 返回输入端口号；0=第一个可用（E12 高） |
-| `PullRequirement` | `pull_requirement`【提案】表达式 | 返回 bool（E12 高） |
-| `SendToPort` | `send_to_port`【提案】表达式/简写 | 见 §4.2 |
-| `UseTransport` | `use_transport`【提案】bool | — |
-| `TransportRef` | `transport_ref`【提案】string | 默认 `current.center_objects[1]`（E12 高） |
-| `TransportPriority` / `TransportPreempt` | `transport_priority` / `transport_preempt`【提案】 | — |
+| `Pull` / `PullStrategy` / `PullRequirement` | — | **未实现**（当前为纯 push + 背压模型，见 ARCHITECTURE "路由与背压"） |
+| `SendToPort` | `connections[].strategy`【已实现】 | 见 §4.2 |
+| `UseTransport` / `TransportRef` / `TransportPriority` / `TransportPreempt` | *未实现* | 运输由 transporter 对象 + 任务序列显式建模 |
 
 ### 3.8 任务执行器族
 
 | FlexSim 属性 | openflex 键 | 说明 |
 |---|---|---|
-| `MaxContent`（Capacity） | `capacity`【提案】 | **仅约束 BREAK 判定**（E13 高） |
-| `MaxSpeed` | `max_speed`【提案】 | 长度单位/时间单位 |
-| `Acceleration`/`Deceleration` | 保留字段，v1 忽略（匀速） | 与 FlexSim 有意差异 |
-| `LoadTime`/`UnloadTime` | `load_time`/`unload_time`【提案】（distribution） | — |
-| `OffsetTravel` | 忽略（v1 无工位内偏移） | 差异需声明 |
-| `QueueStrategy` | `queue_strategy`【提案】= `"priority"`（默认） | 值大者先 |
-| `PassTo` | `pass_to`【提案】 | Dispatcher 专用 |
-| `AvailableOnStart` | `available_on_start`【提案】bool | — |
-
----
+| `MaxContent`（Capacity） | `capacity`【已实现】 | — |
+| `MaxSpeed` | `speed` | 见 `TransporterParams` |
+| `LoadTime`/`UnloadTime` | `load_time`/`unload_time` | — |
+| `Acceleration`/`Deceleration`/`OffsetTravel` | *未实现* | 匀速直线行驶（差异需声明） |
+| `QueueStrategy`/`PassTo`/`BreakTo` | *简化* | 见 COMPATIBILITY 的 dispatcher 说明 |
 
 ## 4. 连接与端口
 
@@ -143,32 +136,44 @@
 - 同一 `from` 出现多次 ⇒ 该对象有多个输出端口（按出现顺序编号）。
 - `check` 必须验证：`from`/`to` 都存在；目标对象存在对应输入端口；不存在自环；不存在重复边（完全相同的 from/to 对，且非有意多端口时应提示）。
 
-### 4.2 `SendToPort` 的简写映射【提案】
+### 4.2 `SendToPort` → `connections[].strategy`【已实现】
 
-FlexSim 用表达式返回端口号（0=全部、>0=指定、−1=扣住）。openflex 提供简写，编译成内部表达式：
-
-| FlexSim 习惯写法 | openflex 简写 | 语义 |
-|---|---|---|
-| 单出口，返回 0 | `"send_to_port": "first_available"` | 打开全部，发给第一个可接收者（等价返回 0） |
-| 轮流 | `"round_robin"` | 按端口顺序循环 |
-| 随机 | `"random"` | 均匀随机选一个可接收端口 |
-| 按 itemtype | `"by_item_type"` | itemtype n → 端口 n（E02 高：**端口顺序即语义**） |
-| 按标签 | `"by_label:ProductType"` | 标签值 n → 端口 n |
-| 任意表达式 | `"expr: ..."` | 受限 DSL（见 §5） |
-
-### 4.3 S 连接（中心端口）→ `resource_refs`【提案】
-
-FlexSim 的 S 连接表示"引用关系"（任务执行器↔固定资源、操作员↔处理器）（E20 高）。openflex 用显式引用字段表达，避免"连一根线就有语义"的隐式耦合：
+FlexSim 的 `SendToPort` 是**对象级**表达式（0=全开、>0=指定端口、−1=扣住不发，E02 高）。当前实现把它放在**连接级**（每条连接可带 `strategy`，`type` 标签区分），语义上等价于"按策略挑一个出口"：
 
 ```json
-"resource_refs": [
-  {"object": "Proc1", "role": "operators", "targets": ["Dispatcher1"]},
-  {"object": "Queue1", "role": "transporter", "targets": ["Transporter1"]}
+"connections": [
+  {"from": "Inbound", "to": "Main",
+   "strategy": {"type": "by_percentage", "percentages": [70.0, 30.0]}},
+  {"from": "Inbound", "to": "Express"}
 ]
 ```
 
-`role` 取值：`operators`（setup/process 用）、`transporter`（运输用）、`dispatcher`（队长）。
-若 `resource_refs` 缺省，则按 FlexSim 默认规则退化：`transport_ref` 默认取该对象第一条连接的**下游**对象（对应文档的 `current.centerObjects[1]`，E12 高）——**这是 v1 的近似，必须在 `check` 输出中提示**。
+| FlexSim `SendToPort` 写法 | openflex `strategy.type` | 语义差异 |
+|---|---|---|
+| 返回 0（发给第一个可接收） | `first_available`（默认） | ✅ 等价 |
+| round-robin | `round_robin` | ✅ |
+| random | `random` | ✅（在**可用**输出中随机） |
+| by itemtype | `by_item_type` | ✅ itemtype n → 第 n 个可用输出 |
+| by label 值 | `by_label` | ✅ 数值标签作端口索引 |
+| by percentage（FlexSim 用 `bernoulli`/概率表达式） | `by_percentage` | 🟡 FlexSim 的百分比路由**不检查可用性**，会阻塞；实现与此一致 |
+| 条件表达式（`if(itemtype==1,1,2)`） | `by_condition` | 🟡 依序求值，命中即选；无"全部表达式"能力 |
+| **返回 −1（扣住不发）** | **未实现** | ⚠ FlexSim 可用 −1 + `releaseitem()` 实现"暂不释放"（E02 高）；openflex 用背压（`Blocked`）表达，语义不同 |
+| **端口级开口/闭口（open/closed）** | 未建模 | ⚠ FlexSim 端口有开闭状态（E20 高），openflex 用 `can_accept` 动态判定 |
+
+> **实现建议**：`by_percentage`/`by_condition` 的权重与条件都定义在**单条连接**上，而 FlexSim 的 `SendToPort` 一次求值决定整个端口集合。当一条 from 有 3 条出边且只有第 1 条带 `by_percentage` 时，语义会不明确 —— 建议 `validate` 强制"同一 from 的所有出边要么都无 strategy，要么只在第一条给 strategy 并覆盖全部出边"，或报 `ambiguous_strategy`。
+
+### 4.3 S 连接（中心端口）→ 显式引用字段
+
+FlexSim 的 S 连接表示"引用关系"（任务执行器↔固定资源、操作员↔处理器）（E20 高）。当前实现用**具名字段**表达，避免"连一根线就有语义"：
+
+| S 连接用途 | openflex 字段 |
+|---|---|
+| 处理器 setup 时请求资源 | `processor.setup_operator`（dispatcher 名） |
+| 处理器 process 时请求资源 | `processor.process_operator` |
+| 故障时请求维修资源 | `failure.repair_operator` |
+| 运输（固定资源要求运输器来取件） | 由 `transporter`/`dispatcher` 对象 + 任务序列建模（v1 简化） |
+
+对应关系：FlexSim 的 `current.centerObjects[1]`（默认运输对象，E12 高）在 openflex 中**没有隐式默认**——必须显式写出引用名。这是有意的规范化（避免"删掉一根线就静默换承运方"）。
 
 ---
 
@@ -255,57 +260,42 @@ FlexSim 每个分布都能指定 `Stream`（E30 高）。openflex 建议加可�
 
 ## 7. 故障与班次映射
 
-### 7.1 MTBF/MTTR（工具对象，可控制多个成员）（E21 高）
+### 7.1 故障（MTBF/MTTR）
 
-FlexSim 用**独立工具对象 + 成员列表**；openflex v1 先在对象级 params 上简化，v1.1 提升为顶层块：
-
-```json
-"breakdowns": [
-  {"name": "BD1", "enabled": true,
-   "members": ["Proc1", "Proc2"],
-   "first_failure_time": {"distribution": "constant", "value": 100.0},
-   "up_time":   {"distribution": "constant", "value": 100.0},
-   "down_time": {"distribution": "constant", "value": 10.0},
-   "count_time_in_states": ["processing"],
-   "break_members_individually": false,
-   "down_state": "down"}
-]
-```
-
-| FlexSim | openflex | 注意 |
-|---|---|---|
-| Members 列表 | `members[]` | 一个对象可被多个 MTBF/MTTR 控制 ⇒ **停机请求栈**（logic.md §8.3） |
-| First Failure Time（负值=忽略） | `first_failure_time` | 返回负 ⇒ 不安排首次故障 |
-| Up Time（MTBF） | `up_time` | **只累计 `count_time_in_states` 里的状态**（这是最易漏的语义） |
-| Down Time（MTTR） | `down_time` | 同组成员**同时**恢复 |
-| Break down members individually | `break_members_individually` | true ⇒ 每成员独立抽样 |
-| Down/Resume Function | `down_actions` / `resume_actions`（表达式列表） | v1 简化为"停止/恢复对象 + 置状态" |
-| Down Behavior（可复用） | `down_behaviors{name: {...}}` | 与 Time Table 共享（E23 高） |
-
-### 7.2 Time Table（班次/计划停机）（E22 高）
+FlexSim 用**独立工具对象 + 成员列表**，同一对象可被多个 MTBF/MTTR 控制（E21 高）。当前实现把它放在对象级（`ProcessorParams.failure`）：
 
 ```json
-"shifts": [
-  {"name": "DayShift", "enabled": true,
-   "members": ["Proc1", "Operator1"],
-   "mode": "repeat_weekly",
-   "periods": [
-     {"down_time": 43200.0, "duration": 43200.0, "down_state": "off_shift"},
-     {"down_time": 288000.0, "duration": 86400.0, "down_state": "off_shift"}
-   ],
-   "merge_touching_periods": true}
-]
+"failure": {"mtbf": {"distribution": "constant", "value": 100.0},
+            "mttr": {"distribution": "constant", "value": 10.0}}
 ```
 
-| FlexSim | openflex | 注意 |
+| FlexSim | openflex | 差距 |
 |---|---|---|
-| 每行 down time + duration | `periods[]`（`down_time` 为模型时间） | 命中即进入停机 |
-| Down Function / Resume Function（逐成员） + On Down / On Resume（一次） | `down_actions` / `resume_actions` / `on_down` / `on_resume` | 顺序：先逐成员，再整体一次（E22 高） |
-| down state + state profile | `down_state`（+`state_profile`） | 配合停止/恢复 |
-| **相接时段自动合并**（状态或 Down Behavior 相同） | `merge_touching_periods: true` | 影响"停机次数"统计，必须实现（E22 高） |
-| 重复模式（不重复/每日/每周…） | `mode` | — |
+| Members 列表（多对象共享） | 每对象各自配置 | 🟡 无法表达"一组对象共用一个故障时钟" |
+| First Failure Time（负值=忽略） | *未实现* | 首故障时刻不可控 |
+| Up Time（MTBF）只在指定状态计时 | *未实现* | **重要**：FlexSim 可只在 `processing` 计时（E21 高），当前实现只能按墙钟 |
+| Down Time（MTTR），组内同时恢复 | `mttr` | 🟡 单对象语义 |
+| Break down members individually | *不适用* | 单对象配置天然独立 |
+| Down/Resume Function | `triggers` 里的故障/修复动作 | 🟡 |
+| Down Behavior（可复用） | `shifts` + 触发器近似 | 🟡 |
+| 停机请求栈（多次停止叠加） | *未实现* | 见 logic.md §8.3 |
 
----
+### 7.2 班次（Time Table）
+
+实现用"窗口"而非"停机时段表"表达（`Shift { start, duration, repeat_every }`）：
+
+```json
+"shifts": [{"start": 28800.0, "duration": 28800.0, "repeat_every": 86400.0}]
+```
+
+| FlexSim（Time Table） | openflex | 差距 |
+|---|---|---|
+| 每行 `downTime + duration` | `start + duration` | ✅ 语义等价（正向表达"上班窗口"） |
+| 重复模式 | `repeat_every`（0=只一次） | ✅ |
+| **相接时段自动合并** | 不适用（无相接概念） | ⚠ 影响"停机次数"统计（E22 高） |
+| Down Function / Resume Function（逐成员）+ On Down/On Resume（一次） | 无钩子，仅置 `OffShift` | 🟡 需 v1.1 补 |
+| down state + state profile | 固定 `off_shift` | 🟡 |
+| Down Behavior（复用动作） | *未实现* | 🟡 |
 
 ## 8. 统计与实验映射
 

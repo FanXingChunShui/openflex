@@ -15,59 +15,27 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "distribution", rename_all = "snake_case")]
 pub enum Distribution {
     /// Always returns the same value.
-    Constant {
-        value: f64,
-    },
+    Constant { value: f64 },
     /// Continuous uniform on `[min, max)`.
-    Uniform {
-        min: f64,
-        max: f64,
-    },
+    Uniform { min: f64, max: f64 },
     /// Normal distribution; samples are not clamped.
-    Normal {
-        mean: f64,
-        stddev: f64,
-    },
+    Normal { mean: f64, stddev: f64 },
     /// Exponential with the given mean (rate = 1 / mean).
-    Exponential {
-        mean: f64,
-    },
+    Exponential { mean: f64 },
     /// Triangular distribution with the usual three parameters.
-    Triangular {
-        min: f64,
-        mode: f64,
-        max: f64,
-    },
+    Triangular { min: f64, mode: f64, max: f64 },
     /// Gamma distribution parameterised by shape and scale.
-    Gamma {
-        shape: f64,
-        scale: f64,
-    },
+    Gamma { shape: f64, scale: f64 },
     /// Weibull distribution parameterised by shape and scale.
-    Weibull {
-        shape: f64,
-        scale: f64,
-    },
+    Weibull { shape: f64, scale: f64 },
     /// Lognormal distribution over the logarithm of the sample.
-    Lognormal {
-        meanlog: f64,
-        sdlog: f64,
-    },
+    Lognormal { meanlog: f64, sdlog: f64 },
     /// Erlang distribution: `shape` exponential phases with the given scale.
-    Erlang {
-        shape: u32,
-        scale: f64,
-    },
+    Erlang { shape: u32, scale: f64 },
     /// Beta distribution on `[0, 1]`.
-    Beta {
-        alpha: f64,
-        beta: f64,
-    },
+    Beta { alpha: f64, beta: f64 },
     /// Discrete uniform over the inclusive integer range.
-    IntegerUniform {
-        min: i64,
-        max: i64,
-    },
+    IntegerUniform { min: i64, max: i64 },
     /// Empirical distribution over fixed values, optionally weighted.
     Empirical {
         values: Vec<f64>,
@@ -84,16 +52,28 @@ impl Distribution {
             Distribution::Uniform { min, max } => {
                 finite(*min, "min")?;
                 finite(*max, "max")?;
-                if max > min { Ok(()) } else { Err("uniform requires max > min".into()) }
+                if max > min {
+                    Ok(())
+                } else {
+                    Err("uniform requires max > min".into())
+                }
             }
             Distribution::Normal { mean, stddev } => {
                 finite(*mean, "mean")?;
                 finite(*stddev, "stddev")?;
-                if *stddev >= 0.0 { Ok(()) } else { Err("normal requires stddev >= 0".into()) }
+                if *stddev >= 0.0 {
+                    Ok(())
+                } else {
+                    Err("normal requires stddev >= 0".into())
+                }
             }
             Distribution::Exponential { mean } => {
                 finite(*mean, "mean")?;
-                if *mean > 0.0 { Ok(()) } else { Err("exponential requires mean > 0".into()) }
+                if *mean > 0.0 {
+                    Ok(())
+                } else {
+                    Err("exponential requires mean > 0".into())
+                }
             }
             Distribution::Triangular { min, mode, max } => {
                 finite(*min, "min")?;
@@ -126,7 +106,11 @@ impl Distribution {
             Distribution::Lognormal { meanlog, sdlog } => {
                 finite(*meanlog, "meanlog")?;
                 finite(*sdlog, "sdlog")?;
-                if *sdlog >= 0.0 { Ok(()) } else { Err("lognormal requires sdlog >= 0".into()) }
+                if *sdlog >= 0.0 {
+                    Ok(())
+                } else {
+                    Err("lognormal requires sdlog >= 0".into())
+                }
             }
             Distribution::Erlang { shape, scale } => {
                 finite(*scale, "scale")?;
@@ -146,7 +130,11 @@ impl Distribution {
                 }
             }
             Distribution::IntegerUniform { min, max } => {
-                if max >= min { Ok(()) } else { Err("integer_uniform requires max >= min".into()) }
+                if max >= min {
+                    Ok(())
+                } else {
+                    Err("integer_uniform requires max >= min".into())
+                }
             }
             Distribution::Empirical { values, weights } => {
                 if values.is_empty() {
@@ -186,17 +174,13 @@ impl Distribution {
             Distribution::Exponential { mean } => Some(*mean),
             Distribution::Triangular { min, mode, max } => Some((min + mode + max) / 3.0),
             Distribution::Gamma { shape, scale } => Some(shape * scale),
-            Distribution::Weibull { shape, scale } => {
-                Some(scale * gamma_fn(1.0 + 1.0 / shape))
-            }
+            Distribution::Weibull { shape, scale } => Some(scale * gamma_fn(1.0 + 1.0 / shape)),
             Distribution::Lognormal { meanlog, sdlog } => {
                 Some((meanlog + sdlog * sdlog / 2.0).exp())
             }
             Distribution::Erlang { shape, scale } => Some(*scale * f64::from(*shape)),
             Distribution::Beta { alpha, beta } => Some(alpha / (alpha + beta)),
-            Distribution::IntegerUniform { min, max } => {
-                Some((*min as f64 + *max as f64) / 2.0)
-            }
+            Distribution::IntegerUniform { min, max } => Some((*min as f64 + *max as f64) / 2.0),
             Distribution::Empirical { values, weights } => {
                 let weights = weights.as_ref()?;
                 let sum: f64 = weights.iter().sum();
@@ -275,15 +259,51 @@ mod tests {
     fn validates_parameters() {
         assert!(Distribution::Exponential { mean: 5.0 }.validate().is_ok());
         assert!(Distribution::Exponential { mean: 0.0 }.validate().is_err());
-        assert!(Distribution::Triangular { min: 1.0, mode: 2.0, max: 3.0 }.validate().is_ok());
-        assert!(Distribution::Triangular { min: 3.0, mode: 2.0, max: 1.0 }.validate().is_err());
-        assert!(Distribution::Empirical { values: vec![], weights: None }.validate().is_err());
+        assert!(
+            Distribution::Triangular {
+                min: 1.0,
+                mode: 2.0,
+                max: 3.0
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            Distribution::Triangular {
+                min: 3.0,
+                mode: 2.0,
+                max: 1.0
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            Distribution::Empirical {
+                values: vec![],
+                weights: None
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]
     fn computes_means() {
-        assert_eq!(Distribution::Uniform { min: 2.0, max: 4.0 }.mean(), Some(3.0));
+        assert_eq!(
+            Distribution::Uniform { min: 2.0, max: 4.0 }.mean(),
+            Some(3.0)
+        );
         assert!((Distribution::Exponential { mean: 5.0 }.mean().unwrap() - 5.0).abs() < 1e-12);
-        assert!((Distribution::Erlang { shape: 3, scale: 2.0 }.mean().unwrap() - 6.0).abs() < 1e-12);
+        assert!(
+            (Distribution::Erlang {
+                shape: 3,
+                scale: 2.0
+            }
+            .mean()
+            .unwrap()
+                - 6.0)
+                .abs()
+                < 1e-12
+        );
     }
 }

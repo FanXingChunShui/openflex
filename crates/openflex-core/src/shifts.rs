@@ -94,7 +94,11 @@ mod tests {
     use super::*;
 
     fn day_shift() -> Vec<Shift> {
-        vec![Shift { start: 0.0, duration: 480.0, repeat_every: 1440.0 }]
+        vec![Shift {
+            start: 0.0,
+            duration: 480.0,
+            repeat_every: 1440.0,
+        }]
     }
 
     #[test]
@@ -126,7 +130,11 @@ mod tests {
 
     #[test]
     fn a_single_window_ends_permanently() {
-        let shifts = vec![Shift { start: 10.0, duration: 5.0, repeat_every: 0.0 }];
+        let shifts = vec![Shift {
+            start: 10.0,
+            duration: 5.0,
+            repeat_every: 0.0,
+        }];
         assert!(!is_active(&shifts, 9.0));
         assert!(is_active(&shifts, 10.0));
         assert!(!is_active(&shifts, 15.0));
@@ -135,7 +143,11 @@ mod tests {
 
     #[test]
     fn zero_duration_shifts_are_ignored() {
-        let shifts = vec![Shift { start: 0.0, duration: 0.0, repeat_every: 10.0 }];
+        let shifts = vec![Shift {
+            start: 0.0,
+            duration: 0.0,
+            repeat_every: 10.0,
+        }];
         assert!(!is_active(&shifts, 0.0));
         assert_eq!(next_transition(&shifts, 0.0), None);
     }

@@ -83,4 +83,22 @@ CI（`.github/workflows/release.yml`）在 macOS / Windows / Linux 矩阵上重�
 
 ## 最近一次验收记录
 
-（由维护者在发布前填写：日期、commit、`make check` 输出、`make golden` 对照结果、三平台安装验证结果。）
+- 日期：2026-11-14
+- 版本：0.1.0（初始实现）
+- `cargo test --workspace`：**82 passed / 0 failed**（17 CLI + 13 model + 10 golden + 21 objects + 11 report + 9 + 1 doctest）
+- `cargo clippy --workspace --all-targets`：**0 warning**
+- `cargo fmt --all --check`：通过
+- `bash scripts/acceptance.sh`：**全部 PASS**（mm1 / det-line / batching / breakdown / combiner-pack / separator-unpack）
+- `bash scripts/verify-packaging.sh`：**RESULT: PASS**（59 项本地检查；CI 矩阵、deb/rpm/MSI、Docker、签名公证为 CI/待办项）
+- 性能：release 构建下 M/M/1 约 20 万事件 / 0.95 s
+
+### 黄金案例实测（release，2026-11-14）
+
+| 案例 | 指标 | 期望 | 实测 |
+|---|---|---|---|
+| mm1 | 利用率 / Lq / Wq / 服务时间 | 0.80 / 3.2 / 16 / 4 | 0.806 / 3.24 / 16.07 / 4.00 |
+| det-line | Sink 输入 / 利用率 / 队列含量 | 48 / 0.8 / 0 | 48 / 0.800 / 0.000 |
+| batching | Sink 输入 / 队列含量 / 停留 | 40 / 1.8182 / 20 | 40 / 1.8182 / 20.00 |
+| breakdown | Sink 输入 / down 占比 | 5455 / 0.0909 | 5455 / 0.0908 |
+| combiner-pack | Sink 输入 | 10 | 10 |
+| separator-unpack | Sink 输入 | 40 | 40 |

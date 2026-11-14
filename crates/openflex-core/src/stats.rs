@@ -19,13 +19,21 @@ pub struct SimConfig {
 
 impl SimConfig {
     pub fn from_run_settings(run: &RunSettings, seed: u64) -> Self {
-        Self { stop_time: run.stop_time, warmup: run.warmup, seed }
+        Self {
+            stop_time: run.stop_time,
+            warmup: run.warmup,
+            seed,
+        }
     }
 }
 
 impl Default for SimConfig {
     fn default() -> Self {
-        Self { stop_time: 1_000.0, warmup: 0.0, seed: 1 }
+        Self {
+            stop_time: 1_000.0,
+            warmup: 0.0,
+            seed: 1,
+        }
     }
 }
 
@@ -132,7 +140,14 @@ impl Aggregate {
     pub fn from_samples(samples: &[f64]) -> Self {
         let n = samples.len() as u32;
         if samples.is_empty() {
-            return Self { mean: 0.0, std_dev: 0.0, min: 0.0, max: 0.0, ci95: 0.0, n: 0 };
+            return Self {
+                mean: 0.0,
+                std_dev: 0.0,
+                min: 0.0,
+                max: 0.0,
+                ci95: 0.0,
+                n: 0,
+            };
         }
         let mean = samples.iter().sum::<f64>() / samples.len() as f64;
         let variance = if samples.len() > 1 {
@@ -141,7 +156,11 @@ impl Aggregate {
             0.0
         };
         let std_dev = variance.sqrt();
-        let ci95 = if samples.len() > 1 { 1.96 * std_dev / (samples.len() as f64).sqrt() } else { 0.0 };
+        let ci95 = if samples.len() > 1 {
+            1.96 * std_dev / (samples.len() as f64).sqrt()
+        } else {
+            0.0
+        };
         Self {
             mean,
             std_dev,
@@ -195,10 +214,16 @@ impl SimReport {
     ) -> Self {
         let objects = aggregate_objects(&replications);
         let created = Aggregate::from_samples(
-            &replications.iter().map(|r| r.items_created as f64).collect::<Vec<_>>(),
+            &replications
+                .iter()
+                .map(|r| r.items_created as f64)
+                .collect::<Vec<_>>(),
         );
         let completed = Aggregate::from_samples(
-            &replications.iter().map(|r| r.items_completed as f64).collect::<Vec<_>>(),
+            &replications
+                .iter()
+                .map(|r| r.items_completed as f64)
+                .collect::<Vec<_>>(),
         );
         Self {
             model: model.name.clone(),
@@ -238,7 +263,9 @@ fn aggregate_objects(replications: &[ReplicationResult]) -> BTreeMap<String, Obj
         let mut blocked = Vec::new();
         let mut down = Vec::new();
         for replication in replications {
-            let Some(stats) = replication.objects.get(name) else { continue };
+            let Some(stats) = replication.objects.get(name) else {
+                continue;
+            };
             kind = stats.kind;
             input.push(stats.input_count as f64);
             output.push(stats.output_count as f64);
@@ -296,7 +323,13 @@ mod tests {
 
     #[test]
     fn state_fractions_sum_to_one() {
-        let states = StateTimes { idle: 2.0, busy: 6.0, blocked: 2.0, down: 0.0, off_shift: 0.0 };
+        let states = StateTimes {
+            idle: 2.0,
+            busy: 6.0,
+            blocked: 2.0,
+            down: 0.0,
+            off_shift: 0.0,
+        };
         let sum = states.fraction("idle")
             + states.fraction("busy")
             + states.fraction("blocked")

@@ -40,7 +40,7 @@
 
 | 参数名 | 类型 | 文档默认 | 语义 |
 |---|---|---|---|
-| `MaxContent` | Number | 未说明（openflex 默认 1，Queue 默认 10000） | 同时可容纳的最大件数 |
+| `MaxContent` | Number | 未说明（openflex 默认：Processor 1，Queue 1000） | 同时可容纳的最大件数 |
 | `Pull` | Boolean | 未说明（openflex 默认 false） | 是否主动拉取上游 |
 | `PullRequirement` | Code | 未说明（openflex 默认 `1`） | 对每个 ready 件返 1/0 |
 | `PullStrategy` | Code | 未说明（openflex 默认 `0`=第一个可用端口） | 返回输入端口号 |
@@ -125,7 +125,7 @@
 
 | 参数名 | 类型 | 文档默认 | 语义 |
 |---|---|---|---|
-| `MaxContent` | Number | 未说明（openflex 默认 10000） | 同时可容纳上限 |
+| `MaxContent` | Number | 未说明（openflex 默认 1000） | 同时可容纳上限 |
 | `LIFO` | Boolean | 文档称"未勾选则 FIFO"，即默认 false=FIFO（E06 高） | 后进先出 |
 | `DoBatching` | Boolean | 未说明（openflex 默认 false） | 是否攒批 |
 | `BatchSize` | Number | 未说明（openflex 默认 1） | 目标批大小；**批内件仍逐件送下游**（E06 高） |

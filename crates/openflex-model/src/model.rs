@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
-use crate::action::{Triggers};
+use crate::action::Triggers;
 use crate::distribution::Distribution;
 use crate::expr::{Expr, ExprError};
 
@@ -137,7 +137,7 @@ impl ObjectKind {
         }
     }
 
-    pub fn from_str(value: &str) -> Option<ObjectKind> {
+    pub fn parse(value: &str) -> Option<ObjectKind> {
         Some(match value {
             "source" => ObjectKind::Source,
             "queue" => ObjectKind::Queue,
@@ -192,7 +192,12 @@ pub struct Object {
 impl Object {
     pub fn new(name: impl Into<String>, params: ObjectParams) -> Self {
         let kind = params.kind();
-        Self { name: name.into(), kind, pos: [0.0, 0.0], params }
+        Self {
+            name: name.into(),
+            kind,
+            pos: [0.0, 0.0],
+            params,
+        }
     }
 }
 
@@ -222,17 +227,26 @@ impl<'de> Deserialize<'de> for Object {
             serde_json::json!({})
         }
         let raw = Raw::deserialize(deserializer)?;
-        let kind = ObjectKind::from_str(&raw.kind).ok_or_else(|| {
+        let kind = ObjectKind::parse(&raw.kind).ok_or_else(|| {
             de::Error::custom(format!(
                 "object '{}' has unknown kind '{}' (expected one of: {})",
                 raw.name,
                 raw.kind,
-                ObjectKind::all().iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")
+                ObjectKind::all()
+                    .iter()
+                    .map(|k| k.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ))
         })?;
         let params = ObjectParams::from_value(kind, raw.params)
             .map_err(|err| de::Error::custom(format!("object '{}': {err}", raw.name)))?;
-        Ok(Object { name: raw.name, kind, pos: raw.pos, params })
+        Ok(Object {
+            name: raw.name,
+            kind,
+            pos: raw.pos,
+            params,
+        })
     }
 }
 
@@ -407,7 +421,6 @@ pub struct SourceParams {
     pub shifts: Vec<Shift>,
 }
 
-
 // Defaults match the documented defaults used by serde when a field is
 // omitted in the JSON, so programmatic construction and JSON agree.
 
@@ -467,12 +480,6 @@ impl Default for CombinerParams {
     }
 }
 
-impl Default for SeparatorParams {
-    fn default() -> Self {
-        Self { split_count: 0, shifts: Vec::new(), triggers: Triggers::default() }
-    }
-}
-
 impl Default for TransporterParams {
     fn default() -> Self {
         Self {
@@ -489,7 +496,12 @@ impl Default for TransporterParams {
 
 impl Default for BasicTeParams {
     fn default() -> Self {
-        Self { speed: 1.0, capacity: 1, shifts: Vec::new(), triggers: Triggers::default() }
+        Self {
+            speed: 1.0,
+            capacity: 1,
+            shifts: Vec::new(),
+            triggers: Triggers::default(),
+        }
     }
 }
 
@@ -610,9 +622,11 @@ pub struct CombinerParams {
     pub shifts: Vec<Shift>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SeparatorParams {
-    /// 0 = split into all parts; otherwise split off this many.
+    /// Unpack: split off this many parts plus the container (0 = every
+    /// component inside the container). The FlexSim "unpack" semantics produce
+    /// `split_count + 1` items.
     #[serde(default)]
     pub split_count: u32,
 
@@ -785,7 +799,11 @@ pub struct Shift {
 
 impl Default for Shift {
     fn default() -> Self {
-        Self { start: 0.0, duration: eight_hours(), repeat_every: 0.0 }
+        Self {
+            start: 0.0,
+            duration: eight_hours(),
+            repeat_every: 0.0,
+        }
     }
 }
 
@@ -811,7 +829,12 @@ pub struct RackParams {
 
 impl Default for RackParams {
     fn default() -> Self {
-        Self { capacity: 100, levels: 1, shifts: Vec::new(), triggers: Triggers::default() }
+        Self {
+            capacity: 100,
+            levels: 1,
+            shifts: Vec::new(),
+            triggers: Triggers::default(),
+        }
     }
 }
 
@@ -948,7 +971,8 @@ fn default_version() -> u32 {
 
 impl Model {
     pub fn from_json(text: &str) -> Result<Model, ModelError> {
-        let model: Model = serde_json::from_str(text).map_err(|err| ModelError::Json(err.to_string()))?;
+        let model: Model =
+            serde_json::from_str(text).map_err(|err| ModelError::Json(err.to_string()))?;
         model.validate()?;
         Ok(model)
     }
@@ -963,12 +987,18 @@ impl Model {
 
     /// Connections leaving `name`, in port order.
     pub fn outputs(&self, name: &str) -> Vec<&Connection> {
-        self.connections.iter().filter(|connection| connection.from == name).collect()
+        self.connections
+            .iter()
+            .filter(|connection| connection.from == name)
+            .collect()
     }
 
     /// Connections entering `name`.
     pub fn inputs(&self, name: &str) -> Vec<&Connection> {
-        self.connections.iter().filter(|connection| connection.to == name).collect()
+        self.connections
+            .iter()
+            .filter(|connection| connection.to == name)
+            .collect()
     }
 
     /// Validate the whole model; see [`crate::validate`].
@@ -997,7 +1027,10 @@ pub struct ValidationIssue {
 
 impl ValidationIssue {
     pub fn new(location: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { location: location.into(), message: message.into() }
+        Self {
+            location: location.into(),
+            message: message.into(),
+        }
     }
 }
 
@@ -1012,7 +1045,11 @@ impl fmt::Display for ValidationIssue {
 }
 
 fn format_issues(issues: &[ValidationIssue]) -> String {
-    issues.iter().map(|issue| format!("  - {issue}")).collect::<Vec<_>>().join("\n")
+    issues
+        .iter()
+        .map(|issue| format!("  - {issue}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -1046,7 +1083,6 @@ fn default_max_content() -> u32 {
 fn one_dist() -> Distribution {
     Distribution::Constant { value: 1.0 }
 }
-
 
 // ---------------------------------------------------------------------------
 // Object helpers
@@ -1118,7 +1154,8 @@ impl Model {
         param: &str,
         value: serde_json::Value,
     ) -> Result<Model, ModelError> {
-        let mut root = serde_json::to_value(self).map_err(|err| ModelError::Json(err.to_string()))?;
+        let mut root =
+            serde_json::to_value(self).map_err(|err| ModelError::Json(err.to_string()))?;
         let objects = root
             .get_mut("objects")
             .and_then(|value| value.as_array_mut())
@@ -1161,7 +1198,8 @@ impl Model {
                 };
             }
         }
-        let model: Model = serde_json::from_value(root).map_err(|err| ModelError::Json(err.to_string()))?;
+        let model: Model =
+            serde_json::from_value(root).map_err(|err| ModelError::Json(err.to_string()))?;
         model.validate()?;
         Ok(model)
     }

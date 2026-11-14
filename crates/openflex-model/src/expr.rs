@@ -114,11 +114,19 @@ pub enum ExprError {
     #[error("unexpected character '{0}' at position {1}")]
     UnexpectedChar(char, usize),
     #[error("expected '{expected}' at position {pos}, found {found:?}")]
-    Expected { expected: String, pos: usize, found: String },
+    Expected {
+        expected: String,
+        pos: usize,
+        found: String,
+    },
     #[error("unknown function '{0}'")]
     UnknownFunction(String),
     #[error("wrong number of arguments for '{name}': expected {expected}, found {found}")]
-    Arity { name: String, expected: usize, found: usize },
+    Arity {
+        name: String,
+        expected: usize,
+        found: usize,
+    },
     #[error("cannot divide by zero")]
     DivideByZero,
     #[error("unknown variable '{0}'")]
@@ -264,13 +272,25 @@ fn eval_call(name: &str, args: &[Expr], ctx: &dyn EvalContext) -> Result<Value, 
     match name {
         "if" => {
             if args.len() != 3 {
-                return Err(ExprError::Arity { name: "if".into(), expected: 3, found: args.len() });
+                return Err(ExprError::Arity {
+                    name: "if".into(),
+                    expected: 3,
+                    found: args.len(),
+                });
             }
-            if args[0].eval(ctx)?.as_bool() { args[1].eval(ctx) } else { args[2].eval(ctx) }
+            if args[0].eval(ctx)?.as_bool() {
+                args[1].eval(ctx)
+            } else {
+                args[2].eval(ctx)
+            }
         }
         "min" | "max" => {
             if args.is_empty() {
-                return Err(ExprError::Arity { name: name.into(), expected: 1, found: 0 });
+                return Err(ExprError::Arity {
+                    name: name.into(),
+                    expected: 1,
+                    found: 0,
+                });
             }
             let mut acc: Option<f64> = None;
             for arg in args {
@@ -285,7 +305,11 @@ fn eval_call(name: &str, args: &[Expr], ctx: &dyn EvalContext) -> Result<Value, 
         }
         "abs" | "round" | "floor" | "ceil" | "sqrt" => {
             if args.len() != 1 {
-                return Err(ExprError::Arity { name: name.into(), expected: 1, found: args.len() });
+                return Err(ExprError::Arity {
+                    name: name.into(),
+                    expected: 1,
+                    found: args.len(),
+                });
             }
             let value = args[0].eval(ctx)?.as_number()?;
             Ok(Value::Number(match name {
@@ -298,9 +322,15 @@ fn eval_call(name: &str, args: &[Expr], ctx: &dyn EvalContext) -> Result<Value, 
         }
         "len" => {
             if args.len() != 1 {
-                return Err(ExprError::Arity { name: "len".into(), expected: 1, found: args.len() });
+                return Err(ExprError::Arity {
+                    name: "len".into(),
+                    expected: 1,
+                    found: args.len(),
+                });
             }
-            Ok(Value::Number(args[0].eval(ctx)?.as_str().chars().count() as f64))
+            Ok(Value::Number(
+                args[0].eval(ctx)?.as_str().chars().count() as f64
+            ))
         }
         _ => Err(ExprError::UnknownFunction(name.to_string())),
     }
@@ -412,7 +442,11 @@ struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     fn new(source: &'a str) -> Self {
-        Self { chars: source.chars().collect(), pos: 0, _source: source }
+        Self {
+            chars: source.chars().collect(),
+            pos: 0,
+            _source: source,
+        }
     }
 
     fn tokenize(&mut self) -> Result<Vec<Token>, ExprError> {
@@ -552,7 +586,8 @@ impl<'a> Lexer<'a> {
             }
         }
         let text: String = self.chars[start..self.pos].iter().collect();
-        text.parse::<f64>().map_err(|_| ExprError::UnexpectedChar('?', start))
+        text.parse::<f64>()
+            .map_err(|_| ExprError::UnexpectedChar('?', start))
     }
 
     fn string(&mut self, quote: char) -> Result<String, ExprError> {
@@ -790,6 +825,9 @@ mod tests {
     #[test]
     fn unknown_variable_is_an_error() {
         let expr = Expr::parse("nope + 1").unwrap();
-        assert!(matches!(expr.eval(&ctx()), Err(ExprError::UnknownVariable(_))));
+        assert!(matches!(
+            expr.eval(&ctx()),
+            Err(ExprError::UnknownVariable(_))
+        ));
     }
 }

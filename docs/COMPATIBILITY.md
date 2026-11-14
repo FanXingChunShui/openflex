@@ -13,19 +13,20 @@
 
 | FlexSim 对象 | OpenFlex | 状态 | 说明 / 简化点 |
 |---|---|---|---|
-| Source | `source` | ✅ | 到达间隔分布、每批数量、首批时间、最大到达数、停止时间、item type、初始标签 |
-| Queue | `queue` | ✅ | 最大容量、FIFO/LIFO/优先级/按标签排序；批量释放（`batch_size`、`batch_max_wait`） |
-| Processor | `processor` | ✅ | setup + process 时间、容量、故障 MTBF/MTTR、变更时间；操作员请求为简化版 |
+| Source | `source` | ✅ | 首件默认 t=0；间隔按“上一批离开 → 下一件到达”计时；每批数量、最大到达数、停止时间、item type、初始标签 |
+| Queue | `queue` | ✅ | 最大容量、FIFO/LIFO/优先级/按标签排序；攒批（`batch_size`）与超时放行（`batch_max_wait`）；批次在释放时刻整体提交 |
+| Processor | `processor` | ✅ | setup + process、容量、故障 MTBF/MTTR（打断加工并补足剩余时间）、操作员请求（Dispatcher 或 Resource 池） |
 | Sink | `sink` | ✅ | 吞吐与停留时间统计 |
 | Combiner | `combiner` | ✅ | pack / join；容器先到、等待组件数 |
-| Separator | `separator` | ✅ | 拆分数量（0 = 全部） |
-| Conveyor | `conveyor` | ✅ | 速度、长度、间距、累积/非累积、容量 |
+| Separator | `separator` | 🟡 | 只实现 unpack 语义：`split_count = qty` → 释放 qty 个零件 + 容器（qty+1 件），0 = 容器内全部组件；FlexSim 的 split（复制）模式未实现 |
+| Conveyor | `conveyor` | ✅ | 速度、长度、间距、累积/非累积、容量；位置与阻塞按一维带面模型计算 |
 | Merge | `merge` | ✅ | 多输入合流；可选等待全部输入 |
 | Split | `split` | ✅ | 轮询或按 item type 分流 |
-| Transporter / TaskExecuter | `transporter` | 🟡 | 容量、速度、装载/卸载时间、按坐标距离行驶；任务序列（travel/load/unload 组合）与抢占为简化版 |
-| Dispatcher | `dispatcher` | 🟡 | 把任务派给空闲 transporter；队列上限；优先级/任务序列简化 |
+| Transporter / TaskExecuter | `transporter` | 🟡 | 速度、装载/卸载时间、按坐标距离行驶、`home` 回程；`capacity` 解释为可并发操作员任务数（不搬运 flow item）；无任务序列/抢占/路网 |
+| Dispatcher | `dispatcher` | 🟡 | 把 Processor 的操作员请求派给最近的空闲 transporter；FIFO 队列，无优先级/抢占 |
 | Operator / Resource | `resource` | ✅ | 资源池容量与停机窗口 |
 | Rack | `rack` | 🟡 | 容量与层数；层/通道的精细放置与取货策略简化 |
+| 班次 / 计划停机 | `params.shifts` | ✅ | `[{start, duration, repeat_every}]`，停机进入 off_shift、暂停处理、恢复后继续 |
 | BasicFR / BasicTE | `basic_fr` / `basic_te` | ✅ | 通用固定资源与执行器 |
 | Fluid（流体） | — | ⛔ | 未实现 |
 | People / A* 行走 | — | ⛔ | 未实现 |
@@ -61,7 +62,8 @@
 | 预热（warm-up） | `run.warmup` | ✅ | 统计窗从 warm-up 起 |
 | 随机种子 / 复现 | `run.seed` / `run.replications` | ✅ | SplitMix64 派生，可复现 |
 | 运行/暂停/步进 | — | 🟡 | CLI 批量运行；无交互式时钟控制 |
-| 对象统计（状态占比、吞吐、WIP） | 报告 | ✅ | idle/busy/blocked/down/off_shift |
+| 对象统计（状态占比、吞吐、WIP） | 报告 | ✅ | idle/busy/blocked/down/off_shift；时间加权 content；停留时间 |
+| 班次 / 计划可用性 | `shifts` | ✅ | 见上表“班次” |
 | 停留时间 | 报告 | ✅ | 平均停留时间 |
 | Experimenter（场景 × 复现） | `experiments` + `openflex experiment` | ✅ | 95% 置信区间 |
 | 置信区间 | 报告 | ✅ | 正态近似 `1.96·se` |
@@ -85,9 +87,12 @@
 1. **不使用任意脚本**：FlexSim 的 FlexScript 可读写任意对象与全局状态；OpenFlex 用受限表达式与动作，
    以保证模型可校验、可确定性重放。
 2. **没有 3D 渲染**：`pos` 是二维坐标，仅用于计算运输距离与生成布局图。
-3. **运输模型简化**：TaskExecuter 不实现完整任务序列（多段 travel/load/unload 组合、抢占、优先级队列），
-   但保留容量、速度、装载/卸载与调度延迟的核心行为。
+3. **运输模型简化**：TaskExecuter 只实现“Processor 请求操作员”这一条任务序列（travel → load → 加工 →
+   unload → 回 home），不实现抢占、优先级与多段任务序列；`capacity` 表示可并发任务数而非载货量。
 4. **统计口径**：`utilization` 定义为忙碌时间/统计时长；与 FlexSim 的“利用率”定义一致，但对象自身
    没有“状态”的对象（如 Sink）不计算利用率。
 5. **随机数**：使用 ChaCha12（`StdRng`）而非 FlexSim 的随机数生成器，因此同一模型的数值不会与
-   FlexSim 逐位相同；分布语义与统计性质一致（用解析解与教材数值验证，见 golden 测试）。
+   FlexSim 逐位相同；分布语义与统计性质一致（用解析解与教材数值验证，见 golden 测试）。到达间隔使用
+   独立随机流，保证只改加工参数时 A/B 对比仍然可比。
+6. **Queue 攒批**：批次在“攒够”或“超时”时刻整体提交，批次内项的停留时间在此刻结算；下游可能随后
+   逐件接收，但 Queue 的统计不再变化（FlexSim 的逐件 release 在时间加权口径上等价）。

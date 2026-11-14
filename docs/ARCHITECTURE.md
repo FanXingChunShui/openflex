@@ -54,6 +54,34 @@ OpenFlex 的目标是：用 Rust 实现一个与 FlexSim 核心建模语义一�
 
 状态时间与内容积分都在状态变化时结算，保证长时间运行不累积误差。
 
+### 对象语义（v1 实现）
+
+| 对象 | 实现要点 |
+|---|---|
+| Source | 首件在 `first_arrival`（默认 0 = t=0 创建）；后续间隔按“上一批**离开** Source → 下一件到达”计时，下游阻塞时暂停到达节奏 |
+| Queue / Rack | 收到即释放；攒批（`batch_size`）时整批一次性提交（离开时刻 = 批次释放时刻），`batch_max_wait` 到期强制放行 |
+| Processor | setup + process；故障立即打断加工、修复后补足剩余时间；操作员未到位时 `Blocked` |
+| Conveyor | 一维直线带：位置、速度、间距、`accumulating` 累积/非累积、容量；末端被阻塞时累积带继续压缩、非累积带整体冻结 |
+| Combiner | 端口 1（第一条连接）为容器；pack 等待 `components_per_container` 个组件后只释放容器（组件不单独计内容）；join 每端口一件、合并为一件 |
+| Separator | unpack 语义：`split_count = qty` 时释放 `qty` 个零件 **加容器本身**（共 qty+1）；0 = 拆出容器内全部组件（+容器）；多输出端口按零件序号轮转分发 |
+| Merge | 每个输入端口暂存一件；`wait_for_all` 时全部到齐才合成一件，否则每来一件即输出 |
+| Split | 按 `by_item_type` 选端口，或轮询输出端口 |
+| Transporter / Dispatcher | Processor 通过 `process_operator` 向 Dispatcher 请求操作员；Dispatcher 按坐标欧氏距离/速度派最近的空闲 transporter，行程 + `load_time` 后到位，`unload_time` 后释放并返 `home`；容量 = 可并发的任务数 |
+| Resource | 计数型资源池（`capacity`、`downtimes`）；占用期间 Processor 处于 `Blocked`，停机窗口内不发放 |
+| 全部对象 | 可选 `shifts`（`start`/`duration`/`repeat_every`）：窗口外进入 `OffShift`、暂停加工并拒绝进件，恢复后补足剩余加工时间 |
+
+### 传送带的简化
+
+- 直线带，无转弯、合流、电机/光电门。
+- 项到达末端即瞬时移交下游，没有独立的 transfer 延迟；因此“离开带面”与“移交完成”同一时刻。
+
+### 任务执行器的简化
+
+- 无路网、加速度与碰撞；行程 = 直线距离 / 固定速度。
+- 不搬运 flow item，`capacity` 解释为可并发的操作员任务数。
+- 只实现“Processor 请求操作员”这一种任务序列（travel → load → 让 Processor 加工 → unload → 回 home），不实现抢占、优先级与多段任务序列。
+- 操作员在加工期间不释放；故障时随 Processor 一起暂停（见下）。
+
 ### 路由与背压
 
 连接（`Connection`）决定拓扑；每条连接可带 `PortStrategy`：
@@ -91,15 +119,20 @@ OpenFlex 的目标是：用 Rust 实现一个与 FlexSim 核心建模语义一�
 
 ### 故障、班次与实验
 
-- 故障：Processor 可配置 `failure: { mtbf, mttr }`，按分布循环进入 `Down`，修复后恢复并执行
-  `on_repair`。
-- 班次：对象可配置 `shifts`，停机时进入 `OffShift`，不接收新项，恢复后继续（见对象参数说明）。
+- 故障：Processor 可配置 `failure: { mtbf, mttr }`。Up time 从上次修复完成开始计时；
+  故障**立即打断**当前 setup/process（记录剩余时间），修复后补足剩余时间继续；`on_breakdown` /
+  `on_repair` 触发器用探测项执行动作。
+- 班次：对象可配置 `shifts: [{ start, duration, repeat_every }]`（`repeat_every = 0` 表示只出现一次）。
+  窗口外对象进入 `OffShift`：暂停 setup/process 并记录剩余时间、拒绝新进件、Conveyor 停止推进；
+  下一个窗口开始时恢复。统计累计 `off_shift` 时间。
 - 实验：模型内 `experiments[]` 声明“场景（覆盖参数）× 复现次数”，`openflex experiment` 逐场景运行并
   输出聚合与 95% 置信区间。
 
 ### 随机性与确定性
 
-- 单一 `StdRng`（ChaCha12），按 seed 初始化。
+- 两条独立的 `StdRng`（ChaCha12）流：一条用于到达间隔，一条用于其余全部采样（加工、故障、装载等）。
+  因此 `--set Proc.process_time=…` 不会改变到达序列，`openflex compare` 的 A/B 对比是可比的
+  （common random numbers）。
 - 复现 `i` 的 seed 由 SplitMix64 从基础 seed 派生，因此复现之间独立，且整组结果可由基础 seed 重放。
 - 同一模型、同一 seed、同一版本 → 逐位相同的结果。
 
@@ -114,6 +147,14 @@ OpenFlex 的目标是：用 Rust 实现一个与 FlexSim 核心建模语义一�
 | `utilization` | 忙碌时间 / 统计时长 |
 | `throughput` | `output_count / 统计时长` |
 | `idle/busy/blocked/down/off_shift` | 各状态时间占统计时长的比例 |
+
+口径细节：
+
+- `created` / `completed` 都只统计 `warmup` 之后创建的项：统计窗外的在制项不计入 `completed`，
+  因此 `created − completed` 就是统计窗内仍在系统中的项数。
+- 容器件只算 1 件内容；容器内的组件不单独计入 Combiner/Separator 的 `content`。
+- Queue 攒批的项在**批次释放时刻**记 `output` 与停留时间（即使下游随后逐件接收）。
+- `avg_content` 的积分在每个内容变化**之前**结算旧内容，再以新内容重新起算，避免把整段间隔记到新件上。
 
 多复现聚合给出均值、标准差、最小值、最大值与 95% 置信区间半宽（`1.96 × se`）。
 

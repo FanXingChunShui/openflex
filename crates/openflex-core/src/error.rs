@@ -9,6 +9,8 @@ pub enum SimError {
     Config(String),
     #[error("expression error at {location}: {detail}")]
     Expression { location: String, detail: String },
-    #[error("simulation exceeded the event limit of {0} events; the model may have a zero-time loop")]
+    #[error(
+        "simulation exceeded the event limit of {0} events; the model may have a zero-time loop"
+    )]
     EventLimit(u64),
 }

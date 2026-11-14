@@ -1,0 +1,19 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "separator-demo",
+  "description": "Unpack every container into 3 parts plus the container: 10 → 40 items",
+  "time_unit": "seconds",
+  "run": { "stop_time": 500.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "constant", "value": 50.0 }, "first_arrival": 0.0 } },
+    { "name": "Separator1", "kind": "separator", "pos": [10, 0], "params": {
+        "split_count": 3 } },
+    { "name": "Sink1", "kind": "sink", "pos": [20, 0], "params": {} }
+  ],
+  "connections": [
+    { "from": "Source1", "to": "Separator1" },
+    { "from": "Separator1", "to": "Sink1" }
+  ]
+}

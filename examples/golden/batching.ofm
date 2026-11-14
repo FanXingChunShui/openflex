@@ -7,7 +7,7 @@
   "objects": [
     {"name": "Source1", "kind": "source", "pos": [0, 0], "params": {
       "interarrival": {"distribution": "constant", "value": 10.0},
-      "items_per_arrival": 1, "first_arrival": 0.0}},
+      "items_per_arrival": 1, "first_arrival": 0.0, "stop_time": 400.0}},
     {"name": "Queue1", "kind": "queue", "pos": [5, 0], "params": {
       "max_content": 1000, "order": "fifo",
       "batch_size": 5, "batch_max_wait": 0.0}},
