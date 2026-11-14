@@ -10,7 +10,7 @@ use openflex_model::{ObjectKind, RunSettings, TimeUnit};
 use serde::{Deserialize, Serialize};
 
 /// Simulation clock configuration for one replication.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SimConfig {
     pub stop_time: f64,
     pub warmup: f64,

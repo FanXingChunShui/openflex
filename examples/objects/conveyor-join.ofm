@@ -1,0 +1,27 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "conveyor-join",
+  "description": "Two upstream belts merge onto one belt (join_inputs = 2), alternating fairly",
+  "time_unit": "seconds",
+  "run": { "stop_time": 300.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "BlueSource", "kind": "source", "pos": [0, 20], "params": {
+        "interarrival": { "distribution": "constant", "value": 10.0 },
+        "max_arrivals": 10, "first_arrival": 0.0, "item_type": 0 } },
+    { "name": "RedSource", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "constant", "value": 10.0 },
+        "max_arrivals": 10, "first_arrival": 0.0, "item_type": 1 } },
+    { "name": "Conveyor1", "kind": "conveyor", "pos": [5, 10], "params": {
+        "speed": 2.0, "length": 10.0, "item_spacing": 1.0, "accumulating": true,
+        "max_content": 100, "join_inputs": 2 } },
+    { "name": "SinkBlue", "kind": "sink", "pos": [15, 20], "params": {} },
+    { "name": "SinkRed", "kind": "sink", "pos": [15, 0], "params": {} }
+  ],
+  "connections": [
+    { "from": "BlueSource", "to": "Conveyor1" },
+    { "from": "RedSource", "to": "Conveyor1" },
+    { "from": "Conveyor1", "to": "SinkBlue", "strategy": { "type": "by_item_type" } },
+    { "from": "Conveyor1", "to": "SinkRed" }
+  ]
+}

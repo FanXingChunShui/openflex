@@ -37,7 +37,7 @@ pub fn describe_kind(kind: ObjectKind) -> (&'static str, &'static str) {
         ),
         ObjectKind::Conveyor => (
             "Moves items along a belt with a fixed speed.",
-            "speed: distance per time unit, default 1\nlength: default 10\naccumulating: boolean, default false\nitem_spacing: default 1\nmax_content: default 1000\nphoto_eyes: [{ position, name? }] triggers on_photo_eye when an item passes\nstations: [{ position, process_time? }] item dwell time on the belt",
+            "speed: distance per time unit, default 1\nlength: default 10\naccumulating: boolean, default false\nitem_spacing: default 1\nmax_content: default 1000\nphoto_eyes: [{ position, name? }] triggers on_photo_eye when an item passes\nstations: [{ position, process_time? }] item dwell time on the belt\njoin_inputs: 2 merges two upstream belts with fair round-robin entry",
         ),
         ObjectKind::Merge => (
             "Merges several input flows into one output flow.",

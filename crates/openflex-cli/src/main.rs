@@ -22,6 +22,7 @@
 //! The report itself still goes to stdout in the requested format, so
 //! `openflex run model.ofm --format json 2>/dev/null | jq` keeps working.
 
+mod checkpoint;
 mod import;
 mod layout;
 mod objects;
@@ -117,9 +118,15 @@ enum Command {
         /// Also write the report as an Excel workbook (.xlsx).
         #[arg(long, value_name = "FILE")]
         xlsx: Option<PathBuf>,
-        /// Write a JSONL event trace; with several replications the files are `FILE.rep0.jsonl`, `FILE.rep1.jsonl`, … (cannot be combined with --parallel > 1).
+        /// Write a JSONL event trace; with several replications the files are `FILE.rep0.jsonl`, `FILE.rep1.jsonl`, … (cannot be combined with --parallel > 1 or --resume).
         #[arg(long, value_name = "FILE")]
         trace: Option<PathBuf>,
+        /// Save the final simulation snapshot as JSON (single replication; cannot be combined with --parallel > 1; may be combined with --trace).
+        #[arg(long, value_name = "FILE")]
+        save_checkpoint: Option<PathBuf>,
+        /// Resume from a checkpoint written by --save-checkpoint (single replication; cannot be combined with --parallel > 1, several --seed values or --trace).
+        #[arg(long, value_name = "FILE")]
+        resume: Option<PathBuf>,
         /// Validate the model and print the run plan without simulating.
         #[arg(long)]
         dry_run: bool,
@@ -502,6 +509,8 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             parallel,
             xlsx,
             trace,
+            save_checkpoint,
+            resume,
             dry_run,
         } => {
             let mut model = load_model(&path)?;
@@ -521,33 +530,51 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             {
                 return Err(Failure::usage(anyhow!("--parallel must be at least 1")));
             }
-            if dry_run {
-                print_run_plan(&model, &seed, parallel);
-                return Ok(());
-            }
             if trace.is_some() && parallel.is_some_and(|workers| workers > 1) {
                 return Err(Failure::usage(anyhow!(
                     "--trace cannot be combined with --parallel > 1; traces are written one replication at a time"
                 )));
             }
+            validate_checkpoint_options(
+                &model,
+                &seed,
+                parallel,
+                trace.as_deref(),
+                save_checkpoint.as_deref(),
+                resume.as_deref(),
+            )?;
+            if dry_run {
+                print_run_plan(&model, &seed, parallel);
+                return Ok(());
+            }
+            if save_checkpoint.is_some() || resume.is_some() {
+                return run_checkpoint(
+                    &model,
+                    trace.as_deref(),
+                    save_checkpoint.as_deref(),
+                    resume.as_deref(),
+                    &RunOutput {
+                        format,
+                        report_dir: report_dir.as_deref(),
+                        xlsx: xlsx.as_deref(),
+                        quiet,
+                    },
+                    progress,
+                );
+            }
             let report = match trace.as_deref() {
                 Some(trace_path) => execute_traced(&model, &seed, trace_path, progress, quiet)?,
                 None => execute(&model, &seed, parallel, progress)?,
             };
-            let text = report::render_sim(&report, format.into())?;
-            emit(&text, None, quiet)?;
-            if let Some(directory) = report_dir {
-                let files = report::write_reports(&report, &directory)?;
-                note(
+            finish_run(
+                &report,
+                &RunOutput {
+                    format,
+                    report_dir: report_dir.as_deref(),
+                    xlsx: xlsx.as_deref(),
                     quiet,
-                    &format!("{} {}", i18n::t("wrote"), join_paths(&files)),
-                );
-            }
-            if let Some(path) = xlsx {
-                report::write_xlsx(&report, &path)?;
-                note(quiet, &format!("{} {}", i18n::t("wrote"), path.display()));
-            }
-            Ok(())
+                },
+            )
         }
         Command::Experiment {
             model: path,
@@ -810,6 +837,195 @@ fn execute(
         report.base_seed = seeds[0];
     }
     Ok(report)
+}
+
+/// Validate the option combinations around `--save-checkpoint` / `--resume`.
+///
+/// A checkpoint is a single replication: it stores the event queue, object
+/// states and random-number generator of one run, so the CLI refuses options
+/// that would run several replications or fork the random stream.
+fn validate_checkpoint_options(
+    model: &Model,
+    seeds: &[u64],
+    parallel: Option<usize>,
+    trace: Option<&Path>,
+    save: Option<&Path>,
+    resume: Option<&Path>,
+) -> Result<(), Failure> {
+    if parallel.is_some_and(|workers| workers > 1) {
+        if save.is_some() {
+            return Err(Failure::usage(anyhow!(
+                "--save-checkpoint cannot be combined with --parallel > 1; a checkpoint captures one replication"
+            )));
+        }
+        if resume.is_some() {
+            return Err(Failure::usage(anyhow!(
+                "--resume cannot be combined with --parallel > 1; a checkpoint resumes one replication"
+            )));
+        }
+    }
+    if save.is_some() && resume.is_none() && (seeds.len() > 1 || model.run.replications > 1) {
+        return Err(Failure::usage(anyhow!(
+            "--save-checkpoint requires a single replication; pass --replications 1"
+        )));
+    }
+    if resume.is_some() {
+        if seeds.len() > 1 {
+            return Err(Failure::usage(anyhow!(
+                "--resume cannot be combined with several --seed values; a checkpoint stores one replication's random state"
+            )));
+        }
+        if model.run.replications > 1 {
+            return Err(Failure::usage(anyhow!(
+                "--resume runs exactly one replication; pass --replications 1"
+            )));
+        }
+        if trace.is_some() {
+            return Err(Failure::usage(anyhow!(
+                "--trace cannot be combined with --resume; tracing is not supported while resuming from a checkpoint"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Run one replication from (or up to) a checkpoint and render its report.
+///
+/// The engine guarantees that resuming produces exactly the same
+/// [`openflex_core::ReplicationResult`] as a single run to the later stop
+/// time, so the report rendered here is byte-for-byte the one `openflex run`
+/// would print for the full horizon.
+fn run_checkpoint(
+    model: &Model,
+    trace: Option<&Path>,
+    save: Option<&Path>,
+    resume: Option<&Path>,
+    output: &RunOutput<'_>,
+    progress: bool,
+) -> Result<(), Failure> {
+    let quiet = output.quiet;
+    let resume_from = match resume {
+        Some(path) => Some(checkpoint::load(path)?),
+        None => None,
+    };
+    let resume_label = resume
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+
+    let config = match &resume_from {
+        Some(resume) => {
+            if resume.model_name() != model.name {
+                return Err(Failure::usage(anyhow!(
+                    "checkpoint {} belongs to model '{}', but '{}' was given",
+                    resume_label,
+                    resume.model_name(),
+                    model.name
+                )));
+            }
+            if (resume.warmup() - model.run.warmup).abs() > f64::EPSILON {
+                return Err(Failure::usage(anyhow!(
+                    "checkpoint {} was recorded with warm-up {}, but the model now uses {}; pass the original --warmup",
+                    resume_label,
+                    resume.warmup(),
+                    model.run.warmup
+                )));
+            }
+            if model.run.stop_time < resume.now() {
+                return Err(Failure::usage(anyhow!(
+                    "--stop-time {} is before the checkpoint time {}; resume to a later time",
+                    model.run.stop_time,
+                    resume.now()
+                )));
+            }
+            SimConfig {
+                stop_time: model.run.stop_time,
+                warmup: model.run.warmup,
+                // The checkpoint stores the derived seed; the base seed only
+                // affects report metadata, exactly like a normal run.
+                seed: resume.seed(),
+            }
+        }
+        None => SimConfig::from_run_settings(&model.run, derive_seed(model.run.seed, 0)),
+    };
+
+    let reporter = Progress::new(progress, 1);
+    let (result, checkpoint, trace_log) = if let Some(trace_path) = trace {
+        let (result, checkpoint, log) =
+            openflex_core::simulate_with_checkpoint_traced(model, &config, 0, resume_from.as_ref())
+                .map_err(checkpoint_failure)?;
+        write_trace(trace_path, &log)?;
+        note(
+            quiet,
+            &format!(
+                "{} {} ({} events{})",
+                i18n::t("wrote"),
+                trace_path.display(),
+                log.len(),
+                if log.truncated {
+                    ", truncated at the event limit"
+                } else {
+                    ""
+                }
+            ),
+        );
+        (result, checkpoint, Some(log))
+    } else {
+        let (result, checkpoint) =
+            openflex_core::simulate_with_checkpoint(model, &config, 0, resume_from.as_ref())
+                .map_err(checkpoint_failure)?;
+        (result, checkpoint, None)
+    };
+    let _ = trace_log;
+
+    if let Some(path) = save {
+        checkpoint::save(path, &checkpoint)?;
+        note(quiet, &format!("{} {}", i18n::t("wrote"), path.display()));
+    }
+
+    reporter.tick();
+    let report = SimReport::from_replications(model, vec![result]);
+    finish_run(&report, output)
+}
+
+/// Map checkpoint simulation failures to the CLI's exit-code convention.
+///
+/// A configuration or model mismatch is a usage error (exit 2); a failing
+/// simulation is a runtime error (exit 1).
+fn checkpoint_failure(error: openflex_core::SimError) -> Failure {
+    use openflex_core::SimError;
+    match &error {
+        SimError::Config(_) | SimError::Model(_) => Failure::usage(anyhow::Error::new(error)),
+        _ => Failure::runtime(anyhow::Error::new(error)),
+    }
+}
+
+/// Rendering/export options shared by the plain, traced and checkpoint paths.
+struct RunOutput<'a> {
+    format: Format,
+    report_dir: Option<&'a Path>,
+    xlsx: Option<&'a Path>,
+    quiet: bool,
+}
+
+/// Render and export a report (shared by plain, traced and checkpoint runs).
+fn finish_run(report: &SimReport, output: &RunOutput<'_>) -> Result<(), Failure> {
+    let text = report::render_sim(report, output.format.into())?;
+    emit(&text, None, output.quiet)?;
+    if let Some(directory) = output.report_dir {
+        let files = report::write_reports(report, directory)?;
+        note(
+            output.quiet,
+            &format!("{} {}", i18n::t("wrote"), join_paths(&files)),
+        );
+    }
+    if let Some(path) = output.xlsx {
+        report::write_xlsx(report, path)?;
+        note(
+            output.quiet,
+            &format!("{} {}", i18n::t("wrote"), path.display()),
+        );
+    }
+    Ok(())
 }
 
 /// Build the replication configurations for one run.

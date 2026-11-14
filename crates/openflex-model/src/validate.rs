@@ -93,6 +93,23 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
         issues.extend(validate_object(object));
     }
 
+    // B3: a join conveyor declares how many upstream belts it merges.
+    for object in &model.objects {
+        if let crate::model::ObjectParams::Conveyor(params) = &object.params
+            && let Some(inputs) = params.join_inputs
+        {
+            let connected = model.inputs(&object.name).len() as u32;
+            if inputs != connected {
+                issues.push(ValidationIssue::new(
+                    format!("objects.{}.join_inputs", object.name),
+                    format!(
+                        "join_inputs is {inputs} but the object has {connected} input connections"
+                    ),
+                ));
+            }
+        }
+    }
+
     let mut output_ports: std::collections::BTreeMap<String, std::collections::BTreeSet<u32>> =
         std::collections::BTreeMap::new();
     for connection in &model.connections {
@@ -523,6 +540,14 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
                         "must be inside the belt (0 < position < length)",
                     ));
                 }
+            }
+            if let Some(inputs) = params.join_inputs
+                && inputs < 2
+            {
+                issues.push(ValidationIssue::new(
+                    location("join_inputs"),
+                    "a join conveyor needs at least two inputs",
+                ));
             }
             for (i, station) in params.stations.iter().enumerate() {
                 if !station.position.is_finite()

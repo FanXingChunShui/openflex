@@ -21,7 +21,7 @@
 //! | `queue`/`rack` | immediate release, optional batching with `batch_size` and `batch_max_wait` |
 //! | `processor` | setup + process, breakdown/repair with preemption, optional operator (dispatcher or resource pool) |
 //! | `multiprocessor` | `slots` parallel setup/process pipelines in one object (B1); one operator crew of `slots` per busy period |
-//! | `conveyor` | item positions, accumulating or rigid transport, spacing and exit blocking; photo eyes fire `on_photo_eye`, stations dwell for their `process_time` (B3) |
+//! | `conveyor` | item positions, accumulating or rigid transport, spacing and exit blocking; photo eyes fire `on_photo_eye`, stations dwell for their `process_time`, `join_inputs` merges upstream belts fairly (B3) |
 //! | `combiner` | port 1 container + `components_per_container` components; `pack` releases the container, `join` merges one item per port, `batch` runs setup/process and releases every item (A7) |
 //! | `separator` | `unpack` releases `split_count + 1` items, `split` copies the item `split_count` times (A6) |
 //! | `merge` | one item per input port, optional `wait_for_all` gating |
@@ -42,6 +42,12 @@
 //!   keeps moving and items behind queue up by the spacing rule.
 //! * The photo-eye trigger fires on the item at the exact crossing time, so a
 //!   trigger that changes `item.type` affects the routing decision at the exit.
+//! * A join conveyor merges its upstream belts with a fair round-robin entry
+//!   gate plus the normal spacing rule; there is no slug building or gap
+//!   control, and an upstream with nothing waiting is skipped.
+//! * Events at or after `stop_time` are never processed, but they stay in the
+//!   calendar; a checkpoint therefore keeps the future events a resumed run
+//!   needs (see [`crate::checkpoint`]).
 //! * A transporter's `capacity` is interpreted as the number of operator tasks
 //!   it can serve concurrently (openflex v1 does not carry flow items).
 //! * Operators stay with a processor through a breakdown instead of being
@@ -64,8 +70,11 @@ use openflex_model::{
     SeparateMode, SimTrigger, Value,
 };
 use rand::prelude::*;
+use rand_chacha::ChaCha12Rng;
 use rand_distr::{Distribution as _, Exp, Gamma, LogNormal, Normal};
+use serde::{Deserialize, Serialize};
 
+use crate::checkpoint::{CHECKPOINT_FORMAT_VERSION, Checkpoint};
 use crate::conveyor::Belt;
 use crate::error::SimError;
 use crate::shifts;
@@ -82,8 +91,28 @@ const EPS: f64 = 1e-9;
 /// Label used to carry the number of components inside a container item.
 pub const COMPONENTS_LABEL: &str = "components";
 
+/// Serde helper: `f64::INFINITY` is not representable in JSON, so infinite
+/// timers are stored as `null` and restored as infinity.
+mod infinite_time {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &f64, serializer: S) -> Result<S::Ok, S::Error> {
+        let encoded = if value.is_finite() {
+            Some(*value)
+        } else {
+            None
+        };
+        serde::Serialize::serialize(&encoded, serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+        let value = Option::<f64>::deserialize(deserializer)?;
+        Ok(value.unwrap_or(f64::INFINITY))
+    }
+}
+
 /// One flow item travelling through the model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowItem {
     pub id: u64,
     pub item_type: u32,
@@ -107,7 +136,7 @@ impl FlowItem {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum State {
     Idle,
     Busy,
@@ -128,8 +157,8 @@ impl State {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-enum EventKind {
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) enum EventKind {
     /// A source creates its next batch.
     Arrive(usize),
     /// An object tries to push its pending items downstream.
@@ -170,8 +199,8 @@ enum EventKind {
     ResetStats,
 }
 
-#[derive(Debug, Clone)]
-struct Event {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Event {
     time: f64,
     seq: u64,
     kind: EventKind,
@@ -197,7 +226,7 @@ impl Ord for Event {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct Accum {
     input: u64,
     output: u64,
@@ -212,7 +241,7 @@ struct Accum {
 }
 
 /// Sub-state accumulators reported inside [`StateTimes`].
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 struct StateDetail {
     setup: f64,
     processing: f64,
@@ -220,7 +249,7 @@ struct StateDetail {
     waiting_transport: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 enum Phase {
     #[default]
     Idle,
@@ -230,7 +259,7 @@ enum Phase {
 }
 
 /// One parallel slot of a [`ObjectKind::MultiProcessor`] (B1).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Lane {
     item: Option<FlowItem>,
     phase: Phase,
@@ -248,7 +277,7 @@ struct Lane {
 /// Why a blocked object is blocked. Only the two waits with a dedicated
 /// statistic are named; blocking on a full downstream object is plain
 /// `blocked`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 enum BlockReason {
     /// Waiting for a downstream object to free capacity (no detail statistic).
     #[default]
@@ -266,7 +295,7 @@ enum BlockReason {
 /// [`ObjectRt::downtime`]: the object is `Down` while the stack is non-empty
 /// and recovers only when the **last** request is cleared, which is what the
 /// spec requires (`logic.md` §8.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum DowntimeSource {
     /// A random failure (MTBF/MTTR).
     Breakdown,
@@ -284,7 +313,7 @@ pub enum DowntimeSource {
 /// the FlexSim default and the v0.1.0 behaviour. When `count_time_in_states` is
 /// given only those states advance the clock, so a machine that fails after
 /// 100 hours of *processing* keeps its clock paused while it waits for work.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct FailureRt {
     /// State names that advance the clock; empty = wall clock.
     count_states: Vec<String>,
@@ -313,7 +342,7 @@ enum OperatorPhase {
 }
 
 /// Where a processor's operator came from; needed to release it correctly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum OperatorSource {
     Transporter(usize),
     Resource(usize),
@@ -332,19 +361,20 @@ struct SimConn {
 }
 
 /// One fixed point on a conveyor belt (B3): a photo eye or a station.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct BeltStop {
     position: f64,
     kind: BeltStopKind,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 enum BeltStopKind {
     PhotoEye,
     Station(usize),
 }
 
-struct ObjectRt {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ObjectRt {
     name: String,
     kind: ObjectKind,
     content: Vec<FlowItem>,
@@ -396,6 +426,7 @@ struct ObjectRt {
     /// Processor bookkeeping.
     processing_item: Option<FlowItem>,
     phase_token: u64,
+    #[serde(with = "infinite_time")]
     phase_end: f64,
     paused_remaining: f64,
     ready_for_process: bool,
@@ -409,12 +440,17 @@ struct ObjectRt {
     belt: Option<Belt>,
     belt_items: Vec<FlowItem>,
     belt_last_update: f64,
+    #[serde(with = "infinite_time")]
     belt_tick_at: f64,
     /// B3: photo eyes and stations, sorted by position.
     belt_stops: Vec<BeltStop>,
     /// B3: per-item flags of the stops already handled, aligned with
     /// `belt_items` (front first).
     belt_handled: Vec<Vec<bool>>,
+    /// B3: number of upstream belts merged onto this belt (0/1 = disabled).
+    join_inputs: u32,
+    /// B3: fair round-robin cursor over the input ports of a join conveyor.
+    join_cursor: usize,
     /// Queue batching.
     batch_anchor: Option<f64>,
     force_release: bool,
@@ -490,6 +526,8 @@ impl ObjectRt {
             belt_tick_at: f64::INFINITY,
             belt_stops: Vec::new(),
             belt_handled: Vec::new(),
+            join_inputs: 0,
+            join_cursor: 0,
             batch_anchor: None,
             force_release: false,
             combine_mode: CombinerMode::Pack,
@@ -537,6 +575,7 @@ impl ObjectRt {
                         .unwrap_or(std::cmp::Ordering::Equal)
                 });
                 runtime.belt_stops = stops;
+                runtime.join_inputs = params.join_inputs.unwrap_or(0);
             }
             ObjectParams::Transporter(params) => runtime.capacity = params.capacity.max(1),
             ObjectParams::Combiner(params) => runtime.combine_mode = params.mode,
@@ -791,7 +830,7 @@ pub fn simulate(
     config: &SimConfig,
     index: u32,
 ) -> Result<ReplicationResult, SimError> {
-    simulate_internal(model, config, index, false).map(|(result, _)| result)
+    simulate_run(model, config, index, false, None, false).map(|(result, _, _)| result)
 }
 
 /// Run one replication and record every processed event (B12).
@@ -804,21 +843,77 @@ pub fn simulate_traced(
     config: &SimConfig,
     index: u32,
 ) -> Result<(ReplicationResult, TraceLog), SimError> {
-    simulate_internal(model, config, index, true)
+    let (result, _, trace) = simulate_run(model, config, index, true, None, false)?;
+    Ok((result, trace))
 }
 
-fn simulate_internal(
+/// Run one replication, optionally resuming from a checkpoint (B12).
+///
+/// * `resume = None` starts at t = 0.
+/// * `resume = Some(checkpoint)` continues from the checkpoint's model time;
+///   the checkpoint must come from the same model, seed and warm-up, and
+///   `config.stop_time` must be at least the checkpoint time.
+///
+/// The returned [`crate::checkpoint::Checkpoint`] captures the state at
+/// `config.stop_time`, so `stop 1000` + resume to `stop 2000` produces exactly
+/// the same [`ReplicationResult`] as a single run to `stop 2000`.
+pub fn simulate_with_checkpoint(
+    model: &Model,
+    config: &SimConfig,
+    index: u32,
+    resume: Option<&Checkpoint>,
+) -> Result<(ReplicationResult, Checkpoint), SimError> {
+    let (result, checkpoint, _) = simulate_run(model, config, index, false, resume, true)?;
+    let checkpoint =
+        checkpoint.ok_or_else(|| SimError::Config("the checkpoint was not captured".into()))?;
+    Ok((result, checkpoint))
+}
+
+/// Like [`simulate_with_checkpoint`], but also records the event trace.
+///
+/// Tracing a *resumed* run is not supported (the event log would only cover
+/// the resumed segment), so combining `resume` with tracing is an error.
+pub fn simulate_with_checkpoint_traced(
+    model: &Model,
+    config: &SimConfig,
+    index: u32,
+    resume: Option<&Checkpoint>,
+) -> Result<(ReplicationResult, Checkpoint, TraceLog), SimError> {
+    if resume.is_some() {
+        return Err(SimError::Config(
+            "tracing is not supported while resuming from a checkpoint".into(),
+        ));
+    }
+    let (result, checkpoint, trace) = simulate_run(model, config, index, true, resume, true)?;
+    let checkpoint =
+        checkpoint.ok_or_else(|| SimError::Config("the checkpoint was not captured".into()))?;
+    Ok((result, checkpoint, trace))
+}
+
+fn simulate_run(
     model: &Model,
     config: &SimConfig,
     index: u32,
     trace: bool,
-) -> Result<(ReplicationResult, TraceLog), SimError> {
+    resume: Option<&Checkpoint>,
+    save_checkpoint: bool,
+) -> Result<(ReplicationResult, Option<Checkpoint>, TraceLog), SimError> {
     model.validate()?;
     if config.stop_time <= 0.0 {
         return Err(SimError::Config("stop_time must be positive".into()));
     }
     let mut sim = Simulation::new(model, config.clone(), trace)?;
-    sim.run()?;
+    if let Some(checkpoint) = resume {
+        sim.restore(checkpoint)?;
+    }
+    sim.run_events()?;
+    sim.advance_to_stop();
+    let checkpoint = if save_checkpoint {
+        Some(sim.snapshot())
+    } else {
+        None
+    };
+    sim.finalize_stats();
     let mut objects = BTreeMap::new();
     let elapsed = config.stop_time - config.warmup;
     for object in &sim.objects {
@@ -840,7 +935,7 @@ fn simulate_internal(
         items_completed,
         objects,
     };
-    Ok((result, sim.trace.unwrap_or_default()))
+    Ok((result, checkpoint, sim.trace.unwrap_or_default()))
 }
 
 /// Derive the seed for replication `index` deterministically.
@@ -866,11 +961,11 @@ struct Simulation<'m> {
     conns: Vec<SimConn>,
     /// Transporters assigned to each dispatcher.
     transporters: Vec<Vec<usize>>,
-    rng: StdRng,
+    rng: ChaCha12Rng,
     /// Separate stream for source inter-arrival times: scenarios that only
     /// change processing times then see the same arrival sequence (common
     /// random numbers), which makes `openflex compare` meaningful.
-    arrival_rng: StdRng,
+    arrival_rng: ChaCha12Rng,
     items_created: u64,
     /// Items created since the last warm-up reset (reported).
     stats_created: u64,
@@ -970,8 +1065,8 @@ impl<'m> Simulation<'m> {
             inputs,
             conns,
             transporters,
-            rng: StdRng::seed_from_u64(seed),
-            arrival_rng: StdRng::seed_from_u64(derive_seed(seed ^ 0xA5A5_5A5A_1234_5678, 7)),
+            rng: ChaCha12Rng::seed_from_u64(seed),
+            arrival_rng: ChaCha12Rng::seed_from_u64(derive_seed(seed ^ 0xA5A5_5A5A_1234_5678, 7)),
             items_created: 0,
             stats_created: 0,
             stats_completed: 0,
@@ -1009,13 +1104,11 @@ impl<'m> Simulation<'m> {
             }
             if !shifts.is_empty()
                 && let Some(next) = shifts::next_transition(&shifts, 0.0)
-                && next < self.config.stop_time
             {
                 self.schedule(next, EventKind::ShiftChange(index));
             }
             if let Some(table) = timetable
                 && let Some(next) = next_timetable_transition(&table.windows, 0.0)
-                && next < self.config.stop_time
             {
                 self.schedule(next, EventKind::TimetableChange(index));
             }
@@ -1106,7 +1199,7 @@ fn operators_needed(params: &openflex_model::ProcessorParams, phase: OperatorPha
     count.unwrap_or(1).max(1)
 }
 
-fn sample_distribution(rng: &mut StdRng, distribution: &Distribution) -> f64 {
+fn sample_distribution(rng: &mut ChaCha12Rng, distribution: &Distribution) -> f64 {
     {
         match distribution {
             Distribution::Constant { value } => *value,
@@ -1286,11 +1379,20 @@ fn sample_distribution(rng: &mut StdRng, distribution: &Distribution) -> f64 {
 }
 
 impl<'m> Simulation<'m> {
-    fn run(&mut self) -> Result<(), SimError> {
-        while let Some(Reverse(event)) = self.events.pop() {
-            if event.time > self.config.stop_time {
+    /// Process every event strictly before `stop_time`.
+    ///
+    /// Events at or after the stop time stay in the calendar: a checkpoint
+    /// taken here keeps them, so resuming with a later stop time continues
+    /// exactly where the run left off.
+    fn run_events(&mut self) -> Result<(), SimError> {
+        while let Some(Reverse(next)) = self.events.peek() {
+            let next_time = next.time;
+            if next_time >= self.config.stop_time - EPS {
                 break;
             }
+            let Some(Reverse(event)) = self.events.pop() else {
+                break;
+            };
             if event.time > self.now {
                 self.now = event.time;
             }
@@ -1301,14 +1403,115 @@ impl<'m> Simulation<'m> {
             self.record_trace(event.time, event.seq, &event.kind);
             self.handle(event.kind)?;
         }
-        // Statistics run until the stop time even if no event lands exactly there.
+        Ok(())
+    }
+
+    /// Statistics run until the stop time even if no event lands exactly there.
+    fn advance_to_stop(&mut self) {
         if self.now < self.config.stop_time {
             self.now = self.config.stop_time;
         }
+    }
+
+    fn finalize_stats(&mut self) {
         let now = self.now;
         for object in &mut self.objects {
             object.finalize(now);
         }
+    }
+
+    /// Capture the current state (B12); called at the stop time, before the
+    /// statistical finalisation, so a resumed run continues seamlessly.
+    fn snapshot(&self) -> Checkpoint {
+        Checkpoint {
+            format_version: CHECKPOINT_FORMAT_VERSION,
+            model_name: self.model.name.clone(),
+            now: self.now,
+            object_names: self
+                .objects
+                .iter()
+                .map(|object| object.name.clone())
+                .collect(),
+            next_seq: self.next_seq,
+            events: self
+                .events
+                .iter()
+                .map(|Reverse(event)| event.clone())
+                .collect(),
+            objects: self.objects.clone(),
+            rng: self.rng.clone(),
+            arrival_rng: self.arrival_rng.clone(),
+            items_created: self.items_created,
+            stats_created: self.stats_created,
+            stats_completed: self.stats_completed,
+            event_count: self.event_count,
+            config: self.config.clone(),
+        }
+    }
+
+    /// Restore a snapshot produced by [`Simulation::snapshot`].
+    ///
+    /// The object model must be unchanged (same name, same object list) and
+    /// the seed/warm-up must match the saved run; the stop time may be later
+    /// than the checkpoint time (that is the point of resuming).
+    fn restore(&mut self, checkpoint: &Checkpoint) -> Result<(), SimError> {
+        if checkpoint.format_version != CHECKPOINT_FORMAT_VERSION {
+            return Err(SimError::Config(format!(
+                "unsupported checkpoint format version {} (this build supports {})",
+                checkpoint.format_version, CHECKPOINT_FORMAT_VERSION
+            )));
+        }
+        if checkpoint.model_name != self.model.name {
+            return Err(SimError::Config(format!(
+                "checkpoint belongs to model '{}', not '{}'",
+                checkpoint.model_name, self.model.name
+            )));
+        }
+        let names: Vec<String> = self
+            .objects
+            .iter()
+            .map(|object| object.name.clone())
+            .collect();
+        if names != checkpoint.object_names {
+            return Err(SimError::Config(
+                "checkpoint object list does not match the model".into(),
+            ));
+        }
+        if checkpoint.config.seed != self.config.seed {
+            return Err(SimError::Config(format!(
+                "checkpoint seed {} does not match the run seed {}",
+                checkpoint.config.seed, self.config.seed
+            )));
+        }
+        if (checkpoint.config.warmup - self.config.warmup).abs() > EPS {
+            return Err(SimError::Config(format!(
+                "checkpoint warm-up {} does not match the run warm-up {}",
+                checkpoint.config.warmup, self.config.warmup
+            )));
+        }
+        if self.config.stop_time < checkpoint.now - EPS {
+            return Err(SimError::Config(format!(
+                "cannot resume a checkpoint from t={} with stop_time {}",
+                checkpoint.now, self.config.stop_time
+            )));
+        }
+        self.now = checkpoint.now;
+        self.next_seq = checkpoint.next_seq;
+        self.events = checkpoint
+            .events
+            .iter()
+            .cloned()
+            .map(Reverse)
+            .collect::<BinaryHeap<_>>();
+        self.objects = checkpoint.objects.clone();
+        self.rng = checkpoint.rng.clone();
+        self.arrival_rng = checkpoint.arrival_rng.clone();
+        self.items_created = checkpoint.items_created;
+        self.stats_created = checkpoint.stats_created;
+        self.stats_completed = checkpoint.stats_completed;
+        self.event_count = checkpoint.event_count;
+        // A resumed run does not replay the trace of the saved segment.
+        self.trace = None;
         Ok(())
     }
 
@@ -1520,10 +1723,10 @@ impl<'m> Simulation<'m> {
     /// The model time at which a source stops creating items: its own
     /// `stop_time` and the run's stop time, whichever comes first.
     fn source_horizon(&self, params: &openflex_model::SourceParams) -> f64 {
-        match params.stop_time {
-            Some(stop) => stop.min(self.config.stop_time),
-            None => self.config.stop_time,
-        }
+        // Only the source's own stop time bounds the arrival table; the run's
+        // stop time does not, so a checkpoint keeps the future arrivals that a
+        // resumed run needs.
+        params.stop_time.unwrap_or(f64::INFINITY)
     }
 
     /// Schedule the very first arrival according to the source's arrival style
@@ -2078,6 +2281,14 @@ impl<'m> Simulation<'m> {
         if !self.can_accept(target, to_port) {
             return Ok(false);
         }
+        // B3 join conveyor: only the port the round-robin cursor prefers may
+        // enter; when that upstream has nothing waiting any port is allowed.
+        if self.objects[target].join_inputs >= 2
+            && let Some(preferred) = self.join_preferred_port(target)
+            && preferred != to_port
+        {
+            return Ok(false);
+        }
         let mut item = item;
         let kind = self.objects[target].kind;
         // Trigger the receiving object's OnEntry/OnReceive logic.
@@ -2129,6 +2340,10 @@ impl<'m> Simulation<'m> {
                     .push(vec![false; stop_count]);
                 self.objects[target].belt_last_update = now;
                 self.objects[target].touch();
+                if self.objects[target].join_inputs >= 2 {
+                    let inputs = self.objects[target].join_inputs as usize;
+                    self.objects[target].join_cursor = (to_port as usize + 1) % inputs;
+                }
                 self.set_state(target, State::Busy);
                 self.schedule(now, EventKind::Flow(target));
             }
@@ -2220,10 +2435,42 @@ impl<'m> Simulation<'m> {
         if !self.objects[index].out_pending.is_empty() {
             return true;
         }
+        if self.objects[index].kind == ObjectKind::Conveyor {
+            return self.objects[index]
+                .belt
+                .as_ref()
+                .is_some_and(|belt| belt.front_ready());
+        }
         matches!(
             self.objects[index].kind,
             ObjectKind::Queue | ObjectKind::Rack
         ) && !self.objects[index].content.is_empty()
+    }
+
+    /// B3: the input port a join conveyor should serve next.
+    ///
+    /// The cursor rotates over the input ports; ports whose upstream object has
+    /// nothing waiting are skipped. `None` means "no preference" (no upstream
+    /// is ready, so any port may be accepted).
+    fn join_preferred_port(&self, target: usize) -> Option<u32> {
+        let inputs = self.objects[target].join_inputs;
+        if inputs < 2 {
+            return None;
+        }
+        let ports = inputs as usize;
+        let start = self.objects[target].join_cursor % ports;
+        let connections = &self.inputs[target];
+        for offset in 0..ports {
+            let port = (start + offset) % ports;
+            let Some(&conn) = connections.get(port) else {
+                continue;
+            };
+            let from = self.conns[conn].from;
+            if self.has_held_item(from) {
+                return Some(port as u32);
+            }
+        }
+        None
     }
 
     /// Whether an object pulls its input instead of being pushed into.
@@ -2508,9 +2755,7 @@ impl<'m> Simulation<'m> {
             .unwrap_or(self.now);
         self.objects[index].batch_anchor = Some(anchor);
         let due = (anchor + params.batch_max_wait).max(self.now);
-        if due < self.config.stop_time - EPS {
-            self.schedule(due, EventKind::BatchTimeout(index));
-        }
+        self.schedule(due, EventKind::BatchTimeout(index));
     }
 
     fn handle_batch_timeout(&mut self, index: usize) -> Result<(), SimError> {
@@ -3242,10 +3487,8 @@ impl<'m> Simulation<'m> {
             return;
         }
         let at = at.max(self.now);
-        if at < self.config.stop_time - EPS {
-            self.objects[resource].retry_pending = true;
-            self.schedule(at, EventKind::ResourceRetry(resource));
-        }
+        self.objects[resource].retry_pending = true;
+        self.schedule(at, EventKind::ResourceRetry(resource));
     }
 
     fn handle_resource_retry(&mut self, resource: usize) -> Result<(), SimError> {
@@ -3523,9 +3766,6 @@ impl<'m> Simulation<'m> {
             return;
         }
         let at = self.now + dt;
-        if at >= self.config.stop_time - EPS {
-            return;
-        }
         if at + EPS < self.objects[index].belt_tick_at {
             self.objects[index].belt_tick_at = at;
             self.schedule(at, EventKind::BeltTick(index));
@@ -4012,9 +4252,7 @@ impl<'m> Simulation<'m> {
         }
         let active = shifts::is_active(&shifts, self.now) && self.timetable_available(index);
         self.set_availability(index, active)?;
-        if let Some(next) = shifts::next_transition(&shifts, self.now)
-            && next < self.config.stop_time - EPS
-        {
+        if let Some(next) = shifts::next_transition(&shifts, self.now) {
             self.schedule(next, EventKind::ShiftChange(index));
         }
         Ok(())
@@ -4027,9 +4265,7 @@ impl<'m> Simulation<'m> {
         };
         let active = self.timetable_available(index) && self.shifts_available(index);
         self.set_availability(index, active)?;
-        if let Some(next) = next_timetable_transition(&timetable.windows, self.now)
-            && next < self.config.stop_time - EPS
-        {
+        if let Some(next) = next_timetable_transition(&timetable.windows, self.now) {
             self.schedule(next, EventKind::TimetableChange(index));
         }
         Ok(())

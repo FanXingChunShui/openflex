@@ -24,7 +24,7 @@
 /// Tolerance used for "reached the exit" / "touching the item in front".
 const EPS: f64 = 1e-9;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Belt {
     pub length: f64,
     pub speed: f64,

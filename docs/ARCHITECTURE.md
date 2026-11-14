@@ -61,7 +61,7 @@ OpenFlex 的目标是：用 Rust 实现一个与 FlexSim 核心建模语义一�
 | Source | 首件在 `first_arrival`（默认 0 = t=0 创建）；后续间隔按“上一批**离开** Source → 下一件到达”计时，下游阻塞时暂停到达节奏；也支持 `arrival_schedule`（表驱动、`repeat` 首行只首轮）与 `arrival_sequence`（上一批全部离开后推进） |
 | Queue / Rack | 收到即释放；攒批（`batch_size`）时整批一次性提交（离开时刻 = 批次释放时刻），`batch_max_wait` 到期强制放行 |
 | Processor | setup + process；故障立即打断加工、修复后补足剩余时间；操作员未到位时 `Blocked` |
-| Conveyor | 一维直线带：位置、速度、间距、`accumulating` 累积/非累积、容量；末端被阻塞时累积带继续压缩、非累积带整体冻结；`photo_eyes`（精确位置触发 `on_photo_eye`）与 `stations`（停留加工、后车排队） |
+| Conveyor | 一维直线带：位置、速度、间距、`accumulating` 累积/非累积、容量；末端被阻塞时累积带继续压缩、非累积带整体冻结；`photo_eyes`（精确位置触发 `on_photo_eye`）、`stations`（停留加工、后车排队）与 `join_inputs`（两上游带公平轮转汇入） |
 | Combiner | 端口 1（第一条连接）为容器；pack 等待 `components_per_container` 个组件后只释放容器（组件不单独计内容）；join 每端口一件、合并为一件；batch 收集一批后按 setup+process 加工并逐件释放（带 `batch` 标签） |
 | Separator | `separate_mode`：`unpack`（默认）释放 `qty` 个零件 **加容器本身**（qty+1）；`split` 只释放 `qty` 个零件；0 = 拆出容器内全部组件；多输出端口按零件序号轮转分发 |
 | Merge | 每个输入端口暂存一件；`wait_for_all` 时全部到齐才合成一件，否则每来一件即输出 |
@@ -159,6 +159,17 @@ FlexSim 的公开帮助没有定义下面几项行为，但任何离散事件引
    不重置已完成的 setup。
 7. **统计窗口**：`warmup` 之前的计数与时间加权量在 warmup 时刻清零；`created/completed` 只统计
    warmup 之后创建的项。
+
+## 检查点与续跑
+
+`openflex run --save-checkpoint cp.json` 把运行到停止时刻的状态写成 JSON；`--resume cp.json --until T`
+从快照继续，结果与一次性运行逐位一致（core 集成测试与 CLI 端到端测试均覆盖）。
+
+快照包含：时钟、事件堆（含 stop 之后已排定的事件）、全部对象运行态（content/out_pending/状态/相位/计时器/
+传送带位置与工位/操作员/在途/班次暂停/统计累加器）、两条可序列化的 `ChaCha12Rng` 随机流、计数器与运行配置。
+`simulate_with_checkpoint` / `simulate_with_checkpoint_traced` 是底层 API。
+
+限制：快照不内嵌模型（要求同名、同对象列表、同 seed/warmup）；仅单复现；trace 不随续跑恢复。
 
 ## 统计口径
 

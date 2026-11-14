@@ -19,7 +19,7 @@
 | Sink | `sink` | ✅ | 吞吐与停留时间统计 |
 | Combiner | `combiner` | ✅ | pack / join / batch（setup+process）；容器先到、等待组件数 |
 | Separator | `separator` | ✅ | `separate_mode: unpack`（qty+1 件）/ `split`（qty 件）；0 = 容器内全部组件 |
-| Conveyor | `conveyor` | ✅ | 速度、长度、间距、累积/非累积、容量；`photo_eyes` 光电门、`stations` 停留加工；无曲线/Join 合流 |
+| Conveyor | `conveyor` | ✅ | 速度、长度、间距、累积/非累积、容量；`photo_eyes` 光电门、`stations` 停留加工、`join_inputs` 两带汇入（入口轮转简化）；无曲线 |
 | Merge | `merge` | ✅ | 多输入合流；可选等待全部输入 |
 | Split | `split` | ✅ | 轮询或按 item type 分流 |
 | Transporter / TaskExecuter | `transporter` | 🟡 | 速度、装载/卸载时间、按坐标距离行驶、`home` 回程；`capacity` 解释为可并发操作员任务数（不搬运 flow item）；无任务序列/抢占/路网 |

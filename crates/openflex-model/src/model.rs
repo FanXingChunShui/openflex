@@ -1120,6 +1120,10 @@ pub struct ConveyorParams {
     /// `process_time` before it continues towards the exit.
     #[serde(default)]
     pub stations: Vec<ConveyorStation>,
+    /// Join conveyor (B3): number of upstream belts merged onto this belt.
+    /// `None`/`1` keeps the plain single-belt behaviour.
+    #[serde(default)]
+    pub join_inputs: Option<u32>,
 
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
@@ -1149,6 +1153,7 @@ impl Default for ConveyorParams {
             max_content: 1_000,
             photo_eyes: Vec::new(),
             stations: Vec::new(),
+            join_inputs: None,
             shifts: Vec::new(),
             timetable: None,
             pull: None,

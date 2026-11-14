@@ -90,6 +90,8 @@ fn english(key: &str) -> &'static str {
              openflex experiment basic.ofm --format json --report-dir experiments\n  \
              openflex layout basic.ofm --svg layout.svg\n  \
              openflex run basic.ofm --until 500 --trace trace.jsonl --format json\n  \
+             openflex run basic.ofm --until 1000 --save-checkpoint checkpoint.json\n  \
+             openflex run basic.ofm --resume checkpoint.json --until 2000 --format json\n  \
              cargo run --release -p openflex-cli --example bench_mm1 -- --stop 100000"
         }
         "error_prefix" => "error:",
@@ -167,6 +169,8 @@ fn chinese(key: &str) -> &'static str {
              openflex experiment basic.ofm --format json --report-dir experiments\n  \
              openflex layout basic.ofm --svg layout.svg\n  \
              openflex run basic.ofm --until 500 --trace trace.jsonl --format json\n  \
+             openflex run basic.ofm --until 1000 --save-checkpoint checkpoint.json\n  \
+             openflex run basic.ofm --resume checkpoint.json --until 2000 --format json\n  \
              cargo run --release -p openflex-cli --example bench_mm1 -- --stop 100000"
         }
         "error_prefix" => "错误：",

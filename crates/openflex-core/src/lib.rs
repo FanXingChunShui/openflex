@@ -19,6 +19,7 @@
 //! # }
 //! ```
 
+pub mod checkpoint;
 pub mod conveyor;
 pub mod engine;
 pub mod error;
@@ -26,7 +27,11 @@ pub mod shifts;
 pub mod stats;
 pub mod trace;
 
-pub use engine::{FlowItem, derive_seed, run_model, simulate, simulate_traced};
+pub use checkpoint::{CHECKPOINT_FORMAT_VERSION, Checkpoint};
+pub use engine::{
+    FlowItem, derive_seed, run_model, simulate, simulate_traced, simulate_with_checkpoint,
+    simulate_with_checkpoint_traced,
+};
 pub use error::SimError;
 pub use stats::{
     Aggregate, LittleCheck, LittleEntry, ObjectAggregate, ObjectStats, ReplicationResult,

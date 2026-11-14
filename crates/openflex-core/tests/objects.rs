@@ -750,17 +750,19 @@ fn multiprocessor_runs_slots_in_parallel() {
     // Three slots process 20 time units each; arrivals every 10 time units are
     // absorbed, so everything except the item still in process leaves.
     assert_eq!(input(&report, "MP"), 50.0);
-    assert_eq!(out(&report, "MP"), 49.0);
+    // Events exactly at the stop time are not processed (exclusive stay
+    // boundary), so the completion at t = 500 is not counted.
+    assert_eq!(out(&report, "MP"), 48.0);
     assert_near(
         report.objects["MP"].avg_stay_time.mean,
         20.0,
         1e-9,
         "slot stay",
     );
-    // Average over the three slots: 49 * 20 plus the partial item at stop.
+    // Mean over the three slots, including the two items still in process.
     assert_near(
         report.objects["MP"].utilization.mean,
-        0.648,
+        0.647,
         0.02,
         "mean slot utilisation",
     );
@@ -1104,7 +1106,7 @@ fn rack_model(rack_type: &str) -> Model {
     model(&format!(
         r#"{{
       "format": "openflex-model", "version": 1, "name": "rack-{rack_type}",
-      "run": {{ "stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1 }},
+      "run": {{ "stop_time": 101.0, "warmup": 0.0, "seed": 1, "replications": 1 }},
       "objects": [
         {{ "name": "Blue", "kind": "source", "params": {{
             "interarrival": {{ "distribution": "constant", "value": 10.0 }},
@@ -1232,4 +1234,96 @@ fn network_edges_must_have_a_positive_distance() {
     }"#;
     let error = Model::from_json(json).expect_err("zero distance must fail validation");
     assert!(error.to_string().contains("must be positive"), "{error}");
+}
+
+// ---------------------------------------------------------------------------
+// Join conveyor (B3)
+// ---------------------------------------------------------------------------
+
+/// Two upstream belts merge onto one belt; both flows are preserved.
+#[test]
+fn join_conveyor_merges_two_upstreams() {
+    let report = run(include_str!("../../../examples/objects/conveyor-join.ofm"));
+    assert_eq!(input(&report, "Conveyor1"), 20.0);
+    assert_eq!(out(&report, "Conveyor1"), 20.0);
+    assert_eq!(input(&report, "SinkBlue"), 10.0);
+    assert_eq!(input(&report, "SinkRed"), 10.0);
+    assert_near(
+        report.objects["Conveyor1"].avg_stay_time.mean,
+        5.0,
+        1e-9,
+        "belt stay",
+    );
+}
+
+fn join_backlog_model(join: bool) -> String {
+    let join_line = if join { r#", "join_inputs": 2"# } else { "" };
+    format!(
+        r#"{{
+      "format": "openflex-model", "version": 1, "name": "join-backlog",
+      "run": {{ "stop_time": 300.0, "warmup": 0.0, "seed": 1, "replications": 1 }},
+      "objects": [
+        {{ "name": "SA", "kind": "source", "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 1.0 }},
+            "first_arrival": 0.0, "item_type": 0 }} }},
+        {{ "name": "SB", "kind": "source", "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 1.0 }},
+            "first_arrival": 0.0, "item_type": 1 }} }},
+        {{ "name": "QA", "kind": "queue", "params": {{ "max_content": 1000 }} }},
+        {{ "name": "QB", "kind": "queue", "params": {{ "max_content": 1000 }} }},
+        {{ "name": "C", "kind": "conveyor", "params": {{
+            "speed": 1.0, "length": 3.0, "item_spacing": 1.0, "accumulating": true,
+            "max_content": 10{join_line} }} }},
+        {{ "name": "P", "kind": "processor", "params": {{
+            "process_time": {{ "distribution": "constant", "value": 5.0 }} }} }},
+        {{ "name": "KA", "kind": "sink", "params": {{}} }},
+        {{ "name": "KB", "kind": "sink", "params": {{}} }}
+      ],
+      "connections": [
+        {{ "from": "SA", "to": "QA" }}, {{ "from": "SB", "to": "QB" }},
+        {{ "from": "QA", "to": "C" }}, {{ "from": "QB", "to": "C" }},
+        {{ "from": "C", "to": "P" }},
+        {{ "from": "P", "to": "KA", "strategy": {{ "type": "by_item_type" }} }},
+        {{ "from": "P", "to": "KB" }}
+      ]
+    }}"#
+    )
+}
+
+/// With two backlogged inputs the round-robin entry keeps the flows balanced;
+/// without `join_inputs` the first connection starves the second.
+#[test]
+fn join_conveyor_round_robins_between_backlogged_inputs() {
+    let joined = run(&join_backlog_model(true));
+    let a = input(&joined, "KA");
+    let b = input(&joined, "KB");
+    assert!(a > 20.0 && b > 20.0, "both inputs must be served: {a}/{b}");
+    assert!(
+        (a - b).abs() <= 2.0,
+        "round-robin should balance the flows: {a} vs {b}"
+    );
+
+    let plain = run(&join_backlog_model(false));
+    assert_eq!(
+        input(&plain, "KB"),
+        0.0,
+        "without join_inputs the first upstream takes everything"
+    );
+}
+
+#[test]
+fn join_inputs_must_match_the_connections() {
+    let json = r#"{
+      "format": "openflex-model", "version": 1, "name": "bad-join",
+      "objects": [
+        { "name": "S", "kind": "source", "params": {} },
+        { "name": "C", "kind": "conveyor", "params": { "join_inputs": 2 } },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [
+        { "from": "S", "to": "C" }, { "from": "C", "to": "K" }
+      ]
+    }"#;
+    let error = Model::from_json(json).expect_err("join_inputs mismatch must fail");
+    assert!(error.to_string().contains("join_inputs"), "{error}");
 }

@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.4.0 — 2026-11-14
+
+### 对象与运行时
+
+- **Join Conveyor**：`conveyor.join_inputs: 2`，两条上游带按入口公平轮转汇入一条带，遵守 `item_spacing`；
+  无 slug/gap 精细策略（文档注明简化）。
+- **检查点/续跑**：`openflex run --save-checkpoint cp.json` / `--resume cp.json --until T`。
+  快照包含时钟、事件堆（含 stop 后事件）、对象运行态、双 RNG 流、统计累加器；
+  续跑结果与一次性运行逐位一致（core 6 个集成测试 + CLI 5 个端到端测试）。
+- 停止边界统一为严格 `time < stop_time`（与黄金案例 GC-2 的语义一致），事件保留在堆中以支持续跑。
+
+### 验证
+
+- 214 个测试全绿（core 103：golden 10、objects 39、p0_semantics 16、checkpoint 6）。
+- 6 个黄金案例零回归；`conveyor-join.ofm` 新增示例（10+10 → 20，公平轮转测试）。
+- clippy 0 警告、fmt 干净、三平台构建与发布流水线保持通过。
+
 ## v0.3.0 — 2026-11-14
 
 ### 对象与运行时（P1 剩余）

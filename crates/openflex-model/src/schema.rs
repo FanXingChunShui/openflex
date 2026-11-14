@@ -314,7 +314,8 @@ fn definitions() -> Value {
                     "required": ["position"],
                     "additionalProperties": false
                 }
-            }
+            },
+            "join_inputs": { "type": ["integer", "null"], "minimum": 2 }
         })),
     );
     defs.insert(

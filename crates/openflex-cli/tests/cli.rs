@@ -1332,3 +1332,335 @@ fn chinese_experiment_tables_and_markdown_reports_are_localised() {
         assert!(text.contains(expected), "missing {expected}: {text}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// B12: checkpoints (--save-checkpoint / --resume)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn checkpoint_round_trip_matches_a_direct_run() {
+    let dir = TempDir::new("checkpoint-roundtrip");
+    let model = dir.write("demo.ofm", MODEL);
+    let checkpoint = dir.join("checkpoint.json");
+
+    let direct = openflex(&[
+        "run",
+        &path_str(&model),
+        "--stop-time",
+        "200",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&direct), 0, "stderr: {}", stderr(&direct));
+
+    let partial = openflex(&[
+        "run",
+        &path_str(&model),
+        "--stop-time",
+        "80",
+        "--save-checkpoint",
+        &path_str(&checkpoint),
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&partial), 0, "stderr: {}", stderr(&partial));
+    assert!(
+        stderr(&partial).is_empty(),
+        "--quiet must silence the checkpoint note: {}",
+        stderr(&partial)
+    );
+    assert_eq!(json(&stdout(&partial))["stop_time"], 80.0);
+
+    let saved = json(&fs::read_to_string(&checkpoint).expect("checkpoint was not written"));
+    assert_eq!(saved["format_version"], 1);
+    assert_eq!(saved["model_name"], "demo");
+    assert_eq!(saved["now"].as_f64(), Some(80.0));
+    assert!(
+        saved["events"]
+            .as_array()
+            .is_some_and(|events| !events.is_empty()),
+        "the checkpoint must carry the pending event calendar"
+    );
+
+    let resumed = openflex(&[
+        "run",
+        &path_str(&model),
+        "--until",
+        "200",
+        "--resume",
+        &path_str(&checkpoint),
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&resumed), 0, "stderr: {}", stderr(&resumed));
+    assert_eq!(
+        json(&stdout(&direct)),
+        json(&stdout(&resumed)),
+        "resuming to 200 must reproduce the direct run to 200"
+    );
+}
+
+#[test]
+fn checkpoint_combines_with_trace_and_can_be_saved_again() {
+    let dir = TempDir::new("checkpoint-trace");
+    let model = dir.write("demo.ofm", MODEL);
+    let checkpoint = dir.join("checkpoint.json");
+    let trace = dir.join("trace.jsonl");
+
+    let saved = openflex(&[
+        "run",
+        &path_str(&model),
+        "--stop-time",
+        "60",
+        "--save-checkpoint",
+        &path_str(&checkpoint),
+        "--trace",
+        &path_str(&trace),
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&saved), 0, "stderr: {}", stderr(&saved));
+    assert!(checkpoint.is_file(), "checkpoint was not written");
+    let events = fs::read_to_string(&trace).expect("trace was not written");
+    assert!(!events.trim().is_empty(), "trace must not be empty");
+    assert_eq!(json(&stdout(&saved))["stop_time"], 60.0);
+
+    let second = dir.join("checkpoint-120.json");
+    let resumed = openflex(&[
+        "run",
+        &path_str(&model),
+        "--until",
+        "120",
+        "--resume",
+        &path_str(&checkpoint),
+        "--save-checkpoint",
+        &path_str(&second),
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&resumed), 0, "stderr: {}", stderr(&resumed));
+    assert_eq!(json(&stdout(&resumed))["stop_time"], 120.0);
+    let saved_again = json(&fs::read_to_string(&second).expect("second checkpoint missing"));
+    assert_eq!(saved_again["now"].as_f64(), Some(120.0));
+}
+
+#[test]
+fn checkpoint_file_errors_have_stable_exit_codes() {
+    let dir = TempDir::new("checkpoint-errors");
+    let model = dir.write("demo.ofm", MODEL);
+
+    let missing = dir.join("missing.json");
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "1",
+        "--resume",
+        &path_str(&missing),
+    ]);
+    assert_eq!(code(&output), 1, "stderr: {}", stderr(&output));
+    assert!(
+        stderr(&output).contains("missing.json"),
+        "stderr: {}",
+        stderr(&output)
+    );
+
+    let broken = dir.write("broken.json", "{ this is not json");
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "1",
+        "--resume",
+        &path_str(&broken),
+    ]);
+    assert_eq!(code(&output), 2, "stderr: {}", stderr(&output));
+    assert!(
+        stderr(&output).contains("invalid checkpoint"),
+        "stderr: {}",
+        stderr(&output)
+    );
+
+    // A checkpoint from another model must be rejected before simulating.
+    let checkpoint = dir.join("checkpoint.json");
+    let saved = openflex(&[
+        "run",
+        &path_str(&model),
+        "--stop-time",
+        "50",
+        "--save-checkpoint",
+        &path_str(&checkpoint),
+        "--quiet",
+    ]);
+    assert_eq!(code(&saved), 0, "stderr: {}", stderr(&saved));
+    let other = dir.write(
+        "other.ofm",
+        &MODEL.replace("\"name\": \"demo\"", "\"name\": \"other\""),
+    );
+    let output = openflex(&[
+        "run",
+        &path_str(&other),
+        "--replications",
+        "1",
+        "--resume",
+        &path_str(&checkpoint),
+    ]);
+    assert_eq!(code(&output), 2, "stderr: {}", stderr(&output));
+    assert!(
+        stderr(&output).contains("belongs to model"),
+        "stderr: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn checkpoint_option_conflicts_are_usage_errors() {
+    let dir = TempDir::new("checkpoint-conflicts");
+    let model = dir.write("demo.ofm", MODEL);
+    let checkpoint = dir.join("checkpoint.json");
+    let model_path = path_str(&model);
+    let checkpoint_path = path_str(&checkpoint);
+
+    let cases: &[(&[&str], &str)] = &[
+        (
+            &[
+                "run",
+                &model_path,
+                "--save-checkpoint",
+                &checkpoint_path,
+                "--parallel",
+                "2",
+            ],
+            "--save-checkpoint",
+        ),
+        (
+            &[
+                "run",
+                &model_path,
+                "--save-checkpoint",
+                &checkpoint_path,
+                "--replications",
+                "2",
+            ],
+            "single replication",
+        ),
+        (
+            &[
+                "run",
+                &model_path,
+                "--resume",
+                &checkpoint_path,
+                "--parallel",
+                "2",
+                "--replications",
+                "1",
+            ],
+            "--resume",
+        ),
+        (
+            &[
+                "run",
+                &model_path,
+                "--resume",
+                &checkpoint_path,
+                "--seed",
+                "1",
+                "--seed",
+                "2",
+            ],
+            "several --seed",
+        ),
+        (
+            &[
+                "run",
+                &model_path,
+                "--resume",
+                &checkpoint_path,
+                "--trace",
+                &checkpoint_path,
+                "--replications",
+                "1",
+            ],
+            "--trace",
+        ),
+        (
+            &[
+                "run",
+                &model_path,
+                "--resume",
+                &checkpoint_path,
+                "--replications",
+                "2",
+            ],
+            "exactly one replication",
+        ),
+    ];
+    for (args, expected) in cases {
+        let output = openflex(args);
+        assert_eq!(code(&output), 2, "{args:?} stderr: {}", stderr(&output));
+        assert!(
+            stderr(&output).contains(expected),
+            "{args:?} should mention {expected:?}: {}",
+            stderr(&output)
+        );
+    }
+}
+
+#[test]
+fn resume_rejects_an_earlier_stop_time_and_a_different_warmup() {
+    let dir = TempDir::new("checkpoint-limits");
+    let model = dir.write("demo.ofm", MODEL);
+    let checkpoint = dir.join("checkpoint.json");
+
+    let saved = openflex(&[
+        "run",
+        &path_str(&model),
+        "--stop-time",
+        "100",
+        "--save-checkpoint",
+        &path_str(&checkpoint),
+        "--quiet",
+    ]);
+    assert_eq!(code(&saved), 0, "stderr: {}", stderr(&saved));
+
+    let earlier = openflex(&[
+        "run",
+        &path_str(&model),
+        "--until",
+        "50",
+        "--replications",
+        "1",
+        "--resume",
+        &path_str(&checkpoint),
+    ]);
+    assert_eq!(code(&earlier), 2, "stderr: {}", stderr(&earlier));
+    assert!(
+        stderr(&earlier).contains("before the checkpoint time"),
+        "stderr: {}",
+        stderr(&earlier)
+    );
+
+    let warmup = openflex(&[
+        "run",
+        &path_str(&model),
+        "--until",
+        "150",
+        "--warmup",
+        "10",
+        "--replications",
+        "1",
+        "--resume",
+        &path_str(&checkpoint),
+    ]);
+    assert_eq!(code(&warmup), 2, "stderr: {}", stderr(&warmup));
+    assert!(
+        stderr(&warmup).contains("warm-up"),
+        "stderr: {}",
+        stderr(&warmup)
+    );
+}
