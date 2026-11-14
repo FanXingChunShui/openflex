@@ -1,0 +1,28 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "person",
+  "description": "Person (B6): a walking operator with 0.5s load/unload serves a processor",
+  "time_unit": "seconds",
+  "run": { "stop_time": 60.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "constant", "value": 10.0 },
+        "max_arrivals": 6, "first_arrival": 0.0 } },
+    { "name": "Processor1", "kind": "processor", "pos": [0, 0], "params": {
+        "process_time": { "distribution": "constant", "value": 2.0 },
+        "process_operator": "Dispatcher1" } },
+    { "name": "Sink1", "kind": "sink", "pos": [5, 0], "params": {} },
+    { "name": "Dispatcher1", "kind": "dispatcher", "pos": [0, 0], "params": {} },
+    { "name": "Person1", "kind": "person", "pos": [0, 0], "params": {
+        "speed": 2.0,
+        "load_time": { "distribution": "constant", "value": 0.5 },
+        "unload_time": { "distribution": "constant", "value": 0.5 },
+        "home": "Dispatcher1" } }
+  ],
+  "connections": [
+    { "from": "Source1", "to": "Processor1" },
+    { "from": "Processor1", "to": "Sink1" },
+    { "from": "Dispatcher1", "to": "Person1" }
+  ]
+}

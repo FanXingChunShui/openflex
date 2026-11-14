@@ -69,6 +69,8 @@ OpenFlex 的目标是：用 Rust 实现一个与 FlexSim 核心建模语义一�
 | MultiProcessor | `slots` 个并行加工槽，每槽独立 setup/process；利用率按槽位秒/(时长×slots)；操作员按忙碌期整批申请 |
 | Split | 按 `by_item_type` 选端口，或轮询输出端口 |
 | Transporter / Dispatcher | Processor 通过 `process_operator` 向 Dispatcher 请求操作员；任务拆两段：home→取货（`network` 双向最短路或欧氏距离）→ load → 送达 → unload → 加工 → 空车回 home；`network` 缺失时回退欧氏；容量 = 可并发的任务数 |
+| Person / AGV | `person`（capacity 固定 1，平面行走，network 或欧氏）、`agv`（transporter alias）；与 Dispatcher 的优先级/抢占/容量机制共用 |
+| Elevator | 只做垂直运输：距离 = |Δz|，到站采样 `stop_time`（取货/送达各一次），`capacity` 表示并发任务数；对象新增 `z`（楼层/高度） |
 | Resource | 计数型资源池（`capacity`、`downtimes`）；占用期间 Processor 处于 `Blocked`，停机窗口内不发放 |
 | 全部对象 | 可选 `shifts`（`start`/`duration`/`repeat_every`）与 `timetable`（窗口列表）：窗口外进入 `OffShift`、暂停加工并拒绝进件，恢复后补足剩余加工时间 |
 | Pull 模式 | 对象可配置 `pull:{enabled,strategy,requirement}`，由下游主动从上游取件；`requirement` 为假的件被跳过 |
@@ -242,5 +244,5 @@ fluid 对象永不接收 flow item，fluid 与离散对象之间的连接在校�
 - 没有 3D 图形界面；布局坐标（`pos`）只用于运输距离与可视化导出。
 - 表达式语言不是完整的 FlexScript；复杂逻辑需要用多个对象/触发器组合表达。
 - 运输与任务执行器是简化模型（见 [COMPATIBILITY.md](COMPATIBILITY.md)）。
-- 未实现 Fluid、人员行走（A*）、AGV 交通控制、OptQuest 优化、3D 界面、Process Flow、脚本语言。
+- 未实现完整 3D 界面、FlexScript 脚本语言、OptQuest 优化；People 仅平面直线/network（无 A* 网格与人群）、AGV 无电池、电梯无门控/召唤策略。
 - Conveyor 仍是直线带（无曲线/Join 合流/入口公平轮转）；Rack 的 push_back/drive_in 为近似（无货位/巷道）；Transporter 无抢占/自定义多段任务/加速度/交通冲突。

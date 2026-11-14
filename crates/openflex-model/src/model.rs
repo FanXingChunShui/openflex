@@ -111,6 +111,9 @@ pub enum ObjectKind {
     Merge,
     Split,
     Transporter,
+    Person,
+    Agv,
+    Elevator,
     Dispatcher,
     Resource,
     Rack,
@@ -136,6 +139,9 @@ impl ObjectKind {
             ObjectKind::Merge => "merge",
             ObjectKind::Split => "split",
             ObjectKind::Transporter => "transporter",
+            ObjectKind::Person => "person",
+            ObjectKind::Agv => "agv",
+            ObjectKind::Elevator => "elevator",
             ObjectKind::Dispatcher => "dispatcher",
             ObjectKind::Resource => "resource",
             ObjectKind::Rack => "rack",
@@ -161,6 +167,9 @@ impl ObjectKind {
             "merge" => ObjectKind::Merge,
             "split" => ObjectKind::Split,
             "transporter" => ObjectKind::Transporter,
+            "person" => ObjectKind::Person,
+            "agv" => ObjectKind::Agv,
+            "elevator" => ObjectKind::Elevator,
             "dispatcher" => ObjectKind::Dispatcher,
             "resource" => ObjectKind::Resource,
             "rack" => ObjectKind::Rack,
@@ -188,6 +197,9 @@ impl ObjectKind {
             ObjectKind::Merge,
             ObjectKind::Split,
             ObjectKind::Transporter,
+            ObjectKind::Person,
+            ObjectKind::Agv,
+            ObjectKind::Elevator,
             ObjectKind::Dispatcher,
             ObjectKind::Resource,
             ObjectKind::Rack,
@@ -206,7 +218,10 @@ impl ObjectKind {
 pub struct Object {
     pub name: String,
     pub kind: ObjectKind,
+    /// Planar position (x, y) in layout units.
     pub pos: [f64; 2],
+    /// Height / floor elevation used by the elevator family (B6).
+    pub z: f64,
     pub params: ObjectParams,
 }
 
@@ -217,6 +232,7 @@ impl Object {
             name: name.into(),
             kind,
             pos: [0.0, 0.0],
+            z: 0.0,
             params,
         }
     }
@@ -224,10 +240,13 @@ impl Object {
 
 impl Serialize for Object {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(4))?;
+        let mut map = serializer.serialize_map(Some(5))?;
         map.serialize_entry("name", &self.name)?;
         map.serialize_entry("kind", self.kind.as_str())?;
         map.serialize_entry("pos", &self.pos)?;
+        if self.z != 0.0 {
+            map.serialize_entry("z", &self.z)?;
+        }
         map.serialize_entry("params", &self.params)?;
         map.end()
     }
@@ -241,6 +260,8 @@ impl<'de> Deserialize<'de> for Object {
             kind: String,
             #[serde(default)]
             pos: [f64; 2],
+            #[serde(default)]
+            z: f64,
             #[serde(default = "empty_object")]
             params: serde_json::Value,
         }
@@ -258,9 +279,9 @@ impl<'de> Deserialize<'de> for Object {
             .to_string();
         if let Some(map) = value.as_object() {
             for key in map.keys() {
-                if !matches!(key.as_str(), "name" | "kind" | "pos" | "params") {
+                if !matches!(key.as_str(), "name" | "kind" | "pos" | "z" | "params") {
                     return Err(de::Error::custom(format!(
-                        "object '{object_name}' has unknown key '{key}' (expected name, kind, pos, params)"
+                        "object '{object_name}' has unknown key '{key}' (expected name, kind, pos, z, params)"
                     )));
                 }
             }
@@ -285,6 +306,7 @@ impl<'de> Deserialize<'de> for Object {
             name: raw.name,
             kind,
             pos: raw.pos,
+            z: raw.z,
             params,
         })
     }
@@ -307,6 +329,9 @@ pub enum ObjectParams {
     Merge(MergeParams),
     Split(SplitParams),
     Transporter(TransporterParams),
+    Person(TransporterParams),
+    Agv(TransporterParams),
+    Elevator(ElevatorParams),
     Dispatcher(DispatcherParams),
     Resource(ResourceParams),
     Rack(RackParams),
@@ -336,6 +361,9 @@ impl ObjectParams {
             ObjectParams::Merge(_) => ObjectKind::Merge,
             ObjectParams::Split(_) => ObjectKind::Split,
             ObjectParams::Transporter(_) => ObjectKind::Transporter,
+            ObjectParams::Person(_) => ObjectKind::Person,
+            ObjectParams::Agv(_) => ObjectKind::Agv,
+            ObjectParams::Elevator(_) => ObjectKind::Elevator,
             ObjectParams::Dispatcher(_) => ObjectKind::Dispatcher,
             ObjectParams::Resource(_) => ObjectKind::Resource,
             ObjectParams::Rack(_) => ObjectKind::Rack,
@@ -362,6 +390,9 @@ impl ObjectParams {
             ObjectParams::Merge(p) => &p.triggers,
             ObjectParams::Split(p) => &p.triggers,
             ObjectParams::Transporter(p) => &p.triggers,
+            ObjectParams::Person(p) => &p.triggers,
+            ObjectParams::Agv(p) => &p.triggers,
+            ObjectParams::Elevator(p) => &p.triggers,
             ObjectParams::Dispatcher(p) => &p.triggers,
             ObjectParams::Resource(p) => &p.triggers,
             ObjectParams::Rack(p) => &p.triggers,
@@ -388,6 +419,9 @@ impl ObjectParams {
             ObjectParams::Merge(p) => p.timetable.as_ref(),
             ObjectParams::Split(p) => p.timetable.as_ref(),
             ObjectParams::Transporter(p) => p.timetable.as_ref(),
+            ObjectParams::Person(p) => p.timetable.as_ref(),
+            ObjectParams::Agv(p) => p.timetable.as_ref(),
+            ObjectParams::Elevator(p) => p.timetable.as_ref(),
             ObjectParams::Dispatcher(p) => p.timetable.as_ref(),
             ObjectParams::Resource(p) => p.timetable.as_ref(),
             ObjectParams::Rack(p) => p.timetable.as_ref(),
@@ -414,6 +448,9 @@ impl ObjectParams {
             ObjectParams::Merge(p) => p.pull.as_ref(),
             ObjectParams::Split(p) => p.pull.as_ref(),
             ObjectParams::Transporter(p) => p.pull.as_ref(),
+            ObjectParams::Person(p) => p.pull.as_ref(),
+            ObjectParams::Agv(p) => p.pull.as_ref(),
+            ObjectParams::Elevator(p) => p.pull.as_ref(),
             ObjectParams::Dispatcher(p) => p.pull.as_ref(),
             ObjectParams::Resource(p) => p.pull.as_ref(),
             ObjectParams::Rack(p) => p.pull.as_ref(),
@@ -440,6 +477,9 @@ impl ObjectParams {
             ObjectParams::Merge(p) => &p.shifts,
             ObjectParams::Split(p) => &p.shifts,
             ObjectParams::Transporter(p) => &p.shifts,
+            ObjectParams::Person(p) => &p.shifts,
+            ObjectParams::Agv(p) => &p.shifts,
+            ObjectParams::Elevator(p) => &p.shifts,
             ObjectParams::Dispatcher(p) => &p.shifts,
             ObjectParams::Resource(p) => &p.shifts,
             ObjectParams::Rack(p) => &p.shifts,
@@ -466,6 +506,9 @@ impl ObjectParams {
             ObjectKind::Merge => ObjectParams::Merge(decode(value)?),
             ObjectKind::Split => ObjectParams::Split(decode(value)?),
             ObjectKind::Transporter => ObjectParams::Transporter(decode(value)?),
+            ObjectKind::Person => ObjectParams::Person(decode(value)?),
+            ObjectKind::Agv => ObjectParams::Agv(decode(value)?),
+            ObjectKind::Elevator => ObjectParams::Elevator(decode(value)?),
             ObjectKind::Dispatcher => ObjectParams::Dispatcher(decode(value)?),
             ObjectKind::Resource => ObjectParams::Resource(decode(value)?),
             ObjectKind::Rack => ObjectParams::Rack(decode(value)?),
@@ -494,6 +537,9 @@ impl Serialize for ObjectParams {
             ObjectParams::Merge(p) => p.serialize(serializer),
             ObjectParams::Split(p) => p.serialize(serializer),
             ObjectParams::Transporter(p) => p.serialize(serializer),
+            ObjectParams::Person(p) => p.serialize(serializer),
+            ObjectParams::Agv(p) => p.serialize(serializer),
+            ObjectParams::Elevator(p) => p.serialize(serializer),
             ObjectParams::Dispatcher(p) => p.serialize(serializer),
             ObjectParams::Resource(p) => p.serialize(serializer),
             ObjectParams::Rack(p) => p.serialize(serializer),
@@ -1309,6 +1355,56 @@ pub struct TransporterParams {
     /// Optional shift plan; outside every window the object is off shift.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shifts: Vec<Shift>,
+}
+
+/// An elevator (B6): vertical task executer between object heights (`z`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ElevatorParams {
+    /// How many operator tasks the cabin can serve at once.
+    #[serde(default = "one_u32")]
+    pub capacity: u32,
+    /// Vertical travel speed (height units per time unit).
+    #[serde(default = "one_f64")]
+    pub speed: f64,
+    /// Dwell time at every stop (doors), default constant 0.
+    #[serde(default)]
+    pub stop_time: Distribution,
+    /// Object the cabin returns to when idle (a floor reference).
+    #[serde(default)]
+    pub home: Option<String>,
+
+    /// Linear availability windows (B11): outside them the object is off
+    /// shift. `None` means "always available".
+    #[serde(default)]
+    pub timetable: Option<TimeTable>,
+
+    /// Pull configuration (A3); `None` keeps the documented push default.
+    #[serde(default)]
+    pub pull: Option<PullParams>,
+
+    /// Object logic fired by the engine at the documented trigger points.
+    #[serde(default)]
+    pub triggers: Triggers,
+
+    /// Optional shift plan; outside every window the object is off shift.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shifts: Vec<Shift>,
+}
+
+impl Default for ElevatorParams {
+    fn default() -> Self {
+        Self {
+            capacity: 1,
+            speed: 1.0,
+            stop_time: Distribution::default(),
+            home: None,
+            timetable: None,
+            pull: None,
+            triggers: Triggers::default(),
+            shifts: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

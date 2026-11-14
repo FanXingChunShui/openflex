@@ -71,6 +71,29 @@ const FLOW_MODEL: &str = r#"{
 }
 "#;
 
+/// Fluid line: generator -> tank -> valve -> sink, matching
+/// `examples/objects/fluid-line.ofm`.
+const FLUID_MODEL: &str = r#"{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "fluid-demo",
+  "time_unit": "seconds",
+  "run": { "stop_time": 60.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "fluid_step": 0.1,
+  "objects": [
+    { "name": "Generator1", "kind": "fluid_generator", "pos": [0, 0], "params": { "flow_rate": 10.0 } },
+    { "name": "Tank1", "kind": "fluid_tank", "pos": [5, 0], "params": { "capacity": 100.0, "initial_level": 0.0, "max_outflow": 5.0 } },
+    { "name": "Valve1", "kind": "fluid_valve", "pos": [10, 0], "params": { "open": true, "ratio": 0.5 } },
+    { "name": "Sink1", "kind": "fluid_sink", "pos": [15, 0], "params": {} }
+  ],
+  "connections": [
+    { "from": "Generator1", "to": "Tank1" },
+    { "from": "Tank1", "to": "Valve1" },
+    { "from": "Valve1", "to": "Sink1" }
+  ]
+}
+"#;
+
 /// Model with an experiment that has a baseline and a faster scenario.
 const EXPERIMENT_MODEL: &str = r#"{
   "format": "openflex-model",
@@ -2323,4 +2346,198 @@ fn flow_flag_on_a_model_without_process_flow_is_harmless() {
     // The flag is documented in --help.
     let help = openflex(&["run", "--help"]);
     assert!(stdout(&help).contains("--flow"), "run --help lacks --flow");
+}
+
+// ---------------------------------------------------------------------------
+// B5: fluid report section and re-rendering
+// ---------------------------------------------------------------------------
+
+fn with_experiment(model: &str) -> String {
+    let mut value: serde_json::Value = serde_json::from_str(model).expect("valid fixture");
+    value["experiments"] = serde_json::json!([
+        { "name": "single", "replications": 1, "scenarios": [
+            { "name": "baseline", "overrides": [] }
+        ] }
+    ]);
+    serde_json::to_string_pretty(&value).expect("serialise fixture")
+}
+
+#[test]
+fn fluid_is_added_to_table_markdown_and_csv() {
+    let dir = TempDir::new("fluid-report");
+    let model = dir.write("fluid.ofm", FLUID_MODEL);
+
+    let table = openflex(&["run", &path_str(&model), "--fluid", "--quiet"]);
+    assert_eq!(code(&table), 0, "stderr: {}", stderr(&table));
+    let text = stdout(&table);
+    for expected in ["Fluid", "Total inflow", "Generator1", "Tank1", "Sink1"] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+
+    let markdown = openflex(&[
+        "run",
+        &path_str(&model),
+        "--fluid",
+        "--format",
+        "markdown",
+        "--quiet",
+    ]);
+    assert_eq!(code(&markdown), 0, "stderr: {}", stderr(&markdown));
+    let text = stdout(&markdown);
+    assert!(text.contains("## Fluid"), "markdown: {text}");
+    assert!(text.contains("| Tank1 | fluid_tank |"), "markdown: {text}");
+
+    let csv = openflex(&[
+        "run",
+        &path_str(&model),
+        "--fluid",
+        "--format",
+        "csv",
+        "--quiet",
+    ]);
+    assert_eq!(code(&csv), 0, "stderr: {}", stderr(&csv));
+    let text = stdout(&csv);
+    assert!(
+        text.contains("fluid_object,kind,level_avg,level_max,throughput,overflow,time_unit"),
+        "csv: {text}"
+    );
+    assert!(text.contains("Tank1,fluid_tank"), "csv: {text}");
+
+    // JSON always carries the structured field, with or without --fluid.
+    let json_output = openflex(&["run", &path_str(&model), "--format", "json", "--quiet"]);
+    assert_eq!(code(&json_output), 0, "stderr: {}", stderr(&json_output));
+    let report = json(&stdout(&json_output));
+    assert!(report["fluid"]["objects"].is_array());
+}
+
+#[test]
+fn fluid_flag_on_a_model_without_fluid_is_harmless() {
+    let dir = TempDir::new("fluid-none");
+    let model = dir.write("demo.ofm", MODEL);
+
+    let output = openflex(&["run", &path_str(&model), "--fluid", "--quiet"]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert!(
+        !stdout(&output).contains("Fluid"),
+        "stdout: {}",
+        stdout(&output)
+    );
+
+    let help = openflex(&["run", "--help"]);
+    assert!(
+        stdout(&help).contains("--fluid"),
+        "run --help lacks --fluid"
+    );
+}
+
+#[test]
+fn report_rerenders_flow_and_fluid_sections() {
+    let dir = TempDir::new("report-sections");
+
+    let flow_model = dir.write("flow.ofm", FLOW_MODEL);
+    let flow_reports = dir.join("flow-reports");
+    let run = openflex(&[
+        "run",
+        &path_str(&flow_model),
+        "--report-dir",
+        &path_str(&flow_reports),
+        "--quiet",
+    ]);
+    assert_eq!(code(&run), 0, "stderr: {}", stderr(&run));
+    let flow_report = flow_reports.join("report.json");
+
+    let without = openflex(&["report", &path_str(&flow_report)]);
+    assert_eq!(code(&without), 0, "stderr: {}", stderr(&without));
+    assert!(!stdout(&without).contains("Process Flow"));
+
+    let with = openflex(&["report", &path_str(&flow_report), "--flow"]);
+    assert_eq!(code(&with), 0, "stderr: {}", stderr(&with));
+    assert!(
+        stdout(&with).contains("Process Flow"),
+        "report --flow: {}",
+        stdout(&with)
+    );
+
+    let fluid_model = dir.write("fluid.ofm", FLUID_MODEL);
+    let fluid_reports = dir.join("fluid-reports");
+    let run = openflex(&[
+        "run",
+        &path_str(&fluid_model),
+        "--report-dir",
+        &path_str(&fluid_reports),
+        "--quiet",
+    ]);
+    assert_eq!(code(&run), 0, "stderr: {}", stderr(&run));
+    let fluid_report = fluid_reports.join("report.json");
+
+    let with = openflex(&[
+        "report",
+        &path_str(&fluid_report),
+        "--fluid",
+        "--format",
+        "markdown",
+    ]);
+    assert_eq!(code(&with), 0, "stderr: {}", stderr(&with));
+    let text = stdout(&with);
+    assert!(text.contains("## Fluid"), "report --fluid: {text}");
+    assert!(
+        text.contains("| Tank1 | fluid_tank |"),
+        "report --fluid: {text}"
+    );
+}
+
+#[test]
+fn experiment_and_report_rerender_support_flow_and_fluid() {
+    let dir = TempDir::new("experiment-sections");
+
+    let flow_model = dir.write("flow-experiment.ofm", &with_experiment(FLOW_MODEL));
+    let flow_reports = dir.join("flow-experiments");
+    let run = openflex(&[
+        "experiment",
+        &path_str(&flow_model),
+        "--report-dir",
+        &path_str(&flow_reports),
+        "--flow",
+        "--quiet",
+    ]);
+    assert_eq!(code(&run), 0, "stderr: {}", stderr(&run));
+    assert!(
+        stdout(&run).contains("Process Flow"),
+        "experiment --flow did not render the flow section"
+    );
+    let readback = openflex(&["report", "--experiment", &path_str(&flow_reports), "--flow"]);
+    assert_eq!(code(&readback), 0, "stderr: {}", stderr(&readback));
+    assert!(
+        stdout(&readback).contains("Process Flow"),
+        "report --experiment --flow did not render the flow section"
+    );
+
+    let fluid_model = dir.write("fluid-experiment.ofm", &with_experiment(FLUID_MODEL));
+    let fluid_reports = dir.join("fluid-experiments");
+    let run = openflex(&[
+        "experiment",
+        &path_str(&fluid_model),
+        "--report-dir",
+        &path_str(&fluid_reports),
+        "--fluid",
+        "--quiet",
+    ]);
+    assert_eq!(code(&run), 0, "stderr: {}", stderr(&run));
+    assert!(
+        stdout(&run).contains("Fluid"),
+        "experiment --fluid did not render the fluid section"
+    );
+    let readback = openflex(&[
+        "report",
+        "--experiment",
+        &path_str(&fluid_reports),
+        "--fluid",
+        "--format",
+        "markdown",
+    ]);
+    assert_eq!(code(&readback), 0, "stderr: {}", stderr(&readback));
+    assert!(
+        stdout(&readback).contains("## Fluid"),
+        "report --experiment --fluid did not render the fluid section"
+    );
 }

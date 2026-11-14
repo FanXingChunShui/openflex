@@ -350,6 +350,15 @@ fn definitions() -> Value {
         })),
     );
     defs.insert(
+        "elevator_params".into(),
+        params_schema(json!({
+            "capacity": { "type": "integer", "minimum": 1, "default": 1 },
+            "speed": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
+            "stop_time": { "$ref": "#/$defs/distribution" },
+            "home": { "type": ["string", "null"] }
+        })),
+    );
+    defs.insert(
         "dispatcher_params".into(),
         params_schema(json!({ "max_tasks": { "type": "integer", "minimum": 0, "default": 0 } })),
     );
@@ -563,6 +572,9 @@ fn object_schema() -> Value {
         "merge",
         "split",
         "transporter",
+        "person",
+        "agv",
+        "elevator",
         "dispatcher",
         "resource",
         "rack",
@@ -585,6 +597,9 @@ fn object_schema() -> Value {
         "merge_params",
         "split_params",
         "transporter_params",
+        "transporter_params",
+        "transporter_params",
+        "elevator_params",
         "dispatcher_params",
         "resource_params",
         "rack_params",
@@ -617,6 +632,7 @@ fn object_schema() -> Value {
                 "maxItems": 2,
                 "default": [0.0, 0.0]
             },
+            "z": { "type": "number", "default": 0.0 },
             "params": { "type": "object" }
         },
         "required": ["name", "kind"],

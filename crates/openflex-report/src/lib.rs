@@ -29,11 +29,15 @@ mod sim;
 mod xlsx;
 
 pub use compare::{Comparison, MetricComparison, ObjectComparison, ReportRef, compare_reports};
-pub use experiment::{ExperimentReport, ScenarioReport, sanitize, write_experiment_reports};
+pub use experiment::{
+    ExperimentReport, ScenarioReport, sanitize, write_experiment_reports,
+    write_experiment_reports_with_sections,
+};
 pub use sim::{
-    REPLICATIONS_CSV, REPORT_CSV, REPORT_JSON, REPORT_MARKDOWN, to_csv, to_csv_with_flow, to_json,
-    to_markdown, to_markdown_with_flow, to_replications_csv, to_table, to_table_with_flow,
-    write_reports, write_reports_with_flow,
+    REPLICATIONS_CSV, REPORT_CSV, REPORT_JSON, REPORT_MARKDOWN, to_csv, to_csv_with_flow,
+    to_csv_with_sections, to_json, to_markdown, to_markdown_with_flow, to_markdown_with_sections,
+    to_replications_csv, to_table, to_table_with_flow, to_table_with_sections, write_reports,
+    write_reports_with_flow, write_reports_with_sections,
 };
 pub use xlsx::write_xlsx;
 
@@ -87,7 +91,7 @@ pub enum ReportError {
 
 /// Render one simulation report in the requested format.
 pub fn render_sim(report: &SimReport, format: Format) -> Result<String, ReportError> {
-    render_sim_with_flow(report, format, false)
+    render_sim_with_sections(report, format, false, false)
 }
 
 /// Render one simulation report, optionally with the process-flow section.
@@ -99,11 +103,21 @@ pub fn render_sim_with_flow(
     format: Format,
     include_flow: bool,
 ) -> Result<String, ReportError> {
+    render_sim_with_sections(report, format, include_flow, false)
+}
+
+/// Render one simulation report with optional process-flow and fluid sections.
+pub fn render_sim_with_sections(
+    report: &SimReport,
+    format: Format,
+    include_flow: bool,
+    include_fluid: bool,
+) -> Result<String, ReportError> {
     Ok(match format {
-        Format::Table => to_table_with_flow(report, include_flow),
+        Format::Table => to_table_with_sections(report, include_flow, include_fluid),
         Format::Json => to_json(report)?,
-        Format::Csv => to_csv_with_flow(report, include_flow),
-        Format::Markdown => to_markdown_with_flow(report, include_flow),
+        Format::Csv => to_csv_with_sections(report, include_flow, include_fluid),
+        Format::Markdown => to_markdown_with_sections(report, include_flow, include_fluid),
     })
 }
 
@@ -114,6 +128,33 @@ pub fn render_experiment(report: &ExperimentReport, format: Format) -> Result<St
         Format::Json => experiment::to_json(report),
         Format::Csv => Ok(experiment::to_csv(report)),
         Format::Markdown => Ok(experiment::to_markdown(report)),
+    }
+}
+
+/// Render an experiment with optional flow/fluid sections in every scenario.
+pub fn render_experiment_with_sections(
+    report: &ExperimentReport,
+    format: Format,
+    include_flow: bool,
+    include_fluid: bool,
+) -> Result<String, ReportError> {
+    match format {
+        Format::Table => Ok(experiment::to_table_with_sections(
+            report,
+            include_flow,
+            include_fluid,
+        )),
+        Format::Json => experiment::to_json(report),
+        Format::Csv => Ok(experiment::to_csv_with_sections(
+            report,
+            include_flow,
+            include_fluid,
+        )),
+        Format::Markdown => Ok(experiment::to_markdown_with_sections(
+            report,
+            include_flow,
+            include_fluid,
+        )),
     }
 }
 

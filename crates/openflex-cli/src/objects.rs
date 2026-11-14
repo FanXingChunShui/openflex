@@ -51,6 +51,18 @@ pub fn describe_kind(kind: ObjectKind) -> (&'static str, &'static str) {
             "Carries flow items between objects (task executer).",
             "capacity: integer, default 1\nspeed: distance per time unit, default 1\nload_time / unload_time: distributions\nhome: optional object name (pickup point)\nnetwork: [{ from, to, distance }] bidirectional shortest-path travel (falls back to euclidean)",
         ),
+        ObjectKind::Person => (
+            "A walking operator that can take dispatcher tasks.",
+            "speed: distance per time unit, default 1\nload_time / unload_time: distributions\nhome: optional object name\nnetwork: optional [{from,to,distance}] road network\ncapacity is fixed at 1",
+        ),
+        ObjectKind::Agv => (
+            "An automated guided vehicle (transporter alias).",
+            "capacity: integer, default 1\nspeed: distance per time unit, default 1\nload_time / unload_time: distributions\nhome: optional object name\nnetwork: optional [{from,to,distance}]\nbattery/charging are not modelled yet",
+        ),
+        ObjectKind::Elevator => (
+            "A vertical task executer between object heights (z).",
+            "capacity: integer, default 1\nspeed: height per time unit, default 1\nstop_time: door dwell distribution, default constant 0\nhome: optional floor object",
+        ),
         ObjectKind::Dispatcher => (
             "Hands out transport tasks to transporters.",
             "max_tasks: integer, 0 = unlimited",

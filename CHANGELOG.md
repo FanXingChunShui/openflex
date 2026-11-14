@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.8.0 — 2026-11-15
+
+### 任务执行器扩展（B6 最小族）
+
+- 新增 `person`（capacity=1、平面/network 行走）、`agv`（transporter alias）、`elevator`（垂直运输、停靠时间、并发任务容量）。
+- 对象新增 `z`（楼层/高度，默认 0，旧 JSON 不变）；Dispatcher 任务执行器族扩展为 Transporter/Person/Agv/Elevator，
+  优先级、抢占、容量与等待统计全部沿用。
+- 示例：`elevator.ofm`（5 件精确时序）、`person.ofm`、`agv.ofm`；`tests/b6.rs` 5 个测试。
+- 简化：电梯无门控/召唤/井道冲突、Person 无 A*/拥挤、AGV 无电池。
+
+### 报告与预览
+
+- `run --fluid` 在 table/markdown/csv 增加 Fluid 段（每对象液位/吞吐/溢出 + 系统总量）。
+- `report` / `experiment` 支持 `--flow` 与 `--fluid` 重渲染（含归档 csv/md）。
+- 交互式 HTML 预览（v0.7.0 已落地）。
+
+### 验证
+
+- 276 个测试全绿（core 125：golden 10、objects 45、p0 16、checkpoint 6、process_flow 6、fluid 5、b6 5）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.8.0 三平台产物发布并 SHA256 校验。
+
 ## v0.7.0 — 2026-11-15
 
 ### Fluid 对象族（B5 最小）

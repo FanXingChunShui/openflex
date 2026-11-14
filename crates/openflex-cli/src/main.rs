@@ -132,6 +132,9 @@ enum Command {
         /// Show process-flow statistics in table/CSV/Markdown (JSON always carries them).
         #[arg(long)]
         flow: bool,
+        /// Show fluid statistics in table/CSV/Markdown (JSON always carries them).
+        #[arg(long)]
+        fluid: bool,
         /// Validate the model and print the run plan without simulating.
         #[arg(long)]
         dry_run: bool,
@@ -152,6 +155,12 @@ enum Command {
         /// Write a JSONL trace per scenario replication under --report-dir.
         #[arg(long, requires = "report_dir")]
         trace: bool,
+        /// Show process-flow statistics in the experiment report.
+        #[arg(long)]
+        flow: bool,
+        /// Show fluid statistics in the experiment report.
+        #[arg(long)]
+        fluid: bool,
     },
     /// Re-render a saved report, or summarise an experiment directory.
     Report {
@@ -167,6 +176,12 @@ enum Command {
         /// Write the rendered report here instead of standard output.
         #[arg(long, short = 'o', value_name = "FILE")]
         output: Option<PathBuf>,
+        /// Add the process-flow section when the saved report contains one.
+        #[arg(long)]
+        flow: bool,
+        /// Add the fluid section when the saved report contains one.
+        #[arg(long)]
+        fluid: bool,
     },
     /// Compare two saved reports object by object (A/B scenario analysis).
     Compare {
@@ -581,6 +596,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             save_checkpoint,
             resume,
             flow,
+            fluid,
             dry_run,
         } => {
             let mut model = load_model(&path)?;
@@ -632,7 +648,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                         format,
                         report_dir: report_dir.as_deref(),
                         xlsx: xlsx.as_deref(),
-                        flow,
+                        sections: Sections { flow, fluid },
                         quiet,
                     },
                     progress,
@@ -648,7 +664,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                     format,
                     report_dir: report_dir.as_deref(),
                     xlsx: xlsx.as_deref(),
-                    flow,
+                    sections: Sections { flow, fluid },
                     quiet,
                 },
             )
@@ -659,6 +675,8 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             format,
             report_dir,
             trace,
+            flow,
+            fluid,
         } => {
             let model = load_model(&path)?;
             run_experiments(
@@ -667,6 +685,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                 format,
                 report_dir.as_deref(),
                 trace,
+                Sections { flow, fluid },
                 quiet,
             )
         }
@@ -675,17 +694,24 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             experiment,
             format,
             output,
+            flow,
+            fluid,
         } => {
             let text = match (path, experiment) {
                 (Some(path), None) => {
                     let sim = report::read_report(&path)
                         .map_err(|error| Failure::from(error).with_path(&path))?;
-                    report::render_sim(&sim, format.into())?
+                    report::render_sim_with_sections(&sim, format.into(), flow, fluid)?
                 }
                 (None, Some(directory)) => {
                     let experiment = report::read_experiment(&directory)
                         .map_err(|error| Failure::from(error).with_path(&directory))?;
-                    report::render_experiment(&experiment, format.into())?
+                    report::render_experiment_with_sections(
+                        &experiment,
+                        format.into(),
+                        flow,
+                        fluid,
+                    )?
                 }
                 _ => {
                     return Err(Failure::usage(anyhow!(
@@ -1149,27 +1175,50 @@ fn checkpoint_failure(error: openflex_core::SimError) -> Failure {
     }
 }
 
+/// Optional report sections requested on the command line.
+#[derive(Debug, Clone, Copy, Default)]
+struct Sections {
+    flow: bool,
+    fluid: bool,
+}
+
 /// Rendering/export options shared by the plain, traced and checkpoint paths.
 struct RunOutput<'a> {
     format: Format,
     report_dir: Option<&'a Path>,
     xlsx: Option<&'a Path>,
-    flow: bool,
+    sections: Sections,
     quiet: bool,
 }
 
 /// Render and export a report (shared by plain, traced and checkpoint runs).
 fn finish_run(report: &SimReport, output: &RunOutput<'_>) -> Result<(), Failure> {
-    if output.flow && report.process_flow.is_none() {
+    if output.sections.flow && report.process_flow.is_none() {
         note(
             output.quiet,
             "note: the model has no process flow; nothing to add to the report",
         );
     }
-    let text = report::render_sim_with_flow(report, output.format.into(), output.flow)?;
+    if output.sections.fluid && report.fluid.is_none() {
+        note(
+            output.quiet,
+            "note: the model has no fluid objects; nothing to add to the report",
+        );
+    }
+    let text = report::render_sim_with_sections(
+        report,
+        output.format.into(),
+        output.sections.flow,
+        output.sections.fluid,
+    )?;
     emit(&text, None, output.quiet)?;
     if let Some(directory) = output.report_dir {
-        let files = report::write_reports_with_flow(report, directory, output.flow)?;
+        let files = report::write_reports_with_sections(
+            report,
+            directory,
+            output.sections.flow,
+            output.sections.fluid,
+        )?;
         note(
             output.quiet,
             &format!("{} {}", i18n::t("wrote"), join_paths(&files)),
@@ -1403,6 +1452,7 @@ fn run_experiments(
     format: Format,
     report_dir: Option<&Path>,
     trace: bool,
+    sections: Sections,
     quiet: bool,
 ) -> Result<(), Failure> {
     let experiments: Vec<_> = model
@@ -1470,10 +1520,20 @@ fn run_experiments(
             time_unit: model.time_unit,
             scenarios: scenario_reports,
         };
-        let text = report::render_experiment(&experiment_report, format.into())?;
+        let text = report::render_experiment_with_sections(
+            &experiment_report,
+            format.into(),
+            sections.flow,
+            sections.fluid,
+        )?;
         emit(&text, None, quiet)?;
         if let Some(root) = report_dir {
-            let files = report::write_experiment_reports(&experiment_report, root)?;
+            let files = report::write_experiment_reports_with_sections(
+                &experiment_report,
+                root,
+                sections.flow,
+                sections.fluid,
+            )?;
             note(
                 quiet,
                 &format!("{} {}", i18n::t("wrote"), join_paths(&files)),

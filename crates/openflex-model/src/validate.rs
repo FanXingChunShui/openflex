@@ -90,6 +90,12 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
                 "position must be finite",
             ));
         }
+        if !object.z.is_finite() {
+            issues.push(ValidationIssue::new(
+                format!("objects.{}.z", object.name),
+                "height must be finite",
+            ));
+        }
         issues.extend(validate_object(object));
     }
 
@@ -684,6 +690,58 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
                     "split mode needs at least one item (split_count >= 1)",
                 ));
             }
+        }
+        crate::model::ObjectParams::Person(params) => {
+            if params.capacity != 1 {
+                issues.push(ValidationIssue::new(
+                    location("capacity"),
+                    "a person always has capacity 1",
+                ));
+            }
+            if params.speed <= 0.0 {
+                issues.push(ValidationIssue::new(location("speed"), "must be positive"));
+            }
+            distribution!("load_time", &params.load_time);
+            distribution!("unload_time", &params.unload_time);
+        }
+        crate::model::ObjectParams::Agv(params) => {
+            if params.capacity == 0 {
+                issues.push(ValidationIssue::new(
+                    location("capacity"),
+                    "must be at least 1",
+                ));
+            }
+            if params.speed <= 0.0 {
+                issues.push(ValidationIssue::new(location("speed"), "must be positive"));
+            }
+            distribution!("load_time", &params.load_time);
+            distribution!("unload_time", &params.unload_time);
+            for (i, edge) in params.network.iter().enumerate() {
+                if edge.from.trim().is_empty() || edge.to.trim().is_empty() {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("network[{i}]")),
+                        "network edges need a from and a to node",
+                    ));
+                }
+                if !edge.distance.is_finite() || edge.distance <= 0.0 {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("network[{i}].distance")),
+                        "must be positive",
+                    ));
+                }
+            }
+        }
+        crate::model::ObjectParams::Elevator(params) => {
+            if params.capacity == 0 {
+                issues.push(ValidationIssue::new(
+                    location("capacity"),
+                    "must be at least 1",
+                ));
+            }
+            if params.speed <= 0.0 || !params.speed.is_finite() {
+                issues.push(ValidationIssue::new(location("speed"), "must be positive"));
+            }
+            distribution!("stop_time", &params.stop_time);
         }
         crate::model::ObjectParams::FluidGenerator(params) => {
             if !params.flow_rate.is_finite() || params.flow_rate <= 0.0 {

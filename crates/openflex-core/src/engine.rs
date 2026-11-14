@@ -26,7 +26,8 @@
 //! | `separator` | `unpack` releases `split_count + 1` items, `split` copies the item `split_count` times (A6) |
 //! | `merge` | one item per input port, optional `wait_for_all` gating |
 //! | `split` | round-robin or by-item-type distribution over the output ports |
-//! | `transporter`/`dispatcher` | two-leg operator tasks (travel to the home pickup point → load → travel to the requester → unload), euclidean or road-network travel, capacity (B4) |
+//! | `transporter`/`person`/`agv`/`dispatcher` | two-leg operator tasks (travel to the home pickup point → load → travel to the requester → unload), euclidean or road-network travel, capacity (B4); `person` is a walking executor and `agv` a transporter alias (B6) |
+//! | `elevator` | vertical task executer between object heights (`z`) with a door dwell `stop_time` and capacity-bounded concurrent tasks (B6) |
 //! | `rack` | queue storage (B2); `gravity`/`push_back` release LIFO, `drive_in` is FIFO; `channels`/`depth` narrow the usable capacity |
 //! | `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_sink` | fixed-step incompressible fluid network (B5): rates, tank level/overflow, valve ratio, link `flow_rate` caps |
 //! | any | optional `shifts` plan: off-shift pauses work and accumulates `off_shift` time |
@@ -49,7 +50,13 @@
 //!   calendar; a checkpoint therefore keeps the future events a resumed run
 //!   needs (see [`crate::checkpoint`]).
 //! * A transporter's `capacity` is interpreted as the number of operator tasks
-//!   it can serve concurrently (openflex v1 does not carry flow items).
+//!   it can serve concurrently (openflex v1 does not carry flow items). The
+//!   elevator uses the same convention.
+//! * The elevator family only moves vertically (`z`); there is no door state
+//!   machine, overload detection, call/scheduling strategy or shaft collision.
+//!   Persons/AGVs move on the plane with straight lines or the optional
+//!   `network`, have no walking grid/A* or crowding, and AGV batteries are not
+//!   modelled (documented alias of the transporter).
 //! * Operators stay with a processor through a breakdown instead of being
 //!   released; the processor simply pauses.
 //! * A MultiProcessor requests its whole crew (`slots` operators) for a busy
@@ -623,6 +630,8 @@ pub(crate) struct ObjectRt {
     merge_slots: Vec<Option<FlowItem>>,
     /// Task executer runtime.
     position: [f64; 2],
+    /// Height (floor) used by the elevator family (B6).
+    z: f64,
     capacity: u32,
     tasks: usize,
     /// Requester currently served by this transporter (A10 preemption).
@@ -696,6 +705,7 @@ impl ObjectRt {
             pending_parts: Vec::new(),
             merge_slots: Vec::new(),
             position: object.pos,
+            z: object.z,
             capacity: 1,
             tasks: 0,
             serving_requester: None,
@@ -736,6 +746,9 @@ impl ObjectRt {
                 runtime.join_inputs = params.join_inputs.unwrap_or(0);
             }
             ObjectParams::Transporter(params) => runtime.capacity = params.capacity.max(1),
+            ObjectParams::Person(_) => runtime.capacity = 1,
+            ObjectParams::Agv(params) => runtime.capacity = params.capacity.max(1),
+            ObjectParams::Elevator(params) => runtime.capacity = params.capacity.max(1),
             ObjectParams::Combiner(params) => runtime.combine_mode = params.mode,
             ObjectParams::MultiProcessor(params) => {
                 runtime.lanes = (0..params.slots.max(1)).map(|_| Lane::default()).collect();
@@ -1194,24 +1207,28 @@ impl<'m> Simulation<'m> {
         // Transporter home positions and dispatcher teams (either direction).
         let mut transporters = vec![Vec::new(); model.objects.len()];
         for (index, object) in model.objects.iter().enumerate() {
-            if let ObjectParams::Transporter(params) = &object.params
-                && let Some(home) = &params.home
-                && let Some(&target) = by_name.get(home)
+            let home = match &object.params {
+                ObjectParams::Transporter(params) => params.home.clone(),
+                ObjectParams::Person(params) => params.home.clone(),
+                ObjectParams::Agv(params) => params.home.clone(),
+                ObjectParams::Elevator(params) => params.home.clone(),
+                _ => None,
+            };
+            if let Some(home) = home
+                && let Some(&target) = by_name.get(&home)
             {
                 objects[index].home = Some(target);
             }
             for &conn in &outputs[index] {
                 let to = conns[conn].to;
-                match (object.kind, model.objects[to].kind) {
-                    (ObjectKind::Dispatcher, ObjectKind::Transporter) => {
-                        transporters[index].push(to);
-                        objects[to].assigned_dispatcher = Some(index);
-                    }
-                    (ObjectKind::Transporter, ObjectKind::Dispatcher) => {
-                        transporters[to].push(index);
-                        objects[index].assigned_dispatcher = Some(to);
-                    }
-                    _ => {}
+                let from_kind = object.kind;
+                let to_kind = model.objects[to].kind;
+                if from_kind == ObjectKind::Dispatcher && is_task_executer_kind(to_kind) {
+                    transporters[index].push(to);
+                    objects[to].assigned_dispatcher = Some(index);
+                } else if is_task_executer_kind(from_kind) && to_kind == ObjectKind::Dispatcher {
+                    transporters[to].push(index);
+                    objects[index].assigned_dispatcher = Some(to);
                 }
             }
         }
@@ -2328,6 +2345,9 @@ impl<'m> Simulation<'m> {
                 .is_some_and(Option::is_none),
             ObjectParams::Split(_) => true,
             ObjectParams::Transporter(_)
+            | ObjectParams::Person(_)
+            | ObjectParams::Agv(_)
+            | ObjectParams::Elevator(_)
             | ObjectParams::Dispatcher(_)
             | ObjectParams::Resource(_) => false,
             ObjectParams::BasicFr(_) => object.content.is_empty(),
@@ -2363,6 +2383,9 @@ impl<'m> Simulation<'m> {
             ObjectKind::Source
             | ObjectKind::Sink
             | ObjectKind::Transporter
+            | ObjectKind::Person
+            | ObjectKind::Agv
+            | ObjectKind::Elevator
             | ObjectKind::Dispatcher
             | ObjectKind::Resource
             | ObjectKind::FluidGenerator
@@ -4228,20 +4251,55 @@ impl<'m> Simulation<'m> {
 
     /// Travel time from the transporter's current position to its pickup point
     /// (its `home`, or the current position when no home is configured).
+    fn transport_is_elevator(&self, transporter: usize) -> bool {
+        self.objects[transporter].kind == ObjectKind::Elevator
+    }
+
     fn transport_pickup_travel(&self, transporter: usize) -> f64 {
         let speed = self.transport_speed(transporter);
-        match self.objects[transporter].home {
-            Some(home) => {
-                distance(
-                    self.objects[transporter].position,
-                    self.objects[home].position,
-                ) / speed
-            }
-            None => 0.0,
+        let Some(home) = self.objects[transporter].home else {
+            return 0.0;
+        };
+        if self.transport_is_elevator(transporter) {
+            (self.objects[transporter].z - self.objects[home].z).abs() / speed
+        } else {
+            distance(
+                self.objects[transporter].position,
+                self.objects[home].position,
+            ) / speed
         }
     }
 
-    /// B4: first task leg — arrive at the pickup point (the transporter's
+    /// B6: dwell time at a stop (elevator doors); zero for other executors.
+    fn transport_dwell(&mut self, transporter: usize) -> f64 {
+        let distribution = match &self.model.objects[transporter].params {
+            ObjectParams::Elevator(params) => params.stop_time.clone(),
+            _ => return 0.0,
+        };
+        self.sample(&distribution).max(0.0)
+    }
+
+    fn transport_load_time(&mut self, transporter: usize) -> f64 {
+        let distribution = match &self.model.objects[transporter].params {
+            ObjectParams::Transporter(params)
+            | ObjectParams::Person(params)
+            | ObjectParams::Agv(params) => params.load_time.clone(),
+            _ => Distribution::Constant { value: 0.0 },
+        };
+        self.sample(&distribution).max(0.0)
+    }
+
+    fn transport_unload_time(&mut self, transporter: usize) -> f64 {
+        let distribution = match &self.model.objects[transporter].params {
+            ObjectParams::Transporter(params)
+            | ObjectParams::Person(params)
+            | ObjectParams::Agv(params) => params.unload_time.clone(),
+            _ => Distribution::Constant { value: 0.0 },
+        };
+        self.sample(&distribution).max(0.0)
+    }
+
+    /// B4/B6: first task leg — travel to the pickup point (the executor's
     /// `home`), load the operator there and travel to the requester.
     fn handle_transport_pickup(
         &mut self,
@@ -4250,15 +4308,13 @@ impl<'m> Simulation<'m> {
     ) -> Result<(), SimError> {
         if let Some(home) = self.objects[transporter].home {
             self.objects[transporter].position = self.objects[home].position;
+            self.objects[transporter].z = self.objects[home].z;
         }
-        let load_distribution = match &self.model.objects[transporter].params {
-            ObjectParams::Transporter(params) => params.load_time.clone(),
-            _ => Distribution::Constant { value: 0.0 },
-        };
-        let load = self.sample(&load_distribution).max(0.0);
+        let dwell = self.transport_dwell(transporter);
+        let load = self.transport_load_time(transporter);
         let travel = self.transport_leg_travel(transporter, requester);
         self.schedule(
-            self.now + load + travel,
+            self.now + dwell + load + travel,
             EventKind::TransportArrive(transporter, requester),
         );
         Ok(())
@@ -4270,25 +4326,29 @@ impl<'m> Simulation<'m> {
         requester: usize,
     ) -> Result<(), SimError> {
         self.objects[transporter].position = self.objects[requester].position;
-        let unload_distribution = match &self.model.objects[transporter].params {
-            ObjectParams::Transporter(params) => params.unload_time.clone(),
-            _ => Distribution::Constant { value: 0.0 },
-        };
-        let unload = self.sample(&unload_distribution).max(0.0);
+        self.objects[transporter].z = self.objects[requester].z;
+        let dwell = self.transport_dwell(transporter);
+        let unload = self.transport_unload_time(transporter);
         self.schedule(
-            self.now + unload,
+            self.now + dwell + unload,
             EventKind::OperatorLoaded(transporter, requester),
         );
         Ok(())
     }
 
-    /// B4: shortest distance for one operational leg of a transport task.
+    /// B4/B6: shortest distance for one operational leg of a transport task.
     ///
     /// With a `network` the leg uses the shortest path between the two objects;
-    /// without one it falls back to the straight-line distance.
+    /// without one it falls back to the straight-line distance. The elevator
+    /// family travels vertically between object heights (`z`) only.
     fn transport_object_distance(&self, transporter: usize, from: usize, to: usize) -> f64 {
+        if self.transport_is_elevator(transporter) {
+            return (self.objects[from].z - self.objects[to].z).abs();
+        }
         let edges: Vec<NetworkEdge> = match &self.model.objects[transporter].params {
-            ObjectParams::Transporter(params) => params.network.clone(),
+            ObjectParams::Transporter(params)
+            | ObjectParams::Person(params)
+            | ObjectParams::Agv(params) => params.network.clone(),
             _ => Vec::new(),
         };
         if !edges.is_empty()
@@ -4302,7 +4362,10 @@ impl<'m> Simulation<'m> {
 
     fn transport_speed(&self, transporter: usize) -> f64 {
         match &self.model.objects[transporter].params {
-            ObjectParams::Transporter(params) => params.speed.max(EPS),
+            ObjectParams::Transporter(params)
+            | ObjectParams::Person(params)
+            | ObjectParams::Agv(params) => params.speed.max(EPS),
+            ObjectParams::Elevator(params) => params.speed.max(EPS),
             _ => 1.0,
         }
     }
@@ -4312,6 +4375,9 @@ impl<'m> Simulation<'m> {
         let speed = self.transport_speed(transporter);
         match self.objects[transporter].home {
             Some(home) => self.transport_object_distance(transporter, home, requester) / speed,
+            None if self.transport_is_elevator(transporter) => {
+                (self.objects[transporter].z - self.objects[requester].z).abs() / speed
+            }
             None => {
                 distance(
                     self.objects[transporter].position,
@@ -4321,19 +4387,10 @@ impl<'m> Simulation<'m> {
         }
     }
 
-    /// Full task estimate used to pick the closest idle transporter (B4).
+    /// Full task estimate used to pick the closest idle executor (B4/B6).
     fn transport_estimate_travel(&self, transporter: usize, requester: usize) -> f64 {
-        let speed = self.transport_speed(transporter);
-        let pickup = match self.objects[transporter].home {
-            Some(home) => {
-                distance(
-                    self.objects[transporter].position,
-                    self.objects[home].position,
-                ) / speed
-            }
-            None => 0.0,
-        };
-        pickup + self.transport_leg_travel(transporter, requester)
+        self.transport_pickup_travel(transporter)
+            + self.transport_leg_travel(transporter, requester)
     }
 
     fn handle_operator_loaded(
@@ -4376,6 +4433,7 @@ impl<'m> Simulation<'m> {
     fn handle_transport_home(&mut self, transporter: usize) -> Result<(), SimError> {
         if let Some(home) = self.objects[transporter].home {
             self.objects[transporter].position = self.objects[home].position;
+            self.objects[transporter].z = self.objects[home].z;
         }
         self.finish_task(transporter)
     }
@@ -5649,6 +5707,14 @@ fn object_field(sim: &Simulation<'_>, index: usize, field: &str) -> Option<Value
         "on_shift" => Some(Value::Bool(object.on_shift)),
         _ => None,
     }
+}
+
+/// Whether an object kind can execute dispatcher tasks (B4/B6).
+fn is_task_executer_kind(kind: ObjectKind) -> bool {
+    matches!(
+        kind,
+        ObjectKind::Transporter | ObjectKind::Person | ObjectKind::Agv | ObjectKind::Elevator
+    )
 }
 
 /// Whether an object kind belongs to the fluid family (B5).

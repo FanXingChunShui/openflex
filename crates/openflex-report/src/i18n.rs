@@ -97,6 +97,8 @@ fn english(key: &str) -> &'static str {
              openflex optimize basic.ofm --param Proc1.process_time.mean=2..6 --objective throughput --steps 5\n  \
              openflex layout basic.ofm --dimension 3d --html preview.html --animate 10\n  \
              openflex run basic.ofm --flow --format markdown\n  \
+             openflex run basic.ofm --fluid\n  \
+             openflex report out/report.json --flow --fluid\n  \
              cargo run --release -p openflex-cli --example bench_mm1 -- --model examples/mm1.ofm --stop 100000"
         }
         "error_prefix" => "error:",
@@ -157,6 +159,13 @@ fn english(key: &str) -> &'static str {
         "block" => "Block",
         "content_avg" => "Avg content",
         "avg_stay" => "Avg stay",
+        "fluid" => "Fluid",
+        "total_inflow" => "Total inflow",
+        "total_throughput" => "Total throughput",
+        "total_overflow" => "Total overflow",
+        "level_avg" => "Avg level",
+        "level_max" => "Max level",
+        "overflow" => "Overflow",
         _ => "",
     }
 }
@@ -187,6 +196,8 @@ fn chinese(key: &str) -> &'static str {
              openflex optimize basic.ofm --param Proc1.process_time.mean=2..6 --objective throughput --steps 5\n  \
              openflex layout basic.ofm --dimension 3d --html preview.html --animate 10\n  \
              openflex run basic.ofm --flow --format markdown\n  \
+             openflex run basic.ofm --fluid\n  \
+             openflex report out/report.json --flow --fluid\n  \
              cargo run --release -p openflex-cli --example bench_mm1 -- --model examples/mm1.ofm --stop 100000"
         }
         "error_prefix" => "错误：",
@@ -247,6 +258,13 @@ fn chinese(key: &str) -> &'static str {
         "block" => "块",
         "content_avg" => "平均内容",
         "avg_stay" => "平均停留",
+        "fluid" => "流体",
+        "total_inflow" => "总流入",
+        "total_throughput" => "总吞吐量",
+        "total_overflow" => "总溢出",
+        "level_avg" => "平均液位",
+        "level_max" => "最高液位",
+        "overflow" => "溢出",
         _ => "",
     }
 }
@@ -364,6 +382,13 @@ mod tests {
             "block",
             "content_avg",
             "avg_stay",
+            "fluid",
+            "total_inflow",
+            "total_throughput",
+            "total_overflow",
+            "level_avg",
+            "level_max",
+            "overflow",
         ];
         for key in keys {
             assert!(!english(key).is_empty(), "missing English key {key}");

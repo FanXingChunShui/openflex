@@ -172,6 +172,15 @@ fn header(experiment: &ExperimentReport) -> String {
 /// Terminal table: one summary row per scenario, followed by the full table of
 /// every scenario so nothing that `openflex run` would show is lost.
 pub fn to_table(experiment: &ExperimentReport) -> String {
+    to_table_with_sections(experiment, false, false)
+}
+
+/// Terminal table with optional flow/fluid sections in every scenario table.
+pub fn to_table_with_sections(
+    experiment: &ExperimentReport,
+    include_flow: bool,
+    include_fluid: bool,
+) -> String {
     let mut out = header(experiment);
     let _ = writeln!(out);
     let _ = writeln!(
@@ -225,12 +234,25 @@ pub fn to_table(experiment: &ExperimentReport) -> String {
                 );
             }
         }
-        let _ = writeln!(out, "{}", sim::to_table(&scenario.report));
+        let _ = writeln!(
+            out,
+            "{}",
+            sim::to_table_with_sections(&scenario.report, include_flow, include_fluid)
+        );
     }
     out
 }
 
 pub fn to_csv(experiment: &ExperimentReport) -> String {
+    to_csv_with_sections(experiment, false, false)
+}
+
+/// CSV with optional per-scenario flow/fluid sections after the summary table.
+pub fn to_csv_with_sections(
+    experiment: &ExperimentReport,
+    include_flow: bool,
+    include_fluid: bool,
+) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -253,10 +275,30 @@ pub fn to_csv(experiment: &ExperimentReport) -> String {
             summary.utilization
         );
     }
+    if include_flow || include_fluid {
+        for scenario in &experiment.scenarios {
+            let _ = writeln!(out, "\n# scenario: {}", scenario.name);
+            if include_flow {
+                out.push_str(&sim::flow_csv(&scenario.report));
+            }
+            if include_fluid {
+                out.push_str(&sim::fluid_csv(&scenario.report));
+            }
+        }
+    }
     out
 }
 
 pub fn to_markdown(experiment: &ExperimentReport) -> String {
+    to_markdown_with_sections(experiment, false, false)
+}
+
+/// Markdown with optional per-scenario flow/fluid sections.
+pub fn to_markdown_with_sections(
+    experiment: &ExperimentReport,
+    include_flow: bool,
+    include_fluid: bool,
+) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -313,6 +355,17 @@ pub fn to_markdown(experiment: &ExperimentReport) -> String {
         "openflex report --experiment reports --format markdown"
     );
     let _ = writeln!(out, "```");
+    if include_flow || include_fluid {
+        for scenario in &experiment.scenarios {
+            let _ = writeln!(out, "\n### {}", scenario.name);
+            if include_flow {
+                out.push_str(&sim::flow_markdown(&scenario.report));
+            }
+            if include_fluid {
+                out.push_str(&sim::fluid_markdown(&scenario.report));
+            }
+        }
+    }
     out
 }
 
@@ -325,6 +378,17 @@ pub fn write_experiment_reports(
     experiment: &ExperimentReport,
     root: &Path,
 ) -> Result<Vec<PathBuf>, ReportError> {
+    write_experiment_reports_with_sections(experiment, root, false, false)
+}
+
+/// Like [`write_experiment_reports`], optionally including flow/fluid sections
+/// in every archived scenario report.
+pub fn write_experiment_reports_with_sections(
+    experiment: &ExperimentReport,
+    root: &Path,
+    include_flow: bool,
+    include_fluid: bool,
+) -> Result<Vec<PathBuf>, ReportError> {
     let mut written = Vec::new();
     let base = root.join(sanitize(&experiment.experiment));
 
@@ -334,7 +398,12 @@ pub fn write_experiment_reports(
 
     for scenario in &experiment.scenarios {
         let directory = base.join(sanitize(&scenario.name));
-        written.extend(sim::write_reports(&scenario.report, &directory)?);
+        written.extend(sim::write_reports_with_sections(
+            &scenario.report,
+            &directory,
+            include_flow,
+            include_fluid,
+        )?);
     }
     Ok(written)
 }
