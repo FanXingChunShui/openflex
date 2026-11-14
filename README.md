@@ -7,6 +7,9 @@ OpenFlex 是一个独立的、从零实现的离散事件仿真（DES）系统�
 运行结果可复现（给定 seed 完全确定），报告可导出为 JSON / CSV / Markdown，并可在 macOS、Windows、
 Linux 上安装使用。
 
+> **最新发布**：[v0.1.0](https://github.com/FanXingChunShui/openflex/releases/tag/v0.1.0) —— macOS universal、
+> Windows x64/arm64、Linux x86_64/aarch64 压缩包，以及 Windows MSI、deb、rpm 安装包，附 `SHA256SUMS.txt`。
+
 > **净室声明**：本项目没有使用、复制或反编译 FlexSim 的任何源代码或二进制。所有行为规格来自公开的
 > 用户手册、帮助文档和公开教材中访客可见的内容，证据记录在 [docs/research/evidence.md](docs/research/evidence.md)。
 

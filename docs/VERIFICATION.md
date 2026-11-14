@@ -92,6 +92,18 @@ CI（`.github/workflows/release.yml`）在 macOS / Windows / Linux 矩阵上重�
 - `bash scripts/verify-packaging.sh`：**RESULT: PASS**（59 项本地检查；CI 矩阵、deb/rpm/MSI、Docker、签名公证为 CI/待办项）
 - 性能：release 构建下 M/M/1 约 20 万事件 / 0.95 s
 
+### GitHub 发布验证（v0.1.0）
+
+- Release：<https://github.com/FanXingChunShui/openflex/releases/tag/v0.1.0>
+- CI（release workflow）全部 job 成功：三平台测试、5 个构建矩阵（含两个可选 aarch64）、deb/rpm、MSI、发布。
+- 10 个产物全部下载并通过 `shasum -a 256 -c SHA256SUMS.txt` 校验：
+
+| 平台 | 产物 |
+|---|---|
+| macOS | `openflex-0.1.0-universal-apple-darwin.tar.gz`（解压后 `openflex --version` 输出 0.1.0） |
+| Windows | `openflex-0.1.0-x86_64-pc-windows-msvc.zip`、`aarch64` zip、`openflex-0.1.0-windows-x64.msi`（WiX 5.0.2） |
+| Linux | `x86_64` / `aarch64` tar.gz、`openflex_0.1.0_amd64.deb`、`openflex_0.1.0_arm64.deb`、`x86_64` / `aarch64` rpm |
+
 ### 黄金案例实测（release，2026-11-14）
 
 | 案例 | 指标 | 期望 | 实测 |
