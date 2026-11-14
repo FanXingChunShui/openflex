@@ -128,9 +128,18 @@ esac
 target="$out_dir/openflex-${VERSION}-1.${rpm_arch}.rpm"
 
 info "building $target"
-VERSION="$VERSION" ARCH="$ARCH" BINARY="$BINARY" README="$ROOT_DIR/README.md" \
-  nfpm package \
-  --config "$ROOT_DIR/packaging/rpm/nfpm.yaml" \
+# nfpm reads its config as a template; expand the variables here so the
+# generated package always points at the binary we just built. (Relying on
+# nfpm's own env expansion differs between releases.)
+tmp_config="$(mktemp "${TMPDIR:-/tmp}/openflex-nfpm.XXXXXX.yaml")"
+trap 'rm -f "$tmp_config"' EXIT
+sed -e "s|\${VERSION}|$VERSION|g" \
+    -e "s|\${ARCH}|$ARCH|g" \
+    -e "s|\${BINARY}|$BINARY|g" \
+    -e "s|\${README}|$ROOT_DIR/README.md|g" \
+    "$ROOT_DIR/packaging/rpm/nfpm.yaml" > "$tmp_config"
+nfpm package \
+  --config "$tmp_config" \
   --packager rpm \
   --target "$target"
 

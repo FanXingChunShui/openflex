@@ -389,9 +389,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
-          wix build packaging\windows\openflex.wxs `
-            -d Version=$env:VERSION `
-            -d BinaryPath=target\release\openflex.exe `
+          # WiX resolves a relative Source against the .wxs file, so pass the
+          # absolute path of the freshly built binary.
+          $bin = (Resolve-Path 'target\release\openflex.exe').Path
+          wix build 'packaging\windows\openflex.wxs' `
+            -d "Version=$env:VERSION" `
+            -d "BinaryPath=$bin" `
             -arch x64 `
             -o "dist\openflex-$env:VERSION-windows-x64.msi"
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "dist\openflex-$env:VERSION-windows-x64.msi").Hash.ToLowerInvariant()
