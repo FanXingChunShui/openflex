@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.6.0 — 2026-11-15
+
+### Process Flow token 运行时（B7 最小子集）
+
+- 模型级 `process_flow`：create / delay / assign / decision / sink 块与带端口的连接；校验无环、端点、必填块。
+- token 沿块流转，`SimReport.process_flow` 给出每块 input/output/content_avg/avg_stay_time 与 token 计数；
+  trace 记录 token 五类事件；检查点覆盖 token 队列与块统计（续跑与直接运行逐位一致）。
+- 前置补齐：from 对象的 `on_exit` 在路由之后、接收方 OnEntry 之前触发。
+- 限制：对象级绑定、transfer、块容量/触发器未实现。
+
+### 预览、优化与脚本
+
+- **等距 3D 预览**：`layout --dimension 3d --svg`（盒体/连接/箭头；`--animate N` 帧动画）。
+- **优化**：`openflex optimize --param Obj.param=2..6 --objective throughput|wip|utilization`（网格/确定性抽样、`--parallel`、多格式输出）。
+- **表达式字符串函数**：contains/starts_with/ends_with/upper/lower/concat、`+` 拼接、`item.name`。
+- **`.fsm` 概念导出**：`fsm_concept_json`（明确净室边界，仅概念映射）。
+
+### 验证
+
+- 257 个测试全绿（core 115：golden 10、objects 45、p0 16、checkpoint 6、process_flow 6）。
+- 黄金案例零回归；clippy 0；fmt 干净；228→257 测试。
+- v0.6.0 三平台产物发布并 SHA256 校验。
+
 ## v0.5.0 — 2026-11-14
 
 ### 对象与运行时

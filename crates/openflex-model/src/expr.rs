@@ -104,8 +104,38 @@ fn format_number(n: f64) -> String {
 /// Everything the evaluator needs to resolve variables.
 pub trait EvalContext {
     /// Resolve a dotted path (`time`, `item.type`, `Queue1.content`).
+    ///
+    /// The engine (not this crate) provides the values. The paths the engine
+    /// resolves out of the box are listed in [`BUILTIN_VARIABLES`]; model
+    /// defined paths are `object.<Name>.<field>` and `<Name>.<field>`.
     fn lookup(&self, path: &str) -> Option<Value>;
 }
+
+/// Variables the engine resolves without a model-defined object.
+///
+/// The string-valued entries are what the string functions
+/// ([`Expr::parse`] functions `contains`, `starts_with`, `ends_with`, `upper`,
+/// `lower`, `concat` and the `+` concatenation) are designed for, e.g.
+/// `contains(item.name, "Box")` or `upper(object.Queue1.state)`.
+pub const BUILTIN_VARIABLES: &[(&str, &str)] = &[
+    ("time", "number"),
+    ("sim.time", "number"),
+    ("now", "number"),
+    ("sim.items_created", "number"),
+    ("item.name", "string"),
+    ("item.type", "number"),
+    ("item.id", "number"),
+    ("item.created", "number"),
+    ("item.age", "number"),
+    ("item.label.<name>", "number"),
+    ("var.<name>", "number"),
+    ("object.<Name>.content", "number"),
+    ("object.<Name>.state", "string"),
+    ("object.<Name>.input", "number"),
+    ("object.<Name>.output", "number"),
+    ("<Name>.content", "number"),
+    ("<Name>.state", "string"),
+];
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ExprError {
@@ -225,7 +255,18 @@ impl Expr {
 
 fn eval_binary(op: BinOp, a: &Value, b: &Value) -> Result<Value, ExprError> {
     match op {
-        BinOp::Add => Ok(Value::Number(a.as_number()? + b.as_number()?)),
+        // `+` concatenates as soon as one side is a string; otherwise it is
+        // numeric addition. This mirrors FlexScript's `+` on strings and keeps
+        // `"n=" + item.type` useful without a cast function.
+        BinOp::Add => {
+            if matches!(a, Value::Str(_)) || matches!(b, Value::Str(_)) {
+                let mut text = a.as_str();
+                text.push_str(&b.as_str());
+                Ok(Value::Str(text))
+            } else {
+                Ok(Value::Number(a.as_number()? + b.as_number()?))
+            }
+        }
         BinOp::Sub => Ok(Value::Number(a.as_number()? - b.as_number()?)),
         BinOp::Mul => Ok(Value::Number(a.as_number()? * b.as_number()?)),
         BinOp::Div => {
@@ -332,6 +373,50 @@ fn eval_call(name: &str, args: &[Expr], ctx: &dyn EvalContext) -> Result<Value, 
                 args[0].eval(ctx)?.as_str().chars().count() as f64
             ))
         }
+        "contains" | "starts_with" | "ends_with" => {
+            if args.len() != 2 {
+                return Err(ExprError::Arity {
+                    name: name.into(),
+                    expected: 2,
+                    found: args.len(),
+                });
+            }
+            let haystack = args[0].eval(ctx)?.as_str();
+            let needle = args[1].eval(ctx)?.as_str();
+            Ok(Value::Bool(match name {
+                "contains" => haystack.contains(&needle),
+                "starts_with" => haystack.starts_with(&needle),
+                _ => haystack.ends_with(&needle),
+            }))
+        }
+        "upper" | "lower" => {
+            if args.len() != 1 {
+                return Err(ExprError::Arity {
+                    name: name.into(),
+                    expected: 1,
+                    found: args.len(),
+                });
+            }
+            let text = args[0].eval(ctx)?.as_str();
+            Ok(Value::Str(match name {
+                "upper" => text.to_uppercase(),
+                _ => text.to_lowercase(),
+            }))
+        }
+        "concat" => {
+            if args.is_empty() {
+                return Err(ExprError::Arity {
+                    name: "concat".into(),
+                    expected: 1,
+                    found: 0,
+                });
+            }
+            let mut text = String::new();
+            for arg in args {
+                text.push_str(&arg.eval(ctx)?.as_str());
+            }
+            Ok(Value::Str(text))
+        }
         _ => Err(ExprError::UnknownFunction(name.to_string())),
     }
 }
@@ -341,7 +426,7 @@ impl fmt::Display for Expr {
         match self {
             Expr::Number(n) => write!(f, "{n}"),
             Expr::Bool(b) => write!(f, "{b}"),
-            Expr::Str(s) => write!(f, "\"{s}\""),
+            Expr::Str(s) => write!(f, "\"{}\"", escape_string(s)),
             Expr::Path(p) => write!(f, "{p}"),
             Expr::Unary(op, inner) => {
                 let sym = match op {
@@ -380,6 +465,22 @@ impl fmt::Display for Expr {
             }
         }
     }
+}
+
+/// Escape a string so that [`Expr::Display`] renders a literal that parses
+/// back to the same value (quotes, backslashes, newlines and tabs).
+fn escape_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 impl Serialize for Expr {
@@ -829,5 +930,96 @@ mod tests {
             expr.eval(&ctx()),
             Err(ExprError::UnknownVariable(_))
         ));
+    }
+
+    fn string_ctx() -> Ctx {
+        let mut map = BTreeMap::new();
+        map.insert("item.name".into(), Value::Str("Box_A".into()));
+        map.insert("item.type".into(), Value::Number(2.0));
+        map.insert("object.Queue1.state".into(), Value::Str("releasing".into()));
+        Ctx(map)
+    }
+
+    #[test]
+    fn string_predicates() {
+        let ctx = string_ctx();
+        let eval = |source: &str| Expr::parse(source).unwrap().eval(&ctx).unwrap();
+        assert_eq!(eval(r#"contains(item.name, "Box")"#), Value::Bool(true));
+        assert_eq!(eval(r#"contains(item.name, "Tray")"#), Value::Bool(false));
+        assert_eq!(eval(r#"starts_with(item.name, "Box_")"#), Value::Bool(true));
+        assert_eq!(eval(r#"ends_with(item.name, "_A")"#), Value::Bool(true));
+        assert_eq!(
+            eval(r#"contains(object.Queue1.state, "releas")"#),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn string_case_and_concat() {
+        let ctx = string_ctx();
+        let eval = |source: &str| Expr::parse(source).unwrap().eval(&ctx).unwrap();
+        assert_eq!(eval("upper(item.name)"), Value::Str("BOX_A".into()));
+        assert_eq!(eval(r#"lower("ABC")"#), Value::Str("abc".into()));
+        assert_eq!(
+            eval(r#"concat("item=", item.name, "/", item.type)"#),
+            Value::Str("item=Box_A/2".into())
+        );
+        assert_eq!(eval(r#"upper(item.name) == "BOX_A""#), Value::Bool(true));
+    }
+
+    #[test]
+    fn plus_concatenates_strings_and_adds_numbers() {
+        let ctx = string_ctx();
+        let eval = |source: &str| Expr::parse(source).unwrap().eval(&ctx).unwrap();
+        assert_eq!(eval(r#""a" + "b""#), Value::Str("ab".into()));
+        assert_eq!(eval(r#""n=" + item.type"#), Value::Str("n=2".into()));
+        assert_eq!(eval(r#"item.type + 1"#), Value::Number(3.0));
+        assert_eq!(eval(r#"1 + 2 * 3"#), Value::Number(7.0));
+        // A string comparison still works after concatenation.
+        assert_eq!(eval(r#""a" + "b" == "ab""#), Value::Bool(true));
+    }
+
+    #[test]
+    fn string_function_arity_is_checked() {
+        let ctx = string_ctx();
+        for source in [
+            "contains(\"a\")",
+            "starts_with(\"a\")",
+            "upper()",
+            "lower(1, 2)",
+            "concat()",
+        ] {
+            let error = Expr::parse(source).unwrap().eval(&ctx).unwrap_err();
+            assert!(
+                matches!(error, ExprError::Arity { .. }),
+                "{source}: {error}"
+            );
+        }
+        assert!(matches!(
+            Expr::parse("unknown_fn(1)").unwrap().eval(&ctx),
+            Err(ExprError::UnknownFunction(_))
+        ));
+    }
+
+    #[test]
+    fn builtin_variables_include_item_name() {
+        assert!(
+            BUILTIN_VARIABLES
+                .iter()
+                .any(|(path, ty)| *path == "item.name" && *ty == "string")
+        );
+        let expr = Expr::parse(r#"contains(item.name, "Box") && item.type == 2"#).unwrap();
+        assert_eq!(expr.referenced_paths(), vec!["item.name", "item.type"]);
+    }
+
+    #[test]
+    fn string_literals_roundtrip_through_display() {
+        let expr = Expr::parse(r#""a\"b\\c\nd" + "x""#).unwrap();
+        let rendered = expr.to_string();
+        let back = Expr::parse(&rendered).unwrap();
+        assert_eq!(expr, back, "rendered: {rendered}");
+        let json = serde_json::to_string(&expr).unwrap();
+        let from_json: Expr = serde_json::from_str(&json).unwrap();
+        assert_eq!(expr, from_json);
     }
 }

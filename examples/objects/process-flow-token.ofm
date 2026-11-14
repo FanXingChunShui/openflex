@@ -1,0 +1,32 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "process-flow-token",
+  "description": "Token runtime (B7): Create 10 tokens -> Delay 2 -> Assign urgent label -> Decision -> two Sinks",
+  "time_unit": "seconds",
+  "run": { "stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [],
+  "process_flow": {
+    "blocks": [
+      { "id": "Create1", "kind": "create", "first_arrival": 0.0,
+        "interarrival": { "distribution": "constant", "value": 1000.0 },
+        "quantity": 10, "max_creations": 1 },
+      { "id": "Delay1", "kind": "delay",
+        "time": { "distribution": "constant", "value": 2.0 } },
+      { "id": "Assign1", "kind": "assign", "actions": [
+          { "action": "set_label", "name": "urgent", "value": "item.id % 2" } ] },
+      { "id": "Decide", "kind": "decision", "conditions": [
+          { "condition": "item.label.urgent == 1", "port": 0 },
+          { "condition": "item.label.urgent == 0", "port": 1 } ] },
+      { "id": "SinkUrgent", "kind": "sink" },
+      { "id": "SinkNormal", "kind": "sink" }
+    ],
+    "connections": [
+      { "from": "Create1", "to": "Delay1" },
+      { "from": "Delay1", "to": "Assign1" },
+      { "from": "Assign1", "to": "Decide" },
+      { "from": "Decide", "to": "SinkUrgent", "port": 0 },
+      { "from": "Decide", "to": "SinkNormal", "port": 1 }
+    ]
+  }
+}

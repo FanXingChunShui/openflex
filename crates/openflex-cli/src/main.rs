@@ -26,6 +26,7 @@ mod checkpoint;
 mod import;
 mod layout;
 mod objects;
+mod optimize;
 mod progress;
 mod schema;
 mod serve;
@@ -200,7 +201,7 @@ enum Command {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
-    /// Export the model's 2D object layout as an SVG drawing.
+    /// Export the model's object layout as an SVG drawing (2D or isometric 3D).
     Layout {
         /// Path to the model file.
         model: PathBuf,
@@ -213,6 +214,47 @@ enum Command {
         /// SVG height in pixels.
         #[arg(long, default_value_t = 800)]
         height: u32,
+        /// Projection: flat 2d (default) or isometric 3d.
+        #[arg(long, value_enum, default_value_t = Dimension::Flat2d)]
+        dimension: Dimension,
+        /// Generate N animation frames (requires --svg); writes out-0.svg, out-1.svg, …
+        #[arg(long, value_name = "N", requires = "svg")]
+        animate: Option<u32>,
+    },
+    /// Search parameter combinations for the best system objective (D4).
+    Optimize {
+        /// Path to the model file.
+        model: PathBuf,
+        /// Parameter range, e.g. `Proc1.process_time.mean=2..6` or `=1,3,5`; repeat for a grid.
+        #[arg(long = "param", value_name = "OBJECT.PARAM=VALUE", action = clap::ArgAction::Append)]
+        params: Vec<String>,
+        /// Objective to optimise.
+        #[arg(long, value_enum, default_value_t = optimize::Objective::Throughput)]
+        objective: optimize::Objective,
+        /// Number of values for each `START..END` range.
+        #[arg(long, default_value_t = 5)]
+        steps: u32,
+        /// Override the number of replications per candidate.
+        #[arg(long)]
+        replications: Option<u32>,
+        /// Override the base random seed.
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Evaluate candidates on N threads (results are still sorted deterministically).
+        #[arg(long, value_name = "N")]
+        parallel: Option<usize>,
+        /// Randomly sample this many combinations instead of the full grid.
+        #[arg(long, value_name = "N")]
+        samples: Option<usize>,
+        /// Evaluate a single object (default: the whole model).
+        #[arg(long, value_name = "NAME")]
+        object: Option<String>,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = Format::Table)]
+        format: Format,
+        /// Write the search result here instead of standard output.
+        #[arg(long, short = 'o', value_name = "FILE")]
+        output: Option<PathBuf>,
     },
     /// Serve a minimal read-only HTTP API on 127.0.0.1 (`/health`, `/objects`).
     Serve {
@@ -263,6 +305,17 @@ enum Format {
     Json,
     Csv,
     Markdown,
+}
+
+/// Projection used by `openflex layout`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Dimension {
+    /// Flat top-down rectangles (the original layout).
+    #[value(name = "2d")]
+    Flat2d,
+    /// Isometric boxes with height and shaded faces.
+    #[value(name = "3d")]
+    Iso3d,
 }
 
 impl From<Format> for report::Format {
@@ -686,11 +739,59 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             svg,
             width,
             height,
+            dimension,
+            animate,
         } => {
             let model = load_model(&model)?;
-            let text = layout::to_svg(&model, width, height);
+            if let Some(frames) = animate {
+                if frames == 0 {
+                    return Err(Failure::usage(anyhow!("--animate must be at least 1")));
+                }
+                let base = svg
+                    .as_deref()
+                    .ok_or_else(|| Failure::usage(anyhow!("--animate requires --svg")))?;
+                for index in 0..frames {
+                    let frame = layout::Frame {
+                        index,
+                        count: frames,
+                    };
+                    let text = render_layout(&model, width, height, dimension, Some(frame));
+                    emit(&text, Some(&frame_path(base, index)), quiet)?;
+                }
+                return Ok(());
+            }
+            let text = render_layout(&model, width, height, dimension, None);
             emit(&text, svg.as_deref(), quiet)
         }
+        Command::Optimize {
+            model,
+            params,
+            objective,
+            steps,
+            replications,
+            seed,
+            parallel,
+            samples,
+            object,
+            format,
+            output,
+        } => run_optimize(
+            &model,
+            &params,
+            objective,
+            &OptimizeOptions {
+                steps,
+                replications,
+                seed,
+                parallel,
+                samples,
+                object: object.as_deref(),
+                format,
+                output: output.as_deref(),
+                quiet,
+                progress,
+            },
+        ),
         Command::Serve { port } => {
             serve::serve(port, quiet).map_err(|error| Failure::runtime(anyhow!(error)))
         }
@@ -1054,6 +1155,33 @@ fn finish_run(report: &SimReport, output: &RunOutput<'_>) -> Result<(), Failure>
     Ok(())
 }
 
+/// Render a layout in the requested projection (and optional animation frame).
+fn render_layout(
+    model: &Model,
+    width: u32,
+    height: u32,
+    dimension: Dimension,
+    frame: Option<layout::Frame>,
+) -> String {
+    match dimension {
+        Dimension::Flat2d => layout::to_svg_flat(model, width, height, frame),
+        Dimension::Iso3d => layout::to_svg_3d(model, width, height, frame),
+    }
+}
+
+/// Derive one animation frame path: `layout.svg` → `layout-0.svg`.
+fn frame_path(base: &Path, index: u32) -> PathBuf {
+    let stem = base
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "layout".to_string());
+    let name = match base.extension() {
+        Some(extension) => format!("{stem}-{index}.{}", extension.to_string_lossy()),
+        None => format!("{stem}-{index}.svg"),
+    };
+    base.with_file_name(name)
+}
+
 /// Build the replication configurations for one run.
 ///
 /// Several `--seed` values mean one replication per seed (each derived with
@@ -1415,6 +1543,148 @@ fn parse_time_unit(value: &str) -> Result<&'static str, Failure> {
             "unknown time unit '{other}' (expected seconds, minutes, hours or days)"
         ))),
     }
+}
+
+/// Options for one `openflex optimize` invocation.
+struct OptimizeOptions<'a> {
+    steps: u32,
+    replications: Option<u32>,
+    seed: Option<u64>,
+    parallel: Option<usize>,
+    samples: Option<usize>,
+    object: Option<&'a str>,
+    format: Format,
+    output: Option<&'a Path>,
+    quiet: bool,
+    progress: bool,
+}
+
+/// Wrap a string error from the optimizer as a usage failure (exit 2).
+fn optimize_usage(error: String) -> Failure {
+    Failure::usage(anyhow!(error))
+}
+
+/// Evaluate a parameter grid and print the ranked candidates plus the best one.
+fn run_optimize(
+    model_path: &Path,
+    params: &[String],
+    objective: optimize::Objective,
+    options: &OptimizeOptions<'_>,
+) -> Result<(), Failure> {
+    if params.is_empty() {
+        return Err(Failure::usage(anyhow!(
+            "optimize needs at least one --param, e.g. --param Proc1.process_time.mean=2..6"
+        )));
+    }
+    if let Some(workers) = options.parallel
+        && workers == 0
+    {
+        return Err(Failure::usage(anyhow!("--parallel must be at least 1")));
+    }
+    let mut base = load_model(model_path)?;
+    if let Some(replications) = options.replications {
+        if replications == 0 {
+            return Err(Failure::usage(anyhow!("--replications must be at least 1")));
+        }
+        base.run.replications = replications;
+    }
+    if let Some(seed) = options.seed {
+        base.run.seed = seed;
+    }
+    if let Some(name) = options.object
+        && base.object(name).is_none()
+    {
+        return Err(Failure::usage(anyhow!(
+            "--object '{name}' does not exist in the model"
+        )));
+    }
+
+    let ranges = params
+        .iter()
+        .map(|spec| optimize::parse_param(spec, options.steps).map_err(optimize_usage))
+        .collect::<Result<Vec<_>, _>>()?;
+    let combinations =
+        optimize::combinations(&ranges, options.samples, base.run.seed).map_err(optimize_usage)?;
+    let models = combinations
+        .iter()
+        .map(|values| optimize::apply(&base, &ranges, values).map_err(optimize_usage))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    note(
+        options.quiet,
+        &format!("evaluating {} candidate(s)…", models.len()),
+    );
+    let reporter = Progress::new(options.progress, models.len());
+    let reports = match options.parallel {
+        Some(workers) if workers > 1 && models.len() > 1 => {
+            use rayon::prelude::*;
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(workers)
+                .thread_name(|index| format!("openflex-opt-{index}"))
+                .build()
+                .map_err(|error| {
+                    Failure::runtime(anyhow!("could not start {workers} worker threads: {error}"))
+                })?;
+            pool.install(|| {
+                models
+                    .par_iter()
+                    .map(|model| {
+                        let result = execute(model, &[], None, false);
+                        reporter.tick();
+                        result
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })?
+        }
+        _ => {
+            let mut reports = Vec::with_capacity(models.len());
+            for model in &models {
+                reports.push(execute(model, &[], None, false)?);
+                reporter.tick();
+            }
+            reports
+        }
+    };
+
+    let candidates = reports
+        .iter()
+        .zip(combinations.iter())
+        .enumerate()
+        .map(|(index, (report, values))| {
+            optimize::candidate(index, &ranges, values, report, objective, options.object)
+                .map_err(optimize_usage)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let best = optimize::best_index(&candidates, objective);
+    let text = optimize::render(
+        &base.name,
+        objective,
+        options.object,
+        &ranges,
+        &candidates,
+        best,
+        options.format.into(),
+    )
+    .map_err(|error| Failure::runtime(anyhow!(error)))?;
+    emit(&text, options.output, options.quiet)?;
+
+    if let Some(best_candidate) = candidates.get(best) {
+        let parameters = best_candidate
+            .assignments
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        note(
+            options.quiet,
+            &format!(
+                "best: {parameters} -> {} {:.4}",
+                objective.label(),
+                best_candidate.metric
+            ),
+        );
+    }
+    Ok(())
 }
 
 fn import_csv(

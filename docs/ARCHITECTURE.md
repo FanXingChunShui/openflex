@@ -58,6 +58,7 @@ OpenFlex 的目标是：用 Rust 实现一个与 FlexSim 核心建模语义一�
 
 | 对象 | 实现要点 |
 |---|---|
+| 任意对象（on_exit） | 项在**路由选择之后、接收方 OnEntry 之前**触发 from 对象的 `on_exit`，因此 on_exit 改的标签对下游路由可见；失败重试不重复触发 |
 | Source | 首件在 `first_arrival`（默认 0 = t=0 创建）；后续间隔按“上一批**离开** Source → 下一件到达”计时，下游阻塞时暂停到达节奏；也支持 `arrival_schedule`（表驱动、`repeat` 首行只首轮）与 `arrival_sequence`（上一批全部离开后推进） |
 | Queue / Rack | 收到即释放；攒批（`batch_size`）时整批一次性提交（离开时刻 = 批次释放时刻），`batch_max_wait` 到期强制放行 |
 | Processor | setup + process；故障立即打断加工、修复后补足剩余时间；操作员未到位时 `Blocked`；`operator_preempt` 可抢占低优先级操作员占用（被抢占方暂停并补足剩余时间） |
@@ -171,9 +172,17 @@ FlexSim 的公开帮助没有定义下面几项行为，但任何离散事件引
 
 限制：快照不内嵌模型（要求同名、同对象列表、同 seed/warmup）；仅单复现；trace 不随续跑恢复。
 
+## Process Flow token 运行时
+
+模型可声明 `process_flow`（模型级）：`blocks`（create/delay/assign/decision/sink；transfer 暂未实现，validate 拒绝）与带端口的 `connections`。
+token 是带 id/标签/创建时间的轻量实体，沿块流转；引擎新增 `FlowCreate/FlowAdvance/FlowDelayDone` 事件，
+`SimReport.process_flow` 给出每块 input/output/content_avg/avg_stay_time 与 token 创建/完成数，trace 记录
+`token_create/token_delay/token_assign/token_decision/token_sink`，检查点覆盖 token 队列与块统计。
+约束：流程图必须无环；decision 未命中条件走第一个出边；flow-only 模型允许空 `objects`；与对象模型可共存。
+
 ## Process Flow 等价模式
 
-FlexSim 的 Process Flow（token/block 图）暂未实现独立运行时。同样语义可用现有对象与触发器表达：
+同样的语义也可以用现有对象与触发器表达（无 token 运行时的场景）：
 
 | Process Flow 块 | OpenFlex 等价物 |
 |---|---|

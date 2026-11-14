@@ -307,6 +307,7 @@ mod tests {
             completed: Aggregate::from_samples(&[99.0]),
             created: Aggregate::from_samples(&[100.0]),
             little_check: None,
+            process_flow: None,
         }
     }
 

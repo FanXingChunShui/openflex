@@ -1880,3 +1880,259 @@ fn import_adds_a_default_source_to_a_structure_only_model() {
         stderr(&bare)
     );
 }
+
+// ---------------------------------------------------------------------------
+// B8: isometric layout and animation frames
+// ---------------------------------------------------------------------------
+
+#[test]
+fn layout_can_render_an_isometric_3d_preview() {
+    let dir = TempDir::new("layout-iso");
+    let model = dir.write("demo.ofm", MODEL);
+    let svg = dir.join("iso.svg");
+
+    let output = openflex(&[
+        "layout",
+        &path_str(&model),
+        "--dimension",
+        "3d",
+        "--svg",
+        &path_str(&svg),
+        "--width",
+        "1000",
+        "--height",
+        "700",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let text = fs::read_to_string(&svg).expect("iso.svg was not written");
+    assert!(text.contains("data-projection=\"isometric\""));
+    assert!(
+        text.matches("<polygon").count() >= 9,
+        "each box needs a top and two side faces"
+    );
+    for name in ["Source1", "Queue1", "Processor1", "Sink1"] {
+        assert!(text.contains(name), "missing {name}");
+    }
+    assert!(text.contains("class=\"link\""), "3D connections missing");
+    assert!(text.contains("face-top") && text.contains("face-left"));
+
+    // The default remains the flat 2D renderer.
+    let flat = openflex(&["layout", &path_str(&model)]);
+    assert_eq!(code(&flat), 0, "stderr: {}", stderr(&flat));
+    assert!(!stdout(&flat).contains("isometric"));
+    assert!(stdout(&flat).contains("<rect class=\"node"));
+}
+
+#[test]
+fn layout_animation_writes_a_frame_sequence() {
+    let dir = TempDir::new("layout-animate");
+    let model = dir.write("demo.ofm", MODEL);
+    let base = dir.join("frame.svg");
+
+    let output = openflex(&[
+        "layout",
+        &path_str(&model),
+        "--dimension",
+        "3d",
+        "--animate",
+        "3",
+        "--svg",
+        &path_str(&base),
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    for index in 0..3 {
+        let path = dir.join(&format!("frame-{index}.svg"));
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("{} was not written", path.display()));
+        assert!(
+            text.contains("class=\"item\""),
+            "frame {index} has no item marker"
+        );
+    }
+    assert!(
+        !base.exists(),
+        "the base path is not written for animations"
+    );
+
+    let missing_svg = openflex(&["layout", &path_str(&model), "--animate", "2"]);
+    assert_eq!(code(&missing_svg), 2, "stderr: {}", stderr(&missing_svg));
+    assert!(stderr(&missing_svg).contains("svg"));
+}
+
+// ---------------------------------------------------------------------------
+// D4: optimize
+// ---------------------------------------------------------------------------
+
+#[test]
+fn optimize_finds_the_highest_throughput_parameter() {
+    let dir = TempDir::new("optimize-throughput");
+    let model = dir.write("demo.ofm", MODEL);
+
+    let output = openflex(&[
+        "optimize",
+        &path_str(&model),
+        "--param",
+        "Processor1.process_time.mean=2..6",
+        "--steps",
+        "3",
+        "--objective",
+        "throughput",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let result = json(&stdout(&output));
+    assert_eq!(result["objective"], "throughput");
+    assert_eq!(result["direction"], "maximize");
+    let candidates = result["candidates"].as_array().expect("candidates");
+    assert_eq!(candidates.len(), 3);
+    assert_eq!(
+        result["best"]["parameters"]["Processor1.process_time.mean"], 2.0,
+        "a faster processor must win on throughput: {}",
+        result["best"]
+    );
+    let best_metric = result["best"]["metric"].as_f64().expect("metric");
+    for candidate in candidates {
+        assert!(
+            candidate["metric"].as_f64().unwrap_or_default() <= best_metric + 1e-12,
+            "a candidate beats the reported best"
+        );
+    }
+
+    // --object switches a WIP objective to one object; a faster processor
+    // keeps the queue emptier, so the smallest process time wins.
+    let wip = openflex(&[
+        "optimize",
+        &path_str(&model),
+        "--param",
+        "Processor1.process_time.mean=2..6",
+        "--steps",
+        "3",
+        "--objective",
+        "wip",
+        "--object",
+        "Queue1",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&wip), 0, "stderr: {}", stderr(&wip));
+    let result = json(&stdout(&wip));
+    assert_eq!(result["direction"], "minimize");
+    assert_eq!(
+        result["best"]["parameters"]["Processor1.process_time.mean"], 2.0,
+        "a faster processor should keep the queue emptier: {}",
+        result["best"]
+    );
+}
+
+#[test]
+fn optimize_validates_parameters_and_objectives() {
+    let dir = TempDir::new("optimize-errors");
+    let model = dir.write("demo.ofm", MODEL);
+
+    for bad in ["Processor1.process_time.mean=bad", "broken"] {
+        let output = openflex(&["optimize", &path_str(&model), "--param", bad, "--quiet"]);
+        assert_eq!(code(&output), 2, "{bad}: stderr: {}", stderr(&output));
+    }
+
+    let missing_object = openflex(&[
+        "optimize",
+        &path_str(&model),
+        "--param",
+        "Processor1.process_time.mean=2..6",
+        "--steps",
+        "2",
+        "--objective",
+        "utilization",
+        "--object",
+        "Nope",
+        "--quiet",
+    ]);
+    assert_eq!(
+        code(&missing_object),
+        2,
+        "stderr: {}",
+        stderr(&missing_object)
+    );
+    assert!(stderr(&missing_object).contains("--object"));
+
+    let no_params = openflex(&["optimize", &path_str(&model), "--quiet"]);
+    assert_eq!(code(&no_params), 2, "stderr: {}", stderr(&no_params));
+}
+
+#[test]
+fn optimize_samples_a_large_grid_and_renders_table_and_csv() {
+    let dir = TempDir::new("optimize-samples");
+    let model = dir.write("demo.ofm", MODEL);
+
+    let sampled = openflex(&[
+        "optimize",
+        &path_str(&model),
+        "--param",
+        "Processor1.process_time.mean=2..6",
+        "--param",
+        "Queue1.max_content=5,10,15",
+        "--steps",
+        "3",
+        "--samples",
+        "2",
+        "--format",
+        "table",
+        "--quiet",
+    ]);
+    assert_eq!(code(&sampled), 0, "stderr: {}", stderr(&sampled));
+    let table = stdout(&sampled);
+    assert!(table.contains("OpenFlex optimize: demo"), "table: {table}");
+    assert!(table.contains("best:"), "table: {table}");
+    assert_eq!(table.lines().filter(|line| line.contains('*')).count(), 1);
+
+    let csv = openflex(&[
+        "optimize",
+        &path_str(&model),
+        "--param",
+        "Processor1.process_time.mean=2..6",
+        "--steps",
+        "2",
+        "--format",
+        "csv",
+        "--quiet",
+    ]);
+    assert_eq!(code(&csv), 0, "stderr: {}", stderr(&csv));
+    let csv = stdout(&csv);
+    assert!(
+        csv.starts_with("rank,Processor1.process_time.mean,throughput,best,created,completed,avg_wip,utilization"),
+        "csv: {csv}"
+    );
+
+    // Candidate evaluation can run on a thread pool; the ranking is unchanged.
+    let serial = openflex(&[
+        "optimize",
+        &path_str(&model),
+        "--param",
+        "Processor1.process_time.mean=2..6",
+        "--steps",
+        "3",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    let parallel = openflex(&[
+        "optimize",
+        &path_str(&model),
+        "--param",
+        "Processor1.process_time.mean=2..6",
+        "--steps",
+        "3",
+        "--format",
+        "json",
+        "--parallel",
+        "2",
+        "--quiet",
+    ]);
+    assert_eq!(code(&serial), 0, "stderr: {}", stderr(&serial));
+    assert_eq!(code(&parallel), 0, "stderr: {}", stderr(&parallel));
+    assert_eq!(json(&stdout(&serial)), json(&stdout(&parallel)));
+}

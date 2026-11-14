@@ -397,6 +397,62 @@ fn definitions() -> Value {
             ]
         }),
     );
+    defs.insert(
+        "process_flow".into(),
+        json!({
+            "type": "object",
+            "properties": {
+                "blocks": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/process_flow_block" }
+                },
+                "connections": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/flow_connection" }
+                }
+            },
+            "additionalProperties": false
+        }),
+    );
+    defs.insert(
+        "flow_connection".into(),
+        json!({
+            "type": "object",
+            "properties": {
+                "from": { "type": "string" },
+                "to": { "type": "string" },
+                "port": { "type": ["integer", "null"], "minimum": 0 }
+            },
+            "required": ["from", "to"],
+            "additionalProperties": false
+        }),
+    );
+    defs.insert(
+        "process_flow_block".into(),
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "kind": { "enum": ["create", "delay", "assign", "decision", "sink", "transfer"] },
+                "first_arrival": { "type": "number", "default": 0.0 },
+                "interarrival": { "$ref": "#/$defs/distribution" },
+                "quantity": { "type": "integer", "minimum": 1, "default": 1 },
+                "max_creations": { "type": ["integer", "null"], "minimum": 1 },
+                "item_type": { "type": "integer", "minimum": 0, "default": 0 },
+                "labels": { "type": "object" },
+                "time": { "$ref": "#/$defs/distribution" },
+                "actions": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "conditions": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/conditional_port" }
+                },
+                "object": { "type": "string" }
+            },
+            "required": ["id", "kind"],
+            "additionalProperties": false
+        }),
+    );
+
     Value::Object(defs)
 }
 
@@ -452,7 +508,6 @@ fn model_schema() -> Value {
             "run": { "$ref": "#/$defs/run_settings" },
             "objects": {
                 "type": "array",
-                "minItems": 1,
                 "items": { "$ref": "#/$defs/object" }
             },
             "connections": {
@@ -463,9 +518,10 @@ fn model_schema() -> Value {
                 "type": "array",
                 "items": { "$ref": "#/$defs/experiment" }
             },
+            "process_flow": { "$ref": "#/$defs/process_flow" },
             "metadata": { "type": "object" }
         },
-        "required": ["name", "objects"],
+        "required": ["name"],
         "additionalProperties": false
     })
 }

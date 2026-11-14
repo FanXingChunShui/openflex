@@ -42,7 +42,7 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
     if model.name.trim().is_empty() {
         issues.push(ValidationIssue::new("name", "the model needs a name"));
     }
-    if model.objects.is_empty() {
+    if model.objects.is_empty() && model.process_flow.is_none() {
         issues.push(ValidationIssue::new("objects", "the model has no objects"));
     }
     if model.run.stop_time <= 0.0 {
@@ -162,20 +162,27 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
         }
     }
 
-    if !model
-        .objects
-        .iter()
-        .any(|object| object.kind == ObjectKind::Source)
-    {
-        issues.push(ValidationIssue::new("objects", "the model has no source"));
+    // A process-flow-only model has no source/sink objects; mixed models may
+    // still rely on the flow for tokens, so the object requirements only apply
+    // when no process flow is declared.
+    if model.process_flow.is_none() {
+        if !model
+            .objects
+            .iter()
+            .any(|object| object.kind == ObjectKind::Source)
+        {
+            issues.push(ValidationIssue::new("objects", "the model has no source"));
+        }
+        if !model
+            .objects
+            .iter()
+            .any(|object| object.kind == ObjectKind::Sink)
+        {
+            issues.push(ValidationIssue::new("objects", "the model has no sink"));
+        }
     }
-    if !model
-        .objects
-        .iter()
-        .any(|object| object.kind == ObjectKind::Sink)
-    {
-        issues.push(ValidationIssue::new("objects", "the model has no sink"));
-    }
+
+    issues.extend(validate_process_flow(model));
 
     issues
 }
@@ -698,6 +705,226 @@ fn is_runtime_state(name: &str) -> bool {
     )
 }
 
+/// Validate the optional Process Flow graph (B7).
+fn validate_process_flow(model: &Model) -> Vec<ValidationIssue> {
+    use crate::model::FlowBlockKind;
+
+    let Some(flow) = &model.process_flow else {
+        return Vec::new();
+    };
+    let mut issues = Vec::new();
+    if flow.blocks.is_empty() {
+        issues.push(ValidationIssue::new(
+            "process_flow.blocks",
+            "a process flow needs at least one block",
+        ));
+        return issues;
+    }
+
+    // Unique, non-empty ids.
+    let mut index: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for (position, block) in flow.blocks.iter().enumerate() {
+        if block.id.trim().is_empty() {
+            issues.push(ValidationIssue::new(
+                format!("process_flow.blocks[{position}].id"),
+                "block ids cannot be empty",
+            ));
+        } else if index.insert(block.id.as_str(), position).is_some() {
+            issues.push(ValidationIssue::new(
+                format!("process_flow.blocks.{}", block.id),
+                "duplicate block id",
+            ));
+        }
+    }
+
+    // Resolve connections and collect the outgoing ports per block.
+    let mut outgoing: Vec<Vec<u32>> = vec![Vec::new(); flow.blocks.len()];
+    for (position, connection) in flow.connections.iter().enumerate() {
+        let location = format!("process_flow.connections[{position}]");
+        let Some(&from) = index.get(connection.from.as_str()) else {
+            issues.push(ValidationIssue::new(
+                &location,
+                format!("unknown source block '{}'", connection.from),
+            ));
+            continue;
+        };
+        let Some(&to) = index.get(connection.to.as_str()) else {
+            issues.push(ValidationIssue::new(
+                &location,
+                format!("unknown target block '{}'", connection.to),
+            ));
+            continue;
+        };
+        if from == to {
+            issues.push(ValidationIssue::new(
+                &location,
+                "a block cannot connect to itself",
+            ));
+        }
+        let port = connection.port.unwrap_or(outgoing[from].len() as u32);
+        outgoing[from].push(port);
+    }
+
+    // Per-block constraints.
+    for (position, block) in flow.blocks.iter().enumerate() {
+        let location = format!("process_flow.blocks.{}", block.id);
+        match &block.kind {
+            FlowBlockKind::Create(params) => {
+                if params.quantity == 0 {
+                    issues.push(ValidationIssue::new(
+                        format!("{location}.quantity"),
+                        "must be at least 1",
+                    ));
+                }
+                if let Err(err) = params.interarrival.validate() {
+                    issues.push(ValidationIssue::new(
+                        format!("{location}.interarrival"),
+                        err,
+                    ));
+                }
+                let zero_interval = matches!(
+                    params.interarrival,
+                    crate::distribution::Distribution::Constant { value } if value <= 0.0
+                );
+                if zero_interval && params.max_creations.is_none() {
+                    issues.push(ValidationIssue::new(
+                        format!("{location}.interarrival"),
+                        "a zero interval without max_creations would create tokens forever",
+                    ));
+                }
+                if outgoing[position].len() != 1 {
+                    issues.push(ValidationIssue::new(
+                        &location,
+                        "a create block needs exactly one outgoing connection",
+                    ));
+                }
+            }
+            FlowBlockKind::Delay(params) => {
+                if let Err(err) = params.time.validate() {
+                    issues.push(ValidationIssue::new(format!("{location}.time"), err));
+                }
+                if outgoing[position].len() != 1 {
+                    issues.push(ValidationIssue::new(
+                        &location,
+                        "a delay block needs exactly one outgoing connection",
+                    ));
+                }
+            }
+            FlowBlockKind::Assign(params) => {
+                for (action_position, action) in params.actions.iter().enumerate() {
+                    if !matches!(
+                        action,
+                        crate::action::Action::SetLabel { .. }
+                            | crate::action::Action::SetItemType { .. }
+                            | crate::action::Action::IncrementLabel { .. }
+                    ) {
+                        issues.push(ValidationIssue::new(
+                            format!("{location}.actions[{action_position}]"),
+                            "assign blocks only support set_label, set_item_type and increment_label",
+                        ));
+                    }
+                }
+                if outgoing[position].len() != 1 {
+                    issues.push(ValidationIssue::new(
+                        &location,
+                        "an assign block needs exactly one outgoing connection",
+                    ));
+                }
+            }
+            FlowBlockKind::Decision(params) => {
+                if outgoing[position].is_empty() {
+                    issues.push(ValidationIssue::new(
+                        &location,
+                        "a decision block needs at least one outgoing connection",
+                    ));
+                }
+                for (condition_position, condition) in params.conditions.iter().enumerate() {
+                    if !outgoing[position].contains(&condition.port) {
+                        issues.push(ValidationIssue::new(
+                            format!("{location}.conditions[{condition_position}].port"),
+                            format!("no outgoing connection uses port {}", condition.port),
+                        ));
+                    }
+                }
+            }
+            FlowBlockKind::Sink => {
+                if !outgoing[position].is_empty() {
+                    issues.push(ValidationIssue::new(
+                        &location,
+                        "a sink block has no outgoing connections",
+                    ));
+                }
+            }
+            FlowBlockKind::Transfer(_) => issues.push(ValidationIssue::new(
+                &location,
+                "transfer blocks are not implemented yet (B7 backlog)",
+            )),
+        }
+    }
+
+    // The graph must be acyclic so tokens cannot loop forever.
+    if has_cycle(flow, &index) {
+        issues.push(ValidationIssue::new(
+            "process_flow",
+            "the block graph must be acyclic",
+        ));
+    }
+    if !flow
+        .blocks
+        .iter()
+        .any(|block| matches!(block.kind, FlowBlockKind::Create(_)))
+    {
+        issues.push(ValidationIssue::new(
+            "process_flow.blocks",
+            "a process flow needs a create block to produce tokens",
+        ));
+    }
+    if !flow
+        .blocks
+        .iter()
+        .any(|block| matches!(block.kind, FlowBlockKind::Sink))
+    {
+        issues.push(ValidationIssue::new(
+            "process_flow.blocks",
+            "a process flow needs a sink block to complete tokens",
+        ));
+    }
+    issues
+}
+
+/// Depth-first cycle detection over the resolved block graph.
+fn has_cycle(
+    flow: &crate::model::ProcessFlow,
+    index: &std::collections::BTreeMap<&str, usize>,
+) -> bool {
+    let count = flow.blocks.len();
+    let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for connection in &flow.connections {
+        let (Some(&from), Some(&to)) = (
+            index.get(connection.from.as_str()),
+            index.get(connection.to.as_str()),
+        ) else {
+            continue;
+        };
+        adjacency[from].push(to);
+    }
+    fn visit(node: usize, adjacency: &[Vec<usize>], state: &mut [u8]) -> bool {
+        state[node] = 1;
+        for &next in &adjacency[node] {
+            if state[next] == 1 {
+                return true;
+            }
+            if state[next] == 0 && visit(next, adjacency, state) {
+                return true;
+            }
+        }
+        state[node] = 2;
+        false
+    }
+    let mut state = vec![0u8; count];
+    (0..count).any(|node| state[node] == 0 && visit(node, &adjacency, &mut state))
+}
+
 fn is_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
@@ -738,6 +965,7 @@ mod tests {
                 strategy: None,
             }],
             experiments: Vec::new(),
+            process_flow: None,
             metadata: Default::default(),
         }
     }

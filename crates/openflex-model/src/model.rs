@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
-use crate::action::Triggers;
+use crate::action::{Action, Triggers};
 use crate::distribution::Distribution;
 use crate::expr::{Expr, ExprError};
 
@@ -1691,6 +1691,140 @@ pub struct Override {
 }
 
 // ---------------------------------------------------------------------------
+// Process Flow (B7)
+// ---------------------------------------------------------------------------
+
+/// A Process Flow graph attached to the model.
+///
+/// Tokens arrive at `create` blocks, travel along the connections, and are
+/// destroyed by `sink` blocks. The graph must be acyclic and every block id
+/// unique; the engine runs it next to the ordinary object model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessFlow {
+    #[serde(default)]
+    pub blocks: Vec<FlowBlock>,
+    #[serde(default)]
+    pub connections: Vec<FlowConnection>,
+}
+
+/// One block of a process flow.
+///
+/// The `kind` tag selects the block parameters, which are inlined next to the
+/// id: `{"id": "c1", "kind": "create", "quantity": 10, ...}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FlowBlock {
+    pub id: String,
+    #[serde(flatten)]
+    pub kind: FlowBlockKind,
+}
+
+/// Parameters of every block kind.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FlowBlockKind {
+    /// Creates tokens, either once (`max_creations: 1`) or periodically.
+    Create(FlowCreateParams),
+    /// Holds every token for a sampled delay before releasing it.
+    Delay(FlowDelayParams),
+    /// Applies label/type actions to the token.
+    Assign(FlowAssignParams),
+    /// Branches on token labels/type via ordered conditions.
+    Decision(FlowDecisionParams),
+    /// Destroys the token.
+    Sink,
+    /// Converts the token into a flow item and injects it into an object
+    /// (not implemented yet, see docs/BACKLOG.md B7).
+    Transfer(FlowTransferParams),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FlowCreateParams {
+    /// Model time of the first creation (default 0).
+    #[serde(default)]
+    pub first_arrival: f64,
+    /// Time between creation batches (default constant 0 = create once).
+    #[serde(default)]
+    pub interarrival: Distribution,
+    /// Tokens created per batch (default 1).
+    #[serde(default = "one_u32")]
+    pub quantity: u32,
+    /// Stop after this many batches (default: run until the stop time).
+    #[serde(default)]
+    pub max_creations: Option<u32>,
+    /// Item type carried by the tokens.
+    #[serde(default)]
+    pub item_type: u32,
+    /// Labels carried by the tokens.
+    #[serde(default)]
+    pub labels: BTreeMap<String, f64>,
+}
+
+impl Default for FlowCreateParams {
+    fn default() -> Self {
+        Self {
+            first_arrival: 0.0,
+            interarrival: Distribution::default(),
+            quantity: 1,
+            max_creations: None,
+            item_type: 0,
+            labels: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FlowDelayParams {
+    /// How long a token stays in the block.
+    #[serde(default = "one_dist")]
+    pub time: Distribution,
+}
+
+impl Default for FlowDelayParams {
+    fn default() -> Self {
+        Self { time: one_dist() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct FlowAssignParams {
+    /// Label/type actions applied to each token (other actions are rejected).
+    #[serde(default)]
+    pub actions: Vec<Action>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct FlowDecisionParams {
+    /// Ordered conditions; the first match selects a port. When no condition
+    /// matches the first outgoing connection is used as the default branch.
+    #[serde(default)]
+    pub conditions: Vec<ConditionalPort>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FlowTransferParams {
+    /// Object that should receive the token as a flow item.
+    pub object: String,
+}
+
+/// One directed connection between two flow blocks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FlowConnection {
+    pub from: String,
+    pub to: String,
+    /// Output port of the source block (used by decision blocks). When omitted
+    /// the declaration order is the port number.
+    #[serde(default)]
+    pub port: Option<u32>,
+}
+
+// ---------------------------------------------------------------------------
 // Model
 // ---------------------------------------------------------------------------
 
@@ -1713,6 +1847,8 @@ pub struct Model {
     pub connections: Vec<Connection>,
     #[serde(default)]
     pub experiments: Vec<Experiment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ProcessFlow>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
 }

@@ -23,6 +23,9 @@ Linux 上安装使用。
 | 路由规则（first available / round robin / random / 百分比 / 条件表达式 / 按 item type / 按标签） | ✅ |
 | 故障与维修（MTBF / MTTR）、班次与计划停机 | ✅ |
 | 多复现实验、场景覆盖（含 Stop/Warmup）、95% 置信区间（t 分布）、并行复现 | ✅ |
+| Process Flow（模型级 token 运行时：Create/Delay/Assign/Decision/Sink + 统计/trace/检查点） | ✅ 最小子集 |
+| 优化：`openflex optimize` 网格/随机搜索（throughput/WIP/利用率） | ✅ |
+| 等距 3D 预览（SVG，支持帧动画） | ✅ |
 | 报告：终端表格、JSON、CSV、Markdown | ✅ |
 | CLI：validate / run / experiment / report / compare / import / layout / serve / schema / completions | ✅ |
 | macOS / Windows / Linux 安装包与安装脚本 | ✅ |
@@ -132,12 +135,14 @@ openflex compare a.json b.json               # A/B 对比两个报告
 openflex import --csv arrivals.csv --out model.ofm   # 从到达表生成模型
 openflex import --objects objects.csv --connections connections.csv --out model.ofm  # 从对象/连接表生成
 openflex layout model.ofm --svg out.svg      # 导出 2D 布局图
+openflex layout model.ofm --dimension 3d --svg iso.svg   # 等距 3D 预览（可 --animate）
 openflex schema --out schema.json            # 导出模型 JSON Schema
 openflex serve --port 8080                   # 本地 HTTP：/health、/objects
 openflex completions zsh                     # shell 补全脚本
 openflex objects list                        # 列出所有对象类型
 openflex objects describe processor          # 查看对象参数
 openflex distributions                       # 列出 20 种统计分布
+openflex optimize model.ofm --param Processor1.process_time.mean=2..6 --objective throughput --steps 5
 openflex new mymodel --template line         # 生成模板模型
 
 # 性能基准（release）

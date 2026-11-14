@@ -1514,3 +1514,43 @@ fn process_flow_pattern_creates_assigns_delays_and_decides() {
         "delay block",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Processor on_entry / on_exit triggers (B7 prerequisite)
+// ---------------------------------------------------------------------------
+
+/// The item leaving a processor runs its `on_exit` trigger before routing, and
+/// entering it runs `on_entry`, so trigger-assigned labels drive decisions.
+#[test]
+fn processor_on_entry_and_on_exit_triggers_fire() {
+    let report = run(r#"{
+      "format": "openflex-model", "version": 1, "name": "processor-triggers",
+      "run": { "stop_time": 200.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+      "objects": [
+        { "name": "S", "kind": "source", "params": {
+            "interarrival": { "distribution": "constant", "value": 10.0 },
+            "max_arrivals": 10, "first_arrival": 0.0 } },
+        { "name": "P", "kind": "processor", "params": {
+            "process_time": { "distribution": "constant", "value": 1.0 },
+            "triggers": {
+              "on_entry": [{ "action": "increment_label", "name": "visits", "by": "1" }],
+              "on_exit": [{ "action": "set_label", "name": "urgent", "value": "1" }]
+            } } },
+        { "name": "Q", "kind": "queue", "params": {} },
+        { "name": "SinkUrgent", "kind": "sink", "params": {} },
+        { "name": "SinkNormal", "kind": "sink", "params": {} }
+      ],
+      "connections": [
+        { "from": "S", "to": "P" },
+        { "from": "P", "to": "Q" },
+        { "from": "Q", "to": "SinkUrgent", "strategy": { "type": "by_condition", "conditions": [
+            { "condition": "item.label.urgent == 1", "port": 0 },
+            { "condition": "item.label.urgent == 0", "port": 1 } ] } },
+        { "from": "Q", "to": "SinkNormal" }
+      ]
+    }"#);
+    assert_eq!(input(&report, "P"), 10.0);
+    assert_eq!(out(&report, "P"), 10.0);
+    assert_eq!(input(&report, "SinkUrgent"), 10.0);
+    assert_eq!(input(&report, "SinkNormal"), 0.0);
+}

@@ -60,11 +60,19 @@
 //!   re-queued, then resumed when an operator returns. Tasks still travelling
 //!   are not preempted, only single-capacity transporters are candidates, and
 //!   a partial multi-operator crew is not re-balanced.
-//! * There is no Process Flow token runtime. The supported blocks map onto
-//!   ordinary objects and triggers: Create -> `source`, Delay -> `processor`
-//!   (or a queue with a timer), Assign -> `on_create`/`on_entry` trigger
-//!   actions, Decision -> `by_condition` routing, Sink -> `sink`. See
+//! * Process Flow (B7) runs as a token graph next to the object model:
+//!   `create` blocks produce tokens, `delay` holds them for a sampled time,
+//!   `assign` applies label/type actions, `decision` branches on expressions
+//!   and `sink` destroys them. The graph must be acyclic (validated), blocks
+//!   have no capacity limit, and `transfer` blocks are not implemented yet
+//!   (validation rejects them). Per-block statistics are reported in
+//!   `SimReport.process_flow` and token events are written to the trace log
+//!   (`token_create`/`token_delay`/`token_assign`/`token_decision`/`token_sink`).
+//!   The object-free equivalent of the same graph is shown in
 //!   `examples/objects/process-flow-equivalent.ofm`.
+//! * An item leaving an object runs that object's `on_exit` trigger before the
+//!   receiver's `on_entry`/`on_receive` logic (Processor included); the sink
+//!   still runs its own `on_exit` when it destroys the item.
 //! * Repeating arrival schedules treat later passes' row times as offsets from
 //!   the previous pass's last row (the first row's time only applies once).
 //! * A released queue batch is committed at once: the items count as leaving
@@ -75,9 +83,9 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 
 use openflex_model::{
-    Action, ArrivalStyle, CombinerMode, Distribution, DowntimeWindow, EvalContext, Model,
-    NetworkEdge, Object, ObjectKind, ObjectParams, PortStrategy, PullParams, QueueOrder, RackType,
-    SeparateMode, SimTrigger, Value,
+    Action, ArrivalStyle, CombinerMode, ConditionalPort, Distribution, DowntimeWindow, EvalContext,
+    FlowBlockKind, Model, NetworkEdge, Object, ObjectKind, ObjectParams, PortStrategy, PullParams,
+    QueueOrder, RackType, SeparateMode, SimTrigger, Value,
 };
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
@@ -88,7 +96,10 @@ use crate::checkpoint::{CHECKPOINT_FORMAT_VERSION, Checkpoint};
 use crate::conveyor::Belt;
 use crate::error::SimError;
 use crate::shifts;
-use crate::stats::{ObjectStats, ReplicationResult, SimConfig, SimReport, StateTimes};
+use crate::stats::{
+    ObjectStats, ReplicationFlow, ReplicationFlowBlock, ReplicationResult, SimConfig, SimReport,
+    StateTimes,
+};
 use crate::trace::{TraceEvent, TraceLog};
 
 /// Safety valve: a model that never drains its events is reported instead of
@@ -205,8 +216,74 @@ pub(crate) enum EventKind {
     ResourceRetry(usize),
     /// A3: a downstream object asks its upstream objects for an item.
     Pull(usize),
+    /// A process-flow create block produces its next token batch (B7).
+    FlowCreate(usize),
+    /// A process-flow block processes the tokens waiting in it (B7).
+    FlowAdvance(usize),
+    /// A token finished its delay block (B7).
+    FlowDelayDone(usize, u64),
     /// Warm-up boundary: reset the statistics accumulators.
     ResetStats,
+}
+
+/// One token waiting inside a process-flow block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct FlowTokenRt {
+    pub token: FlowItem,
+    /// Set while the token is in a delay block; the token leaves when the
+    /// matching `FlowDelayDone` event fires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready_at: Option<f64>,
+}
+
+/// Runtime state and statistics of one process-flow block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct FlowBlockRt {
+    pub tokens: Vec<FlowTokenRt>,
+    pub advance_scheduled: bool,
+    pub input: u64,
+    pub output: u64,
+    pub content_integral: f64,
+    pub stay_sum: f64,
+    pub stay_count: u64,
+    pub last_content_change: f64,
+    /// Batches created so far (create blocks only).
+    pub creations: u32,
+}
+
+impl Default for FlowBlockRt {
+    fn default() -> Self {
+        Self {
+            tokens: Vec::new(),
+            advance_scheduled: false,
+            input: 0,
+            output: 0,
+            content_integral: 0.0,
+            stay_sum: 0.0,
+            stay_count: 0,
+            last_content_change: 0.0,
+            creations: 0,
+        }
+    }
+}
+
+/// One resolved process-flow connection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct FlowConnRt {
+    pub to: usize,
+    pub port: u32,
+}
+
+/// The process-flow runtime of a model (B7).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct FlowRuntime {
+    pub blocks: Vec<FlowBlockRt>,
+    pub connections: Vec<FlowConnRt>,
+    /// Connection indices leaving each block, in declaration order.
+    pub outgoing: Vec<Vec<usize>>,
+    pub next_token_id: u64,
+    pub tokens_created: u64,
+    pub tokens_completed: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -950,6 +1027,7 @@ fn simulate_run(
         items_created: sim.stats_created,
         items_completed,
         objects,
+        process_flow: sim.flow_replication(elapsed),
     };
     Ok((result, checkpoint, sim.trace.unwrap_or_default()))
 }
@@ -991,6 +1069,8 @@ struct Simulation<'m> {
     /// statistical window.
     stats_completed: u64,
     event_count: u64,
+    /// B7: the optional process-flow token runtime.
+    process_flow: Option<FlowRuntime>,
     /// B12: recorded events when tracing is enabled.
     trace: Option<TraceLog>,
 }
@@ -1068,6 +1148,37 @@ impl<'m> Simulation<'m> {
             }
         }
 
+        // B7: resolve the process-flow graph once.
+        let process_flow = model.process_flow.as_ref().map(|flow| {
+            let index: HashMap<&str, usize> = flow
+                .blocks
+                .iter()
+                .enumerate()
+                .map(|(position, block)| (block.id.as_str(), position))
+                .collect();
+            let mut connections = Vec::new();
+            let mut outgoing = vec![Vec::new(); flow.blocks.len()];
+            for connection in &flow.connections {
+                let (Some(&from), Some(&to)) = (
+                    index.get(connection.from.as_str()),
+                    index.get(connection.to.as_str()),
+                ) else {
+                    continue;
+                };
+                let port = connection.port.unwrap_or(outgoing[from].len() as u32);
+                outgoing[from].push(connections.len());
+                connections.push(FlowConnRt { to, port });
+            }
+            FlowRuntime {
+                blocks: vec![FlowBlockRt::default(); flow.blocks.len()],
+                connections,
+                outgoing,
+                next_token_id: 0,
+                tokens_created: 0,
+                tokens_completed: 0,
+            }
+        });
+
         let seed = config.seed;
         let mut sim = Self {
             model,
@@ -1087,6 +1198,7 @@ impl<'m> Simulation<'m> {
             stats_created: 0,
             stats_completed: 0,
             event_count: 0,
+            process_flow,
             trace: if trace {
                 Some(TraceLog::default())
             } else {
@@ -1148,6 +1260,14 @@ impl<'m> Simulation<'m> {
         // A3: a puller starts empty, so it must ask for work at t = 0.
         for index in 0..self.model.objects.len() {
             self.schedule_pull(index);
+        }
+        // B7: create blocks start producing tokens.
+        if self.process_flow.is_some() {
+            for block in 0..self.process_flow_block_count() {
+                if matches!(self.flow_block_kind(block), Some(FlowBlockKind::Create(_))) {
+                    self.schedule_flow_create(block)?;
+                }
+            }
         }
         Ok(())
     }
@@ -1434,6 +1554,7 @@ impl<'m> Simulation<'m> {
         for object in &mut self.objects {
             object.finalize(now);
         }
+        self.finalize_flow();
     }
 
     /// Capture the current state (B12); called at the stop time, before the
@@ -1461,6 +1582,7 @@ impl<'m> Simulation<'m> {
             stats_created: self.stats_created,
             stats_completed: self.stats_completed,
             event_count: self.event_count,
+            process_flow: self.process_flow.clone(),
             config: self.config.clone(),
         }
     }
@@ -1526,6 +1648,16 @@ impl<'m> Simulation<'m> {
         self.stats_created = checkpoint.stats_created;
         self.stats_completed = checkpoint.stats_completed;
         self.event_count = checkpoint.event_count;
+        if let (Some(saved), Some(current)) = (
+            checkpoint.process_flow.as_ref(),
+            self.model.process_flow.as_ref(),
+        ) && saved.blocks.len() != current.blocks.len()
+        {
+            return Err(SimError::Config(
+                "checkpoint process-flow block count does not match the model".into(),
+            ));
+        }
+        self.process_flow = checkpoint.process_flow.clone();
         // A resumed run does not replay the trace of the saved segment.
         self.trace = None;
         Ok(())
@@ -1545,6 +1677,9 @@ impl<'m> Simulation<'m> {
             EventKind::BatchTimeout(index) => self.handle_batch_timeout(index),
             EventKind::ShiftChange(index) => self.handle_shift_change(index),
             EventKind::TimetableChange(index) => self.handle_timetable_change(index),
+            EventKind::FlowCreate(block) => self.handle_flow_create(block),
+            EventKind::FlowAdvance(block) => self.handle_flow_advance(block),
+            EventKind::FlowDelayDone(block, token) => self.handle_flow_delay_done(block, token),
             EventKind::TransportPickup(transporter, requester) => {
                 self.handle_transport_pickup(transporter, requester)
             }
@@ -1569,7 +1704,14 @@ impl<'m> Simulation<'m> {
 
     /// B12: append one processed event to the trace, when enabled.
     fn record_trace(&mut self, time: f64, seq: u64, kind: &EventKind) {
-        if self.trace.is_none() {
+        if self.trace.is_none()
+            || matches!(
+                kind,
+                EventKind::FlowCreate(_)
+                    | EventKind::FlowAdvance(_)
+                    | EventKind::FlowDelayDone(_, _)
+            )
+        {
             return;
         }
         let (index, name, detail) = describe_event(kind);
@@ -2291,7 +2433,7 @@ impl<'m> Simulation<'m> {
 
     /// Deliver an item over one connection. Returns `false` when the target
     /// rejects it; the caller keeps the item and retries later.
-    fn deliver(&mut self, _from: usize, conn: usize, item: FlowItem) -> Result<bool, SimError> {
+    fn deliver(&mut self, from: usize, conn: usize, item: FlowItem) -> Result<bool, SimError> {
         let (target, to_port) = {
             let connection = &self.conns[conn];
             (connection.to, connection.to_port)
@@ -2309,6 +2451,12 @@ impl<'m> Simulation<'m> {
         }
         let mut item = item;
         let kind = self.objects[target].kind;
+        // The item now leaves the upstream object: its OnExit trigger runs
+        // before the receiving object's OnEntry/OnReceive logic (A10-on_exit).
+        let exit_actions = self.trigger_actions(from, SimTrigger::OnExit);
+        if !exit_actions.is_empty() {
+            self.apply_actions(from, &mut item, exit_actions)?;
+        }
         // Trigger the receiving object's OnEntry/OnReceive logic.
         let actions = self.trigger_actions(target, SimTrigger::OnEntry);
         if !actions.is_empty() {
@@ -3077,6 +3225,459 @@ impl<'m> Simulation<'m> {
         self.set_state(index, State::Busy);
         self.schedule(self.now + remaining, event);
         Ok(true)
+    }
+
+    // -----------------------------------------------------------------------
+    // Process Flow (B7)
+    // -----------------------------------------------------------------------
+
+    fn process_flow_block_count(&self) -> usize {
+        self.process_flow
+            .as_ref()
+            .map_or(0, |flow| flow.blocks.len())
+    }
+
+    fn flow_block_kind(&self, block: usize) -> Option<FlowBlockKind> {
+        self.model
+            .process_flow
+            .as_ref()?
+            .blocks
+            .get(block)
+            .map(|definition| definition.kind.clone())
+    }
+
+    fn flow_block_name(&self, block: usize) -> String {
+        self.model
+            .process_flow
+            .as_ref()
+            .and_then(|flow| flow.blocks.get(block))
+            .map(|definition| definition.id.clone())
+            .unwrap_or_default()
+    }
+
+    /// Settle the time-weighted token count of one block up to `now`.
+    fn flow_note(&mut self, block: usize, now: f64) {
+        let Some(flow) = self.process_flow.as_mut() else {
+            return;
+        };
+        let Some(state) = flow.blocks.get_mut(block) else {
+            return;
+        };
+        let dt = (now - state.last_content_change).max(0.0);
+        state.content_integral += state.tokens.len() as f64 * dt;
+        state.last_content_change = now;
+    }
+
+    fn flow_add_token(&mut self, block: usize, token: FlowItem, ready_at: Option<f64>) {
+        if let Some(flow) = self.process_flow.as_mut()
+            && let Some(state) = flow.blocks.get_mut(block)
+        {
+            state.tokens.push(FlowTokenRt { token, ready_at });
+        }
+    }
+
+    /// Take a token out of a block (settling the block's content first).
+    fn flow_take_token(&mut self, block: usize, index: usize) -> Option<FlowTokenRt> {
+        self.flow_note(block, self.now);
+        let flow = self.process_flow.as_mut()?;
+        let state = flow.blocks.get_mut(block)?;
+        if index >= state.tokens.len() {
+            return None;
+        }
+        Some(state.tokens.remove(index))
+    }
+
+    /// Schedule one `FlowAdvance` per block and instant.
+    fn flow_schedule_advance(&mut self, block: usize) {
+        let scheduled = self
+            .process_flow
+            .as_ref()
+            .and_then(|flow| flow.blocks.get(block))
+            .is_some_and(|state| state.advance_scheduled);
+        if scheduled {
+            return;
+        }
+        if let Some(state) = self
+            .process_flow
+            .as_mut()
+            .and_then(|flow| flow.blocks.get_mut(block))
+        {
+            state.advance_scheduled = true;
+        }
+        self.schedule(self.now, EventKind::FlowAdvance(block));
+    }
+
+    /// Schedule the next creation of a create block.
+    fn schedule_flow_create(&mut self, block: usize) -> Result<(), SimError> {
+        let Some(FlowBlockKind::Create(params)) = self.flow_block_kind(block) else {
+            return Ok(());
+        };
+        let creations = self
+            .process_flow
+            .as_ref()
+            .and_then(|flow| flow.blocks.get(block))
+            .map_or(0, |state| state.creations);
+        if let Some(max) = params.max_creations
+            && creations >= max
+        {
+            return Ok(());
+        }
+        let at = if creations == 0 {
+            params.first_arrival.max(0.0)
+        } else {
+            let interval = self.sample(&params.interarrival).max(0.0);
+            if interval <= EPS && params.max_creations.is_none() {
+                return Err(SimError::Config(format!(
+                    "process flow block '{}': a zero interarrival without max_creations \
+                     would create tokens forever",
+                    self.flow_block_name(block)
+                )));
+            }
+            self.now + interval
+        };
+        self.schedule(at, EventKind::FlowCreate(block));
+        Ok(())
+    }
+
+    fn handle_flow_create(&mut self, block: usize) -> Result<(), SimError> {
+        let Some(FlowBlockKind::Create(params)) = self.flow_block_kind(block) else {
+            return Ok(());
+        };
+        let creations = self
+            .process_flow
+            .as_ref()
+            .and_then(|flow| flow.blocks.get(block))
+            .map_or(0, |state| state.creations);
+        if let Some(max) = params.max_creations
+            && creations >= max
+        {
+            return Ok(());
+        }
+        let quantity = params.quantity.max(1);
+        let item_type = params.item_type;
+        let labels = params.labels.clone();
+        for _ in 0..quantity {
+            let token_id = {
+                let Some(flow) = self.process_flow.as_mut() else {
+                    return Ok(());
+                };
+                flow.next_token_id += 1;
+                flow.tokens_created += 1;
+                flow.next_token_id
+            };
+            let token = FlowItem {
+                id: token_id,
+                item_type,
+                labels: labels.clone(),
+                created: self.now,
+                entry_time: self.now,
+            };
+            self.flow_note(block, self.now);
+            self.flow_add_token(block, token, None);
+            self.record_token_trace("token_create", block, token_id);
+        }
+        if let Some(state) = self
+            .process_flow
+            .as_mut()
+            .and_then(|flow| flow.blocks.get_mut(block))
+        {
+            state.creations += 1;
+        }
+        self.flow_schedule_advance(block);
+        self.schedule_flow_create(block)
+    }
+
+    fn handle_flow_advance(&mut self, block: usize) -> Result<(), SimError> {
+        if let Some(state) = self
+            .process_flow
+            .as_mut()
+            .and_then(|flow| flow.blocks.get_mut(block))
+        {
+            state.advance_scheduled = false;
+        }
+        while let Some(kind) = self.flow_block_kind(block) {
+            let index = {
+                let Some(flow) = self.process_flow.as_ref() else {
+                    break;
+                };
+                let Some(state) = flow.blocks.get(block) else {
+                    break;
+                };
+                state
+                    .tokens
+                    .iter()
+                    .position(|entry| entry.ready_at.is_none())
+            };
+            let Some(index) = index else {
+                break;
+            };
+            let now = self.now;
+            match kind {
+                FlowBlockKind::Create(_) => {
+                    let Some(entry) = self.flow_take_token(block, index) else {
+                        break;
+                    };
+                    self.flow_route(block, entry.token)?;
+                }
+                FlowBlockKind::Delay(params) => {
+                    let delay = self.sample(&params.time).max(0.0);
+                    let token_id = {
+                        let Some(flow) = self.process_flow.as_mut() else {
+                            break;
+                        };
+                        let Some(state) = flow.blocks.get_mut(block) else {
+                            break;
+                        };
+                        let Some(entry) = state.tokens.get_mut(index) else {
+                            break;
+                        };
+                        entry.ready_at = Some(now + delay);
+                        entry.token.id
+                    };
+                    self.schedule(now + delay, EventKind::FlowDelayDone(block, token_id));
+                }
+                FlowBlockKind::Assign(params) => {
+                    let Some(entry) = self.flow_take_token(block, index) else {
+                        break;
+                    };
+                    let mut token = entry.token;
+                    self.apply_token_actions(block, &mut token, params.actions.clone())?;
+                    self.record_token_trace("token_assign", block, token.id);
+                    self.flow_route(block, token)?;
+                }
+                FlowBlockKind::Decision(params) => {
+                    let Some(entry) = self.flow_take_token(block, index) else {
+                        break;
+                    };
+                    let token = entry.token;
+                    let port = self.flow_decision_port(&token, &params.conditions)?;
+                    self.record_token_trace("token_decision", block, token.id);
+                    self.flow_route_at(block, token, port)?;
+                }
+                FlowBlockKind::Sink => {
+                    let Some(entry) = self.flow_take_token(block, index) else {
+                        break;
+                    };
+                    let token = entry.token;
+                    let stay = now - token.entry_time;
+                    if let Some(state) = self
+                        .process_flow
+                        .as_mut()
+                        .and_then(|flow| flow.blocks.get_mut(block))
+                    {
+                        state.output += 1;
+                        state.stay_sum += stay;
+                        state.stay_count += 1;
+                    }
+                    if let Some(flow) = self.process_flow.as_mut() {
+                        flow.tokens_completed += 1;
+                    }
+                    self.record_token_trace("token_sink", block, token.id);
+                }
+                FlowBlockKind::Transfer(_) => break,
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_flow_delay_done(&mut self, block: usize, token: u64) -> Result<(), SimError> {
+        let index = {
+            let Some(flow) = self.process_flow.as_ref() else {
+                return Ok(());
+            };
+            let Some(state) = flow.blocks.get(block) else {
+                return Ok(());
+            };
+            state
+                .tokens
+                .iter()
+                .position(|entry| entry.token.id == token && entry.ready_at.is_some())
+        };
+        let Some(index) = index else {
+            return Ok(());
+        };
+        let ready_at = self
+            .process_flow
+            .as_ref()
+            .and_then(|flow| flow.blocks.get(block))
+            .and_then(|state| state.tokens.get(index))
+            .and_then(|entry| entry.ready_at);
+        if ready_at.is_some_and(|at| at > self.now + EPS) {
+            return Ok(());
+        }
+        let Some(entry) = self.flow_take_token(block, index) else {
+            return Ok(());
+        };
+        self.record_token_trace("token_delay", block, token);
+        self.flow_route(block, entry.token)
+    }
+
+    /// Send a token to the first outgoing connection of a block.
+    fn flow_route(&mut self, block: usize, token: FlowItem) -> Result<(), SimError> {
+        self.flow_route_at(block, token, None)
+    }
+
+    /// Send a token to the outgoing connection with `port`, or the first one.
+    fn flow_route_at(
+        &mut self,
+        block: usize,
+        mut token: FlowItem,
+        port: Option<u32>,
+    ) -> Result<(), SimError> {
+        let now = self.now;
+        let target = {
+            let Some(flow) = self.process_flow.as_ref() else {
+                return Ok(());
+            };
+            let Some(outgoing) = flow.outgoing.get(block) else {
+                return Ok(());
+            };
+            let connection = match port {
+                Some(port) => outgoing
+                    .iter()
+                    .copied()
+                    .find(|&index| flow.connections[index].port == port),
+                None => outgoing.first().copied(),
+            };
+            connection.map(|index| flow.connections[index].to)
+        };
+        let Some(target) = target else {
+            return Ok(());
+        };
+        let stay = now - token.entry_time;
+        self.flow_note(block, now);
+        if let Some(state) = self
+            .process_flow
+            .as_mut()
+            .and_then(|flow| flow.blocks.get_mut(block))
+        {
+            state.output += 1;
+            state.stay_sum += stay;
+            state.stay_count += 1;
+        }
+        token.entry_time = now;
+        self.flow_note(target, now);
+        if let Some(state) = self
+            .process_flow
+            .as_mut()
+            .and_then(|flow| flow.blocks.get_mut(target))
+        {
+            state.input += 1;
+        }
+        self.flow_add_token(target, token, None);
+        self.flow_schedule_advance(target);
+        Ok(())
+    }
+
+    /// Pick the decision port for a token; `None` means "default branch".
+    fn flow_decision_port(
+        &self,
+        token: &FlowItem,
+        conditions: &[ConditionalPort],
+    ) -> Result<Option<u32>, SimError> {
+        for condition in conditions {
+            let context = ExprContext::new(self, Some(token));
+            let matched =
+                condition
+                    .condition
+                    .eval(&context)
+                    .map_err(|err| SimError::Expression {
+                        location: "process flow decision".into(),
+                        detail: err.to_string(),
+                    })?;
+            if matched.as_bool() {
+                return Ok(Some(condition.port));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Apply the label/type actions of an assign block to a token.
+    fn apply_token_actions(
+        &mut self,
+        block: usize,
+        token: &mut FlowItem,
+        actions: Vec<Action>,
+    ) -> Result<(), SimError> {
+        let block_name = self.flow_block_name(block);
+        for action in actions {
+            match action {
+                Action::SetLabel { name, value } => {
+                    let value = self.eval_expr(&block_name, token, &value)?;
+                    token.labels.insert(name, value.as_number().unwrap_or(0.0));
+                }
+                Action::SetItemType { value } => {
+                    let value = self.eval_expr(&block_name, token, &value)?;
+                    token.item_type = value.as_number().unwrap_or(0.0).max(0.0) as u32;
+                }
+                Action::IncrementLabel { name, by } => {
+                    let by = self.eval_expr(&block_name, token, &by)?;
+                    let entry = token.labels.entry(name).or_insert(0.0);
+                    *entry += by.as_number().unwrap_or(0.0);
+                }
+                _ => {
+                    return Err(SimError::Config(format!(
+                        "process flow block '{block_name}' only supports label/type actions"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Record one token event in the trace log (B7).
+    fn record_token_trace(&mut self, label: &str, block: usize, token: u64) {
+        if self.trace.is_none() {
+            return;
+        }
+        let block_name = self.flow_block_name(block);
+        let time = self.now;
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        if let Some(log) = self.trace.as_mut() {
+            log.push(TraceEvent::new(time, seq, label, block_name).with("token", token as f64));
+        }
+    }
+
+    fn finalize_flow(&mut self) {
+        let now = self.now;
+        for block in 0..self.process_flow_block_count() {
+            self.flow_note(block, now);
+        }
+    }
+
+    /// Build the reported Process Flow statistics of this replication.
+    fn flow_replication(&self, elapsed: f64) -> Option<ReplicationFlow> {
+        let flow = self.process_flow.as_ref()?;
+        let definitions = self.model.process_flow.as_ref()?;
+        let denom = elapsed.max(1e-12);
+        let blocks = flow
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(position, state)| {
+                let definition = definitions.blocks.get(position);
+                ReplicationFlowBlock {
+                    id: definition.map(|block| block.id.clone()).unwrap_or_default(),
+                    kind: definition
+                        .map(|block| flow_block_kind_name(&block.kind).to_string())
+                        .unwrap_or_default(),
+                    input_count: state.input,
+                    output_count: state.output,
+                    content_avg: state.content_integral / denom,
+                    avg_stay_time: if state.stay_count > 0 {
+                        state.stay_sum / state.stay_count as f64
+                    } else {
+                        0.0
+                    },
+                }
+            })
+            .collect();
+        Some(ReplicationFlow {
+            tokens_created: flow.tokens_created,
+            tokens_completed: flow.tokens_completed,
+            blocks,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -4536,6 +5137,18 @@ impl<'m> Simulation<'m> {
     fn reset_stats(&mut self) {
         self.stats_created = 0;
         self.stats_completed = 0;
+        if let Some(flow) = self.process_flow.as_mut() {
+            flow.tokens_created = 0;
+            flow.tokens_completed = 0;
+            for block in &mut flow.blocks {
+                block.input = 0;
+                block.output = 0;
+                block.content_integral = 0.0;
+                block.stay_sum = 0.0;
+                block.stay_count = 0;
+                block.last_content_change = self.now;
+            }
+        }
         for object in &mut self.objects {
             object.slot_busy = 0.0;
             object.acc = Accum::default();
@@ -4596,6 +5209,11 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
         EventKind::TransportHome(transporter) => (Some(*transporter), "transport_home", None),
         EventKind::ResourceRetry(resource) => (Some(*resource), "resource_retry", None),
         EventKind::Pull(index) => (Some(*index), "pull", None),
+        EventKind::FlowCreate(block) => (None, "flow_create", Some(("block", *block as f64))),
+        EventKind::FlowAdvance(block) => (None, "flow_advance", Some(("block", *block as f64))),
+        EventKind::FlowDelayDone(block, _) => {
+            (None, "flow_delay_done", Some(("block", *block as f64)))
+        }
         EventKind::ResetStats => (None, "reset_stats", None),
     }
 }
@@ -4751,6 +5369,18 @@ fn object_field(sim: &Simulation<'_>, index: usize, field: &str) -> Option<Value
         "off_shift" => Some(Value::Number(object.acc.states.off_shift)),
         "on_shift" => Some(Value::Bool(object.on_shift)),
         _ => None,
+    }
+}
+
+/// Stable label of a process-flow block kind (B7).
+fn flow_block_kind_name(kind: &FlowBlockKind) -> &'static str {
+    match kind {
+        FlowBlockKind::Create(_) => "create",
+        FlowBlockKind::Delay(_) => "delay",
+        FlowBlockKind::Assign(_) => "assign",
+        FlowBlockKind::Decision(_) => "decision",
+        FlowBlockKind::Sink => "sink",
+        FlowBlockKind::Transfer(_) => "transfer",
     }
 }
 

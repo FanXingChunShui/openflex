@@ -157,6 +157,25 @@ impl Default for ObjectStats {
     }
 }
 
+/// Statistics of one Process Flow block in one replication.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplicationFlowBlock {
+    pub id: String,
+    pub kind: String,
+    pub input_count: u64,
+    pub output_count: u64,
+    pub content_avg: f64,
+    pub avg_stay_time: f64,
+}
+
+/// Process Flow statistics of one replication.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplicationFlow {
+    pub tokens_created: u64,
+    pub tokens_completed: u64,
+    pub blocks: Vec<ReplicationFlowBlock>,
+}
+
 /// Result of one replication.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReplicationResult {
@@ -171,6 +190,9 @@ pub struct ReplicationResult {
     pub items_completed: u64,
     /// Items still in the model when the run stopped.
     pub items_in_system: u64,
+    /// Process Flow statistics; `None` when the model has no process flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ReplicationFlow>,
 }
 
 /// Aggregated metric across replications.
@@ -357,6 +379,25 @@ impl LittleCheck {
     }
 }
 
+/// Aggregated Process Flow block statistics.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FlowBlockReport {
+    pub id: String,
+    pub kind: String,
+    pub input_count: f64,
+    pub output_count: f64,
+    pub content_avg: f64,
+    pub avg_stay_time: f64,
+}
+
+/// Aggregated Process Flow statistics of the whole run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FlowReport {
+    pub tokens_created: f64,
+    pub tokens_completed: f64,
+    pub blocks: Vec<FlowBlockReport>,
+}
+
 /// The full report produced by `openflex run` / `openflex experiment`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SimReport {
@@ -372,6 +413,9 @@ pub struct SimReport {
     pub completed: Aggregate,
     /// Items created by every source, aggregated.
     pub created: Aggregate,
+    /// Process Flow statistics; `None` when the model has no process flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<FlowReport>,
     /// Little's law (`L = λW`) self-check; `None` only for reports built by
     /// hand that do not want the check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -398,6 +442,7 @@ impl SimReport {
                 .collect::<Vec<_>>(),
         );
         let little_check = Some(LittleCheck::from_objects(&objects));
+        let process_flow = aggregate_flow(&replications);
         Self {
             model: model.name.clone(),
             description: model.description.clone(),
@@ -409,9 +454,70 @@ impl SimReport {
             objects,
             completed,
             created,
+            process_flow,
             little_check,
         }
     }
+}
+
+/// Average the Process Flow statistics over the replications.
+fn aggregate_flow(replications: &[ReplicationResult]) -> Option<FlowReport> {
+    let flows: Vec<&ReplicationFlow> = replications
+        .iter()
+        .filter_map(|replication| replication.process_flow.as_ref())
+        .collect();
+    if flows.is_empty() {
+        return None;
+    }
+    let count = flows.len() as f64;
+    let tokens_created = flows
+        .iter()
+        .map(|flow| flow.tokens_created as f64)
+        .sum::<f64>()
+        / count;
+    let tokens_completed = flows
+        .iter()
+        .map(|flow| flow.tokens_completed as f64)
+        .sum::<f64>()
+        / count;
+
+    let mut order: Vec<(String, String)> = Vec::new();
+    for flow in &flows {
+        for block in &flow.blocks {
+            if !order.iter().any(|(id, _)| *id == block.id) {
+                order.push((block.id.clone(), block.kind.clone()));
+            }
+        }
+    }
+    let blocks = order
+        .into_iter()
+        .map(|(id, kind)| {
+            let samples: Vec<&ReplicationFlowBlock> = flows
+                .iter()
+                .flat_map(|flow| flow.blocks.iter().filter(|block| block.id == id))
+                .collect();
+            let mean = |pick: fn(&ReplicationFlowBlock) -> f64| {
+                if samples.is_empty() {
+                    0.0
+                } else {
+                    samples.iter().map(|block| pick(block)).sum::<f64>() / samples.len() as f64
+                }
+            };
+            FlowBlockReport {
+                id,
+                kind,
+                input_count: mean(|block| block.input_count as f64),
+                output_count: mean(|block| block.output_count as f64),
+                content_avg: mean(|block| block.content_avg),
+                avg_stay_time: mean(|block| block.avg_stay_time),
+            }
+        })
+        .collect();
+    Some(FlowReport {
+        tokens_created,
+        tokens_completed,
+        blocks,
+    })
 }
 
 fn aggregate_objects(replications: &[ReplicationResult]) -> BTreeMap<String, ObjectAggregate> {

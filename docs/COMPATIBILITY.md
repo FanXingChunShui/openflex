@@ -54,7 +54,7 @@
 | Send To Port：By Label | `by_label` | ✅ | |
 | FlexScript / C++ 逻辑 | 表达式语言 + 动作 | 🟡 | 无任意脚本；支持变量、算术、比较、条件与少量函数；Processor 抢占见操作员参数 |
 | 全局表（Global Table） | — | ⛔ | 可用标签/参数覆盖模拟 |
-| Process Flow（流程图块） | — | 🟡 | 未实现 token 运行时；提供对象+触发器等价模式（示例 process-flow-equivalent.ofm） |
+| Process Flow（流程图块） | `model.process_flow` | 🟡 | 最小子集：create/delay/assign/decision/sink，token 统计与 trace；对象级绑定、transfer、块容量/触发器未实现 |
 
 ## 运行与统计
 
