@@ -109,7 +109,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-14, windows-2022]
+        os: [ubuntu-22.04, macos-latest, windows-2022]
     steps:
       - uses: actions/checkout@v4
 
@@ -141,7 +141,7 @@ jobs:
       matrix:
         include:
           - name: universal-apple-darwin
-            os: macos-14
+            os: macos-latest
             platform: universal-apple-darwin
             optional: false
             cross: false
@@ -201,7 +201,7 @@ jobs:
         run: cross build --release --locked -p openflex-cli --target ${{ matrix.target }}
 
       - name: Build (universal macOS)
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-latest'
         run: |
           set -euo pipefail
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
