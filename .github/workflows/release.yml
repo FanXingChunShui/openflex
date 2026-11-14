@@ -437,7 +437,7 @@ jobs:
           set -euo pipefail
           cd dist
           ls -l
-          cat SHA256SUMS.txt* 2>/dev/null \
+          cat SHA256SUMS*.txt 2>/dev/null \
             | awk 'NF == 2 && $1 ~ /^[0-9a-f]{64}$/ { if (!seen[$2]++) print }' \
             | LC_ALL=C sort -k2 > SHA256SUMS.merged
           mv SHA256SUMS.merged SHA256SUMS.txt
