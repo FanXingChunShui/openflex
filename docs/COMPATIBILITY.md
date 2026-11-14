@@ -17,8 +17,8 @@
 | Queue | `queue` | ✅ | 最大容量、FIFO/LIFO/优先级/按标签排序；攒批（`batch_size`）与超时放行（`batch_max_wait`）；批次在释放时刻整体提交 |
 | Processor | `processor` | ✅ | setup + process、容量、故障 MTBF/MTTR（打断加工并补足剩余时间）、操作员请求（Dispatcher 或 Resource 池） |
 | Sink | `sink` | ✅ | 吞吐与停留时间统计 |
-| Combiner | `combiner` | ✅ | pack / join；容器先到、等待组件数 |
-| Separator | `separator` | 🟡 | 只实现 unpack 语义：`split_count = qty` → 释放 qty 个零件 + 容器（qty+1 件），0 = 容器内全部组件；FlexSim 的 split（复制）模式未实现 |
+| Combiner | `combiner` | ✅ | pack / join / batch（setup+process）；容器先到、等待组件数 |
+| Separator | `separator` | ✅ | `separate_mode: unpack`（qty+1 件）/ `split`（qty 件）；0 = 容器内全部组件 |
 | Conveyor | `conveyor` | ✅ | 速度、长度、间距、累积/非累积、容量；位置与阻塞按一维带面模型计算 |
 | Merge | `merge` | ✅ | 多输入合流；可选等待全部输入 |
 | Split | `split` | ✅ | 轮询或按 item type 分流 |
@@ -27,7 +27,9 @@
 | Operator / Resource | `resource` | ✅ | 资源池容量与停机窗口 |
 | Rack | `rack` | 🟡 | 容量与层数；层/通道的精细放置与取货策略简化 |
 | 班次 / 计划停机 | `params.shifts` | ✅ | `[{start, duration, repeat_every}]`，停机进入 off_shift、暂停处理、恢复后继续 |
+| Time Table | `params.timetable` | ✅ | `{windows:[{start,end}]}`，与 shifts 取交集 |
 | BasicFR / BasicTE | `basic_fr` / `basic_te` | ✅ | 通用固定资源与执行器 |
+| MultiProcessor | `multiprocessor` | ✅ | 多槽并行加工，每槽 setup/process，操作员按忙碌期申请 |
 | Fluid（流体） | — | ⛔ | 未实现 |
 | People / A* 行走 | — | ⛔ | 未实现 |
 | AGV / 交通控制 | — | ⛔ | 未实现 |

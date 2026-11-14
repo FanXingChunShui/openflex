@@ -58,17 +58,20 @@ OpenFlex 的目标是：用 Rust 实现一个与 FlexSim 核心建模语义一�
 
 | 对象 | 实现要点 |
 |---|---|
-| Source | 首件在 `first_arrival`（默认 0 = t=0 创建）；后续间隔按“上一批**离开** Source → 下一件到达”计时，下游阻塞时暂停到达节奏 |
+| Source | 首件在 `first_arrival`（默认 0 = t=0 创建）；后续间隔按“上一批**离开** Source → 下一件到达”计时，下游阻塞时暂停到达节奏；也支持 `arrival_schedule`（表驱动、`repeat` 首行只首轮）与 `arrival_sequence`（上一批全部离开后推进） |
 | Queue / Rack | 收到即释放；攒批（`batch_size`）时整批一次性提交（离开时刻 = 批次释放时刻），`batch_max_wait` 到期强制放行 |
 | Processor | setup + process；故障立即打断加工、修复后补足剩余时间；操作员未到位时 `Blocked` |
 | Conveyor | 一维直线带：位置、速度、间距、`accumulating` 累积/非累积、容量；末端被阻塞时累积带继续压缩、非累积带整体冻结 |
-| Combiner | 端口 1（第一条连接）为容器；pack 等待 `components_per_container` 个组件后只释放容器（组件不单独计内容）；join 每端口一件、合并为一件 |
-| Separator | unpack 语义：`split_count = qty` 时释放 `qty` 个零件 **加容器本身**（共 qty+1）；0 = 拆出容器内全部组件（+容器）；多输出端口按零件序号轮转分发 |
+| Combiner | 端口 1（第一条连接）为容器；pack 等待 `components_per_container` 个组件后只释放容器（组件不单独计内容）；join 每端口一件、合并为一件；batch 收集一批后按 setup+process 加工并逐件释放（带 `batch` 标签） |
+| Separator | `separate_mode`：`unpack`（默认）释放 `qty` 个零件 **加容器本身**（qty+1）；`split` 只释放 `qty` 个零件；0 = 拆出容器内全部组件；多输出端口按零件序号轮转分发 |
 | Merge | 每个输入端口暂存一件；`wait_for_all` 时全部到齐才合成一件，否则每来一件即输出 |
+| MultiProcessor | `slots` 个并行加工槽，每槽独立 setup/process；利用率按槽位秒/(时长×slots)；操作员按忙碌期整批申请 |
 | Split | 按 `by_item_type` 选端口，或轮询输出端口 |
 | Transporter / Dispatcher | Processor 通过 `process_operator` 向 Dispatcher 请求操作员；Dispatcher 按坐标欧氏距离/速度派最近的空闲 transporter，行程 + `load_time` 后到位，`unload_time` 后释放并返 `home`；容量 = 可并发的任务数 |
 | Resource | 计数型资源池（`capacity`、`downtimes`）；占用期间 Processor 处于 `Blocked`，停机窗口内不发放 |
-| 全部对象 | 可选 `shifts`（`start`/`duration`/`repeat_every`）：窗口外进入 `OffShift`、暂停加工并拒绝进件，恢复后补足剩余加工时间 |
+| 全部对象 | 可选 `shifts`（`start`/`duration`/`repeat_every`）与 `timetable`（窗口列表）：窗口外进入 `OffShift`、暂停加工并拒绝进件，恢复后补足剩余加工时间 |
+| Pull 模式 | 对象可配置 `pull:{enabled,strategy,requirement}`，由下游主动从上游取件；`requirement` 为假的件被跳过 |
+| Hold | `PortStrategy::Hold` 扣住已完成项，直到 `release_item` 动作单次放行 |
 
 ### 传送带的简化
 
@@ -192,4 +195,5 @@ FlexSim 的公开帮助没有定义下面几项行为，但任何离散事件引
 - 没有 3D 图形界面；布局坐标（`pos`）只用于运输距离与可视化导出。
 - 表达式语言不是完整的 FlexScript；复杂逻辑需要用多个对象/触发器组合表达。
 - 运输与任务执行器是简化模型（见 [COMPATIBILITY.md](COMPATIBILITY.md)）。
-- 未实现 Fluid、人员行走（A*）、AGV 交通控制、OptQuest 优化。
+- 未实现 Fluid、人员行走（A*）、AGV 交通控制、OptQuest 优化、3D 界面、Process Flow、脚本语言。
+- Conveyor 仍是直线带（无曲线/合流/Station/光电门）；Rack 只有容量/层数（无 floor/gravity 等类型）；Transporter 无路网与多段任务序列。
