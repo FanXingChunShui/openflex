@@ -18,3 +18,8 @@ thiserror = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { version = "0.3", features = ["serde1"] }
 rand_distr = { workspace = true }
+
+# wasm32 builds: getrandom needs the browser/JS backend; native targets keep
+# the default implementation.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
