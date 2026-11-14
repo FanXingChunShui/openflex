@@ -1,0 +1,21 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "multiprocessor-demo",
+  "description": "Three parallel slots (B1): each item takes 20 time units, three items are processed at once",
+  "time_unit": "seconds",
+  "run": { "stop_time": 500.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+    { "name": "MultiProcessor1", "kind": "multiprocessor", "pos": [10, 0], "params": {
+        "slots": 3,
+        "setup_time": { "distribution": "constant", "value": 0.0 },
+        "process_time": { "distribution": "constant", "value": 20.0 } } },
+    { "name": "Sink1", "kind": "sink", "pos": [20, 0], "params": {} }
+  ],
+  "connections": [
+    { "from": "Source1", "to": "MultiProcessor1" },
+    { "from": "MultiProcessor1", "to": "Sink1" }
+  ]
+}

@@ -9,7 +9,7 @@
 //! expected values are exact arithmetic rather than statistical ranges.
 
 use openflex_core::run_model;
-use openflex_core::{SimReport, StateTimes};
+use openflex_core::{SimConfig, SimReport, StateTimes, simulate, simulate_traced};
 use openflex_model::Model;
 
 fn model(json: &str) -> Model {
@@ -708,4 +708,255 @@ fn empty_transit_fixture_has_no_queue_wait() {
         "processor WIP",
     );
     assert_eq!(report.replications[0].items_in_system, 0);
+}
+
+// ---------------------------------------------------------------------------
+// MultiProcessor (B1)
+// ---------------------------------------------------------------------------
+
+fn multiprocessor_model(slots: u32, process_time: f64, operator: &str) -> String {
+    let operator_line = if operator.is_empty() {
+        String::new()
+    } else {
+        format!(r#", "process_operator": "{operator}""#)
+    };
+    format!(
+        r#"{{
+      "format": "openflex-model", "version": 1, "name": "multiprocessor-{slots}",
+      "run": {{ "stop_time": 500.0, "warmup": 0.0, "seed": 1, "replications": 1 }},
+      "objects": [
+        {{ "name": "S", "kind": "source", "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 10.0 }}, "first_arrival": 0.0 }} }},
+        {{ "name": "MP", "kind": "multiprocessor", "params": {{
+            "slots": {slots},
+            "setup_time": {{ "distribution": "constant", "value": 0.0 }},
+            "process_time": {{ "distribution": "constant", "value": {process_time} }}{operator_line} }} }},
+        {{ "name": "K", "kind": "sink", "params": {{}} }},
+        {{ "name": "Dispatcher1", "kind": "dispatcher", "pos": [100, 0], "params": {{}} }},
+        {{ "name": "T1", "kind": "transporter", "pos": [100, 0], "params": {{ "capacity": 1, "speed": 10.0 }} }},
+        {{ "name": "T2", "kind": "transporter", "pos": [100, 0], "params": {{ "capacity": 1, "speed": 10.0 }} }}
+      ],
+      "connections": [
+        {{ "from": "S", "to": "MP" }}, {{ "from": "MP", "to": "K" }},
+        {{ "from": "Dispatcher1", "to": "T1" }}, {{ "from": "Dispatcher1", "to": "T2" }}
+      ]
+    }}"#
+    )
+}
+
+#[test]
+fn multiprocessor_runs_slots_in_parallel() {
+    let report = run(&multiprocessor_model(3, 20.0, ""));
+    // Three slots process 20 time units each; arrivals every 10 time units are
+    // absorbed, so everything except the item still in process leaves.
+    assert_eq!(input(&report, "MP"), 50.0);
+    assert_eq!(out(&report, "MP"), 49.0);
+    assert_near(
+        report.objects["MP"].avg_stay_time.mean,
+        20.0,
+        1e-9,
+        "slot stay",
+    );
+    // Average over the three slots: 49 * 20 plus the partial item at stop.
+    assert_near(
+        report.objects["MP"].utilization.mean,
+        0.648,
+        0.02,
+        "mean slot utilisation",
+    );
+    assert!(report.objects["MP"].max_content.mean <= 3.0);
+}
+
+#[test]
+fn multiprocessor_slots_raise_the_throughput() {
+    let single = run(&multiprocessor_model(1, 25.0, ""));
+    let parallel = run(&multiprocessor_model(3, 25.0, ""));
+    assert!(
+        input(&parallel, "K") > input(&single, "K"),
+        "more slots must raise the throughput: {} vs {}",
+        input(&parallel, "K"),
+        input(&single, "K")
+    );
+    assert!(input(&single, "K") <= 21.0);
+}
+
+#[test]
+fn multiprocessor_requests_a_crew_per_busy_period() {
+    let without = run(&multiprocessor_model(2, 20.0, ""));
+    let with = run(&multiprocessor_model(2, 20.0, "Dispatcher1"));
+    assert!(input(&with, "K") > 0.0);
+    assert!(
+        input(&with, "K") < input(&without, "K"),
+        "the operator crew must delay the start: {} vs {}",
+        input(&with, "K"),
+        input(&without, "K")
+    );
+    assert!(state_times(&with, "MP").blocked > 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Time Table (B11)
+// ---------------------------------------------------------------------------
+
+/// A linear availability calendar pauses the processor outside its windows and
+/// reports the unavailable time as `off_shift`.
+#[test]
+fn timetable_pauses_the_object_outside_its_windows() {
+    let report = run(r#"{
+      "format": "openflex-model", "version": 1, "name": "timetable",
+      "run": { "stop_time": 500.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+      "objects": [
+        { "name": "S", "kind": "source", "params": {
+            "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+        { "name": "P", "kind": "processor", "params": {
+            "process_time": { "distribution": "constant", "value": 4.0 },
+            "timetable": { "windows": [
+              { "start": 0.0, "end": 100.0 },
+              { "start": 200.0, "end": 300.0 },
+              { "start": 400.0, "end": 500.0 }
+            ] } } },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [{ "from": "S", "to": "P" }, { "from": "P", "to": "K" }]
+    }"#);
+    // The source keeps its departure-paced rhythm: it produces while the
+    // processor is available (0-100, 200-300, 400-500) and waits otherwise, so
+    // 30 items are created and all of them are processed.
+    assert_eq!(out(&report, "S"), 30.0);
+    assert_eq!(input(&report, "K"), 30.0);
+    let states = state_times(&report, "P");
+    assert_near(states.off_shift, 200.0, 0.5, "off-shift time");
+    assert_near(states.busy, 120.0, 0.5, "processing time");
+}
+
+/// Availability calendars and shift plans are combined: the object only works
+/// when both are open.
+#[test]
+fn timetable_and_shifts_combine() {
+    let report = run(r#"{
+      "format": "openflex-model", "version": 1, "name": "timetable-shift",
+      "run": { "stop_time": 300.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+      "objects": [
+        { "name": "S", "kind": "source", "params": {
+            "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+        { "name": "P", "kind": "processor", "params": {
+            "process_time": { "distribution": "constant", "value": 5.0 },
+            "shifts": [{ "start": 0.0, "duration": 200.0, "repeat_every": 0.0 }],
+            "timetable": { "windows": [{ "start": 0.0, "end": 100.0 }] } } },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [{ "from": "S", "to": "P" }, { "from": "P", "to": "K" }]
+    }"#);
+    // Only the intersection [0, 100) is usable. The source creates 11 items
+    // (0..100); the last one arrives as the calendar closes and waits forever,
+    // so 10 items reach the sink.
+    assert_eq!(out(&report, "S"), 10.0);
+    assert_eq!(input(&report, "K"), 10.0);
+    assert_near(state_times(&report, "P").off_shift, 200.0, 0.5, "off-shift");
+}
+
+#[test]
+fn timetable_windows_must_not_overlap() {
+    let json = r#"{
+      "format": "openflex-model", "version": 1, "name": "bad-timetable",
+      "objects": [
+        { "name": "S", "kind": "source", "params": {
+            "timetable": { "windows": [
+              { "start": 0.0, "end": 100.0 },
+              { "start": 50.0, "end": 150.0 }
+            ] } } },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [{ "from": "S", "to": "K" }]
+    }"#;
+    let error = Model::from_json(json).expect_err("overlapping windows must fail validation");
+    assert!(
+        error.to_string().contains("must not overlap"),
+        "unexpected error: {error}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Event trace (B12)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn trace_records_every_processed_event() {
+    let model = model(
+        r#"{
+      "format": "openflex-model", "version": 1, "name": "trace",
+      "run": { "stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+      "objects": [
+        { "name": "S", "kind": "source", "params": {
+            "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+        { "name": "P", "kind": "processor", "params": {
+            "process_time": { "distribution": "constant", "value": 4.0 } } },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [{ "from": "S", "to": "P" }, { "from": "P", "to": "K" }]
+    }"#,
+    );
+    let config = SimConfig {
+        stop_time: 100.0,
+        warmup: 0.0,
+        seed: 1,
+    };
+    let (result, trace) = simulate_traced(&model, &config, 0).expect("traced run");
+    let plain = simulate(&model, &config, 0).expect("plain run");
+    assert_eq!(result, plain, "tracing must not change the run");
+
+    assert!(!trace.truncated);
+    assert!(trace.len() > 10);
+    assert!(
+        trace
+            .events
+            .windows(2)
+            .all(|pair| (pair[0].time, pair[0].seq) <= (pair[1].time, pair[1].seq)),
+        "the trace must follow the event calendar order"
+    );
+    for label in ["arrive", "flow", "process_done"] {
+        assert!(
+            trace.events.iter().any(|event| event.event == label),
+            "missing {label} event"
+        );
+    }
+    assert!(
+        trace
+            .object("P")
+            .any(|event| event.event == "process_done" && event.time < 20.0),
+        "processor events must carry the object name"
+    );
+    // A queue batch timeout / shift change style event carries its detail.
+    let first = &trace.events[0];
+    assert_eq!(first.time, 0.0);
+    assert!(first.data.is_empty() || first.data.contains_key("token"));
+}
+
+#[test]
+fn trace_is_off_for_normal_runs() {
+    let model = model(
+        r#"{
+      "format": "openflex-model", "version": 1, "name": "no-trace",
+      "objects": [
+        { "name": "S", "kind": "source", "params": {
+            "interarrival": { "distribution": "constant", "value": 10.0 }, "max_arrivals": 1 } },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [{ "from": "S", "to": "K" }]
+    }"#,
+    );
+    let config = SimConfig {
+        stop_time: 100.0,
+        warmup: 0.0,
+        seed: 1,
+    };
+    let (_, trace) = simulate_traced(&model, &config, 0).expect("traced run");
+    let plain = simulate(&model, &config, 0).expect("plain run");
+    assert_eq!(plain.items_completed, 1);
+    // The sink delivery happens inside the source's `flow` event, so the trace
+    // only contains the arrival and that flow.
+    assert_eq!(trace.len(), 2);
+    assert_eq!(trace.events[0].event, "arrive");
+    assert_eq!(trace.events[1].event, "flow");
+    assert_eq!(trace.object("K").count(), 0);
 }

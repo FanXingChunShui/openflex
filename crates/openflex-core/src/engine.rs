@@ -17,12 +17,13 @@
 //!
 //! | Kind | Behaviour |
 //! |------|-----------|
-//! | `source` | first item at `first_arrival` (0 = at time zero), then one inter-arrival time after the previous batch *left* the source |
+//! | `source` | inter-arrival mode: first item at `first_arrival` (0 = time zero), then one interval after the previous batch *left* the source; `arrival_schedule` / `arrival_sequence` modes (A2) create items from a table |
 //! | `queue`/`rack` | immediate release, optional batching with `batch_size` and `batch_max_wait` |
 //! | `processor` | setup + process, breakdown/repair with preemption, optional operator (dispatcher or resource pool) |
+//! | `multiprocessor` | `slots` parallel setup/process pipelines in one object (B1); one operator crew of `slots` per busy period |
 //! | `conveyor` | item positions, accumulating or rigid transport, spacing and exit blocking |
-//! | `combiner` | port 1 container + `components_per_container` components, `pack` or `join` |
-//! | `separator` | unpack into `split_count + 1` items (0 = every component inside the container) |
+//! | `combiner` | port 1 container + `components_per_container` components; `pack` releases the container, `join` merges one item per port, `batch` runs setup/process and releases every item (A7) |
+//! | `separator` | `unpack` releases `split_count + 1` items, `split` copies the item `split_count` times (A6) |
 //! | `merge` | one item per input port, optional `wait_for_all` gating |
 //! | `split` | round-robin or by-item-type distribution over the output ports |
 //! | `transporter`/`dispatcher` | task assignment with euclidean travel time, load/unload delays, capacity |
@@ -39,6 +40,11 @@
 //!   it can serve concurrently (openflex v1 does not carry flow items).
 //! * Operators stay with a processor through a breakdown instead of being
 //!   released; the processor simply pauses.
+//! * A MultiProcessor requests its whole crew (`slots` operators) for a busy
+//!   period and holds it until every slot is idle again; it cannot run with a
+//!   partial crew, so a dispatcher/pool smaller than `slots` keeps it blocked.
+//! * Repeating arrival schedules treat later passes' row times as offsets from
+//!   the previous pass's last row (the first row's time only applies once).
 //! * A released queue batch is committed at once: the items count as leaving
 //!   the queue at the batch release instant, even though a downstream object
 //!   may accept them one at a time afterwards.
@@ -47,8 +53,9 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 
 use openflex_model::{
-    Action, CombinerMode, Distribution, DowntimeWindow, EvalContext, Model, Object, ObjectKind,
-    ObjectParams, PortStrategy, PullParams, QueueOrder, SimTrigger, Value,
+    Action, ArrivalStyle, CombinerMode, Distribution, DowntimeWindow, EvalContext, Model, Object,
+    ObjectKind, ObjectParams, PortStrategy, PullParams, QueueOrder, SeparateMode, SimTrigger,
+    Value,
 };
 use rand::prelude::*;
 use rand_distr::{Distribution as _, Exp, Gamma, LogNormal, Normal};
@@ -57,6 +64,7 @@ use crate::conveyor::Belt;
 use crate::error::SimError;
 use crate::shifts;
 use crate::stats::{ObjectStats, ReplicationResult, SimConfig, SimReport, StateTimes};
+use crate::trace::{TraceEvent, TraceLog};
 
 /// Safety valve: a model that never drains its events is reported instead of
 /// hanging forever.
@@ -130,10 +138,14 @@ enum EventKind {
     Message(usize),
     /// The next conveyor movement boundary is reached.
     BeltTick(usize),
+    /// One slot of a multiprocessor finished its setup/process step (B1).
+    MpDone(usize, usize, u64),
     /// A queue batch waited `batch_max_wait` and is released early.
     BatchTimeout(usize),
     /// A shift window starts or ends.
     ShiftChange(usize),
+    /// A linear availability calendar (B11) window starts or ends.
+    TimetableChange(usize),
     /// A transporter reaches the processor that requested it.
     TransportArrive(usize, usize),
     /// A transporter finished loading an operator at the processor.
@@ -200,12 +212,29 @@ struct StateDetail {
     waiting_transport: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Phase {
+    #[default]
     Idle,
     Setup,
     Processing,
     WaitingForOutput,
+}
+
+/// One parallel slot of a [`ObjectKind::MultiProcessor`] (B1).
+#[derive(Debug, Clone, Default)]
+struct Lane {
+    item: Option<FlowItem>,
+    phase: Phase,
+    token: u64,
+    /// Scheduled end of the current setup/process step.
+    end: f64,
+    /// Remaining time of a step paused by a breakdown or a shift.
+    paused_remaining: f64,
+    paused: bool,
+    /// Model time at which this slot started its current busy interval
+    /// (0 = slot not accumulating, e.g. while paused).
+    busy_since: f64,
 }
 
 /// Why a blocked object is blocked. Only the two waits with a dedicated
@@ -337,6 +366,12 @@ struct ObjectRt {
     /// Source bookkeeping.
     arrivals: u32,
     next_arrival_pending: bool,
+    /// A2: next table row for `arrival_schedule` / `arrival_sequence` sources.
+    arrival_row: usize,
+    /// A2: base model time of the current repeating schedule pass.
+    arrival_base: f64,
+    /// A2: schedule pass index; pass 0 uses the table's absolute row times.
+    arrival_pass: u32,
     /// Processor bookkeeping.
     processing_item: Option<FlowItem>,
     phase_token: u64,
@@ -358,10 +393,14 @@ struct ObjectRt {
     batch_anchor: Option<f64>,
     force_release: bool,
     /// Combiner runtime.
-    pack_mode: bool,
+    combine_mode: CombinerMode,
     container: Option<FlowItem>,
     components: Vec<FlowItem>,
     join_slots: Vec<Option<FlowItem>>,
+    /// MultiProcessor slots (B1); empty for every other kind.
+    lanes: Vec<Lane>,
+    /// Total slot-seconds worked by a MultiProcessor (feeds its utilisation).
+    slot_busy: f64,
     /// Separator runtime.
     pending_parts: Vec<(FlowItem, u32)>,
     /// Merge runtime.
@@ -407,6 +446,9 @@ impl ObjectRt {
             split_cursor: 0,
             arrivals: 0,
             next_arrival_pending: false,
+            arrival_row: 0,
+            arrival_base: 0.0,
+            arrival_pass: 0,
             processing_item: None,
             phase_token: 0,
             phase_end: f64::INFINITY,
@@ -422,10 +464,12 @@ impl ObjectRt {
             belt_tick_at: f64::INFINITY,
             batch_anchor: None,
             force_release: false,
-            pack_mode: true,
+            combine_mode: CombinerMode::Pack,
             container: None,
             components: Vec::new(),
             join_slots: Vec::new(),
+            lanes: Vec::new(),
+            slot_busy: 0.0,
             pending_parts: Vec::new(),
             merge_slots: Vec::new(),
             position: object.pos,
@@ -448,7 +492,10 @@ impl ObjectRt {
                 ));
             }
             ObjectParams::Transporter(params) => runtime.capacity = params.capacity.max(1),
-            ObjectParams::Combiner(params) => runtime.pack_mode = params.mode == CombinerMode::Pack,
+            ObjectParams::Combiner(params) => runtime.combine_mode = params.mode,
+            ObjectParams::MultiProcessor(params) => {
+                runtime.lanes = (0..params.slots.max(1)).map(|_| Lane::default()).collect();
+            }
             _ => {}
         }
         runtime
@@ -458,7 +505,7 @@ impl ObjectRt {
     fn configure_ports(&mut self, input_count: usize) {
         match self.kind {
             ObjectKind::Merge => self.merge_slots = vec![None; input_count.max(1)],
-            ObjectKind::Combiner if !self.pack_mode => {
+            ObjectKind::Combiner if self.combine_mode == CombinerMode::Join => {
                 self.join_slots = vec![None; input_count.max(1)];
             }
             _ => {}
@@ -469,18 +516,21 @@ impl ObjectRt {
     /// components are inside the container and are not counted separately.
     fn held(&self) -> usize {
         match self.kind {
-            ObjectKind::Combiner => {
-                if self.pack_mode {
-                    usize::from(self.container.is_some())
-                } else {
-                    self.join_slots.iter().flatten().count()
+            ObjectKind::Combiner => match self.combine_mode {
+                CombinerMode::Pack => usize::from(self.container.is_some()),
+                CombinerMode::Batch => {
+                    usize::from(self.container.is_some()) + self.components.len()
                 }
-            }
+                CombinerMode::Join => self.join_slots.iter().flatten().count(),
+            },
             ObjectKind::Separator => {
                 self.content.len() + usize::from(!self.pending_parts.is_empty())
             }
             ObjectKind::Conveyor => self.belt_items.len(),
             ObjectKind::Merge => self.merge_slots.iter().flatten().count(),
+            ObjectKind::MultiProcessor => {
+                self.content.len() + self.lanes.iter().filter(|lane| lane.item.is_some()).count()
+            }
             _ => self.content.len() + usize::from(self.processing_item.is_some()),
         }
     }
@@ -635,6 +685,14 @@ impl ObjectRt {
         self.note_content(now);
         self.accumulate_state(now);
         self.charge_phase(now);
+        for lane in &mut self.lanes {
+            if lane.busy_since > 0.0 || lane.item.is_some() {
+                if lane.item.is_some() && lane.busy_since > 0.0 {
+                    self.slot_busy += (now - lane.busy_since).max(0.0);
+                }
+                lane.busy_since = 0.0;
+            }
+        }
     }
 
     fn stats(&self, elapsed: f64) -> ObjectStats {
@@ -656,7 +714,13 @@ impl ObjectRt {
                 0.0
             },
             state_times,
-            utilization: self.acc.states.busy / denom,
+            // MultiProcessor slots work in parallel: report the mean slot
+            // utilisation instead of the aggregate busy fraction (B1).
+            utilization: if self.kind == ObjectKind::MultiProcessor {
+                self.slot_busy / (denom * self.lanes.len().max(1) as f64)
+            } else {
+                self.acc.states.busy / denom
+            },
             throughput: self.acc.output as f64 / denom,
         }
     }
@@ -680,11 +744,33 @@ pub fn simulate(
     config: &SimConfig,
     index: u32,
 ) -> Result<ReplicationResult, SimError> {
+    simulate_internal(model, config, index, false).map(|(result, _)| result)
+}
+
+/// Run one replication and record every processed event (B12).
+///
+/// A tracing run is otherwise identical to [`simulate`]; the returned
+/// [`TraceLog`] can be streamed as JSONL or inspected in tests. The log is
+/// capped at [`crate::trace::MAX_TRACE_EVENTS`] events.
+pub fn simulate_traced(
+    model: &Model,
+    config: &SimConfig,
+    index: u32,
+) -> Result<(ReplicationResult, TraceLog), SimError> {
+    simulate_internal(model, config, index, true)
+}
+
+fn simulate_internal(
+    model: &Model,
+    config: &SimConfig,
+    index: u32,
+    trace: bool,
+) -> Result<(ReplicationResult, TraceLog), SimError> {
     model.validate()?;
     if config.stop_time <= 0.0 {
         return Err(SimError::Config("stop_time must be positive".into()));
     }
-    let mut sim = Simulation::new(model, config.clone())?;
+    let mut sim = Simulation::new(model, config.clone(), trace)?;
     sim.run()?;
     let mut objects = BTreeMap::new();
     let elapsed = config.stop_time - config.warmup;
@@ -697,7 +783,7 @@ pub fn simulate(
         .iter()
         .map(|object| (object.held() + object.out_pending.len()) as u64)
         .sum();
-    Ok(ReplicationResult {
+    let result = ReplicationResult {
         index,
         seed: config.seed,
         final_time: config.stop_time,
@@ -706,7 +792,8 @@ pub fn simulate(
         items_created: sim.stats_created,
         items_completed,
         objects,
-    })
+    };
+    Ok((result, sim.trace.unwrap_or_default()))
 }
 
 /// Derive the seed for replication `index` deterministically.
@@ -746,10 +833,12 @@ struct Simulation<'m> {
     /// statistical window.
     stats_completed: u64,
     event_count: u64,
+    /// B12: recorded events when tracing is enabled.
+    trace: Option<TraceLog>,
 }
 
 impl<'m> Simulation<'m> {
-    fn new(model: &'m Model, config: SimConfig) -> Result<Self, SimError> {
+    fn new(model: &'m Model, config: SimConfig, trace: bool) -> Result<Self, SimError> {
         let mut by_name = HashMap::new();
         for (index, object) in model.objects.iter().enumerate() {
             if by_name.insert(object.name.clone(), index).is_some() {
@@ -840,56 +929,55 @@ impl<'m> Simulation<'m> {
             stats_created: 0,
             stats_completed: 0,
             event_count: 0,
+            trace: if trace {
+                Some(TraceLog::default())
+            } else {
+                None
+            },
         };
         sim.initialize()?;
         Ok(sim)
     }
 
     fn initialize(&mut self) -> Result<(), SimError> {
-        // A2 guard: the engine only implements inter-arrival-time sources. A
-        // table-driven source would silently fall back to the default
-        // `constant 0` inter-arrival and spin at t = 0, so it is refused here
-        // with an explicit message. Remove this check when A2 (arrival
-        // schedule / arrival sequence) is implemented.
-        for (index, object) in self.model.objects.iter().enumerate() {
-            if let ObjectParams::Source(params) = &object.params
-                && !params.uses_interarrival()
-            {
-                return Err(SimError::Config(format!(
-                    "object {}: arrival_schedule/arrival_sequence are not implemented by the \
-                     engine yet; use interarrival or remove the table",
-                    self.objects[index].name
-                )));
-            }
-        }
         if self.config.warmup > 0.0 {
             self.schedule(self.config.warmup, EventKind::ResetStats);
         }
-        // Shift plans first: they decide which objects are available at t = 0.
+        // Shift plans and availability calendars decide which objects are
+        // available at t = 0 and when their availability changes (B11).
         for index in 0..self.model.objects.len() {
             let shifts = self.model.objects[index].params.shifts().to_vec();
-            if shifts.is_empty() {
+            let timetable = self.model.objects[index].params.timetable().cloned();
+            if shifts.is_empty() && timetable.is_none() {
                 continue;
             }
-            if !shifts::is_active(&shifts, 0.0) {
+            let shifts_ok = shifts.is_empty() || shifts::is_active(&shifts, 0.0);
+            let timetable_ok = timetable
+                .as_ref()
+                .is_none_or(|table| timetable_active(&table.windows, 0.0));
+            if !(shifts_ok && timetable_ok) {
                 self.objects[index].on_shift = false;
                 self.objects[index].downtime.push(DowntimeSource::Shift);
                 self.set_state(index, State::OffShift);
             }
-            if let Some(next) = shifts::next_transition(&shifts, 0.0)
+            if !shifts.is_empty()
+                && let Some(next) = shifts::next_transition(&shifts, 0.0)
                 && next < self.config.stop_time
             {
                 self.schedule(next, EventKind::ShiftChange(index));
+            }
+            if let Some(table) = timetable
+                && let Some(next) = next_timetable_transition(&table.windows, 0.0)
+                && next < self.config.stop_time
+            {
+                self.schedule(next, EventKind::TimetableChange(index));
             }
         }
         for index in 0..self.model.objects.len() {
             let params = self.model.objects[index].params.clone();
             match params {
                 ObjectParams::Source(params) => {
-                    let first = params.first_arrival.max(0.0);
-                    if first < self.config.stop_time {
-                        self.schedule(first, EventKind::Arrive(index));
-                    }
+                    self.schedule_first_arrival(index, &params)?;
                 }
                 ObjectParams::Processor(params) => {
                     if let Some(failure) = &params.failure {
@@ -928,6 +1016,38 @@ impl<'m> Simulation<'m> {
 ///
 /// `use_same_num_operators` makes the process phase reuse the setup count, so a
 /// model only declares the crew size once.
+/// B1: a MultiProcessor requests a crew of `crew` operators for its busy
+/// period through the shared dispatcher/resource machinery.
+fn mp_operator_params(
+    params: &openflex_model::MultiProcessorParams,
+    crew: u32,
+) -> openflex_model::ProcessorParams {
+    let operator = params
+        .process_operator
+        .clone()
+        .or_else(|| params.setup_operator.clone());
+    openflex_model::ProcessorParams {
+        setup_operator: operator.clone(),
+        process_operator: operator,
+        num_setup_operators: Some(crew),
+        num_process_operators: Some(crew),
+        use_same_num_operators: true,
+        ..Default::default()
+    }
+}
+
+/// A7: the Combiner inherits the Processor operator fields; wrap them in a
+/// `ProcessorParams` so the shared operator machinery can be reused.
+fn combiner_operator_params(
+    params: &openflex_model::CombinerParams,
+) -> openflex_model::ProcessorParams {
+    openflex_model::ProcessorParams {
+        setup_operator: params.setup_operator.clone(),
+        process_operator: params.process_operator.clone(),
+        ..Default::default()
+    }
+}
+
 fn operators_needed(params: &openflex_model::ProcessorParams, phase: OperatorPhase) -> u32 {
     let count = match (phase, params.use_same_num_operators) {
         (OperatorPhase::Process, true) => {
@@ -1131,6 +1251,7 @@ impl<'m> Simulation<'m> {
             if self.event_count > MAX_EVENTS {
                 return Err(SimError::EventLimit(MAX_EVENTS));
             }
+            self.record_trace(event.time, event.seq, &event.kind);
             self.handle(event.kind)?;
         }
         // Statistics run until the stop time even if no event lands exactly there.
@@ -1153,9 +1274,11 @@ impl<'m> Simulation<'m> {
             EventKind::Breakdown(index, generation) => self.handle_breakdown(index, generation),
             EventKind::RepairDone(index) => self.handle_repair(index),
             EventKind::Message(index) => self.handle_message(index),
+            EventKind::MpDone(index, lane, token) => self.handle_mp_done(index, lane, token),
             EventKind::BeltTick(index) => self.handle_belt_tick(index),
             EventKind::BatchTimeout(index) => self.handle_batch_timeout(index),
             EventKind::ShiftChange(index) => self.handle_shift_change(index),
+            EventKind::TimetableChange(index) => self.handle_timetable_change(index),
             EventKind::TransportArrive(transporter, requester) => {
                 self.handle_transport_arrive(transporter, requester)
             }
@@ -1172,6 +1295,25 @@ impl<'m> Simulation<'m> {
                 self.reset_stats();
                 Ok(())
             }
+        }
+    }
+
+    /// B12: append one processed event to the trace, when enabled.
+    fn record_trace(&mut self, time: f64, seq: u64, kind: &EventKind) {
+        if self.trace.is_none() {
+            return;
+        }
+        let (index, name, detail) = describe_event(kind);
+        let object = match index {
+            Some(index) => self.objects[index].name.clone(),
+            None => "sim".to_string(),
+        };
+        if let Some(log) = self.trace.as_mut() {
+            let mut event = TraceEvent::new(time, seq, name, object);
+            if let Some((key, value)) = detail {
+                event = event.with(key, value);
+            }
+            log.push(event);
         }
     }
 
@@ -1311,11 +1453,70 @@ impl<'m> Simulation<'m> {
         {
             return Ok(());
         }
-        if !self.objects[index].on_shift {
-            // No production while off shift; keep the arrival rhythm going.
-            self.schedule_next_arrival(index)?;
+        if self.now >= self.config.stop_time - EPS {
             return Ok(());
         }
+        let style = params.effective_arrival_style();
+        if !self.objects[index].on_shift {
+            return self.handle_off_shift_arrival(index, &params, style);
+        }
+        match style {
+            ArrivalStyle::InterArrivalTime => self.handle_interarrival(index, &params),
+            ArrivalStyle::ArrivalSchedule => self.handle_schedule_arrival(index, &params),
+            ArrivalStyle::ArrivalSequence => self.handle_sequence_arrival(index, &params),
+        }
+    }
+
+    /// The model time at which a source stops creating items: its own
+    /// `stop_time` and the run's stop time, whichever comes first.
+    fn source_horizon(&self, params: &openflex_model::SourceParams) -> f64 {
+        match params.stop_time {
+            Some(stop) => stop.min(self.config.stop_time),
+            None => self.config.stop_time,
+        }
+    }
+
+    /// Schedule the very first arrival according to the source's arrival style
+    /// (inter-arrival, absolute schedule or table sequence).
+    fn schedule_first_arrival(
+        &mut self,
+        index: usize,
+        params: &openflex_model::SourceParams,
+    ) -> Result<(), SimError> {
+        match params.effective_arrival_style() {
+            ArrivalStyle::InterArrivalTime => {
+                // `first_arrival = 0` means "an item exists at t = 0".
+                let first = params.first_arrival.max(0.0);
+                if first < self.source_horizon(params) - EPS {
+                    self.schedule(first, EventKind::Arrive(index));
+                }
+            }
+            ArrivalStyle::ArrivalSchedule => {
+                self.objects[index].arrival_row = 0;
+                self.objects[index].arrival_base = 0.0;
+                self.objects[index].arrival_pass = 0;
+                self.schedule_next_schedule_row(index, params)?;
+            }
+            ArrivalStyle::ArrivalSequence => {
+                // A sequence starts as soon as the run starts.
+                if params
+                    .arrival_sequence()
+                    .is_some_and(|rows| !rows.is_empty())
+                {
+                    self.schedule(self.now, EventKind::Arrive(index));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Inter-arrival-time sources: create `items_per_arrival` items and let
+    /// `drain_out_pending` schedule the next arrival once the batch has left.
+    fn handle_interarrival(
+        &mut self,
+        index: usize,
+        params: &openflex_model::SourceParams,
+    ) -> Result<(), SimError> {
         self.objects[index].arrivals += 1;
         for _ in 0..params.items_per_arrival {
             let item = self.create_item(params.item_type, &params.labels, index)?;
@@ -1328,7 +1529,165 @@ impl<'m> Simulation<'m> {
         self.flow(index)
     }
 
-    /// Schedule the next arrival one inter-arrival time from now.
+    /// Arrival schedule (A2): one row is created per absolute arrival time.
+    fn handle_schedule_arrival(
+        &mut self,
+        index: usize,
+        params: &openflex_model::SourceParams,
+    ) -> Result<(), SimError> {
+        let Some(schedule) = params.arrival_schedule() else {
+            return Ok(());
+        };
+        let Some(row) = schedule.rows.get(self.objects[index].arrival_row) else {
+            return Ok(());
+        };
+        self.objects[index].arrivals += 1;
+        self.create_row_items(index, params, row.quantity, row.item_type, &row.labels)?;
+        self.objects[index].arrival_row += 1;
+        self.schedule_next_schedule_row(index, params)?;
+        self.flow(index)
+    }
+
+    /// Schedule the next row of an arrival schedule, handling `repeat`.
+    ///
+    /// The first row's time only applies to the first pass: when the table
+    /// repeats, the next pass starts at the last row's time and later passes
+    /// use the row times as offsets from that pass start.
+    fn schedule_next_schedule_row(
+        &mut self,
+        index: usize,
+        params: &openflex_model::SourceParams,
+    ) -> Result<(), SimError> {
+        let Some(schedule) = params.arrival_schedule() else {
+            return Ok(());
+        };
+        if schedule.rows.is_empty() {
+            return Ok(());
+        }
+        if self.objects[index].arrival_row >= schedule.rows.len() {
+            if !schedule.repeat {
+                return Ok(());
+            }
+            let last = schedule.rows[schedule.rows.len() - 1].time;
+            if last <= EPS {
+                return Err(SimError::Config(format!(
+                    "object {}: a repeating arrival_schedule needs a positive last row time",
+                    self.objects[index].name
+                )));
+            }
+            self.objects[index].arrival_base += last;
+            self.objects[index].arrival_pass += 1;
+            self.objects[index].arrival_row = 0;
+        }
+        if let Some(max) = params.max_arrivals
+            && self.objects[index].arrivals >= max
+        {
+            return Ok(());
+        }
+        let row = self.objects[index].arrival_row;
+        let first_pass = self.objects[index].arrival_pass == 0;
+        let offset = if first_pass || row > 0 {
+            schedule.rows[row].time
+        } else {
+            0.0
+        };
+        let at = self.objects[index].arrival_base + offset;
+        if at < self.source_horizon(params) - EPS {
+            self.schedule(at, EventKind::Arrive(index));
+        }
+        Ok(())
+    }
+
+    /// Arrival sequence (A2): rows advance once the previous batch has left
+    /// the source, so no time is scheduled here.
+    fn handle_sequence_arrival(
+        &mut self,
+        index: usize,
+        params: &openflex_model::SourceParams,
+    ) -> Result<(), SimError> {
+        let Some(rows) = params.arrival_sequence() else {
+            return Ok(());
+        };
+        let Some(row) = rows.get(self.objects[index].arrival_row) else {
+            return Ok(());
+        };
+        self.objects[index].arrivals += 1;
+        self.create_row_items(index, params, row.quantity, row.item_type, &row.labels)?;
+        self.objects[index].arrival_row += 1;
+        self.objects[index].next_arrival_pending = true;
+        self.flow(index)
+    }
+
+    /// Create the items of one table row with the row's item type and labels
+    /// layered on top of the source defaults.
+    fn create_row_items(
+        &mut self,
+        index: usize,
+        params: &openflex_model::SourceParams,
+        quantity: u32,
+        item_type: Option<u32>,
+        labels: &BTreeMap<String, f64>,
+    ) -> Result<(), SimError> {
+        let mut merged = params.labels.clone();
+        merged.extend(labels.iter().map(|(name, value)| (name.clone(), *value)));
+        let item_type = item_type.unwrap_or(params.item_type);
+        for _ in 0..quantity {
+            let item = self.create_item(item_type, &merged, index)?;
+            self.objects[index].out_pending.push(item);
+        }
+        Ok(())
+    }
+
+    /// A source that is off shift creates nothing. Inter-arrival sources keep
+    /// their rhythm; schedules skip the row; sequences resume at the next
+    /// shift window.
+    fn handle_off_shift_arrival(
+        &mut self,
+        index: usize,
+        params: &openflex_model::SourceParams,
+        style: ArrivalStyle,
+    ) -> Result<(), SimError> {
+        match style {
+            ArrivalStyle::InterArrivalTime => self.schedule_next_arrival(index),
+            ArrivalStyle::ArrivalSchedule => {
+                if self.objects[index].arrival_row
+                    < params.arrival_schedule().map_or(0, |s| s.rows.len())
+                {
+                    self.objects[index].arrival_row += 1;
+                }
+                self.schedule_next_schedule_row(index, params)
+            }
+            ArrivalStyle::ArrivalSequence => {
+                if let Some(at) = self.next_shift_start(index)
+                    && at < self.source_horizon(params) - EPS
+                {
+                    self.schedule(at, EventKind::Arrive(index));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// First model time after now at which the object's shift plan makes it
+    /// available again.
+    fn next_shift_start(&self, index: usize) -> Option<f64> {
+        let shifts = self.model.objects[index].params.shifts();
+        if shifts.is_empty() {
+            return None;
+        }
+        let mut cursor = self.now;
+        for _ in 0..16 {
+            let next = shifts::next_transition(shifts, cursor)?;
+            if shifts::is_active(shifts, next + EPS) {
+                return Some(next);
+            }
+            cursor = next;
+        }
+        None
+    }
+
+    /// Schedule the next arrival one inter-arrival time from now (inter-arrival
+    /// style) or the next sequence row (no delay).
     fn schedule_next_arrival(&mut self, index: usize) -> Result<(), SimError> {
         let params = match &self.model.objects[index].params {
             ObjectParams::Source(params) => params.clone(),
@@ -1344,6 +1703,14 @@ impl<'m> Simulation<'m> {
         {
             return Ok(());
         }
+        // Arrival sequence: the next row starts as soon as the previous batch
+        // has left the source (the event carries no delay).
+        if let Some(rows) = params.arrival_sequence() {
+            if self.objects[index].arrival_row < rows.len() {
+                self.schedule(self.now, EventKind::Arrive(index));
+            }
+            return Ok(());
+        }
         let interval = self.sample_arrival(&params.interarrival).max(0.0);
         // A safety net for zero-time loops: a source that samples a zero
         // inter-arrival time without an arrival cap would create items at the
@@ -1356,11 +1723,7 @@ impl<'m> Simulation<'m> {
             )));
         }
         let next = self.now + interval;
-        let horizon = match params.stop_time {
-            Some(stop) => stop.min(self.config.stop_time),
-            None => self.config.stop_time,
-        };
-        if next < horizon - EPS {
+        if next < self.source_horizon(&params) - EPS {
             self.schedule(next, EventKind::Arrive(index));
         }
         Ok(())
@@ -1435,25 +1798,27 @@ impl<'m> Simulation<'m> {
             ObjectParams::Processor(params) => {
                 (object.effective_content() as u32) < params.max_content
             }
+            ObjectParams::MultiProcessor(params) => {
+                (object.effective_content() as u32) < params.slots.max(1)
+            }
             ObjectParams::Conveyor(params) => object
                 .belt
                 .as_ref()
                 .is_some_and(|belt| belt.entry_free(params.max_content)),
-            ObjectParams::Combiner(params) => {
-                if object.pack_mode {
+            ObjectParams::Combiner(params) => match object.combine_mode {
+                CombinerMode::Pack | CombinerMode::Batch => {
                     if port == 0 {
                         object.container.is_none() && object.components.is_empty()
                     } else {
                         object.container.is_some()
                             && (object.components.len() as u32) < params.components_per_container
                     }
-                } else {
-                    object
-                        .join_slots
-                        .get(port as usize)
-                        .is_some_and(Option::is_none)
                 }
-            }
+                CombinerMode::Join => object
+                    .join_slots
+                    .get(port as usize)
+                    .is_some_and(Option::is_none),
+            },
             ObjectParams::Separator(_) => {
                 object.content.is_empty() && object.pending_parts.is_empty()
             }
@@ -1485,6 +1850,7 @@ impl<'m> Simulation<'m> {
         match kind {
             ObjectKind::Queue | ObjectKind::Rack => self.flow_queue(index)?,
             ObjectKind::Processor => self.flow_processor(index)?,
+            ObjectKind::MultiProcessor => self.flow_multiprocessor(index)?,
             ObjectKind::Conveyor => self.flow_conveyor(index)?,
             ObjectKind::Combiner => self.flow_combiner(index)?,
             ObjectKind::Separator => self.flow_separator(index)?,
@@ -1713,17 +2079,27 @@ impl<'m> Simulation<'m> {
             }
             ObjectKind::Combiner => {
                 self.objects[target].note_content(now);
-                if self.objects[target].pack_mode {
-                    if to_port == 0 {
-                        self.objects[target].container = Some(item);
-                    } else {
-                        self.objects[target].components.push(item);
+                match self.objects[target].combine_mode {
+                    CombinerMode::Pack | CombinerMode::Batch => {
+                        if to_port == 0 {
+                            self.objects[target].container = Some(item);
+                        } else {
+                            self.objects[target].components.push(item);
+                        }
                     }
-                } else if let Some(slot) = self.objects[target].join_slots.get_mut(to_port as usize)
-                {
-                    *slot = Some(item);
+                    CombinerMode::Join => {
+                        if let Some(slot) =
+                            self.objects[target].join_slots.get_mut(to_port as usize)
+                        {
+                            *slot = Some(item);
+                        }
+                    }
                 }
                 self.objects[target].touch();
+                self.schedule(now, EventKind::Flow(target));
+            }
+            ObjectKind::MultiProcessor => {
+                self.objects[target].push_content(now, item);
                 self.schedule(now, EventKind::Flow(target));
             }
             ObjectKind::Separator => {
@@ -2133,6 +2509,13 @@ impl<'m> Simulation<'m> {
     // Processor
     // -----------------------------------------------------------------------
 
+    fn combiner_params(&self, index: usize) -> Option<openflex_model::CombinerParams> {
+        match &self.model.objects[index].params {
+            ObjectParams::Combiner(params) => Some(params.clone()),
+            _ => None,
+        }
+    }
+
     fn processor_params(&self, index: usize) -> Option<openflex_model::ProcessorParams> {
         match &self.model.objects[index].params {
             ObjectParams::Processor(params) => Some(params.clone()),
@@ -2208,7 +2591,28 @@ impl<'m> Simulation<'m> {
         if self.objects[index].phase_token != token {
             return Ok(());
         }
-        let Some(params) = self.processor_params(index) else {
+        match self.kind(index) {
+            ObjectKind::Processor => {
+                let Some(params) = self.processor_params(index) else {
+                    return Ok(());
+                };
+                let same_operator = params.setup_operator.is_some()
+                    && params.setup_operator == params.process_operator;
+                if !same_operator {
+                    self.release_operator(index)?;
+                }
+                self.set_phase(index, Phase::Idle);
+                self.objects[index].ready_for_process = true;
+                self.flow_processor(index)
+            }
+            ObjectKind::Combiner => self.handle_combiner_setup_done(index),
+            _ => Ok(()),
+        }
+    }
+
+    /// A7: setup of a combiner batch finished; continue with processing.
+    fn handle_combiner_setup_done(&mut self, index: usize) -> Result<(), SimError> {
+        let Some(params) = self.combiner_params(index) else {
             return Ok(());
         };
         let same_operator =
@@ -2218,12 +2622,45 @@ impl<'m> Simulation<'m> {
         }
         self.set_phase(index, Phase::Idle);
         self.objects[index].ready_for_process = true;
-        self.flow_processor(index)
+        self.flow_combiner(index)
+    }
+
+    /// A7: processing of a combiner batch finished; release every item.
+    fn handle_combiner_process_done(&mut self, index: usize) -> Result<(), SimError> {
+        let now = self.now;
+        self.objects[index].note_content(now);
+        let mut items: Vec<FlowItem> = Vec::new();
+        if let Some(container) = self.objects[index].container.take() {
+            items.push(container);
+        }
+        items.extend(std::mem::take(&mut self.objects[index].components));
+        let count = items.len();
+        for mut item in items {
+            item.labels.insert("batch".to_string(), count as f64);
+            self.objects[index].out_pending.push(item);
+        }
+        self.objects[index].touch();
+        self.set_phase(index, Phase::WaitingForOutput);
+        self.release_operator(index)?;
+        self.flow(index)?;
+        if self.objects[index].out_pending.is_empty()
+            && self.objects[index].container.is_none()
+            && self.objects[index].components.is_empty()
+            && !matches!(self.objects[index].phase, Phase::Setup | Phase::Processing)
+        {
+            self.set_phase(index, Phase::Idle);
+            self.set_state(index, State::Idle);
+        }
+        self.notify_upstreams(index)?;
+        Ok(())
     }
 
     fn handle_process_done(&mut self, index: usize, token: u64) -> Result<(), SimError> {
         if self.objects[index].phase_token != token {
             return Ok(());
+        }
+        if self.kind(index) == ObjectKind::Combiner {
+            return self.handle_combiner_process_done(index);
         }
         self.objects[index].note_content(self.now);
         let Some(item) = self.objects[index].processing_item.take() else {
@@ -2252,6 +2689,28 @@ impl<'m> Simulation<'m> {
 
     /// Pause the current setup/process step, remembering the remaining time.
     fn pause_phase(&mut self, index: usize) {
+        if self.kind(index) == ObjectKind::MultiProcessor {
+            let now = self.now;
+            for lane in 0..self.objects[index].lanes.len() {
+                if !matches!(
+                    self.objects[index].lanes[lane].phase,
+                    Phase::Setup | Phase::Processing
+                ) || self.objects[index].lanes[lane].paused
+                {
+                    continue;
+                }
+                self.objects[index].lanes[lane].paused_remaining =
+                    (self.objects[index].lanes[lane].end - now).max(0.0);
+                self.objects[index].lanes[lane].token += 1;
+                self.objects[index].lanes[lane].paused = true;
+                let busy_since = self.objects[index].lanes[lane].busy_since;
+                if busy_since > 0.0 {
+                    self.objects[index].slot_busy += (now - busy_since).max(0.0);
+                    self.objects[index].lanes[lane].busy_since = 0.0;
+                }
+            }
+            return;
+        }
         if matches!(self.objects[index].phase, Phase::Setup | Phase::Processing)
             && self.objects[index].paused_remaining <= 0.0
         {
@@ -2264,6 +2723,27 @@ impl<'m> Simulation<'m> {
 
     /// Resume a paused setup/process step. Returns `true` when a step resumed.
     fn resume_phase(&mut self, index: usize) -> Result<bool, SimError> {
+        if self.kind(index) == ObjectKind::MultiProcessor {
+            let mut resumed = false;
+            for lane in 0..self.objects[index].lanes.len() {
+                if !self.objects[index].lanes[lane].paused {
+                    continue;
+                }
+                let remaining = self.objects[index].lanes[lane].paused_remaining;
+                self.objects[index].lanes[lane].paused = false;
+                self.objects[index].lanes[lane].paused_remaining = 0.0;
+                self.objects[index].lanes[lane].busy_since = self.now;
+                self.objects[index].lanes[lane].token += 1;
+                let token = self.objects[index].lanes[lane].token;
+                self.objects[index].lanes[lane].end = self.now + remaining;
+                self.schedule(self.now + remaining, EventKind::MpDone(index, lane, token));
+                resumed = true;
+            }
+            if resumed {
+                self.refresh_multiprocessor(index)?;
+            }
+            return Ok(resumed);
+        }
         if !matches!(self.objects[index].phase, Phase::Setup | Phase::Processing) {
             return Ok(false);
         }
@@ -2635,6 +3115,155 @@ impl<'m> Simulation<'m> {
     }
 
     // -----------------------------------------------------------------------
+    // MultiProcessor (B1)
+    // -----------------------------------------------------------------------
+
+    fn multiprocessor_params(&self, index: usize) -> Option<openflex_model::MultiProcessorParams> {
+        match &self.model.objects[index].params {
+            ObjectParams::MultiProcessor(params) => Some(params.clone()),
+            _ => None,
+        }
+    }
+
+    /// Start as many free slots as possible and keep the state in sync.
+    ///
+    /// Operators are requested as a crew of `slots` for the whole busy period
+    /// (one crew per busy period, held until every slot is idle), which keeps
+    /// the shared dispatcher/resource machinery unchanged; see the module
+    /// documentation for the simplification.
+    fn flow_multiprocessor(&mut self, index: usize) -> Result<(), SimError> {
+        let Some(params) = self.multiprocessor_params(index) else {
+            return Ok(());
+        };
+        if !self.objects[index].on_shift || self.objects[index].state == State::Down {
+            return Ok(());
+        }
+        let slots = self.objects[index].lanes.len();
+        let active = self.objects[index]
+            .lanes
+            .iter()
+            .filter(|lane| lane.item.is_some())
+            .count();
+        let wanted = (active + self.objects[index].content.len()).min(slots);
+        if wanted > 0 && (params.process_operator.is_some() || params.setup_operator.is_some()) {
+            let operator_params = mp_operator_params(&params, wanted as u32);
+            if !self.ensure_operator(index, OperatorPhase::Process, &operator_params)? {
+                // Existing slots keep working while the crew is incomplete.
+                if active > 0 {
+                    self.set_phase(index, Phase::Processing);
+                    self.set_state(index, State::Busy);
+                }
+                return Ok(());
+            }
+        }
+        while let Some(lane) = self.objects[index]
+            .lanes
+            .iter()
+            .position(|lane| lane.item.is_none())
+        {
+            let Some(item) = self.objects[index].take_content(self.now, 0) else {
+                break;
+            };
+            let setup = self.sample(&params.setup_time).max(0.0);
+            self.objects[index].lanes[lane].item = Some(item);
+            self.objects[index].lanes[lane].busy_since = self.now;
+            self.objects[index].lanes[lane].token += 1;
+            let token = self.objects[index].lanes[lane].token;
+            if setup > 0.0 {
+                self.objects[index].lanes[lane].phase = Phase::Setup;
+                self.objects[index].lanes[lane].end = self.now + setup;
+                self.schedule(self.now + setup, EventKind::MpDone(index, lane, token));
+            } else {
+                let process = self.sample(&params.process_time).max(0.0);
+                self.objects[index].lanes[lane].phase = Phase::Processing;
+                self.objects[index].lanes[lane].end = self.now + process;
+                self.schedule(self.now + process, EventKind::MpDone(index, lane, token));
+            }
+        }
+        self.refresh_multiprocessor(index)?;
+        Ok(())
+    }
+
+    /// Publish the object-level phase/state from the slot states and release
+    /// the crew once the object is idle again.
+    fn refresh_multiprocessor(&mut self, index: usize) -> Result<(), SimError> {
+        let active = self.objects[index]
+            .lanes
+            .iter()
+            .filter(|lane| lane.item.is_some())
+            .count();
+        if active == 0 {
+            self.set_phase(index, Phase::Idle);
+            if self.objects[index].content.is_empty() && self.objects[index].out_pending.is_empty()
+            {
+                self.set_state(index, State::Idle);
+                self.release_operator(index)?;
+            } else {
+                self.set_state(index, State::Busy);
+            }
+            return Ok(());
+        }
+        let any_setup = self.objects[index]
+            .lanes
+            .iter()
+            .any(|lane| lane.phase == Phase::Setup);
+        self.set_phase(
+            index,
+            if any_setup {
+                Phase::Setup
+            } else {
+                Phase::Processing
+            },
+        );
+        self.set_state(index, State::Busy);
+        Ok(())
+    }
+
+    fn handle_mp_done(&mut self, index: usize, lane: usize, token: u64) -> Result<(), SimError> {
+        let Some(params) = self.multiprocessor_params(index) else {
+            return Ok(());
+        };
+        let Some(current) = self.objects[index].lanes.get(lane) else {
+            return Ok(());
+        };
+        if current.token != token || current.item.is_none() {
+            return Ok(());
+        }
+        if current.phase == Phase::Setup {
+            let process = self.sample(&params.process_time).max(0.0);
+            let lane_rt = &mut self.objects[index].lanes[lane];
+            lane_rt.phase = Phase::Processing;
+            lane_rt.token += 1;
+            lane_rt.end = self.now + process;
+            let next_token = lane_rt.token;
+            self.schedule(
+                self.now + process,
+                EventKind::MpDone(index, lane, next_token),
+            );
+            self.refresh_multiprocessor(index)?;
+            return Ok(());
+        }
+        let now = self.now;
+        self.objects[index].note_content(now);
+        if let Some(item) = self.objects[index].lanes[lane].item.take() {
+            self.objects[index].out_pending.push(item);
+        }
+        let busy_since = self.objects[index].lanes[lane].busy_since;
+        if busy_since > 0.0 {
+            self.objects[index].slot_busy += (now - busy_since).max(0.0);
+        }
+        self.objects[index].lanes[lane].busy_since = 0.0;
+        self.objects[index].lanes[lane].phase = Phase::Idle;
+        self.objects[index].lanes[lane].token += 1;
+        self.objects[index].touch();
+        // Deliver the finished item and start the next one in a free slot.
+        self.flow(index)?;
+        self.refresh_multiprocessor(index)?;
+        self.notify_upstreams(index)?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
     // Conveyor
     // -----------------------------------------------------------------------
 
@@ -2735,71 +3364,150 @@ impl<'m> Simulation<'m> {
             ObjectParams::Combiner(params) => params.clone(),
             _ => return Ok(()),
         };
-        if self.objects[index].pack_mode {
-            if self.objects[index].container.is_none() {
-                self.set_state(index, State::Idle);
-                return Ok(());
-            }
-            if (self.objects[index].components.len() as u32) < params.components_per_container {
-                // Waiting for the remaining components.
-                self.set_state(index, State::Blocked);
-                return Ok(());
-            }
-            let now = self.now;
-            self.objects[index].note_content(now);
-            let Some(mut container) = self.objects[index].container.take() else {
-                return Ok(());
-            };
-            let components = std::mem::take(&mut self.objects[index].components);
-            let count = components.len();
-            for component in &components {
-                for (label, value) in &component.labels {
-                    *container.labels.entry(label.clone()).or_insert(0.0) += *value;
-                }
-            }
-            container
-                .labels
-                .insert(COMPONENTS_LABEL.to_string(), count as f64);
-            self.objects[index].out_pending.push(container);
-            self.objects[index].touch();
+        match self.objects[index].combine_mode {
+            CombinerMode::Pack => self.flow_combiner_pack(index, &params),
+            CombinerMode::Join => self.flow_combiner_join(index),
+            CombinerMode::Batch => self.flow_combiner_batch(index, &params),
+        }
+    }
+
+    /// `pack`: wait for the container plus its components, then release the
+    /// container with the components inside.
+    fn flow_combiner_pack(
+        &mut self,
+        index: usize,
+        params: &openflex_model::CombinerParams,
+    ) -> Result<(), SimError> {
+        if self.objects[index].container.is_none() {
             self.set_state(index, State::Idle);
-            Ok(())
-        } else {
-            let all = self.objects[index].join_slots.iter().all(Option::is_some);
-            let any = self.objects[index].join_slots.iter().any(Option::is_some);
-            if !all {
-                self.objects[index]
-                    .set_state(self.now, if any { State::Blocked } else { State::Idle });
-                return Ok(());
+            return Ok(());
+        }
+        if (self.objects[index].components.len() as u32) < params.components_per_container {
+            // Waiting for the remaining components.
+            self.set_state(index, State::Blocked);
+            return Ok(());
+        }
+        let now = self.now;
+        self.objects[index].note_content(now);
+        let Some(mut container) = self.objects[index].container.take() else {
+            return Ok(());
+        };
+        let components = std::mem::take(&mut self.objects[index].components);
+        let count = components.len();
+        for component in &components {
+            for (label, value) in &component.labels {
+                *container.labels.entry(label.clone()).or_insert(0.0) += *value;
             }
-            let now = self.now;
-            self.objects[index].note_content(now);
-            let mut merged: Option<FlowItem> = None;
-            let mut count = 0usize;
-            for slot in self.objects[index].join_slots.iter_mut() {
-                if let Some(item) = slot.take() {
-                    count += 1;
-                    match merged.as_mut() {
-                        None => merged = Some(item),
-                        Some(base) => {
-                            for (label, value) in &item.labels {
-                                *base.labels.entry(label.clone()).or_insert(0.0) += *value;
-                            }
-                            base.entry_time = base.entry_time.min(item.entry_time);
+        }
+        container
+            .labels
+            .insert(COMPONENTS_LABEL.to_string(), count as f64);
+        self.objects[index].out_pending.push(container);
+        self.objects[index].touch();
+        self.set_state(index, State::Idle);
+        Ok(())
+    }
+
+    /// `join`: permanently merge one item per input port into a single item.
+    fn flow_combiner_join(&mut self, index: usize) -> Result<(), SimError> {
+        let all = self.objects[index].join_slots.iter().all(Option::is_some);
+        let any = self.objects[index].join_slots.iter().any(Option::is_some);
+        if !all {
+            self.set_state(index, if any { State::Blocked } else { State::Idle });
+            return Ok(());
+        }
+        let now = self.now;
+        self.objects[index].note_content(now);
+        let mut merged: Option<FlowItem> = None;
+        let mut count = 0usize;
+        for slot in self.objects[index].join_slots.iter_mut() {
+            if let Some(item) = slot.take() {
+                count += 1;
+                match merged.as_mut() {
+                    None => merged = Some(item),
+                    Some(base) => {
+                        for (label, value) in &item.labels {
+                            *base.labels.entry(label.clone()).or_insert(0.0) += *value;
                         }
+                        base.entry_time = base.entry_time.min(item.entry_time);
                     }
                 }
             }
-            if let Some(mut merged) = merged {
-                merged
-                    .labels
-                    .insert(COMPONENTS_LABEL.to_string(), count as f64);
-                self.objects[index].out_pending.push(merged);
-            }
-            self.objects[index].touch();
-            self.set_state(index, State::Idle);
-            Ok(())
         }
+        if let Some(mut merged) = merged {
+            merged
+                .labels
+                .insert(COMPONENTS_LABEL.to_string(), count as f64);
+            self.objects[index].out_pending.push(merged);
+        }
+        self.objects[index].touch();
+        self.set_state(index, State::Idle);
+        Ok(())
+    }
+
+    /// `batch` (A7): collect the container plus its components, run the
+    /// inherited setup/process cycle (including operators), then release every
+    /// item of the batch together.
+    fn flow_combiner_batch(
+        &mut self,
+        index: usize,
+        params: &openflex_model::CombinerParams,
+    ) -> Result<(), SimError> {
+        if !self.objects[index].on_shift || self.objects[index].state == State::Down {
+            return Ok(());
+        }
+        if self.objects[index].container.is_none() {
+            self.set_state(index, State::Idle);
+            return Ok(());
+        }
+        if (self.objects[index].components.len() as u32) < params.components_per_container {
+            self.set_state(index, State::Blocked);
+            return Ok(());
+        }
+        let operator_params = combiner_operator_params(params);
+        // Continue after a setup whose process operator was not available yet.
+        if self.objects[index].ready_for_process {
+            if !self.ensure_operator(index, OperatorPhase::Process, &operator_params)? {
+                return Ok(());
+            }
+            self.objects[index].ready_for_process = false;
+            let process = self.sample(&params.process_time).max(0.0);
+            self.set_phase(index, Phase::Processing);
+            self.objects[index].phase_token += 1;
+            let token = self.objects[index].phase_token;
+            self.objects[index].phase_end = self.now + process;
+            self.set_state(index, State::Busy);
+            self.schedule(self.now + process, EventKind::ProcessDone(index, token));
+            return Ok(());
+        }
+        if matches!(self.objects[index].phase, Phase::Setup | Phase::Processing) {
+            return Ok(());
+        }
+        let setup = self.sample(&params.setup_time).max(0.0);
+        let phase = if setup > 0.0 {
+            OperatorPhase::Setup
+        } else {
+            OperatorPhase::Process
+        };
+        if !self.ensure_operator(index, phase, &operator_params)? {
+            return Ok(());
+        }
+        self.objects[index].phase_token += 1;
+        let token = self.objects[index].phase_token;
+        let now = self.now;
+        if setup > 0.0 {
+            self.set_phase(index, Phase::Setup);
+            self.objects[index].phase_end = now + setup;
+            self.set_state(index, State::Busy);
+            self.schedule(now + setup, EventKind::SetupDone(index, token));
+        } else {
+            let process = self.sample(&params.process_time).max(0.0);
+            self.set_phase(index, Phase::Processing);
+            self.objects[index].phase_end = now + process;
+            self.set_state(index, State::Busy);
+            self.schedule(now + process, EventKind::ProcessDone(index, token));
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -2828,12 +3536,18 @@ impl<'m> Simulation<'m> {
                 .copied()
                 .unwrap_or(0.0)
                 .max(0.0) as usize;
-            // unpack semantics: the container is released as well, so `qty`
-            // parts plus the container itself leave the separator.
-            let parts = if params.split_count > 0 {
-                params.split_count as usize + 1
-            } else {
-                components + 1
+            // `unpack` releases the container as well (qty + 1 items), while
+            // `split` copies the item `split_count` times and does not keep
+            // the container as a separate output (A6).
+            let parts = match params.separate_mode {
+                SeparateMode::Unpack => {
+                    if params.split_count > 0 {
+                        params.split_count as usize + 1
+                    } else {
+                        components + 1
+                    }
+                }
+                SeparateMode::Split => (params.split_count as usize).max(1),
             };
             for part in 0..parts {
                 let item = if part == 0 {
@@ -3060,7 +3774,7 @@ impl<'m> Simulation<'m> {
         if shifts.is_empty() {
             return Ok(());
         }
-        let active = shifts::is_active(&shifts, self.now);
+        let active = shifts::is_active(&shifts, self.now) && self.timetable_available(index);
         self.set_availability(index, active)?;
         if let Some(next) = shifts::next_transition(&shifts, self.now)
             && next < self.config.stop_time - EPS
@@ -3068,6 +3782,35 @@ impl<'m> Simulation<'m> {
             self.schedule(next, EventKind::ShiftChange(index));
         }
         Ok(())
+    }
+
+    /// B11: a linear availability window starts or ends.
+    fn handle_timetable_change(&mut self, index: usize) -> Result<(), SimError> {
+        let Some(timetable) = self.model.objects[index].params.timetable().cloned() else {
+            return Ok(());
+        };
+        let active = self.timetable_available(index) && self.shifts_available(index);
+        self.set_availability(index, active)?;
+        if let Some(next) = next_timetable_transition(&timetable.windows, self.now)
+            && next < self.config.stop_time - EPS
+        {
+            self.schedule(next, EventKind::TimetableChange(index));
+        }
+        Ok(())
+    }
+
+    /// Is the object's linear availability calendar open right now?
+    fn timetable_available(&self, index: usize) -> bool {
+        match self.model.objects[index].params.timetable() {
+            Some(table) => timetable_active(&table.windows, self.now),
+            None => true,
+        }
+    }
+
+    /// Is the object's shift plan open right now?
+    fn shifts_available(&self, index: usize) -> bool {
+        let shifts = self.model.objects[index].params.shifts();
+        shifts.is_empty() || shifts::is_active(shifts, self.now)
     }
 
     fn set_availability(&mut self, index: usize, active: bool) -> Result<(), SimError> {
@@ -3217,6 +3960,7 @@ impl<'m> Simulation<'m> {
         self.stats_created = 0;
         self.stats_completed = 0;
         for object in &mut self.objects {
+            object.slot_busy = 0.0;
             object.acc = Accum::default();
             object.last_state_change = self.now;
             object.last_content_change = self.now;
@@ -3225,11 +3969,77 @@ impl<'m> Simulation<'m> {
     }
 }
 
+/// B12: map an event to the object it belongs to, a stable label and one
+/// optional numeric detail.
+#[allow(clippy::type_complexity)]
+fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'static str, f64)>) {
+    match kind {
+        EventKind::Arrive(index) => (Some(*index), "arrive", None),
+        EventKind::Flow(index) => (Some(*index), "flow", None),
+        EventKind::SetupDone(index, token) => {
+            (Some(*index), "setup_done", Some(("token", *token as f64)))
+        }
+        EventKind::ProcessDone(index, token) => {
+            (Some(*index), "process_done", Some(("token", *token as f64)))
+        }
+        EventKind::Breakdown(index, generation) => (
+            Some(*index),
+            "breakdown",
+            Some(("generation", *generation as f64)),
+        ),
+        EventKind::RepairDone(index) => (Some(*index), "repair_done", None),
+        EventKind::Message(index) => (Some(*index), "message", None),
+        EventKind::MpDone(index, lane, _) => {
+            (Some(*index), "mp_done", Some(("lane", *lane as f64)))
+        }
+        EventKind::BeltTick(index) => (Some(*index), "belt_tick", None),
+        EventKind::BatchTimeout(index) => (Some(*index), "batch_timeout", None),
+        EventKind::ShiftChange(index) => (Some(*index), "shift_change", None),
+        EventKind::TimetableChange(index) => (Some(*index), "timetable_change", None),
+        EventKind::TransportArrive(transporter, requester) => (
+            Some(*transporter),
+            "transport_arrive",
+            Some(("requester", *requester as f64)),
+        ),
+        EventKind::OperatorLoaded(transporter, requester) => (
+            Some(*transporter),
+            "operator_loaded",
+            Some(("requester", *requester as f64)),
+        ),
+        EventKind::OperatorReleased(transporter, requester) => (
+            Some(*transporter),
+            "operator_released",
+            Some(("requester", *requester as f64)),
+        ),
+        EventKind::TransportHome(transporter) => (Some(*transporter), "transport_home", None),
+        EventKind::ResourceRetry(resource) => (Some(*resource), "resource_retry", None),
+        EventKind::Pull(index) => (Some(*index), "pull", None),
+        EventKind::ResetStats => (None, "reset_stats", None),
+    }
+}
+
 /// Euclidean distance between two object positions.
 fn distance(from: [f64; 2], to: [f64; 2]) -> f64 {
     let dx = to[0] - from[0];
     let dy = to[1] - from[1];
     (dx * dx + dy * dy).sqrt()
+}
+
+/// Is `now` inside one of the linear availability windows (B11)?
+fn timetable_active(windows: &[DowntimeWindow], now: f64) -> bool {
+    windows.is_empty()
+        || windows
+            .iter()
+            .any(|window| now + EPS >= window.start && now < window.end)
+}
+
+/// The first availability-calendar boundary strictly after `after` (B11).
+fn next_timetable_transition(windows: &[DowntimeWindow], after: f64) -> Option<f64> {
+    windows
+        .iter()
+        .flat_map(|window| [window.start, window.end])
+        .filter(|time| *time > after + EPS)
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
 }
 
 /// The end of the downtime window that contains `now`, if any.
@@ -3364,7 +4174,7 @@ mod tests {
             warmup: 0.0,
             seed: 1,
         };
-        let mut sim = Simulation::new(&model, config).expect("simulation");
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
         let processor = sim.by_name["P"];
         assert!(sim.can_accept(processor, 0));
 
@@ -3395,7 +4205,7 @@ mod tests {
             warmup: 0.0,
             seed: 1,
         };
-        let mut sim = Simulation::new(&model, config).expect("simulation");
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
         let processor = sim.by_name["P"];
         sim.objects[processor].content.push(item());
         sim.objects[processor].in_transit = 3;

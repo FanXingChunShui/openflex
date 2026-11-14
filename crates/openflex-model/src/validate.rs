@@ -275,6 +275,26 @@ fn validate_connection(
 fn validate_object(object: &Object) -> Vec<ValidationIssue> {
     let location = |field: &str| format!("objects.{}.{}", object.name, field);
     let mut issues = Vec::new();
+
+    // B11: availability calendars are linear, ordered and non-overlapping.
+    if let Some(timetable) = object.params.timetable() {
+        let mut previous_end = f64::NEG_INFINITY;
+        for (i, window) in timetable.windows.iter().enumerate() {
+            if window.end <= window.start {
+                issues.push(ValidationIssue::new(
+                    location(&format!("timetable.windows[{i}]")),
+                    "end must be after start",
+                ));
+            }
+            if window.start < previous_end {
+                issues.push(ValidationIssue::new(
+                    location(&format!("timetable.windows[{i}]")),
+                    "windows must be ordered and must not overlap",
+                ));
+            }
+            previous_end = window.end;
+        }
+    }
     macro_rules! distribution {
         ($field:expr, $dist:expr) => {
             if let Err(err) = $dist.validate() {
@@ -464,6 +484,16 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
                         ));
                     }
                 }
+            }
+        }
+        crate::model::ObjectParams::MultiProcessor(params) => {
+            distribution!("setup_time", &params.setup_time);
+            distribution!("process_time", &params.process_time);
+            if params.slots == 0 {
+                issues.push(ValidationIssue::new(
+                    location("slots"),
+                    "must be at least 1",
+                ));
             }
         }
         crate::model::ObjectParams::Conveyor(params) => {

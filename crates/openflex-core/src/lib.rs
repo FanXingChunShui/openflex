@@ -24,10 +24,12 @@ pub mod engine;
 pub mod error;
 pub mod shifts;
 pub mod stats;
+pub mod trace;
 
-pub use engine::{FlowItem, derive_seed, run_model, simulate};
+pub use engine::{FlowItem, derive_seed, run_model, simulate, simulate_traced};
 pub use error::SimError;
 pub use stats::{
     Aggregate, LittleCheck, LittleEntry, ObjectAggregate, ObjectStats, ReplicationResult,
     SimConfig, SimReport, StateTimes, t_critical_95,
 };
+pub use trace::{MAX_TRACE_EVENTS, TraceEvent, TraceLog};

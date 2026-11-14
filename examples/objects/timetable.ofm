@@ -1,0 +1,24 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "timetable-demo",
+  "description": "Processor availability calendar (B11): three work windows, off the rest of the time",
+  "time_unit": "seconds",
+  "run": { "stop_time": 500.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+    { "name": "Processor1", "kind": "processor", "pos": [10, 0], "params": {
+        "process_time": { "distribution": "constant", "value": 4.0 },
+        "timetable": { "windows": [
+          { "start": 0.0, "end": 100.0 },
+          { "start": 200.0, "end": 300.0 },
+          { "start": 400.0, "end": 500.0 }
+        ] } } },
+    { "name": "Sink1", "kind": "sink", "pos": [20, 0], "params": {} }
+  ],
+  "connections": [
+    { "from": "Source1", "to": "Processor1" },
+    { "from": "Processor1", "to": "Sink1" }
+  ]
+}

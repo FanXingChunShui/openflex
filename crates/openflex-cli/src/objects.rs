@@ -19,6 +19,10 @@ pub fn describe_kind(kind: ObjectKind) -> (&'static str, &'static str) {
             "Processes one or more flow items with setup and process times.",
             "setup_time: distribution, default constant 0\nprocess_time: distribution, default constant 1\nmax_content: capacity including the item in process, default 1\nchangeover_time: distribution, default constant 0\nfailure: { mtbf, mttr, first_failure_time?, count_time_in_states? } optional failure/repair cycle\nsetup_operator / process_operator: dispatcher names\nnum_setup_operators / num_process_operators: integers (default 1)\nuse_same_num_operators: boolean, default false\noperator_priority: integer, default 0\noperator_preempt: boolean, default false\npull: { enabled, strategy, requirement }\ntriggers: object triggers and actions (release_item supported)",
         ),
+        ObjectKind::MultiProcessor => (
+            "Processes several flow items in parallel through independent slots.",
+            "slots: number of parallel processing slots, default 1\nsetup_time: distribution per slot, default constant 0\nprocess_time: distribution per slot, default constant 1\nsetup_operator / process_operator: dispatcher names (crew of `slots` requested per busy period)",
+        ),
         ObjectKind::Sink => (
             "Removes finished flow items and counts them.",
             "pull: { enabled, strategy, requirement }",

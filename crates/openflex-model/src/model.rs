@@ -103,6 +103,7 @@ pub enum ObjectKind {
     Source,
     Queue,
     Processor,
+    MultiProcessor,
     Sink,
     Combiner,
     Separator,
@@ -123,6 +124,7 @@ impl ObjectKind {
             ObjectKind::Source => "source",
             ObjectKind::Queue => "queue",
             ObjectKind::Processor => "processor",
+            ObjectKind::MultiProcessor => "multiprocessor",
             ObjectKind::Sink => "sink",
             ObjectKind::Combiner => "combiner",
             ObjectKind::Separator => "separator",
@@ -143,6 +145,7 @@ impl ObjectKind {
             "source" => ObjectKind::Source,
             "queue" => ObjectKind::Queue,
             "processor" => ObjectKind::Processor,
+            "multiprocessor" => ObjectKind::MultiProcessor,
             "sink" => ObjectKind::Sink,
             "combiner" => ObjectKind::Combiner,
             "separator" => ObjectKind::Separator,
@@ -165,6 +168,7 @@ impl ObjectKind {
             ObjectKind::Source,
             ObjectKind::Queue,
             ObjectKind::Processor,
+            ObjectKind::MultiProcessor,
             ObjectKind::Sink,
             ObjectKind::Combiner,
             ObjectKind::Separator,
@@ -279,6 +283,7 @@ pub enum ObjectParams {
     Source(SourceParams),
     Queue(QueueParams),
     Processor(ProcessorParams),
+    MultiProcessor(MultiProcessorParams),
     Sink(SinkParams),
     Combiner(CombinerParams),
     Separator(SeparatorParams),
@@ -303,6 +308,7 @@ impl ObjectParams {
             ObjectParams::Source(_) => ObjectKind::Source,
             ObjectParams::Queue(_) => ObjectKind::Queue,
             ObjectParams::Processor(_) => ObjectKind::Processor,
+            ObjectParams::MultiProcessor(_) => ObjectKind::MultiProcessor,
             ObjectParams::Sink(_) => ObjectKind::Sink,
             ObjectParams::Combiner(_) => ObjectKind::Combiner,
             ObjectParams::Separator(_) => ObjectKind::Separator,
@@ -324,6 +330,7 @@ impl ObjectParams {
             ObjectParams::Source(p) => &p.triggers,
             ObjectParams::Queue(p) => &p.triggers,
             ObjectParams::Processor(p) => &p.triggers,
+            ObjectParams::MultiProcessor(p) => &p.triggers,
             ObjectParams::Sink(p) => &p.triggers,
             ObjectParams::Combiner(p) => &p.triggers,
             ObjectParams::Separator(p) => &p.triggers,
@@ -339,12 +346,35 @@ impl ObjectParams {
         }
     }
 
+    /// Availability calendar shared by every object kind (B11).
+    pub fn timetable(&self) -> Option<&TimeTable> {
+        match self {
+            ObjectParams::Source(p) => p.timetable.as_ref(),
+            ObjectParams::Queue(p) => p.timetable.as_ref(),
+            ObjectParams::Processor(p) => p.timetable.as_ref(),
+            ObjectParams::MultiProcessor(p) => p.timetable.as_ref(),
+            ObjectParams::Sink(p) => p.timetable.as_ref(),
+            ObjectParams::Combiner(p) => p.timetable.as_ref(),
+            ObjectParams::Separator(p) => p.timetable.as_ref(),
+            ObjectParams::Conveyor(p) => p.timetable.as_ref(),
+            ObjectParams::Merge(p) => p.timetable.as_ref(),
+            ObjectParams::Split(p) => p.timetable.as_ref(),
+            ObjectParams::Transporter(p) => p.timetable.as_ref(),
+            ObjectParams::Dispatcher(p) => p.timetable.as_ref(),
+            ObjectParams::Resource(p) => p.timetable.as_ref(),
+            ObjectParams::Rack(p) => p.timetable.as_ref(),
+            ObjectParams::BasicFr(p) => p.timetable.as_ref(),
+            ObjectParams::BasicTe(p) => p.timetable.as_ref(),
+        }
+    }
+
     /// Pull configuration shared by every object kind (A3).
     pub fn pull(&self) -> Option<&PullParams> {
         match self {
             ObjectParams::Source(p) => p.pull.as_ref(),
             ObjectParams::Queue(p) => p.pull.as_ref(),
             ObjectParams::Processor(p) => p.pull.as_ref(),
+            ObjectParams::MultiProcessor(p) => p.pull.as_ref(),
             ObjectParams::Sink(p) => p.pull.as_ref(),
             ObjectParams::Combiner(p) => p.pull.as_ref(),
             ObjectParams::Separator(p) => p.pull.as_ref(),
@@ -366,6 +396,7 @@ impl ObjectParams {
             ObjectParams::Source(p) => &p.shifts,
             ObjectParams::Queue(p) => &p.shifts,
             ObjectParams::Processor(p) => &p.shifts,
+            ObjectParams::MultiProcessor(p) => &p.shifts,
             ObjectParams::Sink(p) => &p.shifts,
             ObjectParams::Combiner(p) => &p.shifts,
             ObjectParams::Separator(p) => &p.shifts,
@@ -387,6 +418,7 @@ impl ObjectParams {
             ObjectKind::Source => ObjectParams::Source(decode(value)?),
             ObjectKind::Queue => ObjectParams::Queue(decode(value)?),
             ObjectKind::Processor => ObjectParams::Processor(decode(value)?),
+            ObjectKind::MultiProcessor => ObjectParams::MultiProcessor(decode(value)?),
             ObjectKind::Sink => ObjectParams::Sink(decode(value)?),
             ObjectKind::Combiner => ObjectParams::Combiner(decode(value)?),
             ObjectKind::Separator => ObjectParams::Separator(decode(value)?),
@@ -410,6 +442,7 @@ impl Serialize for ObjectParams {
             ObjectParams::Source(p) => p.serialize(serializer),
             ObjectParams::Queue(p) => p.serialize(serializer),
             ObjectParams::Processor(p) => p.serialize(serializer),
+            ObjectParams::MultiProcessor(p) => p.serialize(serializer),
             ObjectParams::Sink(p) => p.serialize(serializer),
             ObjectParams::Combiner(p) => p.serialize(serializer),
             ObjectParams::Separator(p) => p.serialize(serializer),
@@ -565,6 +598,11 @@ pub struct SourceParams {
     /// `interarrival` and `arrival_schedule`.
     #[serde(default)]
     pub arrival_sequence: Option<Vec<SequenceRow>>,
+    /// Linear availability windows (B11): outside them the object is off
+    /// shift. `None` means "always available".
+    #[serde(default)]
+    pub timetable: Option<TimeTable>,
+
     /// Pull configuration (A3).
     #[serde(default)]
     pub pull: Option<PullParams>,
@@ -638,6 +676,7 @@ impl Default for SourceParams {
             arrival_sequence: None,
             item_type: 0,
             labels: BTreeMap::new(),
+            timetable: None,
             pull: None,
             shifts: Vec::new(),
             triggers: Triggers::default(),
@@ -653,6 +692,7 @@ impl Default for QueueParams {
             batch_size: None,
             batch_max_wait: 0.0,
             shifts: Vec::new(),
+            timetable: None,
             pull: None,
             triggers: Triggers::default(),
         }
@@ -675,6 +715,7 @@ impl Default for ProcessorParams {
             failure: None,
             changeover_time: Distribution::default(),
             shifts: Vec::new(),
+            timetable: None,
             pull: None,
             triggers: Triggers::default(),
         }
@@ -691,6 +732,7 @@ impl Default for CombinerParams {
             setup_operator: None,
             process_operator: None,
             shifts: Vec::new(),
+            timetable: None,
             pull: None,
             triggers: Triggers::default(),
         }
@@ -706,6 +748,7 @@ impl Default for TransporterParams {
             unload_time: Distribution::default(),
             home: None,
             shifts: Vec::new(),
+            timetable: None,
             pull: None,
             triggers: Triggers::default(),
         }
@@ -718,6 +761,7 @@ impl Default for BasicTeParams {
             speed: 1.0,
             capacity: 1,
             shifts: Vec::new(),
+            timetable: None,
             pull: None,
             triggers: Triggers::default(),
         }
@@ -755,6 +799,11 @@ pub struct QueueParams {
     /// Maximum time the oldest item waits for a batch (0 = wait forever).
     #[serde(default)]
     pub batch_max_wait: f64,
+
+    /// Linear availability windows (B11): outside them the object is off
+    /// shift. `None` means "always available".
+    #[serde(default)]
+    pub timetable: Option<TimeTable>,
 
     /// Pull configuration (A3); `None` keeps the documented push default.
     #[serde(default)]
@@ -807,6 +856,11 @@ pub struct ProcessorParams {
     #[serde(default)]
     pub changeover_time: Distribution,
 
+    /// Linear availability windows (B11): outside them the object is off
+    /// shift. `None` means "always available".
+    #[serde(default)]
+    pub timetable: Option<TimeTable>,
+
     /// Pull configuration (A3); `None` keeps the documented push default.
     #[serde(default)]
     pub pull: Option<PullParams>,
@@ -842,9 +896,37 @@ pub struct FailureParams {
     pub count_time_in_states: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+/// Multi-slot parallel processor (`MultiProcessor` in FlexSim, B1).
+///
+/// Every slot runs its own setup/process cycle, so up to `slots` items are
+/// processed at the same time. The object holds at most `slots` items in total
+/// (in process plus waiting); operators are requested per busy period as a crew
+/// of `slots` (see `docs/BACKLOG.md` B1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SinkParams {
+pub struct MultiProcessorParams {
+    /// Number of parallel processing slots (default 1).
+    #[serde(default = "one_u32")]
+    pub slots: u32,
+    /// Setup delay before each item is processed (default constant 0).
+    #[serde(default)]
+    pub setup_time: Distribution,
+    /// Processing delay per item (default constant 1).
+    #[serde(default = "one_dist")]
+    pub process_time: Distribution,
+    /// Dispatcher asked for the crew during setup (used when
+    /// `process_operator` is absent).
+    #[serde(default)]
+    pub setup_operator: Option<String>,
+    /// Dispatcher asked for the processing crew.
+    #[serde(default)]
+    pub process_operator: Option<String>,
+
+    /// Linear availability windows (B11): outside them the object is off
+    /// shift. `None` means "always available".
+    #[serde(default)]
+    pub timetable: Option<TimeTable>,
+
     /// Pull configuration (A3); `None` keeps the documented push default.
     #[serde(default)]
     pub pull: Option<PullParams>,
@@ -858,7 +940,44 @@ pub struct SinkParams {
     pub shifts: Vec<Shift>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+impl Default for MultiProcessorParams {
+    fn default() -> Self {
+        Self {
+            slots: 1,
+            setup_time: Distribution::default(),
+            process_time: one_dist(),
+            setup_operator: None,
+            process_operator: None,
+            timetable: None,
+            pull: None,
+            shifts: Vec::new(),
+            triggers: Triggers::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct SinkParams {
+    /// Linear availability windows (B11): outside them the object is off
+    /// shift. `None` means "always available".
+    #[serde(default)]
+    pub timetable: Option<TimeTable>,
+
+    /// Pull configuration (A3); `None` keeps the documented push default.
+    #[serde(default)]
+    pub pull: Option<PullParams>,
+
+    /// Object logic fired by the engine at the documented trigger points.
+    #[serde(default)]
+    pub triggers: Triggers,
+
+    /// Optional shift plan; outside every window the object is off shift.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shifts: Vec<Shift>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CombinerMode {
     /// Put the components inside the container item.
@@ -892,6 +1011,11 @@ pub struct CombinerParams {
     /// Dispatcher asked for a resource during processing.
     #[serde(default)]
     pub process_operator: Option<String>,
+
+    /// Linear availability windows (B11): outside them the object is off
+    /// shift. `None` means "always available".
+    #[serde(default)]
+    pub timetable: Option<TimeTable>,
 
     /// Pull configuration (A3); `None` keeps the documented push default.
     #[serde(default)]
@@ -934,6 +1058,11 @@ pub struct SeparatorParams {
     #[serde(default)]
     pub separate_mode: SeparateMode,
 
+    /// Linear availability windows (B11): outside them the object is off
+    /// shift. `None` means "always available".
+    #[serde(default)]
+    pub timetable: Option<TimeTable>,
+
     /// Pull configuration (A3); `None` keeps the documented push default.
     #[serde(default)]
     pub pull: Option<PullParams>,
@@ -961,6 +1090,11 @@ pub struct ConveyorParams {
     #[serde(default = "default_max_content")]
     pub max_content: u32,
 
+    /// Linear availability windows (B11): outside them the object is off
+    /// shift. `None` means "always available".
+    #[serde(default)]
+    pub timetable: Option<TimeTable>,
+
     /// Pull configuration (A3); `None` keeps the documented push default.
     #[serde(default)]
     pub pull: Option<PullParams>,
@@ -983,6 +1117,7 @@ impl Default for ConveyorParams {
             item_spacing: 1.0,
             max_content: 1_000,
             shifts: Vec::new(),
+            timetable: None,
             pull: None,
             triggers: Triggers::default(),
         }
@@ -995,6 +1130,11 @@ pub struct MergeParams {
     /// Merge waits until all input ports have an item available.
     #[serde(default)]
     pub wait_for_all: bool,
+
+    /// Linear availability windows (B11): outside them the object is off
+    /// shift. `None` means "always available".
+    #[serde(default)]
+    pub timetable: Option<TimeTable>,
 
     /// Pull configuration (A3); `None` keeps the documented push default.
     #[serde(default)]
@@ -1015,6 +1155,11 @@ pub struct SplitParams {
     /// Send items to output ports in round-robin order (default) or by item type.
     #[serde(default)]
     pub by_item_type: bool,
+
+    /// Linear availability windows (B11): outside them the object is off
+    /// shift. `None` means "always available".
+    #[serde(default)]
+    pub timetable: Option<TimeTable>,
 
     /// Pull configuration (A3); `None` keeps the documented push default.
     #[serde(default)]
@@ -1044,6 +1189,11 @@ pub struct TransporterParams {
     #[serde(default)]
     pub home: Option<String>,
 
+    /// Linear availability windows (B11): outside them the object is off
+    /// shift. `None` means "always available".
+    #[serde(default)]
+    pub timetable: Option<TimeTable>,
+
     /// Pull configuration (A3); `None` keeps the documented push default.
     #[serde(default)]
     pub pull: Option<PullParams>,
@@ -1064,6 +1214,11 @@ pub struct DispatcherParams {
     /// queued at once (0 = unlimited).
     #[serde(default)]
     pub max_tasks: u32,
+
+    /// Linear availability windows (B11): outside them the object is off
+    /// shift. `None` means "always available".
+    #[serde(default)]
+    pub timetable: Option<TimeTable>,
 
     /// Pull configuration (A3); `None` keeps the documented push default.
     #[serde(default)]
@@ -1087,6 +1242,11 @@ pub struct ResourceParams {
     #[serde(default)]
     pub downtimes: Vec<DowntimeWindow>,
 
+    /// Linear availability windows (B11): outside them the object is off
+    /// shift. `None` means "always available".
+    #[serde(default)]
+    pub timetable: Option<TimeTable>,
+
     /// Pull configuration (A3); `None` keeps the documented push default.
     #[serde(default)]
     pub pull: Option<PullParams>,
@@ -1106,6 +1266,7 @@ impl Default for ResourceParams {
             capacity: 1,
             downtimes: Vec::new(),
             shifts: Vec::new(),
+            timetable: None,
             pull: None,
             triggers: Triggers::default(),
         }
@@ -1117,6 +1278,19 @@ impl Default for ResourceParams {
 pub struct DowntimeWindow {
     pub start: f64,
     pub end: f64,
+}
+
+/// A linear availability calendar (B11, "Time Table").
+///
+/// The object is available inside any of the `windows` and unavailable
+/// outside them. Windows are model-time intervals (`[start, end)`) and must not
+/// overlap; an empty window list means "always available". The engine reports
+/// unavailable time as `off_shift`, the same bucket used by shift plans.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct TimeTable {
+    #[serde(default)]
+    pub windows: Vec<DowntimeWindow>,
 }
 
 /// One work period of an object's shift plan.
@@ -1161,6 +1335,11 @@ pub struct RackParams {
     #[serde(default = "one_u32")]
     pub levels: u32,
 
+    /// Linear availability windows (B11): outside them the object is off
+    /// shift. `None` means "always available".
+    #[serde(default)]
+    pub timetable: Option<TimeTable>,
+
     /// Pull configuration (A3); `None` keeps the documented push default.
     #[serde(default)]
     pub pull: Option<PullParams>,
@@ -1180,6 +1359,7 @@ impl Default for RackParams {
             capacity: 100,
             levels: 1,
             shifts: Vec::new(),
+            timetable: None,
             pull: None,
             triggers: Triggers::default(),
         }
@@ -1189,6 +1369,11 @@ impl Default for RackParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct BasicFrParams {
+    /// Linear availability windows (B11): outside them the object is off
+    /// shift. `None` means "always available".
+    #[serde(default)]
+    pub timetable: Option<TimeTable>,
+
     /// Pull configuration (A3); `None` keeps the documented push default.
     #[serde(default)]
     pub pull: Option<PullParams>,
@@ -1209,6 +1394,11 @@ pub struct BasicTeParams {
     pub speed: f64,
     #[serde(default = "one_u32")]
     pub capacity: u32,
+
+    /// Linear availability windows (B11): outside them the object is off
+    /// shift. `None` means "always available".
+    #[serde(default)]
+    pub timetable: Option<TimeTable>,
 
     /// Pull configuration (A3); `None` keeps the documented push default.
     #[serde(default)]

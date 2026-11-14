@@ -253,6 +253,16 @@ fn definitions() -> Value {
             "changeover_time": { "$ref": "#/$defs/distribution" }
         })),
     );
+    defs.insert(
+        "multiprocessor_params".into(),
+        params_schema(json!({
+            "slots": { "type": "integer", "minimum": 1, "default": 1 },
+            "setup_time": { "$ref": "#/$defs/distribution" },
+            "process_time": { "$ref": "#/$defs/distribution" },
+            "setup_operator": { "type": ["string", "null"] },
+            "process_operator": { "type": ["string", "null"] }
+        })),
+    );
     defs.insert("sink_params".into(), params_schema(json!({})));
     defs.insert(
         "combiner_params".into(),
@@ -357,6 +367,27 @@ fn params_schema(properties: Value) -> Value {
         }),
     );
     map.insert("pull".into(), json!({ "$ref": "#/$defs/pull" }));
+    map.insert(
+        "timetable".into(),
+        json!({
+            "type": ["object", "null"],
+            "properties": {
+                "windows": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "start": { "type": "number" },
+                            "end": { "type": "number" }
+                        },
+                        "required": ["start", "end"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "additionalProperties": false
+        }),
+    );
     json!({
         "type": "object",
         "properties": map,
@@ -399,6 +430,7 @@ fn object_schema() -> Value {
         "source",
         "queue",
         "processor",
+        "multiprocessor",
         "sink",
         "combiner",
         "separator",
@@ -416,6 +448,7 @@ fn object_schema() -> Value {
         "source_params",
         "queue_params",
         "processor_params",
+        "multiprocessor_params",
         "sink_params",
         "combiner_params",
         "separator_params",
