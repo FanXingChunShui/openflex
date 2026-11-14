@@ -280,7 +280,7 @@ jobs:
       - name: YAML parses
         run: |
           set -euo pipefail
-          ruby -ryaml -e 'ARGV.each { |f| YAML.load_file(f); puts "yaml ok: #{f}" }' \
+          ruby -ryaml -e 'ARGV.each { |f| YAML.parse_file(f); puts "yaml ok: #{f}" }' \
             .github/workflows/*.yml \
             .github/dependabot.yml \
             packaging/winget/*.yaml

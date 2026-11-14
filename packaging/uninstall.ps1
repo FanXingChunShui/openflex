@@ -39,7 +39,7 @@ $InstallDir = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
 
 function Write-Info {
     param([string]$Message)
-    Write-Host "$Program: $Message" -ForegroundColor Cyan
+    Write-Host "${Program}: $Message" -ForegroundColor Cyan
 }
 
 function Remove-UserPathEntry {

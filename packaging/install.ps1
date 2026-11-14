@@ -77,7 +77,7 @@ if (-not $InstallDir) {
 $InstallDir = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
 if ($FromDir) {
     if (-not (Test-Path -LiteralPath $FromDir -PathType Container)) {
-        Write-Host "$Program: error: -FromDir: no such directory: $FromDir" -ForegroundColor Red
+        Write-Host "${Program}: error: -FromDir: no such directory: $FromDir" -ForegroundColor Red
         exit 1
     }
     $FromDir = (Resolve-Path -LiteralPath $FromDir).Path
@@ -85,12 +85,12 @@ if ($FromDir) {
 
 function Write-Info {
     param([string]$Message)
-    Write-Host "$Program: $Message" -ForegroundColor Cyan
+    Write-Host "${Program}: $Message" -ForegroundColor Cyan
 }
 
 function Fail {
     param([string]$Message)
-    Write-Host "$Program: error: $Message" -ForegroundColor Red
+    Write-Host "${Program}: error: $Message" -ForegroundColor Red
     exit 1
 }
 
@@ -174,7 +174,7 @@ function Set-UserPathEntry {
         [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
     }
     catch {
-        Write-Warning "$Program: could not update the user PATH automatically: $($_.Exception.Message)"
+        Write-Warning "${Program}: could not update the user PATH automatically: $($_.Exception.Message)"
         Write-Host "  Add this directory to your PATH manually: $Directory"
         return $false
     }
@@ -204,7 +204,7 @@ if ($FromDir) {
         $fallback = @(Get-ChildItem -LiteralPath $FromDir -Filter 'openflex-*.zip' -File | Sort-Object Name)
         if ($fallback.Count -gt 0) {
             $archive = $fallback[$fallback.Count - 1].FullName
-            Write-Warning "$Program: no archive matched this platform; using $archive"
+            Write-Warning "${Program}: no archive matched this platform; using $archive"
         }
     }
     if (-not $archive) {
@@ -258,7 +258,7 @@ try {
             $sumsPath = $tmpSums
         }
         catch {
-            Write-Warning "$Program: could not download $sumsUrl"
+            Write-Warning "${Program}: could not download $sumsUrl"
         }
     }
 
@@ -266,12 +266,12 @@ try {
         $expected = Get-ExpectedHash -SumsPath $sumsPath -ArchiveName $archiveName
         if (-not $expected) {
             if ($RequireChecksum) { Fail "no checksum entry for $archiveName in $sumsPath" }
-            Write-Warning "$Program: no checksum entry for $archiveName in $sumsPath; continuing without verification"
+            Write-Warning "${Program}: no checksum entry for $archiveName in $sumsPath; continuing without verification"
         }
         else {
             $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($actual -ne $expected) {
-                Fail "checksum mismatch for $archiveName: expected $expected, got $actual"
+                Fail "checksum mismatch for ${archiveName}: expected $expected, got $actual"
             }
             Write-Info "sha256 verified: $actual"
         }
@@ -280,7 +280,7 @@ try {
         Fail "no SHA256SUMS.txt available to verify $archive"
     }
     else {
-        Write-Warning "$Program: no SHA256SUMS.txt available; skipping checksum verification"
+        Write-Warning "${Program}: no SHA256SUMS.txt available; skipping checksum verification"
     }
 
     # --- extract
@@ -324,7 +324,7 @@ try {
         Write-Info "wrote receipt $receipt"
     }
     catch {
-        Write-Warning "$Program: could not write the receipt: $($_.Exception.Message)"
+        Write-Warning "${Program}: could not write the receipt: $($_.Exception.Message)"
     }
 
     # --- verify
