@@ -18,13 +18,13 @@ Linux 上安装使用。
 | 能力 | 状态 |
 |---|---|
 | 对象库：Source、Queue、Processor、Sink、Combiner、Separator、Conveyor、Merge、Split、Transporter、Dispatcher、Resource、Rack、BasicFR、BasicTE | ✅ |
-| 12 种统计分布（常数/均匀/正态/指数/三角/Gamma/Weibull/对数正态/Erlang/Beta/整数均匀/经验分布） | ✅ |
+| 20 种统计分布（常数/均匀/正态/指数/三角/Gamma/Weibull/对数正态/Erlang/Beta/整数均匀/经验/Pareto/LogLogistic/Rayleigh/二项/泊松/几何/负二项/Bernoulli） | ✅ |
 | 对象触发器（OnCreate / OnEntry / OnExit / OnReceive / OnMessage / OnBreakdown / OnRepair） | ✅ |
 | 路由规则（first available / round robin / random / 百分比 / 条件表达式 / 按 item type / 按标签） | ✅ |
 | 故障与维修（MTBF / MTTR）、班次与计划停机 | ✅ |
-| 多复现实验、场景覆盖、95% 置信区间 | ✅ |
+| 多复现实验、场景覆盖（含 Stop/Warmup）、95% 置信区间（t 分布）、并行复现 | ✅ |
 | 报告：终端表格、JSON、CSV、Markdown | ✅ |
-| CLI：validate / run / experiment / new / objects / distributions / report / compare | ✅ |
+| CLI：validate / run / experiment / report / compare / import / layout / serve / schema / completions | ✅ |
 | macOS / Windows / Linux 安装包与安装脚本 | ✅ |
 | 3D 图形界面（FlexSim 的 3D 视图） | ⛔ 规划中；当前提供无界面 CLI 与结构化输出 |
 
@@ -119,17 +119,27 @@ Items in system              1.8  (95% CI ±1.6)
 openflex validate model.ofm                  # 校验，退出码 2 表示失败
 openflex run model.ofm --stop-time 480 --seed 7 --replications 10
 openflex run model.ofm --set Server.process_time.mean=4.5 --format json
-openflex run model.ofm --report-dir out/     # 写出 report.json / report.csv / report.md
+openflex run model.ofm --report-dir out/     # 写出 report.json / report.csv / report.md / replications.csv
+openflex run model.ofm --xlsx out.xlsx       # 导出 Excel（Summary / Objects / Replications）
+openflex run model.ofm --parallel 4          # 并行复现（结果与串行逐位一致）
+openflex run model.ofm --progress            # stderr 显示复现进度
 openflex experiment model.ofm --format json  # 运行模型里声明的实验
 openflex report out/report.json              # 读回报告并重新渲染
 openflex compare a.json b.json               # A/B 对比两个报告
+openflex import --csv arrivals.csv --out model.ofm   # 从到达表生成模型
+openflex layout model.ofm --svg out.svg      # 导出 2D 布局图
+openflex schema --out schema.json            # 导出模型 JSON Schema
+openflex serve --port 8080                   # 本地 HTTP：/health、/objects
+openflex completions zsh                     # shell 补全脚本
 openflex objects list                        # 列出所有对象类型
 openflex objects describe processor          # 查看对象参数
-openflex distributions                       # 列出统计分布
+openflex distributions                       # 列出 20 种统计分布
 openflex new mymodel --template line         # 生成模板模型
 ```
 
-退出码：`0` 成功，`1` 运行错误，`2` 模型校验失败。
+- 退出码：`0` 成功，`1` 运行错误，`2` 模型校验失败。
+- `--format json` 时错误也以 JSON 输出（`{"error":{"code","message","path"}}`），可用 `--error-format json|text` 单独控制。
+- `OPENFLEX_LANG=zh` 切换中文报告表头与帮助文案。
 
 ## FlexSim 对应关系
 
