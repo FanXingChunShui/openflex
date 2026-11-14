@@ -231,6 +231,10 @@ jobs:
             --platform "$PLATFORM" \
             --binary "$binary" \
             --out-dir dist
+          # Give the checksum fragment a unique name: every build job uploads
+          # into the same release directory and same-named files would be
+          # overwritten when the artifacts are merged.
+          mv dist/SHA256SUMS.txt "dist/SHA256SUMS-${PLATFORM}.txt"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -438,6 +442,7 @@ jobs:
           cd dist
           ls -l
           cat SHA256SUMS*.txt 2>/dev/null \
+            | tr -d '\r' \
             | awk 'NF == 2 && $1 ~ /^[0-9a-f]{64}$/ { if (!seen[$2]++) print }' \
             | LC_ALL=C sort -k2 > SHA256SUMS.merged
           mv SHA256SUMS.merged SHA256SUMS.txt
@@ -452,6 +457,17 @@ jobs:
           done
           LC_ALL=C sort -k2 -o SHA256SUMS.txt SHA256SUMS.txt
           cat SHA256SUMS.txt
+
+          # Every published file must have a checksum line.
+          missing=0
+          for f in *.tar.gz *.zip *.deb *.rpm *.msi; do
+            [ -e "$f" ] || continue
+            if ! grep -q "  $f\$" SHA256SUMS.txt; then
+              echo "::error::missing checksum for $f"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
 
           archives="$(ls *.tar.gz *.zip 2>/dev/null | wc -l | tr -d ' ')"
           if [ "$archives" -lt 3 ]; then
