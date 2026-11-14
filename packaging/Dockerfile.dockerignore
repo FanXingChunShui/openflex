@@ -1,0 +1,20 @@
+# Build context filter for packaging/Dockerfile.
+#
+# BuildKit picks this up automatically because it is named after its
+# Dockerfile (<Dockerfile-name>.dockerignore). It keeps the build context small
+# without touching a repository-root .dockerignore:
+#   docker build -f packaging/Dockerfile -t openflex:dev .
+target
+dist
+.git
+.github
+.research
+docs
+examples
+packaging
+scripts
+**/*.tar.gz
+**/*.zip
+**/*.deb
+**/*.rpm
+**/*.msi

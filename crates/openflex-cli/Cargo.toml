@@ -1,0 +1,24 @@
+[package]
+name = "openflex-cli"
+description = "OpenFlex command line interface: validate, run, experiment and inspect models"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "openflex"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+openflex-model = { workspace = true }
+openflex-core = { workspace = true }
+openflex-report = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

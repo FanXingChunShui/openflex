@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WiX template for the OpenFlex MSI installer (WiX Toolset v4/v5 syntax).
+
+  Build (from the repository root, on Windows):
+    cargo build -p openflex-cli -r      ( -r is shorthand for the release profile )
+    wix build packaging\windows\openflex.wxs ^
+        -d Version=0.1.0 ^
+        -d BinaryPath=target\release\openflex.exe ^
+        -arch x64 ^
+        -o dist\openflex-0.1.0-windows-x64.msi
+
+  `wix` comes from the .NET tool:  dotnet tool install -g wix
+
+  WiX v3 equivalent: replace the root namespace with
+  http://schemas.microsoft.com/wix/2006/wi, wrap the contents in
+  <Product Id="*" Name="OpenFlex" Language="1033" Version="$(var.Version)"
+           Manufacturer="OpenFlex contributors" UpgradeCode="{...}">,
+  use <Directory Id="TARGETDIR" Name="SourceDir"> with LocalAppDataFolder,
+  and build with candle/light (-dVersion=... -dBinaryPath=...). Everything
+  below the Package element maps 1:1 to v3 ChildElements; the v3 Environment
+  element uses the same attributes.
+
+  Scope="perUser" installs into %LOCALAPPDATA%\OpenFlex\bin and appends that
+  directory to the *user* PATH, so no administrator rights are needed.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="OpenFlex"
+      Manufacturer="OpenFlex contributors"
+      Version="$(var.Version)"
+      UpgradeCode="9A4C2F0E-5B3D-4A7E-9C1F-6D2B8E4A7C31"
+      Scope="perUser"
+      Compressed="yes">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of OpenFlex is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="OpenFlexRoot" Name="OpenFlex">
+        <Directory Id="OpenFlexBin" Name="bin" />
+      </Directory>
+    </StandardDirectory>
+
+    <ComponentGroup Id="OpenFlexComponents" Directory="OpenFlexBin">
+      <Component Id="OpenFlexExe" Guid="3E7B1D9A-2C4F-4E8B-A5D6-1F0C9B7E2D48">
+        <File Id="OpenFlexExeFile"
+              Source="$(var.BinaryPath)"
+              KeyPath="yes" />
+        <!-- Append %LOCALAPPDATA%\OpenFlex\bin to the user PATH (System="no").
+             The entry is removed again on uninstall. -->
+        <Environment Id="OpenFlexPathEnv"
+                     Name="PATH"
+                     Value="[OpenFlexBin]"
+                     Action="set"
+                     Part="last"
+                     Permanent="no"
+                     System="no" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="OpenFlexFeature" Title="OpenFlex" Level="1">
+      <ComponentGroupRef Id="OpenFlexComponents" />
+    </Feature>
+  </Package>
+</Wix>

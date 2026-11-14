@@ -1,0 +1,6 @@
+/target
+/tmp
+/var
+/.research
+**/*.log
+.DS_Store

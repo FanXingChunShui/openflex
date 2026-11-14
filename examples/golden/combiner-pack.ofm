@@ -1,0 +1,23 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "combiner-pack",
+  "time_unit": "seconds",
+  "run": {"stop_time": 500.0, "warmup": 0.0, "seed": 1, "replications": 1},
+  "objects": [
+    {"name": "TraySource", "kind": "source", "pos": [0, 40], "params": {
+      "interarrival": {"distribution": "constant", "value": 50.0},
+      "items_per_arrival": 1, "first_arrival": 0.0}},
+    {"name": "BoxSource", "kind": "source", "pos": [0, 0], "params": {
+      "interarrival": {"distribution": "constant", "value": 10.0},
+      "items_per_arrival": 1, "first_arrival": 0.0}},
+    {"name": "Combiner1", "kind": "combiner", "pos": [10, 20], "params": {
+      "mode": "pack", "components_per_container": 4}},
+    {"name": "Sink1", "kind": "sink", "pos": [20, 20], "params": {}}
+  ],
+  "connections": [
+    {"from": "TraySource", "to": "Combiner1"},
+    {"from": "BoxSource", "to": "Combiner1"},
+    {"from": "Combiner1", "to": "Sink1"}
+  ]
+}

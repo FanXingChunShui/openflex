@@ -1,0 +1,16 @@
+{
+  "format": "openflex-model", "version": 1, "name": "mm1-check",
+  "time_unit": "minutes",
+  "run": { "stop_time": 100000.0, "warmup": 10000.0, "seed": 42, "replications": 5 },
+  "objects": [
+    { "name": "Arrivals", "kind": "source", "params": { "interarrival": { "distribution": "exponential", "mean": 5.0 } } },
+    { "name": "Queue", "kind": "queue", "params": { "max_content": 100000 } },
+    { "name": "Server", "kind": "processor", "params": { "process_time": { "distribution": "exponential", "mean": 4.0 } } },
+    { "name": "Exit", "kind": "sink", "params": {} }
+  ],
+  "connections": [
+    { "from": "Arrivals", "to": "Queue" },
+    { "from": "Queue", "to": "Server" },
+    { "from": "Server", "to": "Exit" }
+  ]
+}

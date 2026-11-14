@@ -1,0 +1,20 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "routing",
+  "description": "One source feeding two sinks: 70/30 percentage routing, plus a condition-based express lane",
+  "time_unit": "seconds",
+  "run": { "stop_time": 3600.0, "warmup": 60.0, "seed": 11, "replications": 5 },
+  "objects": [
+    { "name": "Inbound", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "exponential", "mean": 6.0 },
+        "labels": { "priority": 0 } } },
+    { "name": "Main", "kind": "sink", "pos": [20, 4], "params": {} },
+    { "name": "Express", "kind": "sink", "pos": [20, -4], "params": {} }
+  ],
+  "connections": [
+    { "from": "Inbound", "to": "Main",
+      "strategy": { "type": "by_percentage", "percentages": [70.0, 30.0] } },
+    { "from": "Inbound", "to": "Express" }
+  ]
+}

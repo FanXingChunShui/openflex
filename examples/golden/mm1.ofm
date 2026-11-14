@@ -1,0 +1,24 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "mm1",
+  "time_unit": "seconds",
+  "run": {"stop_time": 48000.0, "warmup": 1000.0, "seed": 1, "replications": 5},
+  "objects": [
+    {"name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+      "interarrival": {"distribution": "exponential", "mean": 5.0},
+      "items_per_arrival": 1, "first_arrival": 0.0}},
+    {"name": "Queue1", "kind": "queue", "pos": [5, 0], "params": {
+      "max_content": 1000000, "order": "fifo"}},
+    {"name": "Proc1", "kind": "processor", "pos": [10, 0], "params": {
+      "setup_time": {"distribution": "constant", "value": 0.0},
+      "process_time": {"distribution": "exponential", "mean": 4.0},
+      "max_content": 1}},
+    {"name": "Sink1", "kind": "sink", "pos": [15, 0], "params": {}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Queue1"},
+    {"from": "Queue1", "to": "Proc1"},
+    {"from": "Proc1", "to": "Sink1"}
+  ]
+}

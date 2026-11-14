@@ -1,0 +1,34 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "triggers",
+  "description": "Labels, item types and messages: stamp arrival time, tag urgent items, notify a queue",
+  "time_unit": "seconds",
+  "run": { "stop_time": 1200.0, "warmup": 0.0, "seed": 5, "replications": 2 },
+  "objects": [
+    { "name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "exponential", "mean": 4.0 },
+        "triggers": {
+          "on_create": [
+            { "action": "set_label", "name": "created_at", "value": "time" },
+            { "action": "increment_label", "name": "serial", "by": "1" }
+          ]
+        } } },
+    { "name": "Gate", "kind": "queue", "pos": [5, 0], "params": {
+        "max_content": 100,
+        "triggers": {
+          "on_receive": [
+            { "action": "set_item_type",
+              "value": "if(item.label.serial % 5 == 0, 1, 0)" }
+          ]
+        } } },
+    { "name": "Check", "kind": "processor", "pos": [10, 0], "params": {
+        "process_time": { "distribution": "uniform", "min": 1.0, "max": 3.0 } } },
+    { "name": "Done", "kind": "sink", "pos": [15, 0], "params": {} }
+  ],
+  "connections": [
+    { "from": "Source1", "to": "Gate" },
+    { "from": "Gate", "to": "Check" },
+    { "from": "Check", "to": "Done" }
+  ]
+}

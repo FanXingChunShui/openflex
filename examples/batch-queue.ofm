@@ -1,0 +1,22 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "batch-queue",
+  "description": "A queue releases items in batches of four to a palletizer (processor)",
+  "time_unit": "minutes",
+  "run": { "stop_time": 480.0, "warmup": 0.0, "seed": 3, "replications": 3 },
+  "objects": [
+    { "name": "Arrivals", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "exponential", "mean": 2.5 } } },
+    { "name": "BatchQueue", "kind": "queue", "pos": [5, 0], "params": {
+        "max_content": 200, "batch_size": 4, "batch_max_wait": 5.0 } },
+    { "name": "Palletizer", "kind": "processor", "pos": [10, 0], "params": {
+        "process_time": { "distribution": "constant", "value": 2.0 } } },
+    { "name": "Out", "kind": "sink", "pos": [15, 0], "params": {} }
+  ],
+  "connections": [
+    { "from": "Arrivals", "to": "BatchQueue" },
+    { "from": "BatchQueue", "to": "Palletizer" },
+    { "from": "Palletizer", "to": "Out" }
+  ]
+}

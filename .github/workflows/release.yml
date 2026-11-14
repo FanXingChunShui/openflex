@@ -1,0 +1,472 @@
+name: release
+
+# Cut a release by pushing a tag (v0.1.0, v0.2.0-rc.1, ...) or run this
+# workflow manually. See docs/releasing.md for the full process.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release without the leading v (default: workspace version from Cargo.toml)"
+        required: false
+        type: string
+      tag:
+        description: "Tag to publish (default: v<version>)"
+        required: false
+        type: string
+      draft:
+        description: "Create the GitHub release as a draft"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Resolve the version/tag once, so every job names its files identically.
+  # ---------------------------------------------------------------------------
+  meta:
+    name: Resolve version
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version and tag
+        id: version
+        run: |
+          set -euo pipefail
+          tag=""
+          version=""
+
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            tag="${{ github.ref_name }}"
+            version="${tag#v}"
+          fi
+          if [ -n "${{ inputs.version }}" ]; then
+            version="${{ inputs.version }}"
+            version="${version#v}"
+            tag="v${version}"
+          fi
+          if [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+            version="${tag#v}"
+          fi
+
+          cargo_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [ -z "$version" ]; then
+            version="$cargo_version"
+            tag="v${version}"
+          fi
+          if [ -z "$tag" ]; then
+            tag="v${version}"
+          fi
+
+          if [ "${{ github.ref_type }}" = "tag" ] && [ "$version" != "$cargo_version" ]; then
+            echo "::error::tag '${tag}' does not match the workspace version '${cargo_version}' in Cargo.toml"
+            exit 1
+          fi
+          if [ "$version" != "$cargo_version" ]; then
+            echo "::warning::releasing version '${version}' while Cargo.toml says '${cargo_version}'"
+          fi
+
+          prerelease=false
+          case "$version" in
+            *-*) prerelease=true ;;
+          esac
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${tag} (version ${version}, prerelease=${prerelease})"
+
+  # ---------------------------------------------------------------------------
+  # Test on every supported OS before anything is published.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test (${{ matrix.os }})
+    needs: meta
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14, windows-2022]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: test-${{ matrix.os }}
+
+      - name: cargo test --workspace
+        run: cargo test --workspace --locked
+
+  # ---------------------------------------------------------------------------
+  # Build and archive every platform. macOS ships a universal binary, Linux
+  # gets a native x86_64 build plus an optional cross-built aarch64 build, and
+  # Windows gets x86_64 plus an optional aarch64 build.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.name }}
+    needs: [meta, test]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: universal-apple-darwin
+            os: macos-14
+            platform: universal-apple-darwin
+            optional: false
+            cross: false
+          - name: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            platform: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-gnu
+            optional: false
+            cross: false
+          - name: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+            platform: aarch64-unknown-linux-gnu
+            target: aarch64-unknown-linux-gnu
+            optional: true
+            cross: true
+          - name: x86_64-pc-windows-msvc
+            os: windows-2022
+            platform: x86_64-pc-windows-msvc
+            target: x86_64-pc-windows-msvc
+            optional: false
+            cross: false
+          - name: aarch64-pc-windows-msvc
+            os: windows-2022
+            platform: aarch64-pc-windows-msvc
+            target: aarch64-pc-windows-msvc
+            optional: true
+            cross: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: build-${{ matrix.name }}
+
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Add Rust target
+        if: matrix.target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build (native)
+        if: matrix.target && !matrix.cross
+        run: cargo build --release --locked -p openflex-cli --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --locked -p openflex-cli --target ${{ matrix.target }}
+
+      - name: Build (universal macOS)
+        if: matrix.os == 'macos-14'
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build --release --locked -p openflex-cli --target aarch64-apple-darwin
+          cargo build --release --locked -p openflex-cli --target x86_64-apple-darwin
+          mkdir -p dist
+          lipo -create \
+            target/aarch64-apple-darwin/release/openflex \
+            target/x86_64-apple-darwin/release/openflex \
+            -output dist/openflex
+          lipo -info dist/openflex
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          if [ "$PLATFORM" = "universal-apple-darwin" ]; then
+            binary="dist/openflex"
+          else
+            binary="target/${PLATFORM}/release/openflex"
+          fi
+          bash scripts/package-release.sh \
+            --version "$VERSION" \
+            --platform "$PLATFORM" \
+            --binary "$binary" \
+            --out-dir dist
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $env:RUNNER_TEMP "openflex-$env:VERSION-$env:PLATFORM"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -LiteralPath "target\$env:PLATFORM\release\openflex.exe" -Destination (Join-Path $stage 'openflex.exe')
+          if (Test-Path 'README.md') { Copy-Item -LiteralPath 'README.md' -Destination $stage }
+          New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
+          $zip = "dist\openflex-$env:VERSION-$env:PLATFORM.zip"
+          Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path $stage -DestinationPath $zip -Force
+          $name = "openflex-$env:VERSION-$env:PLATFORM.zip"
+          $sums = 'dist\SHA256SUMS.txt'
+          if (Test-Path $sums) {
+            Get-Content $sums | Where-Object { $_ -notmatch [regex]::Escape($name) } | Set-Content $sums
+          }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+          Add-Content -LiteralPath $sums -Value "$hash  $name"
+          Write-Host "$hash  $name"
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: openflex-${{ matrix.platform }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Optional: distro packages (deb/rpm). Requires nfpm, which is a single static
+  # binary; nothing else is installed into the runner.
+  # ---------------------------------------------------------------------------
+  packages:
+    name: deb/rpm (${{ matrix.arch }})
+    needs: [meta, test]
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            target: x86_64-unknown-linux-gnu
+            cross: false
+          - arch: arm64
+            target: aarch64-unknown-linux-gnu
+            cross: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: packages-${{ matrix.arch }}
+
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Add Rust target
+        if: matrix.cross
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --locked -p openflex-cli --target ${{ matrix.target }}
+          else
+            cargo build --release --locked -p openflex-cli --target ${{ matrix.target }}
+          fi
+
+      - name: Install nfpm
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          nfpm_version="$(curl -fsSL https://api.github.com/repos/goreleaser/nfpm/releases/latest \
+            | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/p' | head -n 1)"
+          [ -n "$nfpm_version" ] || { echo "::error::could not resolve the nfpm version"; exit 1; }
+          url="https://github.com/goreleaser/nfpm/releases/download/v${nfpm_version}/nfpm_${nfpm_version}_Linux_x86_64.tar.gz"
+          curl -fsSL "$url" | tar -xz -C "$HOME/.local/bin" nfpm
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/nfpm" --version
+
+      - name: Build deb and rpm
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          binary="target/${{ matrix.target }}/release/openflex"
+          bash packaging/deb/build-deb.sh --version "$VERSION" --arch "${{ matrix.arch }}" --binary "$binary" --out-dir dist
+          bash packaging/rpm/build-rpm.sh --version "$VERSION" --arch "${{ matrix.arch }}" --binary "$binary" --out-dir dist
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: openflex-packages-${{ matrix.arch }}
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Optional: MSI installer (WiX v4/v5 template in packaging/windows).
+  # ---------------------------------------------------------------------------
+  msi:
+    name: msi (windows x64)
+    needs: [meta, test]
+    runs-on: windows-2022
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: msi-windows
+
+      - name: Build
+        run: cargo build --release --locked -p openflex-cli
+
+      - name: Install WiX
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet tool install --global wix
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build MSI
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
+          wix build packaging\windows\openflex.wxs `
+            -d Version=$env:VERSION `
+            -d BinaryPath=target\release\openflex.exe `
+            -arch x64 `
+            -o "dist\openflex-$env:VERSION-windows-x64.msi"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "dist\openflex-$env:VERSION-windows-x64.msi").Hash.ToLowerInvariant()
+          Add-Content -LiteralPath 'dist\SHA256SUMS.txt' -Value "$hash  openflex-$env:VERSION-windows-x64.msi"
+
+      - name: Upload MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: openflex-msi
+          path: |
+            dist/*.msi
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Publish: merge every artifact, build one SHA256SUMS.txt and create the
+  # GitHub release. Signing/notarisation is not implemented yet; see
+  # docs/releasing.md ("待办").
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish release
+    needs: [meta, build, packages, msi]
+    if: always() && needs.meta.result == 'success'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Merge checksums and sanity-check the file set
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -l
+          cat SHA256SUMS.txt* 2>/dev/null \
+            | awk 'NF == 2 && $1 ~ /^[0-9a-f]{64}$/ { if (!seen[$2]++) print }' \
+            | LC_ALL=C sort -k2 > SHA256SUMS.merged
+          mv SHA256SUMS.merged SHA256SUMS.txt
+
+          # deb/rpm/msi artifacts carry their own checksum fragments; make sure
+          # every published file has a line even if a fragment was missing.
+          for f in *.deb *.rpm *.msi; do
+            [ -e "$f" ] || continue
+            if ! grep -q "  $f\$" SHA256SUMS.txt; then
+              sha256sum "$f" >> SHA256SUMS.txt
+            fi
+          done
+          LC_ALL=C sort -k2 -o SHA256SUMS.txt SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+          archives="$(ls *.tar.gz *.zip 2>/dev/null | wc -l | tr -d ' ')"
+          if [ "$archives" -lt 3 ]; then
+            echo "::error::expected at least 3 platform archives (macOS, Linux, Windows), found ${archives}"
+            exit 1
+          fi
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag }}
+          name: OpenFlex ${{ needs.meta.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          draft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
+          prerelease: ${{ needs.meta.outputs.prerelease }}
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.deb
+            dist/*.rpm
+            dist/*.msi
+            dist/SHA256SUMS.txt

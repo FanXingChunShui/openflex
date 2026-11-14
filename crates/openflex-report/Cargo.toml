@@ -1,0 +1,18 @@
+[package]
+name = "openflex-report"
+description = "Report rendering for OpenFlex simulation results (table, JSON, CSV, Markdown)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+openflex-core = { workspace = true }
+openflex-model = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
