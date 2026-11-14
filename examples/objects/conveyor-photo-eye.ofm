@@ -1,0 +1,28 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "conveyor-photo-eye",
+  "description": "A photo eye at position 4 tags every passing item; the tag routes it to SinkB",
+  "time_unit": "seconds",
+  "run": { "stop_time": 300.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+    { "name": "Conveyor1", "kind": "conveyor", "pos": [5, 0], "params": {
+        "speed": 2.0, "length": 10.0, "item_spacing": 1.0, "accumulating": true,
+        "photo_eyes": [{ "position": 4.0, "name": "eye1" }],
+        "triggers": {
+          "on_photo_eye": [
+            { "action": "set_item_type", "value": "1" },
+            { "action": "send_message", "target": "SinkB", "delay": "0" }
+          ]
+        } } },
+    { "name": "SinkA", "kind": "sink", "pos": [15, 5], "params": {} },
+    { "name": "SinkB", "kind": "sink", "pos": [15, -5], "params": {} }
+  ],
+  "connections": [
+    { "from": "Source1", "to": "Conveyor1" },
+    { "from": "Conveyor1", "to": "SinkA", "strategy": { "type": "by_item_type" } },
+    { "from": "Conveyor1", "to": "SinkB" }
+  ]
+}

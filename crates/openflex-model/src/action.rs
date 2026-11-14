@@ -159,6 +159,8 @@ pub enum SimTrigger {
     OnMessage,
     OnBreakdown,
     OnRepair,
+    /// A conveyor photo eye was crossed (B3).
+    OnPhotoEye,
 }
 
 impl SimTrigger {
@@ -171,6 +173,7 @@ impl SimTrigger {
             SimTrigger::OnMessage => "on_message",
             SimTrigger::OnBreakdown => "on_breakdown",
             SimTrigger::OnRepair => "on_repair",
+            SimTrigger::OnPhotoEye => "on_photo_eye",
         }
     }
 }
@@ -193,6 +196,8 @@ pub struct Triggers {
     pub on_breakdown: Vec<Action>,
     #[serde(default)]
     pub on_repair: Vec<Action>,
+    #[serde(default)]
+    pub on_photo_eye: Vec<Action>,
 }
 
 impl Triggers {
@@ -205,6 +210,7 @@ impl Triggers {
             SimTrigger::OnMessage => self.on_message.clone(),
             SimTrigger::OnBreakdown => self.on_breakdown.clone(),
             SimTrigger::OnRepair => self.on_repair.clone(),
+            SimTrigger::OnPhotoEye => self.on_photo_eye.clone(),
         }
     }
 
@@ -216,5 +222,6 @@ impl Triggers {
             && self.on_message.is_empty()
             && self.on_breakdown.is_empty()
             && self.on_repair.is_empty()
+            && self.on_photo_eye.is_empty()
     }
 }

@@ -747,6 +747,7 @@ impl Default for TransporterParams {
             load_time: Distribution::default(),
             unload_time: Distribution::default(),
             home: None,
+            network: Vec::new(),
             shifts: Vec::new(),
             timetable: None,
             pull: None,
@@ -1076,6 +1077,28 @@ pub struct SeparatorParams {
     pub shifts: Vec<Shift>,
 }
 
+/// A photo eye on a conveyor (B3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PhotoEye {
+    /// Distance from the belt entry point (must be inside the belt).
+    pub position: f64,
+    /// Optional name, useful in diagnostics.
+    #[serde(default)]
+    pub name: String,
+}
+
+/// A processing station on a conveyor (B3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConveyorStation {
+    /// Distance from the belt entry point (must be inside the belt).
+    pub position: f64,
+    /// How long an item stays at the station before it moves on.
+    #[serde(default)]
+    pub process_time: Distribution,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConveyorParams {
@@ -1089,6 +1112,14 @@ pub struct ConveyorParams {
     pub item_spacing: f64,
     #[serde(default = "default_max_content")]
     pub max_content: u32,
+    /// Photo eyes mounted on the belt (B3): when an item reaches `position` the
+    /// conveyor runs its `on_photo_eye` trigger for that item.
+    #[serde(default)]
+    pub photo_eyes: Vec<PhotoEye>,
+    /// Stations mounted on the belt (B3): an item stops at `position` for
+    /// `process_time` before it continues towards the exit.
+    #[serde(default)]
+    pub stations: Vec<ConveyorStation>,
 
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
@@ -1116,6 +1147,8 @@ impl Default for ConveyorParams {
             accumulating: false,
             item_spacing: 1.0,
             max_content: 1_000,
+            photo_eyes: Vec::new(),
+            stations: Vec::new(),
             shifts: Vec::new(),
             timetable: None,
             pull: None,
@@ -1174,6 +1207,19 @@ pub struct SplitParams {
     pub shifts: Vec<Shift>,
 }
 
+/// One leg of a transporter network (B4).
+///
+/// The edge connects two model objects by name and is bidirectional; the
+/// engine uses Dijkstra over the edges to get the shortest travel distance
+/// between the transporter's home and the requesting object.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkEdge {
+    pub from: String,
+    pub to: String,
+    pub distance: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransporterParams {
@@ -1188,6 +1234,11 @@ pub struct TransporterParams {
     /// Object the transporter returns to when idle.
     #[serde(default)]
     pub home: Option<String>,
+    /// Optional road network (B4). Legs between the home object and the
+    /// requesting object use the shortest path over these edges; without a
+    /// network the straight-line distance is used.
+    #[serde(default)]
+    pub network: Vec<NetworkEdge>,
 
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
@@ -1327,6 +1378,29 @@ fn eight_hours() -> f64 {
     480.0
 }
 
+/// Storage behaviour of a rack (B2).
+///
+/// `floor` is the existing FIFO queue behaviour. `gravity` (and the
+/// `push_back` approximation) release the most recently stored item first
+/// (LIFO), because a gravity flow rack pushes new items to the front.
+/// `drive_in` keeps the FIFO approximation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RackType {
+    #[default]
+    Floor,
+    Gravity,
+    PushBack,
+    DriveIn,
+}
+
+impl RackType {
+    /// Whether items leave the rack in LIFO (last in, first out) order.
+    pub fn is_lifo(self) -> bool {
+        matches!(self, RackType::Gravity | RackType::PushBack)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RackParams {
@@ -1334,6 +1408,9 @@ pub struct RackParams {
     pub capacity: u32,
     #[serde(default = "one_u32")]
     pub levels: u32,
+    /// Storage type (B2); controls the release order of the rack.
+    #[serde(default)]
+    pub rack_type: RackType,
 
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
@@ -1358,6 +1435,7 @@ impl Default for RackParams {
         Self {
             capacity: 100,
             levels: 1,
+            rack_type: RackType::Floor,
             shifts: Vec::new(),
             timetable: None,
             pull: None,

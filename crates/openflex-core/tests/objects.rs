@@ -960,3 +960,276 @@ fn trace_is_off_for_normal_runs() {
     assert_eq!(trace.events[1].event, "flow");
     assert_eq!(trace.object("K").count(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Conveyor photo eyes and stations (B3)
+// ---------------------------------------------------------------------------
+
+fn photo_eye_model() -> Model {
+    model(
+        r#"{
+      "format": "openflex-model", "version": 1, "name": "photo-eye",
+      "run": { "stop_time": 300.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+      "objects": [
+        { "name": "S", "kind": "source", "params": {
+            "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+        { "name": "C", "kind": "conveyor", "params": {
+            "speed": 2.0, "length": 10.0, "item_spacing": 1.0, "accumulating": true,
+            "photo_eyes": [{ "position": 4.0, "name": "eye1" }],
+            "triggers": {
+              "on_photo_eye": [
+                { "action": "set_item_type", "value": "1" },
+                { "action": "send_message", "target": "B", "delay": "0" }
+              ]
+            } } },
+        { "name": "A", "kind": "sink", "params": {} },
+        { "name": "B", "kind": "sink", "params": {} }
+      ],
+      "connections": [
+        { "from": "S", "to": "C" },
+        { "from": "C", "to": "A", "strategy": { "type": "by_item_type" } },
+        { "from": "C", "to": "B" }
+      ]
+    }"#,
+    )
+}
+
+/// The eye at position 4 on a belt with speed 2 fires after exactly 2 time
+/// units, and the trigger can re-route the tagged items.
+#[test]
+fn photo_eye_fires_at_position_over_speed() {
+    let model = photo_eye_model();
+    let config = SimConfig {
+        stop_time: 300.0,
+        warmup: 0.0,
+        seed: 1,
+    };
+    let (result, trace) = simulate_traced(&model, &config, 0).expect("traced run");
+    assert_eq!(result.objects["B"].input_count, 30);
+    assert_eq!(result.objects["A"].input_count, 0);
+    assert_eq!(result.objects["C"].output_count, 30);
+
+    let messages: Vec<f64> = trace
+        .events
+        .iter()
+        .filter(|event| event.event == "message")
+        .map(|event| event.time)
+        .collect();
+    assert_eq!(messages.len(), 30, "one message per item");
+    assert!((messages[0] - 2.0).abs() < 1e-9, "{messages:?}");
+    for (index, time) in messages.iter().enumerate() {
+        let expected = 2.0 + 10.0 * index as f64;
+        assert!((time - expected).abs() < 1e-9, "item {index}: {time}");
+    }
+}
+
+/// A station at position 5 on a speed-1 belt holds every item for 3 time
+/// units, so the belt stay time is 5 + 3 + 5 = 13.
+#[test]
+fn station_holds_items_for_its_process_time() {
+    let report = run(r#"{
+      "format": "openflex-model", "version": 1, "name": "station",
+      "run": { "stop_time": 200.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+      "objects": [
+        { "name": "S", "kind": "source", "params": {
+            "interarrival": { "distribution": "constant", "value": 20.0 }, "first_arrival": 0.0 } },
+        { "name": "C", "kind": "conveyor", "params": {
+            "speed": 1.0, "length": 10.0, "item_spacing": 1.0, "accumulating": true,
+            "stations": [{ "position": 5.0,
+                           "process_time": { "distribution": "constant", "value": 3.0 } }] } },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [{ "from": "S", "to": "C" }, { "from": "C", "to": "K" }]
+    }"#);
+    assert_eq!(input(&report, "K"), 10.0);
+    assert_near(
+        report.objects["C"].avg_stay_time.mean,
+        13.0,
+        1e-9,
+        "belt stay",
+    );
+}
+
+/// A station's dwell makes items behind it queue up at the spacing.
+#[test]
+fn station_dwell_queues_the_items_behind() {
+    let report = run(r#"{
+      "format": "openflex-model", "version": 1, "name": "station-queue",
+      "run": { "stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+      "objects": [
+        { "name": "S", "kind": "source", "params": {
+            "interarrival": { "distribution": "constant", "value": 2.0 },
+            "max_arrivals": 3, "first_arrival": 0.0 } },
+        { "name": "C", "kind": "conveyor", "params": {
+            "speed": 1.0, "length": 10.0, "item_spacing": 1.0, "accumulating": true,
+            "stations": [{ "position": 5.0,
+                           "process_time": { "distribution": "constant", "value": 5.0 } }] } },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [{ "from": "S", "to": "C" }, { "from": "C", "to": "K" }]
+    }"#);
+    // The three items queue behind the dwell: their stays grow from 15 to
+    // about 23, averaging 18.33.
+    assert_eq!(input(&report, "K"), 3.0);
+    assert_near(
+        report.objects["C"].avg_stay_time.mean,
+        18.33,
+        0.5,
+        "belt stay",
+    );
+    assert!(report.objects["C"].max_content.mean >= 2.0);
+}
+
+#[test]
+fn photo_eye_positions_must_be_inside_the_belt() {
+    let json = r#"{
+      "format": "openflex-model", "version": 1, "name": "bad-eye",
+      "objects": [
+        { "name": "S", "kind": "source", "params": {} },
+        { "name": "C", "kind": "conveyor", "params": {
+            "length": 10.0, "photo_eyes": [{ "position": 12.0 }] } },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [{ "from": "S", "to": "C" }, { "from": "C", "to": "K" }]
+    }"#;
+    let error = Model::from_json(json).expect_err("photo eye outside the belt must fail");
+    assert!(error.to_string().contains("inside the belt"), "{error}");
+}
+
+// ---------------------------------------------------------------------------
+// Rack types (B2)
+// ---------------------------------------------------------------------------
+
+fn rack_model(rack_type: &str) -> Model {
+    model(&format!(
+        r#"{{
+      "format": "openflex-model", "version": 1, "name": "rack-{rack_type}",
+      "run": {{ "stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1 }},
+      "objects": [
+        {{ "name": "Blue", "kind": "source", "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 10.0 }},
+            "items_per_arrival": 5, "max_arrivals": 1,
+            "first_arrival": 0.0, "item_type": 0 }} }},
+        {{ "name": "Red", "kind": "source", "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 10.0 }},
+            "items_per_arrival": 5, "max_arrivals": 1,
+            "first_arrival": 0.0, "item_type": 1 }} }},
+        {{ "name": "R", "kind": "rack", "params": {{
+            "capacity": 100, "levels": 3, "rack_type": "{rack_type}" }} }},
+        {{ "name": "P", "kind": "processor", "params": {{
+            "process_time": {{ "distribution": "constant", "value": 20.0 }} }} }},
+        {{ "name": "KBlue", "kind": "sink", "params": {{}} }},
+        {{ "name": "KRed", "kind": "sink", "params": {{}} }}
+      ],
+      "connections": [
+        {{ "from": "Blue", "to": "R" }},
+        {{ "from": "Red", "to": "R" }},
+        {{ "from": "R", "to": "P" }},
+        {{ "from": "P", "to": "KBlue", "strategy": {{ "type": "by_item_type" }} }},
+        {{ "from": "P", "to": "KRed" }}
+      ]
+    }}"#
+    ))
+}
+
+/// A floor rack is FIFO: the five blue items arrive first and are processed
+/// first. A gravity rack is LIFO: the five red items (stored last) leave first.
+#[test]
+fn gravity_rack_releases_last_in_first_out() {
+    let floor = run_model(&rack_model("floor")).expect("floor run");
+    assert_eq!(input(&floor, "KBlue"), 5.0);
+    assert_eq!(input(&floor, "KRed"), 0.0);
+
+    let gravity = run_model(&rack_model("gravity")).expect("gravity run");
+    assert_eq!(input(&gravity, "KBlue"), 0.0);
+    assert_eq!(input(&gravity, "KRed"), 5.0);
+    assert_eq!(out(&gravity, "P"), 5.0);
+}
+
+// ---------------------------------------------------------------------------
+// Transporter network and two-leg tasks (B4)
+// ---------------------------------------------------------------------------
+
+fn network_transporter_model(with_network: bool) -> Model {
+    let network = if with_network {
+        r#", "network": [{ "from": "Dispatcher1", "to": "Processor1", "distance": 300.0 }]"#
+    } else {
+        ""
+    };
+    model(&format!(
+        r#"{{
+      "format": "openflex-model", "version": 1, "name": "network-{with_network}",
+      "run": {{ "stop_time": 300.0, "warmup": 0.0, "seed": 1, "replications": 1 }},
+      "objects": [
+        {{ "name": "S", "kind": "source", "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 50.0 }}, "first_arrival": 0.0 }} }},
+        {{ "name": "Processor1", "kind": "processor", "params": {{
+            "process_time": {{ "distribution": "constant", "value": 5.0 }},
+            "process_operator": "Dispatcher1" }} }},
+        {{ "name": "K", "kind": "sink", "params": {{}} }},
+        {{ "name": "Dispatcher1", "kind": "dispatcher", "pos": [10, 0], "params": {{}} }},
+        {{ "name": "Transporter1", "kind": "transporter", "pos": [0, 0], "params": {{
+            "capacity": 1, "speed": 10.0, "home": "Dispatcher1"{network} }} }}
+      ],
+      "connections": [
+        {{ "from": "S", "to": "Processor1" }}, {{ "from": "Processor1", "to": "K" }},
+        {{ "from": "Dispatcher1", "to": "Transporter1" }}
+      ]
+    }}"#
+    ))
+}
+
+/// The task has two legs: travel to the pickup point (home is 10 units away
+/// from the transporter, speed 10 -> 1 time unit) and then the network leg
+/// (300 units at speed 10 -> 30 time units).
+#[test]
+fn transporter_network_drives_the_task_legs() {
+    let model = network_transporter_model(true);
+    let config = SimConfig {
+        stop_time: 300.0,
+        warmup: 0.0,
+        seed: 1,
+    };
+    let (result, trace) = simulate_traced(&model, &config, 0).expect("traced run");
+    let transporter_events = |label: &str| -> Vec<f64> {
+        trace
+            .object("Transporter1")
+            .filter(|event| event.event == label)
+            .map(|event| event.time)
+            .collect()
+    };
+    let pickup = transporter_events("transport_pickup");
+    let arrive = transporter_events("transport_arrive");
+    let loaded = transporter_events("operator_loaded");
+    assert!(!pickup.is_empty() && !arrive.is_empty() && !loaded.is_empty());
+    assert!((pickup[0] - 1.0).abs() < 1e-9, "{pickup:?}");
+    assert!((arrive[0] - 31.0).abs() < 1e-9, "{arrive:?}");
+    assert!((loaded[0] - 31.0).abs() < 1e-9, "{loaded:?}");
+
+    // The network leg dominates: far fewer items than without a network.
+    let plain = run_model(&network_transporter_model(false)).expect("plain run");
+    let network_completed = result.objects["K"].input_count;
+    assert!(
+        network_completed < input(&plain, "K") as u64,
+        "network: {} vs euclidean: {}",
+        network_completed,
+        input(&plain, "K")
+    );
+}
+
+#[test]
+fn network_edges_must_have_a_positive_distance() {
+    let json = r#"{
+      "format": "openflex-model", "version": 1, "name": "bad-network",
+      "objects": [
+        { "name": "S", "kind": "source", "params": {} },
+        { "name": "K", "kind": "sink", "params": {} },
+        { "name": "D", "kind": "dispatcher", "params": {} },
+        { "name": "T", "kind": "transporter", "params": {
+            "home": "D", "network": [{ "from": "D", "to": "S", "distance": 0.0 }] } }
+      ],
+      "connections": [{ "from": "S", "to": "K" }, { "from": "D", "to": "T" }]
+    }"#;
+    let error = Model::from_json(json).expect_err("zero distance must fail validation");
+    assert!(error.to_string().contains("must be positive"), "{error}");
+}

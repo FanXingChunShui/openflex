@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.3.0 — 2026-11-14
+
+### 对象与运行时（P1 剩余）
+
+- **Conveyor 光电门**：`photo_eyes: [{position, name}]`，项在精确位置 `position/speed` 触发 `on_photo_eye`，可改标签/类型/发消息。
+- **Conveyor 工位**：`stations: [{position, process_time}]`，项在带面停留加工，后车按间距排队。
+- **Rack 类型**：`rack_type: floor | gravity | push_back | drive_in`；floor FIFO，gravity/push_back LIFO，drive_in 近似。
+- **Transporter 路网**：`network: [{from,to,distance}]` 双向最短路（无路网回退欧氏）；任务拆两段：取货 → 送达 → 空车回 home。
+- **MultiProcessor** 与 **Time Table** 已在 v0.2.0 落地，本版补 schema/校验与文档。
+
+### CLI 与可观测性
+
+- `openflex run --trace events.jsonl`：逐事件 JSONL（`time,seq,event,object,data`），多复现写 `.repN.jsonl`。
+- `--until` 作为 `--stop-time` 别名。
+- i18n 扩展到 experiment 表格与 Markdown 报告（`OPENFLEX_LANG=zh`）。
+- 性能基准示例 `cargo run --release -p openflex-cli --example bench_mm1`：约 1.8M events/s。
+- `objects describe` 补齐新参数（photo_eyes/stations/rack_type/network 等）。
+
+### 验证
+
+- 198 个测试全绿（core 92，含 golden 10、objects 36、p0_semantics 16）。
+- 6 个黄金案例零回归；新增 4 个对象示例（photo-eye/station/rack-gravity/transporter-network）。
+
 ## v0.2.0 — 2026-11-14
 
 ### 语义一致性（P0）

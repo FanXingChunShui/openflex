@@ -12,7 +12,9 @@ use openflex_core::SimReport;
 use openflex_model::{ObjectKind, Override, TimeUnit};
 use serde::{Deserialize, Serialize};
 
-use crate::{ReportError, fmt_ci, fmt_count, fmt_percent, fmt_rate, fmt_time, sim, write_file};
+use crate::{
+    ReportError, fmt_ci, fmt_count, fmt_percent, fmt_rate, fmt_time, i18n, sim, write_file,
+};
 
 pub const EXPERIMENT_FILE: &str = "experiment.json";
 
@@ -148,21 +150,23 @@ fn average_utilization(report: &SimReport) -> f64 {
 
 fn header(experiment: &ExperimentReport) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "OpenFlex experiment: {}", experiment.experiment);
     let _ = writeln!(
         out,
-        "model: {} ({} scenario{}, {} replication{} each)",
-        experiment.model,
-        experiment.scenarios.len(),
-        plural(experiment.scenarios.len()),
-        experiment.replications(),
-        plural(experiment.replications() as usize)
+        "{}{}{}",
+        i18n::t("experiment_title"),
+        i18n::t("title_separator"),
+        experiment.experiment
+    );
+    let _ = writeln!(
+        out,
+        "{}",
+        i18n::experiment_table_summary(
+            &experiment.model,
+            experiment.scenarios.len(),
+            experiment.replications()
+        )
     );
     out
-}
-
-fn plural(count: usize) -> &'static str {
-    if count == 1 { "" } else { "s" }
 }
 
 /// Terminal table: one summary row per scenario, followed by the full table of
@@ -173,7 +177,15 @@ pub fn to_table(experiment: &ExperimentReport) -> String {
     let _ = writeln!(
         out,
         "{:<18} {:>5} {:>10} {:>8} {:>11} {:>8} {:>11} {:>8} {:>8}",
-        "Scenario", "Reps", "Created", "±95%", "Completed", "±95%", "Throughput", "AvgWIP", "Util"
+        i18n::t("scenario"),
+        i18n::t("reps"),
+        i18n::t("created_count"),
+        "±95%",
+        i18n::t("completed_count"),
+        "±95%",
+        i18n::t("throughput"),
+        i18n::t("avg_wip"),
+        i18n::t("util_short")
     );
     let _ = writeln!(out, "{}", "-".repeat(87));
     for scenario in &experiment.scenarios {
@@ -194,12 +206,19 @@ pub fn to_table(experiment: &ExperimentReport) -> String {
     }
     for scenario in &experiment.scenarios {
         let _ = writeln!(out);
-        let _ = writeln!(out, "-- scenario: {} --", sanitize(&scenario.name));
+        let _ = writeln!(
+            out,
+            "-- {}{}{} --",
+            i18n::t("scenario"),
+            i18n::t("title_separator"),
+            sanitize(&scenario.name)
+        );
         if !scenario.overrides.is_empty() {
             for over in &scenario.overrides {
                 let _ = writeln!(
                     out,
-                    "   override {}.{} = {}",
+                    "   {} {}.{} = {}",
+                    i18n::t("override"),
                     over.object,
                     over.param,
                     serde_json::to_string(&over.value).unwrap_or_else(|_| "?".into())
@@ -239,20 +258,35 @@ pub fn to_csv(experiment: &ExperimentReport) -> String {
 
 pub fn to_markdown(experiment: &ExperimentReport) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "# OpenFlex experiment: {}", experiment.experiment);
+    let _ = writeln!(
+        out,
+        "# {}{}{}",
+        i18n::t("experiment_title"),
+        i18n::t("title_separator"),
+        experiment.experiment
+    );
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "Model `{}` — {} scenarios, {} replications each ({} runs).\n",
-        experiment.model,
-        experiment.scenarios.len(),
-        experiment.replications(),
-        experiment.runs()
+        "{}\n",
+        i18n::experiment_markdown_summary(
+            &experiment.model,
+            experiment.scenarios.len(),
+            experiment.replications(),
+            experiment.runs()
+        )
     );
-    let _ = writeln!(out, "## Scenarios\n");
+    let _ = writeln!(out, "## {}\n", i18n::t("scenarios"));
     let _ = writeln!(
         out,
-        "| Scenario | Replications | Items created | Items completed | Throughput | Avg WIP | Avg utilisation |"
+        "| {} | {} | {} | {} | {} | {} | {} |",
+        i18n::t("scenario"),
+        i18n::t("replications_label"),
+        i18n::t("items_created"),
+        i18n::t("items_completed"),
+        i18n::t("throughput"),
+        i18n::t("avg_wip_md"),
+        i18n::t("avg_utilization_md")
     );
     let _ = writeln!(out, "|---|---:|---:|---:|---:|---:|---:|");
     for scenario in &experiment.scenarios {
@@ -271,7 +305,7 @@ pub fn to_markdown(experiment: &ExperimentReport) -> String {
             fmt_percent(summary.utilization)
         );
     }
-    let _ = writeln!(out, "\n## How to reproduce\n");
+    let _ = writeln!(out, "\n## {}\n", i18n::t("how_to_reproduce"));
     let _ = writeln!(out, "```sh");
     let _ = writeln!(out, "openflex experiment <model file> --report-dir reports");
     let _ = writeln!(

@@ -88,7 +88,9 @@ fn english(key: &str) -> &'static str {
              reports\n  openflex compare reports/report.json reports-faster/report.json\n  \
              openflex report reports/report.json --format markdown --output summary.md\n  \
              openflex experiment basic.ofm --format json --report-dir experiments\n  \
-             openflex layout basic.ofm --svg layout.svg"
+             openflex layout basic.ofm --svg layout.svg\n  \
+             openflex run basic.ofm --until 500 --trace trace.jsonl --format json\n  \
+             cargo run --release -p openflex-cli --example bench_mm1 -- --stop 100000"
         }
         "error_prefix" => "error:",
         "ok" => "ok",
@@ -123,6 +125,25 @@ fn english(key: &str) -> &'static str {
         "mean" => "Mean",
         "replication" => "replication",
         "progress" => "progress",
+        "title_separator" => ": ",
+        "stop_time_label" => "Stop time",
+        "warmup_label" => "Warm-up",
+        "replications_label" => "Replications",
+        "base_seed_label" => "Base seed",
+        "kind" => "Kind",
+        "avg_wip_md" => "Avg WIP",
+        "max_wip_md" => "Max WIP",
+        "stay_ci" => "Stay 95% CI",
+        "utilisation" => "Utilisation",
+        "util_ci" => "Util 95% CI",
+        "how_to_reproduce" => "How to reproduce",
+        "scenarios" => "Scenarios",
+        "replications_each" => "replications each",
+        "model_prefix" => "model:",
+        "override" => "override",
+        "util_short" => "Util",
+        "avg_utilization_md" => "Avg utilisation",
+        "scenario_prefix" => "scenario:",
         _ => "",
     }
 }
@@ -144,7 +165,9 @@ fn chinese(key: &str) -> &'static str {
              reports\n  openflex compare reports/report.json reports-faster/report.json\n  \
              openflex report reports/report.json --format markdown --output summary.md\n  \
              openflex experiment basic.ofm --format json --report-dir experiments\n  \
-             openflex layout basic.ofm --svg layout.svg"
+             openflex layout basic.ofm --svg layout.svg\n  \
+             openflex run basic.ofm --until 500 --trace trace.jsonl --format json\n  \
+             cargo run --release -p openflex-cli --example bench_mm1 -- --stop 100000"
         }
         "error_prefix" => "错误：",
         "ok" => "通过",
@@ -179,8 +202,64 @@ fn chinese(key: &str) -> &'static str {
         "mean" => "均值",
         "replication" => "重复",
         "progress" => "进度",
+        "title_separator" => "：",
+        "stop_time_label" => "停止时间",
+        "warmup_label" => "预热期",
+        "replications_label" => "重复次数",
+        "base_seed_label" => "基础种子",
+        "kind" => "类型",
+        "avg_wip_md" => "平均在制品",
+        "max_wip_md" => "最大在制品",
+        "stay_ci" => "停留时间 95% CI",
+        "utilisation" => "利用率",
+        "util_ci" => "利用率 95% CI",
+        "how_to_reproduce" => "如何复现",
+        "scenarios" => "场景",
+        "replications_each" => "次重复",
+        "model_prefix" => "模型：",
+        "override" => "覆盖",
+        "util_short" => "利用率",
+        "avg_utilization_md" => "平均利用率",
+        "scenario_prefix" => "场景：",
         _ => "",
     }
+}
+
+/// Summary line of the experiment table header.
+pub fn experiment_table_summary(model: &str, scenarios: usize, replications: u32) -> String {
+    match language() {
+        Language::En => format!(
+            "model: {model} ({scenarios} scenario{}, {replications} replication{} each)",
+            plural(scenarios),
+            plural(replications as usize)
+        ),
+        Language::Zh => {
+            format!("模型：{model}（{scenarios} 个场景，每个 {replications} 次重复）")
+        }
+    }
+}
+
+/// Summary line of the experiment Markdown report.
+pub fn experiment_markdown_summary(
+    model: &str,
+    scenarios: usize,
+    replications: u32,
+    runs: usize,
+) -> String {
+    match language() {
+        Language::En => format!(
+            "Model `{model}` — {scenarios} scenarios, {replications} replications each ({runs} runs)."
+        ),
+        Language::Zh => {
+            format!(
+                "模型 `{model}` — {scenarios} 个场景，每个 {replications} 次重复（共 {runs} 次运行）。"
+            )
+        }
+    }
+}
+
+fn plural(count: usize) -> &'static str {
+    if count == 1 { "" } else { "s" }
 }
 
 #[cfg(test)]
@@ -234,6 +313,25 @@ mod tests {
             "mean",
             "replication",
             "progress",
+            "title_separator",
+            "stop_time_label",
+            "warmup_label",
+            "replications_label",
+            "base_seed_label",
+            "kind",
+            "avg_wip_md",
+            "max_wip_md",
+            "stay_ci",
+            "utilisation",
+            "util_ci",
+            "how_to_reproduce",
+            "scenarios",
+            "replications_each",
+            "model_prefix",
+            "override",
+            "util_short",
+            "avg_utilization_md",
+            "scenario_prefix",
         ];
         for key in keys {
             assert!(!english(key).is_empty(), "missing English key {key}");

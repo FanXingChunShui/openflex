@@ -515,6 +515,30 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
                     "must be at least 1",
                 ));
             }
+            for (i, eye) in params.photo_eyes.iter().enumerate() {
+                if !eye.position.is_finite() || eye.position <= 0.0 || eye.position >= params.length
+                {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("photo_eyes[{i}].position")),
+                        "must be inside the belt (0 < position < length)",
+                    ));
+                }
+            }
+            for (i, station) in params.stations.iter().enumerate() {
+                if !station.position.is_finite()
+                    || station.position <= 0.0
+                    || station.position >= params.length
+                {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("stations[{i}].position")),
+                        "must be inside the belt (0 < position < length)",
+                    ));
+                }
+                distribution!(
+                    &format!("stations[{i}].process_time"),
+                    &station.process_time
+                );
+            }
         }
         crate::model::ObjectParams::Combiner(params) => {
             distribution!("setup_time", &params.setup_time);
@@ -544,6 +568,20 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
             }
             distribution!("load_time", &params.load_time);
             distribution!("unload_time", &params.unload_time);
+            for (i, edge) in params.network.iter().enumerate() {
+                if edge.from.trim().is_empty() || edge.to.trim().is_empty() {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("network[{i}]")),
+                        "network edges need a from and a to node",
+                    ));
+                }
+                if !edge.distance.is_finite() || edge.distance <= 0.0 {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("network[{i}].distance")),
+                        "must be positive",
+                    ));
+                }
+            }
         }
         crate::model::ObjectParams::Resource(params) => {
             if params.capacity == 0 {

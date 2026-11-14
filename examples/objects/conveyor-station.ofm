@@ -1,0 +1,21 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "conveyor-station",
+  "description": "A station at position 5 holds every item for 3 time units: 5 + 3 + 5 = 13 units on the belt",
+  "time_unit": "seconds",
+  "run": { "stop_time": 200.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "constant", "value": 20.0 }, "first_arrival": 0.0 } },
+    { "name": "Conveyor1", "kind": "conveyor", "pos": [5, 0], "params": {
+        "speed": 1.0, "length": 10.0, "item_spacing": 1.0, "accumulating": true,
+        "stations": [{ "position": 5.0,
+                       "process_time": { "distribution": "constant", "value": 3.0 } }] } },
+    { "name": "Sink1", "kind": "sink", "pos": [15, 0], "params": {} }
+  ],
+  "connections": [
+    { "from": "Source1", "to": "Conveyor1" },
+    { "from": "Conveyor1", "to": "Sink1" }
+  ]
+}

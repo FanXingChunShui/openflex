@@ -37,7 +37,7 @@ pub fn describe_kind(kind: ObjectKind) -> (&'static str, &'static str) {
         ),
         ObjectKind::Conveyor => (
             "Moves items along a belt with a fixed speed.",
-            "speed: distance per time unit, default 1\nlength: default 10\naccumulating: boolean, default false\nitem_spacing: default 1\nmax_content: default 1000",
+            "speed: distance per time unit, default 1\nlength: default 10\naccumulating: boolean, default false\nitem_spacing: default 1\nmax_content: default 1000\nphoto_eyes: [{ position, name? }] triggers on_photo_eye when an item passes\nstations: [{ position, process_time? }] item dwell time on the belt",
         ),
         ObjectKind::Merge => (
             "Merges several input flows into one output flow.",
@@ -49,7 +49,7 @@ pub fn describe_kind(kind: ObjectKind) -> (&'static str, &'static str) {
         ),
         ObjectKind::Transporter => (
             "Carries flow items between objects (task executer).",
-            "capacity: integer, default 1\nspeed: distance per time unit, default 1\nload_time / unload_time: distributions\nhome: optional object name",
+            "capacity: integer, default 1\nspeed: distance per time unit, default 1\nload_time / unload_time: distributions\nhome: optional object name (pickup point)\nnetwork: [{ from, to, distance }] bidirectional shortest-path travel (falls back to euclidean)",
         ),
         ObjectKind::Dispatcher => (
             "Hands out transport tasks to transporters.",
@@ -61,7 +61,7 @@ pub fn describe_kind(kind: ObjectKind) -> (&'static str, &'static str) {
         ),
         ObjectKind::Rack => (
             "Stores items in levels (a specialised queue).",
-            "capacity: integer, default 100\nlevels: integer, default 1",
+            "capacity: integer, default 100\nlevels: integer, default 1\nrack_type: floor | gravity | push_back | drive_in (gravity/push_back are LIFO)",
         ),
         ObjectKind::BasicFr => (
             "A generic fixed resource.",

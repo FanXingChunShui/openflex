@@ -19,13 +19,13 @@
 | Sink | `sink` | ✅ | 吞吐与停留时间统计 |
 | Combiner | `combiner` | ✅ | pack / join / batch（setup+process）；容器先到、等待组件数 |
 | Separator | `separator` | ✅ | `separate_mode: unpack`（qty+1 件）/ `split`（qty 件）；0 = 容器内全部组件 |
-| Conveyor | `conveyor` | ✅ | 速度、长度、间距、累积/非累积、容量；位置与阻塞按一维带面模型计算 |
+| Conveyor | `conveyor` | ✅ | 速度、长度、间距、累积/非累积、容量；`photo_eyes` 光电门、`stations` 停留加工；无曲线/Join 合流 |
 | Merge | `merge` | ✅ | 多输入合流；可选等待全部输入 |
 | Split | `split` | ✅ | 轮询或按 item type 分流 |
 | Transporter / TaskExecuter | `transporter` | 🟡 | 速度、装载/卸载时间、按坐标距离行驶、`home` 回程；`capacity` 解释为可并发操作员任务数（不搬运 flow item）；无任务序列/抢占/路网 |
 | Dispatcher | `dispatcher` | 🟡 | 把 Processor 的操作员请求派给最近的空闲 transporter；FIFO 队列，无优先级/抢占 |
 | Operator / Resource | `resource` | ✅ | 资源池容量与停机窗口 |
-| Rack | `rack` | 🟡 | 容量与层数；层/通道的精细放置与取货策略简化 |
+| Rack | `rack` | 🟡 | `rack_type`：floor(FIFO)/gravity/push_back(LIFO)/drive_in(FIFO 近似)；无货位/巷道精细放置 |
 | 班次 / 计划停机 | `params.shifts` | ✅ | `[{start, duration, repeat_every}]`，停机进入 off_shift、暂停处理、恢复后继续 |
 | Time Table | `params.timetable` | ✅ | `{windows:[{start,end}]}`，与 shifts 取交集 |
 | BasicFR / BasicTE | `basic_fr` / `basic_te` | ✅ | 通用固定资源与执行器 |
@@ -43,6 +43,7 @@
 | OnEntry / OnExit / OnReceive | `params.triggers.*` | ✅ | 结构化动作：设置标签、改类型、累加、发消息 |
 | OnMessage | `params.triggers.on_message` | ✅ | `send_message` 支持延迟 |
 | OnBreakdown / OnRepair | `params.triggers.*` | ✅ | 故障/修复时触发 |
+| OnPhotoEye | `params.triggers.on_photo_eye` | ✅ | 传送带光电门在精确位置触发 |
 | OnCreate | `params.triggers.on_create` | ✅ | Source 创建项时触发 |
 | Send To Port：First Available | `strategy: first_available` | ✅ | 默认 |
 | Send To Port：Round Robin | `round_robin` | ✅ | |

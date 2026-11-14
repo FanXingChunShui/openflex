@@ -32,11 +32,12 @@ mod templates;
 
 use std::ffi::OsString;
 use std::fs;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, anyhow, bail};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
-use openflex_core::{SimConfig, SimReport, derive_seed, simulate};
+use openflex_core::{SimConfig, SimReport, derive_seed, simulate, simulate_traced};
 use openflex_model::{Model, ObjectKind, Scenario, TimeUnit};
 use openflex_report::{self as report, i18n};
 use report::i18n::Language;
@@ -89,8 +90,8 @@ enum Command {
     Run {
         /// Path to the model file.
         model: PathBuf,
-        /// Override the stop time (model time units).
-        #[arg(long)]
+        /// Override the stop time (model time units); `--until` is an alias.
+        #[arg(long, visible_alias = "until")]
         stop_time: Option<f64>,
         /// Override the warm-up period.
         #[arg(long)]
@@ -116,6 +117,9 @@ enum Command {
         /// Also write the report as an Excel workbook (.xlsx).
         #[arg(long, value_name = "FILE")]
         xlsx: Option<PathBuf>,
+        /// Write a JSONL event trace; with several replications the files are `FILE.rep0.jsonl`, `FILE.rep1.jsonl`, … (cannot be combined with --parallel > 1).
+        #[arg(long, value_name = "FILE")]
+        trace: Option<PathBuf>,
         /// Validate the model and print the run plan without simulating.
         #[arg(long)]
         dry_run: bool,
@@ -497,6 +501,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             report_dir,
             parallel,
             xlsx,
+            trace,
             dry_run,
         } => {
             let mut model = load_model(&path)?;
@@ -520,7 +525,15 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                 print_run_plan(&model, &seed, parallel);
                 return Ok(());
             }
-            let report = execute(&model, &seed, parallel, progress)?;
+            if trace.is_some() && parallel.is_some_and(|workers| workers > 1) {
+                return Err(Failure::usage(anyhow!(
+                    "--trace cannot be combined with --parallel > 1; traces are written one replication at a time"
+                )));
+            }
+            let report = match trace.as_deref() {
+                Some(trace_path) => execute_traced(&model, &seed, trace_path, progress, quiet)?,
+                None => execute(&model, &seed, parallel, progress)?,
+            };
             let text = report::render_sim(&report, format.into())?;
             emit(&text, None, quiet)?;
             if let Some(directory) = report_dir {
@@ -759,29 +772,7 @@ fn execute(
     parallel: Option<usize>,
     progress: bool,
 ) -> Result<SimReport, Failure> {
-    let configs: Vec<(u32, SimConfig)> = if seeds.len() > 1 {
-        seeds
-            .iter()
-            .enumerate()
-            .map(|(index, seed)| {
-                (
-                    index as u32,
-                    SimConfig::from_run_settings(&model.run, derive_seed(*seed, 0)),
-                )
-            })
-            .collect()
-    } else {
-        let replications = model.run.replications.max(1);
-        (0..replications)
-            .map(|index| {
-                (
-                    index,
-                    SimConfig::from_run_settings(&model.run, derive_seed(model.run.seed, index)),
-                )
-            })
-            .collect()
-    };
-
+    let configs = run_configs(model, seeds);
     let reporter = Progress::new(progress, configs.len());
     let results = match (parallel, configs.len()) {
         (Some(workers), count) if workers > 1 && count > 1 => {
@@ -819,6 +810,151 @@ fn execute(
         report.base_seed = seeds[0];
     }
     Ok(report)
+}
+
+/// Build the replication configurations for one run.
+///
+/// Several `--seed` values mean one replication per seed (each derived with
+/// index 0); otherwise the model's replication count is expanded with
+/// [`derive_seed`]. The tracing and parallel paths share this function so a run
+/// cannot produce different seeds depending on how it was started.
+fn run_configs(model: &Model, seeds: &[u64]) -> Vec<(u32, SimConfig)> {
+    if seeds.len() > 1 {
+        seeds
+            .iter()
+            .enumerate()
+            .map(|(index, seed)| {
+                (
+                    index as u32,
+                    SimConfig::from_run_settings(&model.run, derive_seed(*seed, 0)),
+                )
+            })
+            .collect()
+    } else {
+        let replications = model.run.replications.max(1);
+        (0..replications)
+            .map(|index| {
+                (
+                    index,
+                    SimConfig::from_run_settings(&model.run, derive_seed(model.run.seed, index)),
+                )
+            })
+            .collect()
+    }
+}
+
+/// Run every replication with tracing enabled and write JSONL trace files.
+///
+/// One replication writes exactly the requested path. Several replications
+/// write `out.rep0.jsonl`, `out.rep1.jsonl`, … next to each other so each trace
+/// stays self-contained and `rg`/`jq` can process them independently.
+fn execute_traced(
+    model: &Model,
+    seeds: &[u64],
+    path: &Path,
+    progress: bool,
+    quiet: bool,
+) -> Result<SimReport, Failure> {
+    let configs = run_configs(model, seeds);
+    let several = configs.len() > 1;
+    let reporter = Progress::new(progress, configs.len());
+    let mut results = Vec::with_capacity(configs.len());
+
+    for (index, config) in &configs {
+        let (result, trace) = simulate_traced(model, config, *index)?;
+        let file = if several {
+            replication_trace_path(path, *index)
+        } else {
+            path.to_path_buf()
+        };
+        write_trace(&file, &trace)?;
+        note(
+            quiet,
+            &format!(
+                "{} {} ({} events{})",
+                i18n::t("wrote"),
+                file.display(),
+                trace.len(),
+                if trace.truncated {
+                    ", truncated at the event limit"
+                } else {
+                    ""
+                }
+            ),
+        );
+        results.push(result);
+        reporter.tick();
+    }
+
+    let mut report = SimReport::from_replications(model, results);
+    if seeds.len() > 1 {
+        report.base_seed = seeds[0];
+    }
+    Ok(report)
+}
+
+/// Derive the per-replication trace path: `events.jsonl` → `events.rep0.jsonl`.
+fn replication_trace_path(base: &Path, index: u32) -> PathBuf {
+    let stem = base
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "trace".to_string());
+    let name = match base.extension() {
+        Some(extension) => format!("{stem}.rep{index}.{}", extension.to_string_lossy()),
+        None => format!("{stem}.rep{index}.jsonl"),
+    };
+    base.with_file_name(name)
+}
+
+/// One JSONL trace line.
+///
+/// `TraceEvent` skips `data` when it is empty, but a trace file is a data feed:
+/// every line keeps the same five keys so downstream tools can rely on the
+/// schema without special-casing the first event.
+#[derive(serde::Serialize)]
+struct TraceLine<'a> {
+    time: f64,
+    seq: u64,
+    event: &'a str,
+    object: &'a str,
+    data: &'a std::collections::BTreeMap<String, f64>,
+}
+
+/// Write a [`openflex_core::TraceLog`] as JSON Lines, one event per line.
+fn write_trace(path: &Path, trace: &openflex_core::TraceLog) -> Result<(), Failure> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            Failure::runtime(anyhow!("could not create {}: {error}", parent.display()))
+        })?;
+    }
+    let file = fs::File::create(path).map_err(|error| {
+        Failure::runtime(anyhow!("could not write trace {}: {error}", path.display()))
+    })?;
+    let mut writer = BufWriter::new(file);
+    for event in &trace.events {
+        let line = TraceLine {
+            time: event.time,
+            seq: event.seq,
+            event: &event.event,
+            object: &event.object,
+            data: &event.data,
+        };
+        serde_json::to_writer(&mut writer, &line).map_err(|error| {
+            Failure::runtime(anyhow!(
+                "could not serialise trace event in {}: {error}",
+                path.display()
+            ))
+        })?;
+        writer.write_all(b"\n").map_err(|error| {
+            Failure::runtime(anyhow!("could not write trace {}: {error}", path.display()))
+        })?;
+    }
+    writer.flush().map_err(|error| {
+        Failure::runtime(anyhow!("could not write trace {}: {error}", path.display()))
+    })?;
+    Ok(())
 }
 
 fn run_experiments(

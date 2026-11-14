@@ -1104,3 +1104,231 @@ fn distributions_lists_every_distribution_the_model_supports() {
         .count();
     assert!(rows >= 20, "only {rows} distributions listed");
 }
+
+// ---------------------------------------------------------------------------
+// B12: event trace output and the --until alias
+// ---------------------------------------------------------------------------
+
+#[test]
+fn trace_writes_parseable_jsonl_events() {
+    let dir = TempDir::new("trace-single");
+    let model = dir.write("demo.ofm", MODEL);
+    let trace = dir.join("trace.jsonl");
+
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--stop-time",
+        "100",
+        "--replications",
+        "1",
+        "--trace",
+        &path_str(&trace),
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    // The report still goes to stdout, complete and parseable.
+    let report = json(&stdout(&output));
+    assert_eq!(report["model"], "demo");
+    assert!(
+        stderr(&output).is_empty(),
+        "--quiet must silence trace notes: {}",
+        stderr(&output)
+    );
+
+    let text = fs::read_to_string(&trace).expect("trace file was not written");
+    let lines: Vec<&str> = text.lines().filter(|line| !line.is_empty()).collect();
+    assert!(!lines.is_empty(), "the trace must contain events");
+
+    let mut events = Vec::new();
+    for line in &lines {
+        let event = json(line);
+        assert!(event["time"].is_f64(), "missing time in {line}");
+        assert!(event["seq"].is_u64(), "missing seq in {line}");
+        let kind = event["event"].as_str().expect("event name");
+        assert!(!kind.is_empty());
+        assert!(
+            event["object"]
+                .as_str()
+                .is_some_and(|object| !object.is_empty()),
+            "missing object in {line}"
+        );
+        events.push(kind.to_string());
+    }
+    for expected in ["process_done", "flow"] {
+        assert!(
+            events.iter().any(|event| event == expected),
+            "missing {expected} in {:?}",
+            events.iter().collect::<std::collections::BTreeSet<_>>()
+        );
+    }
+}
+
+#[test]
+fn trace_writes_one_file_per_replication() {
+    let dir = TempDir::new("trace-many");
+    let model = dir.write("demo.ofm", MODEL);
+    let trace = dir.join("events.jsonl");
+
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--stop-time",
+        "60",
+        "--replications",
+        "3",
+        "--trace",
+        &path_str(&trace),
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+
+    for index in 0..3 {
+        let path = dir.join(&format!("events.rep{index}.jsonl"));
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("{} was not written", path.display()));
+        assert!(!text.trim().is_empty(), "{} is empty", path.display());
+        for line in text.lines() {
+            json(line);
+        }
+    }
+    assert!(
+        !trace.exists(),
+        "multi-replication traces use the .repN files, not the bare path"
+    );
+
+    let conflicting = openflex(&[
+        "run",
+        &path_str(&model),
+        "--trace",
+        &path_str(&trace),
+        "--parallel",
+        "2",
+    ]);
+    assert_eq!(code(&conflicting), 2, "stderr: {}", stderr(&conflicting));
+    assert!(
+        stderr(&conflicting).contains("--trace"),
+        "stderr: {}",
+        stderr(&conflicting)
+    );
+}
+
+#[test]
+fn until_is_an_alias_for_stop_time() {
+    let dir = TempDir::new("until");
+    let model = dir.write("demo.ofm", MODEL);
+
+    let until = openflex(&[
+        "run",
+        &path_str(&model),
+        "--until",
+        "123.5",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code(&until), 0, "stderr: {}", stderr(&until));
+    let stop_time = openflex(&[
+        "run",
+        &path_str(&model),
+        "--stop-time",
+        "123.5",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code(&stop_time), 0, "stderr: {}", stderr(&stop_time));
+
+    let until = json(&stdout(&until));
+    assert_eq!(until["stop_time"], 123.5);
+    assert_eq!(until, json(&stdout(&stop_time)));
+
+    let help = openflex(&["run", "--help"]);
+    assert!(
+        stdout(&help).contains("--until"),
+        "the alias must be documented in --help"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// C8: experiments and Markdown are localised too
+// ---------------------------------------------------------------------------
+
+#[test]
+fn chinese_experiment_tables_and_markdown_reports_are_localised() {
+    let dir = TempDir::new("i18n-reports");
+    let model = dir.write("experiment.ofm", EXPERIMENT_MODEL);
+    let zh = &[("OPENFLEX_LANG", "zh")][..];
+
+    let table = openflex_env(&["experiment", &path_str(&model), "--format", "table"], zh);
+    assert_eq!(code(&table), 0, "stderr: {}", stderr(&table));
+    let text = stdout(&table);
+    for expected in [
+        "OpenFlex 实验：process-time",
+        "场景",
+        "重复",
+        "创建",
+        "完成",
+        "吞吐率",
+        "利用率",
+        "baseline",
+    ] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+
+    let markdown = openflex_env(
+        &["experiment", &path_str(&model), "--format", "markdown"],
+        zh,
+    );
+    assert_eq!(code(&markdown), 0, "stderr: {}", stderr(&markdown));
+    let text = stdout(&markdown);
+    for expected in [
+        "# OpenFlex 实验：process-time",
+        "## 场景",
+        "| 场景 | 重复次数 | 创建数 | 完成数 | 吞吐率 | 平均在制品 | 平均利用率 |",
+        "## 如何复现",
+    ] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+
+    // JSON stays a machine contract: field names are never translated.
+    let encoded = openflex_env(&["experiment", &path_str(&model), "--format", "json"], zh);
+    assert_eq!(code(&encoded), 0, "stderr: {}", stderr(&encoded));
+    let experiment = json(&stdout(&encoded));
+    assert_eq!(experiment["experiment"], "process-time");
+    assert_eq!(experiment["scenarios"].as_array().map(Vec::len), Some(2));
+
+    // The Markdown form of a plain simulation report is localised as well.
+    let reports = dir.join("reports");
+    let run = openflex_env(
+        &[
+            "run",
+            &path_str(&model),
+            "--report-dir",
+            &path_str(&reports),
+            "--quiet",
+        ],
+        zh,
+    );
+    assert_eq!(code(&run), 0, "stderr: {}", stderr(&run));
+    let sim_markdown = openflex_env(
+        &[
+            "report",
+            &path_str(&reports.join("report.json")),
+            "--format",
+            "markdown",
+        ],
+        zh,
+    );
+    assert_eq!(code(&sim_markdown), 0, "stderr: {}", stderr(&sim_markdown));
+    let text = stdout(&sim_markdown);
+    for expected in [
+        "# OpenFlex 报告：experiment-demo",
+        "## 对象",
+        "| 对象 | 类型 | 输入 | 输出 |",
+        "## 总计",
+        "## 如何复现",
+    ] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+}

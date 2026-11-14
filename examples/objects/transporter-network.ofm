@@ -1,0 +1,28 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "transporter-network",
+  "description": "Road network (B4): pickup at home (1 unit) then 300 units of road to the processor",
+  "time_unit": "seconds",
+  "run": { "stop_time": 300.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "constant", "value": 50.0 }, "first_arrival": 0.0 } },
+    { "name": "Processor1", "kind": "processor", "pos": [0, 0], "params": {
+        "process_time": { "distribution": "constant", "value": 5.0 },
+        "process_operator": "Dispatcher1" } },
+    { "name": "Sink1", "kind": "sink", "pos": [5, 0], "params": {} },
+    { "name": "Dispatcher1", "kind": "dispatcher", "pos": [10, 0], "params": {} },
+    { "name": "Transporter1", "kind": "transporter", "pos": [0, 0], "params": {
+        "capacity": 1, "speed": 10.0,
+        "load_time": { "distribution": "constant", "value": 0.0 },
+        "unload_time": { "distribution": "constant", "value": 0.0 },
+        "home": "Dispatcher1",
+        "network": [{ "from": "Dispatcher1", "to": "Processor1", "distance": 300.0 }] } }
+  ],
+  "connections": [
+    { "from": "Source1", "to": "Processor1" },
+    { "from": "Processor1", "to": "Sink1" },
+    { "from": "Dispatcher1", "to": "Transporter1" }
+  ]
+}

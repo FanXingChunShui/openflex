@@ -164,7 +164,8 @@ fn definitions() -> Value {
                 "on_receive": { "type": "array", "items": { "$ref": "#/$defs/action" } },
                 "on_message": { "type": "array", "items": { "$ref": "#/$defs/action" } },
                 "on_breakdown": { "type": "array", "items": { "$ref": "#/$defs/action" } },
-                "on_repair": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+                "on_repair": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_photo_eye": { "type": "array", "items": { "$ref": "#/$defs/action" } }
             },
             "additionalProperties": false
         }),
@@ -289,7 +290,31 @@ fn definitions() -> Value {
             "length": { "type": "number", "exclusiveMinimum": 0, "default": 10.0 },
             "accumulating": { "type": "boolean", "default": false },
             "item_spacing": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
-            "max_content": { "type": "integer", "minimum": 1, "default": 1000 }
+            "max_content": { "type": "integer", "minimum": 1, "default": 1000 },
+            "photo_eyes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "position": { "type": "number", "exclusiveMinimum": 0 },
+                        "name": { "type": "string", "default": "" }
+                    },
+                    "required": ["position"],
+                    "additionalProperties": false
+                }
+            },
+            "stations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "position": { "type": "number", "exclusiveMinimum": 0 },
+                        "process_time": { "$ref": "#/$defs/distribution" }
+                    },
+                    "required": ["position"],
+                    "additionalProperties": false
+                }
+            }
         })),
     );
     defs.insert(
@@ -307,7 +332,20 @@ fn definitions() -> Value {
             "speed": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
             "load_time": { "$ref": "#/$defs/distribution" },
             "unload_time": { "$ref": "#/$defs/distribution" },
-            "home": { "type": ["string", "null"] }
+            "home": { "type": ["string", "null"] },
+            "network": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "from": { "type": "string" },
+                        "to": { "type": "string" },
+                        "distance": { "type": "number", "exclusiveMinimum": 0 }
+                    },
+                    "required": ["from", "to", "distance"],
+                    "additionalProperties": false
+                }
+            }
         })),
     );
     defs.insert(
@@ -325,7 +363,11 @@ fn definitions() -> Value {
         "rack_params".into(),
         params_schema(json!({
             "capacity": { "type": "integer", "minimum": 1, "default": 100 },
-            "levels": { "type": "integer", "minimum": 1, "default": 1 }
+            "levels": { "type": "integer", "minimum": 1, "default": 1 },
+            "rack_type": {
+                "enum": ["floor", "gravity", "push_back", "drive_in"],
+                "default": "floor"
+            }
         })),
     );
     defs.insert("basic_fr_params".into(), params_schema(json!({})));

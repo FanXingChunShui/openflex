@@ -36,7 +36,13 @@ pub fn to_json(report: &SimReport) -> Result<String, ReportError> {
 pub fn to_table(report: &SimReport) -> String {
     let mut out = String::new();
     let unit = i18n::unit(report.time_unit);
-    let _ = writeln!(out, "{}: {}", i18n::t("report_title"), report.model);
+    let _ = writeln!(
+        out,
+        "{}{}{}",
+        i18n::t("report_title"),
+        i18n::t("title_separator"),
+        report.model
+    );
     if !report.description.is_empty() {
         let _ = writeln!(out, "{}", report.description);
     }
@@ -173,26 +179,51 @@ pub fn to_replications_csv(report: &SimReport) -> String {
 }
 
 /// Markdown report, friendly to pull requests and documentation.
+///
+/// Titles, headings and column names follow `OPENFLEX_LANG`; the shell commands
+/// in the "how to reproduce" block never do, so a localised report still runs
+/// as written.
 pub fn to_markdown(report: &SimReport) -> String {
     let mut out = String::new();
-    let unit = report.time_unit.label();
-    let _ = writeln!(out, "# OpenFlex report: {}", report.model);
+    let unit = i18n::unit(report.time_unit);
+    let _ = writeln!(
+        out,
+        "# {}{}{}",
+        i18n::t("report_title"),
+        i18n::t("title_separator"),
+        report.model
+    );
     let _ = writeln!(out);
     if !report.description.is_empty() {
         let _ = writeln!(out, "{}\n", report.description);
     }
     let _ = writeln!(
         out,
-        "- Stop time: {} {unit}\n- Warm-up: {} {unit}\n- Replications: {}\n- Base seed: {}\n",
+        "- {}: {} {unit}\n- {}: {} {unit}\n- {}: {}\n- {}: {}\n",
+        i18n::t("stop_time_label"),
         fmt_time(report.stop_time),
+        i18n::t("warmup_label"),
         fmt_time(report.warmup),
+        i18n::t("replications_label"),
         report.replications.len().max(1),
+        i18n::t("base_seed_label"),
         report.base_seed
     );
-    let _ = writeln!(out, "## Objects\n");
+    let _ = writeln!(out, "## {}\n", i18n::t("objects"));
     let _ = writeln!(
         out,
-        "| Object | Kind | In | Out | Avg WIP | Max WIP | Avg stay ({unit}) | Stay 95% CI | Utilisation | Util 95% CI | Throughput |"
+        "| {} | {} | {} | {} | {} | {} | {} ({unit}) | {} | {} | {} | {} |",
+        i18n::t("object"),
+        i18n::t("kind"),
+        i18n::t("in"),
+        i18n::t("out"),
+        i18n::t("avg_wip_md"),
+        i18n::t("max_wip_md"),
+        i18n::t("stay"),
+        i18n::t("stay_ci"),
+        i18n::t("utilisation"),
+        i18n::t("util_ci"),
+        i18n::t("throughput")
     );
     let _ = writeln!(
         out,
@@ -215,28 +246,36 @@ pub fn to_markdown(report: &SimReport) -> String {
         );
     }
     let in_system = in_system(report);
-    let _ = writeln!(out, "\n## Totals\n");
-    let _ = writeln!(out, "| Metric | Mean | 95% CI |");
+    let _ = writeln!(out, "\n## {}\n", i18n::t("totals"));
+    let _ = writeln!(
+        out,
+        "| {} | {} | 95% CI |",
+        i18n::t("metric"),
+        i18n::t("mean")
+    );
     let _ = writeln!(out, "|---|---:|---:|");
     let _ = writeln!(
         out,
-        "| Items created | {} | {} |",
+        "| {} | {} | {} |",
+        i18n::t("items_created"),
         fmt_count(report.created.mean),
         fmt_ci(report.created.ci95)
     );
     let _ = writeln!(
         out,
-        "| Items completed | {} | {} |",
+        "| {} | {} | {} |",
+        i18n::t("items_completed"),
         fmt_count(report.completed.mean),
         fmt_ci(report.completed.ci95)
     );
     let _ = writeln!(
         out,
-        "| Items in system | {} | {} |",
+        "| {} | {} | {} |",
+        i18n::t("items_in_system"),
         fmt_count(in_system.mean),
         fmt_ci(in_system.ci95)
     );
-    let _ = writeln!(out, "\n## How to reproduce\n");
+    let _ = writeln!(out, "\n## {}\n", i18n::t("how_to_reproduce"));
     let _ = writeln!(out, "```sh");
     let _ = writeln!(out, "{}", reproduce_command(report));
     let _ = writeln!(out, "openflex report report.json --format markdown");

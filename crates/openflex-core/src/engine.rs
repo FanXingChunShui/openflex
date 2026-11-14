@@ -21,12 +21,13 @@
 //! | `queue`/`rack` | immediate release, optional batching with `batch_size` and `batch_max_wait` |
 //! | `processor` | setup + process, breakdown/repair with preemption, optional operator (dispatcher or resource pool) |
 //! | `multiprocessor` | `slots` parallel setup/process pipelines in one object (B1); one operator crew of `slots` per busy period |
-//! | `conveyor` | item positions, accumulating or rigid transport, spacing and exit blocking |
+//! | `conveyor` | item positions, accumulating or rigid transport, spacing and exit blocking; photo eyes fire `on_photo_eye`, stations dwell for their `process_time` (B3) |
 //! | `combiner` | port 1 container + `components_per_container` components; `pack` releases the container, `join` merges one item per port, `batch` runs setup/process and releases every item (A7) |
 //! | `separator` | `unpack` releases `split_count + 1` items, `split` copies the item `split_count` times (A6) |
 //! | `merge` | one item per input port, optional `wait_for_all` gating |
 //! | `split` | round-robin or by-item-type distribution over the output ports |
-//! | `transporter`/`dispatcher` | task assignment with euclidean travel time, load/unload delays, capacity |
+//! | `transporter`/`dispatcher` | two-leg operator tasks (travel to the home pickup point → load → travel to the requester → unload), euclidean or road-network travel, capacity (B4) |
+//! | `rack` | queue storage; `rack_type = gravity` / `push_back` release LIFO (B2) |
 //! | `resource` | counted resource pool with downtime windows |
 //! | any | optional `shifts` plan: off-shift pauses work and accumulates `off_shift` time |
 //!
@@ -34,8 +35,13 @@
 //!
 //! * Conveyors transfer an item to the downstream object at the exact instant
 //!   it reaches the end of the belt; there is no separate transfer delay.
-//! * Task executers travel in a straight line at constant speed; there is no
-//!   acceleration, network or collision model.
+//! * Task executers travel in a straight line at constant speed unless a
+//!   `network` distance table is supplied (then object-to-object legs use the
+//!   shortest path); there is no acceleration or collision model.
+//! * A conveyor station dwells only the item at the station; the belt itself
+//!   keeps moving and items behind queue up by the spacing rule.
+//! * The photo-eye trigger fires on the item at the exact crossing time, so a
+//!   trigger that changes `item.type` affects the routing decision at the exit.
 //! * A transporter's `capacity` is interpreted as the number of operator tasks
 //!   it can serve concurrently (openflex v1 does not carry flow items).
 //! * Operators stay with a processor through a breakdown instead of being
@@ -53,9 +59,9 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 
 use openflex_model::{
-    Action, ArrivalStyle, CombinerMode, Distribution, DowntimeWindow, EvalContext, Model, Object,
-    ObjectKind, ObjectParams, PortStrategy, PullParams, QueueOrder, SeparateMode, SimTrigger,
-    Value,
+    Action, ArrivalStyle, CombinerMode, Distribution, DowntimeWindow, EvalContext, Model,
+    NetworkEdge, Object, ObjectKind, ObjectParams, PortStrategy, PullParams, QueueOrder, RackType,
+    SeparateMode, SimTrigger, Value,
 };
 use rand::prelude::*;
 use rand_distr::{Distribution as _, Exp, Gamma, LogNormal, Normal};
@@ -146,6 +152,8 @@ enum EventKind {
     ShiftChange(usize),
     /// A linear availability calendar (B11) window starts or ends.
     TimetableChange(usize),
+    /// A transporter reaches its pickup point (home) and loads there (B4).
+    TransportPickup(usize, usize),
     /// A transporter reaches the processor that requested it.
     TransportArrive(usize, usize),
     /// A transporter finished loading an operator at the processor.
@@ -323,6 +331,19 @@ struct SimConn {
     strategy: Option<PortStrategy>,
 }
 
+/// One fixed point on a conveyor belt (B3): a photo eye or a station.
+#[derive(Debug, Clone, Copy)]
+struct BeltStop {
+    position: f64,
+    kind: BeltStopKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BeltStopKind {
+    PhotoEye,
+    Station(usize),
+}
+
 struct ObjectRt {
     name: String,
     kind: ObjectKind,
@@ -389,6 +410,11 @@ struct ObjectRt {
     belt_items: Vec<FlowItem>,
     belt_last_update: f64,
     belt_tick_at: f64,
+    /// B3: photo eyes and stations, sorted by position.
+    belt_stops: Vec<BeltStop>,
+    /// B3: per-item flags of the stops already handled, aligned with
+    /// `belt_items` (front first).
+    belt_handled: Vec<Vec<bool>>,
     /// Queue batching.
     batch_anchor: Option<f64>,
     force_release: bool,
@@ -462,6 +488,8 @@ impl ObjectRt {
             belt_items: Vec::new(),
             belt_last_update: now,
             belt_tick_at: f64::INFINITY,
+            belt_stops: Vec::new(),
+            belt_handled: Vec::new(),
             batch_anchor: None,
             force_release: false,
             combine_mode: CombinerMode::Pack,
@@ -490,6 +518,25 @@ impl ObjectRt {
                     params.item_spacing,
                     params.accumulating,
                 ));
+                let mut stops: Vec<BeltStop> = Vec::new();
+                for photo_eye in &params.photo_eyes {
+                    stops.push(BeltStop {
+                        position: photo_eye.position,
+                        kind: BeltStopKind::PhotoEye,
+                    });
+                }
+                for (station, conveyor_station) in params.stations.iter().enumerate() {
+                    stops.push(BeltStop {
+                        position: conveyor_station.position,
+                        kind: BeltStopKind::Station(station),
+                    });
+                }
+                stops.sort_by(|a, b| {
+                    a.position
+                        .partial_cmp(&b.position)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                runtime.belt_stops = stops;
             }
             ObjectParams::Transporter(params) => runtime.capacity = params.capacity.max(1),
             ObjectParams::Combiner(params) => runtime.combine_mode = params.mode,
@@ -1279,6 +1326,9 @@ impl<'m> Simulation<'m> {
             EventKind::BatchTimeout(index) => self.handle_batch_timeout(index),
             EventKind::ShiftChange(index) => self.handle_shift_change(index),
             EventKind::TimetableChange(index) => self.handle_timetable_change(index),
+            EventKind::TransportPickup(transporter, requester) => {
+                self.handle_transport_pickup(transporter, requester)
+            }
             EventKind::TransportArrive(transporter, requester) => {
                 self.handle_transport_arrive(transporter, requester)
             }
@@ -2067,11 +2117,16 @@ impl<'m> Simulation<'m> {
             }
             ObjectKind::Conveyor => {
                 self.sync_belt(target);
+                self.process_belt_stops(target)?;
                 self.objects[target].note_content(now);
                 if let Some(belt) = self.objects[target].belt.as_mut() {
                     belt.admit();
                 }
                 self.objects[target].belt_items.push(item);
+                let stop_count = self.objects[target].belt_stops.len();
+                self.objects[target]
+                    .belt_handled
+                    .push(vec![false; stop_count]);
                 self.objects[target].belt_last_update = now;
                 self.objects[target].touch();
                 self.set_state(target, State::Busy);
@@ -2881,9 +2936,10 @@ impl<'m> Simulation<'m> {
         }
         while let Some(position) = self.pick_request(dispatcher) {
             let requester = self.objects[dispatcher].requests[position];
-            let Some((transporter, travel)) = self.pick_transporter(dispatcher, requester) else {
+            let Some(transporter) = self.pick_transporter(dispatcher, requester) else {
                 break;
             };
+            let pickup_travel = self.transport_pickup_travel(transporter);
             self.objects[dispatcher].requests.remove(position);
             self.objects[transporter].tasks += 1;
             self.objects[transporter].acc.input += 1;
@@ -2891,9 +2947,11 @@ impl<'m> Simulation<'m> {
             // in-transit item until it arrives.
             self.objects[requester].in_transit += 1;
             self.set_state(transporter, State::Busy);
+            // B4: the task has two legs — travel to the pickup point (the
+            // transporter's home) and then to the requester.
             self.schedule(
-                self.now + travel,
-                EventKind::TransportArrive(transporter, requester),
+                self.now + pickup_travel,
+                EventKind::TransportPickup(transporter, requester),
             );
         }
         // Forget requests whose requester already got what it needed.
@@ -2936,8 +2994,7 @@ impl<'m> Simulation<'m> {
 
     /// Pick an idle transporter for a request, with the travel time to the
     /// requesting object (euclidean distance / speed).
-    fn pick_transporter(&self, dispatcher: usize, requester: usize) -> Option<(usize, f64)> {
-        let target = self.objects[requester].position;
+    fn pick_transporter(&self, dispatcher: usize, requester: usize) -> Option<usize> {
         let mut best: Option<(usize, f64)> = None;
         for &transporter in &self.transporters[dispatcher] {
             if !self.objects[transporter].on_shift {
@@ -2946,16 +3003,50 @@ impl<'m> Simulation<'m> {
             if self.objects[transporter].tasks >= self.objects[transporter].capacity as usize {
                 continue;
             }
-            let speed = match &self.model.objects[transporter].params {
-                ObjectParams::Transporter(params) => params.speed.max(EPS),
-                _ => 1.0,
-            };
-            let travel = distance(self.objects[transporter].position, target) / speed;
+            let travel = self.transport_estimate_travel(transporter, requester);
             if best.is_none_or(|(_, current)| travel < current) {
                 best = Some((transporter, travel));
             }
         }
-        best
+        best.map(|(transporter, _)| transporter)
+    }
+
+    /// Travel time from the transporter's current position to its pickup point
+    /// (its `home`, or the current position when no home is configured).
+    fn transport_pickup_travel(&self, transporter: usize) -> f64 {
+        let speed = self.transport_speed(transporter);
+        match self.objects[transporter].home {
+            Some(home) => {
+                distance(
+                    self.objects[transporter].position,
+                    self.objects[home].position,
+                ) / speed
+            }
+            None => 0.0,
+        }
+    }
+
+    /// B4: first task leg — arrive at the pickup point (the transporter's
+    /// `home`), load the operator there and travel to the requester.
+    fn handle_transport_pickup(
+        &mut self,
+        transporter: usize,
+        requester: usize,
+    ) -> Result<(), SimError> {
+        if let Some(home) = self.objects[transporter].home {
+            self.objects[transporter].position = self.objects[home].position;
+        }
+        let load_distribution = match &self.model.objects[transporter].params {
+            ObjectParams::Transporter(params) => params.load_time.clone(),
+            _ => Distribution::Constant { value: 0.0 },
+        };
+        let load = self.sample(&load_distribution).max(0.0);
+        let travel = self.transport_leg_travel(transporter, requester);
+        self.schedule(
+            self.now + load + travel,
+            EventKind::TransportArrive(transporter, requester),
+        );
+        Ok(())
     }
 
     fn handle_transport_arrive(
@@ -2964,16 +3055,70 @@ impl<'m> Simulation<'m> {
         requester: usize,
     ) -> Result<(), SimError> {
         self.objects[transporter].position = self.objects[requester].position;
-        let load_distribution = match &self.model.objects[transporter].params {
-            ObjectParams::Transporter(params) => params.load_time.clone(),
+        let unload_distribution = match &self.model.objects[transporter].params {
+            ObjectParams::Transporter(params) => params.unload_time.clone(),
             _ => Distribution::Constant { value: 0.0 },
         };
-        let load = self.sample(&load_distribution).max(0.0);
+        let unload = self.sample(&unload_distribution).max(0.0);
         self.schedule(
-            self.now + load,
+            self.now + unload,
             EventKind::OperatorLoaded(transporter, requester),
         );
         Ok(())
+    }
+
+    /// B4: shortest distance for one operational leg of a transport task.
+    ///
+    /// With a `network` the leg uses the shortest path between the two objects;
+    /// without one it falls back to the straight-line distance.
+    fn transport_object_distance(&self, transporter: usize, from: usize, to: usize) -> f64 {
+        let edges: Vec<NetworkEdge> = match &self.model.objects[transporter].params {
+            ObjectParams::Transporter(params) => params.network.clone(),
+            _ => Vec::new(),
+        };
+        if !edges.is_empty()
+            && let Some(distance) =
+                shortest_network_distance(&edges, &self.objects[from].name, &self.objects[to].name)
+        {
+            return distance;
+        }
+        distance(self.objects[from].position, self.objects[to].position)
+    }
+
+    fn transport_speed(&self, transporter: usize) -> f64 {
+        match &self.model.objects[transporter].params {
+            ObjectParams::Transporter(params) => params.speed.max(EPS),
+            _ => 1.0,
+        }
+    }
+
+    /// Travel time from the pickup point to the requester.
+    fn transport_leg_travel(&self, transporter: usize, requester: usize) -> f64 {
+        let speed = self.transport_speed(transporter);
+        match self.objects[transporter].home {
+            Some(home) => self.transport_object_distance(transporter, home, requester) / speed,
+            None => {
+                distance(
+                    self.objects[transporter].position,
+                    self.objects[requester].position,
+                ) / speed
+            }
+        }
+    }
+
+    /// Full task estimate used to pick the closest idle transporter (B4).
+    fn transport_estimate_travel(&self, transporter: usize, requester: usize) -> f64 {
+        let speed = self.transport_speed(transporter);
+        let pickup = match self.objects[transporter].home {
+            Some(home) => {
+                distance(
+                    self.objects[transporter].position,
+                    self.objects[home].position,
+                ) / speed
+            }
+            None => 0.0,
+        };
+        pickup + self.transport_leg_travel(transporter, requester)
     }
 
     fn handle_operator_loaded(
@@ -2997,18 +3142,12 @@ impl<'m> Simulation<'m> {
     fn handle_operator_released(
         &mut self,
         transporter: usize,
-        _requester: usize,
+        requester: usize,
     ) -> Result<(), SimError> {
-        let speed = match &self.model.objects[transporter].params {
-            ObjectParams::Transporter(params) => params.speed.max(EPS),
-            _ => 1.0,
-        };
-        let home_travel = self.objects[transporter].home.map(|home| {
-            distance(
-                self.objects[transporter].position,
-                self.objects[home].position,
-            ) / speed
-        });
+        let speed = self.transport_speed(transporter);
+        let home_travel = self.objects[transporter]
+            .home
+            .map(|home| self.transport_object_distance(transporter, requester, home) / speed);
         if let Some(travel) = home_travel
             && travel > EPS
         {
@@ -3279,12 +3418,104 @@ impl<'m> Simulation<'m> {
         self.objects[index].belt_last_update = self.now;
     }
 
+    /// Positions of the photo eyes and stations on a belt, sorted ascending.
+    fn belt_stop_positions(&self, index: usize) -> Vec<f64> {
+        self.objects[index]
+            .belt_stops
+            .iter()
+            .map(|stop| stop.position)
+            .collect()
+    }
+
+    /// Fire photo-eye triggers and start station dwells for every item that
+    /// reached one of the belt's fixed points (B3).
+    fn process_belt_stops(&mut self, index: usize) -> Result<(), SimError> {
+        if self.objects[index].belt_stops.is_empty() {
+            return Ok(());
+        }
+        let stops = self.objects[index].belt_stops.clone();
+        let items = self.objects[index].belt_items.len();
+        for item_index in 0..items {
+            for (stop_index, stop) in stops.iter().enumerate() {
+                let handled = self.objects[index]
+                    .belt_handled
+                    .get(item_index)
+                    .and_then(|flags| flags.get(stop_index))
+                    .copied()
+                    .unwrap_or(false);
+                if handled {
+                    continue;
+                }
+                let Some(position) = self.objects[index]
+                    .belt
+                    .as_ref()
+                    .and_then(|belt| belt.position(item_index))
+                else {
+                    continue;
+                };
+                if position + EPS < stop.position {
+                    continue;
+                }
+                if let Some(flags) = self.objects[index].belt_handled.get_mut(item_index)
+                    && let Some(flag) = flags.get_mut(stop_index)
+                {
+                    *flag = true;
+                }
+                if let Some(belt) = self.objects[index].belt.as_mut() {
+                    belt.set_position(item_index, stop.position);
+                }
+                match stop.kind {
+                    BeltStopKind::PhotoEye => self.fire_photo_eye(index, item_index)?,
+                    BeltStopKind::Station(station) => {
+                        let dwell = self.sample_station_time(index, station);
+                        if let Some(belt) = self.objects[index].belt.as_mut() {
+                            belt.set_hold(item_index, dwell);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Run the conveyor's `on_photo_eye` trigger against one item.
+    fn fire_photo_eye(&mut self, index: usize, item_index: usize) -> Result<(), SimError> {
+        let actions = self.trigger_actions(index, SimTrigger::OnPhotoEye);
+        if actions.is_empty() {
+            return Ok(());
+        }
+        let Some(mut item) = self.objects[index].belt_items.get(item_index).cloned() else {
+            return Ok(());
+        };
+        self.apply_actions(index, &mut item, actions)?;
+        if let Some(slot) = self.objects[index].belt_items.get_mut(item_index) {
+            *slot = item;
+        }
+        Ok(())
+    }
+
+    /// Sample how long an item stays at a conveyor station (B3).
+    fn sample_station_time(&mut self, index: usize, station: usize) -> f64 {
+        let distribution = match &self.model.objects[index].params {
+            ObjectParams::Conveyor(params) => params
+                .stations
+                .get(station)
+                .map(|stop| stop.process_time.clone()),
+            _ => None,
+        };
+        match distribution {
+            Some(distribution) => self.sample(&distribution).max(0.0),
+            None => 0.0,
+        }
+    }
+
     /// Schedule the next movement boundary, if the belt is moving.
     fn schedule_belt_tick(&mut self, index: usize) {
+        let stops = self.belt_stop_positions(index);
         let Some(dt) = self.objects[index]
             .belt
             .as_ref()
-            .and_then(|belt| belt.time_to_next_event())
+            .and_then(|belt| belt.time_to_next_event_with_stops(&stops))
         else {
             return;
         };
@@ -3304,12 +3535,14 @@ impl<'m> Simulation<'m> {
     fn handle_belt_tick(&mut self, index: usize) -> Result<(), SimError> {
         self.objects[index].belt_tick_at = f64::INFINITY;
         self.sync_belt(index);
+        self.process_belt_stops(index)?;
         self.flow(index)?;
         self.notify_upstreams(index)
     }
 
     fn flow_conveyor(&mut self, index: usize) -> Result<(), SimError> {
         self.sync_belt(index);
+        self.process_belt_stops(index)?;
         loop {
             let ready = self.objects[index]
                 .belt
@@ -3338,6 +3571,9 @@ impl<'m> Simulation<'m> {
             }
             if !self.objects[index].belt_items.is_empty() {
                 self.objects[index].belt_items.remove(0);
+            }
+            if !self.objects[index].belt_handled.is_empty() {
+                self.objects[index].belt_handled.remove(0);
             }
             self.objects[index].touch();
             self.objects[index].acc.output += 1;
@@ -3996,6 +4232,11 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
         EventKind::BatchTimeout(index) => (Some(*index), "batch_timeout", None),
         EventKind::ShiftChange(index) => (Some(*index), "shift_change", None),
         EventKind::TimetableChange(index) => (Some(*index), "timetable_change", None),
+        EventKind::TransportPickup(transporter, requester) => (
+            Some(*transporter),
+            "transport_pickup",
+            Some(("requester", *requester as f64)),
+        ),
         EventKind::TransportArrive(transporter, requester) => (
             Some(*transporter),
             "transport_arrive",
@@ -4015,6 +4256,56 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
         EventKind::ResourceRetry(resource) => (Some(*resource), "resource_retry", None),
         EventKind::Pull(index) => (Some(*index), "pull", None),
         EventKind::ResetStats => (None, "reset_stats", None),
+    }
+}
+
+/// Shortest distance between two named network nodes (B4).
+///
+/// Edges are bidirectional; the graph is small, so Dijkstra uses a linear scan
+/// for the next node instead of a priority queue.
+fn shortest_network_distance(edges: &[NetworkEdge], from: &str, to: &str) -> Option<f64> {
+    if from == to {
+        return Some(0.0);
+    }
+    let mut adjacency: std::collections::HashMap<&str, Vec<(&str, f64)>> =
+        std::collections::HashMap::new();
+    for edge in edges {
+        adjacency
+            .entry(edge.from.as_str())
+            .or_default()
+            .push((edge.to.as_str(), edge.distance));
+        adjacency
+            .entry(edge.to.as_str())
+            .or_default()
+            .push((edge.from.as_str(), edge.distance));
+    }
+    let mut distances: std::collections::HashMap<&str, f64> = std::collections::HashMap::new();
+    let mut visited: std::collections::HashMap<&str, bool> = std::collections::HashMap::new();
+    distances.insert(from, 0.0);
+    loop {
+        let mut current: Option<(&str, f64)> = None;
+        for (node, distance) in &distances {
+            if visited.get(*node).copied().unwrap_or(false) {
+                continue;
+            }
+            if current.is_none_or(|(_, best)| *distance < best) {
+                current = Some((*node, *distance));
+            }
+        }
+        let (node, node_distance) = current?;
+        if node == to {
+            return Some(node_distance);
+        }
+        visited.insert(node, true);
+        if let Some(neighbours) = adjacency.get(node) {
+            for (next, weight) in neighbours {
+                let candidate = node_distance + weight;
+                let entry = distances.entry(*next).or_insert(f64::INFINITY);
+                if candidate < *entry {
+                    *entry = candidate;
+                }
+            }
+        }
     }
 }
 
@@ -4128,6 +4419,15 @@ fn queue_params_of(object: &Object) -> openflex_model::QueueParams {
         ObjectParams::Queue(params) => params.clone(),
         ObjectParams::Rack(params) => openflex_model::QueueParams {
             max_content: params.capacity,
+            // B2: a gravity flow rack (and the push-back approximation)
+            // releases the most recently stored item first.
+            order: if params.rack_type == RackType::Gravity
+                || params.rack_type == RackType::PushBack
+            {
+                QueueOrder::Lifo
+            } else {
+                QueueOrder::Fifo
+            },
             ..Default::default()
         },
         _ => openflex_model::QueueParams::default(),
