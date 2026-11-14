@@ -1664,3 +1664,219 @@ fn resume_rejects_an_earlier_stop_time_and_a_different_warmup() {
         stderr(&warmup)
     );
 }
+
+// ---------------------------------------------------------------------------
+// experiment --trace
+// ---------------------------------------------------------------------------
+
+#[test]
+fn experiment_writes_traces_next_to_scenario_reports() {
+    let dir = TempDir::new("experiment-trace");
+    let model = dir.write("experiment.ofm", EXPERIMENT_MODEL);
+    let reports = dir.join("experiments");
+
+    let output = openflex(&[
+        "experiment",
+        &path_str(&model),
+        "--report-dir",
+        &path_str(&reports),
+        "--trace",
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+
+    for scenario in ["baseline", "faster"] {
+        for replication in 0..2 {
+            let path = reports
+                .join("process-time")
+                .join(scenario)
+                .join(format!("trace.rep{replication}.jsonl"));
+            let text = fs::read_to_string(&path)
+                .unwrap_or_else(|_| panic!("{} was not written", path.display()));
+            let lines: Vec<&str> = text.lines().filter(|line| !line.is_empty()).collect();
+            assert!(!lines.is_empty(), "{} is empty", path.display());
+            for line in lines {
+                let event = json(line);
+                assert!(event["event"].as_str().is_some());
+                assert!(event["object"].as_str().is_some());
+                assert!(event["time"].is_f64());
+            }
+        }
+    }
+
+    // A single-replication scenario uses the unsuffixed file name.
+    let single_text = EXPERIMENT_MODEL.replace("\"replications\": 2", "\"replications\": 1");
+    let single = dir.write("experiment-single.ofm", &single_text);
+    let single_reports = dir.join("experiments-single");
+    let output = openflex(&[
+        "experiment",
+        &path_str(&single),
+        "--report-dir",
+        &path_str(&single_reports),
+        "--trace",
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert!(
+        single_reports
+            .join("process-time")
+            .join("baseline")
+            .join("trace.jsonl")
+            .is_file(),
+        "a single replication writes trace.jsonl"
+    );
+
+    // --trace requires --report-dir to know where the files belong.
+    let missing_dir = openflex(&["experiment", &path_str(&model), "--trace"]);
+    assert_eq!(code(&missing_dir), 2, "stderr: {}", stderr(&missing_dir));
+    assert!(
+        stderr(&missing_dir).contains("report-dir"),
+        "stderr: {}",
+        stderr(&missing_dir)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// --resume and --set
+// ---------------------------------------------------------------------------
+
+#[test]
+fn resume_rejects_parameter_overrides() {
+    let dir = TempDir::new("checkpoint-set");
+    let model = dir.write("demo.ofm", MODEL);
+    let checkpoint = dir.join("checkpoint.json");
+
+    let saved = openflex(&[
+        "run",
+        &path_str(&model),
+        "--stop-time",
+        "90",
+        "--save-checkpoint",
+        &path_str(&checkpoint),
+        "--quiet",
+    ]);
+    assert_eq!(code(&saved), 0, "stderr: {}", stderr(&saved));
+
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--until",
+        "150",
+        "--replications",
+        "1",
+        "--resume",
+        &path_str(&checkpoint),
+        "--set",
+        "Processor1.process_time.mean=2.0",
+    ]);
+    assert_eq!(code(&output), 2, "stderr: {}", stderr(&output));
+    assert!(
+        stderr(&output).contains("--set") && stderr(&output).contains("--resume"),
+        "stderr: {}",
+        stderr(&output)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// B9: object/connection CSV import
+// ---------------------------------------------------------------------------
+
+#[test]
+fn import_builds_a_model_from_object_and_connection_tables() {
+    let dir = TempDir::new("import-structure");
+    let objects = dir.write(
+        "objects.csv",
+        "name,kind,pos_x,pos_y\nSource,source,-200,0\nQueue1,queue,0,0\nProc1,processor,150,0\nSink1,sink,300,0\n",
+    );
+    let connections = dir.write(
+        "connections.csv",
+        "from,to,port,strategy\nSource,Queue1,0,round_robin\nQueue1,Proc1,,\nProc1,Sink1,,\n",
+    );
+    let model = dir.join("line.ofm");
+
+    let output = openflex(&[
+        "import",
+        "--objects",
+        &path_str(&objects),
+        "--connections",
+        &path_str(&connections),
+        "--out",
+        &path_str(&model),
+        "--name",
+        "imported-line",
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert!(model.is_file(), "the model file was not written");
+
+    let text = fs::read_to_string(&model).expect("read the model");
+    for expected in ["Source", "Queue1", "Proc1", "Sink1", "round_robin"] {
+        assert!(text.contains(expected), "missing {expected}");
+    }
+
+    let validate = openflex(&["validate", &path_str(&model)]);
+    assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
+
+    let run = openflex(&[
+        "run",
+        &path_str(&model),
+        "--stop-time",
+        "100",
+        "--warmup",
+        "0",
+        "--replications",
+        "1",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code(&run), 0, "stderr: {}", stderr(&run));
+    let report = json(&stdout(&run));
+    assert_eq!(report["model"], "imported-line");
+    assert!(
+        report["created"]["mean"].as_f64().unwrap_or_default() > 0.0,
+        "the imported line must create items: {}",
+        report["created"]
+    );
+    assert!(report["objects"]["Queue1"].is_object());
+}
+
+#[test]
+fn import_adds_a_default_source_to_a_structure_only_model() {
+    let dir = TempDir::new("import-default-source");
+    let objects = dir.write("objects.csv", "Buffer,queue,0,0\nOut,sink,200,0\n");
+    let connections = dir.write("connections.csv", "Buffer,Out\n");
+    let model = dir.join("buffers.ofm");
+
+    let output = openflex(&[
+        "import",
+        "--objects",
+        &path_str(&objects),
+        "--connections",
+        &path_str(&connections),
+        "--out",
+        &path_str(&model),
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let text = fs::read_to_string(&model).expect("read the model");
+    assert!(
+        text.contains("\"Source1\""),
+        "default source missing: {text}"
+    );
+    assert!(
+        text.contains("\"interarrival\""),
+        "default source needs an inter-arrival time"
+    );
+
+    let validate = openflex(&["validate", &path_str(&model)]);
+    assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
+
+    // No input tables at all is a usage error.
+    let bare = openflex(&["import", "--out", &path_str(&dir.join("empty.ofm"))]);
+    assert_eq!(code(&bare), 2, "stderr: {}", stderr(&bare));
+    assert!(
+        stderr(&bare).contains("--csv") && stderr(&bare).contains("--objects"),
+        "stderr: {}",
+        stderr(&bare)
+    );
+}

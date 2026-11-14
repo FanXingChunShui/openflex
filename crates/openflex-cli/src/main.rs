@@ -124,7 +124,7 @@ enum Command {
         /// Save the final simulation snapshot as JSON (single replication; cannot be combined with --parallel > 1; may be combined with --trace).
         #[arg(long, value_name = "FILE")]
         save_checkpoint: Option<PathBuf>,
-        /// Resume from a checkpoint written by --save-checkpoint (single replication; cannot be combined with --parallel > 1, several --seed values or --trace).
+        /// Resume from a checkpoint written by --save-checkpoint (single replication; cannot be combined with --parallel > 1, several --seed values, --trace or --set).
         #[arg(long, value_name = "FILE")]
         resume: Option<PathBuf>,
         /// Validate the model and print the run plan without simulating.
@@ -144,6 +144,9 @@ enum Command {
         /// Write one report directory per scenario here.
         #[arg(long)]
         report_dir: Option<PathBuf>,
+        /// Write a JSONL trace per scenario replication under --report-dir.
+        #[arg(long, requires = "report_dir")]
+        trace: bool,
     },
     /// Re-render a saved report, or summarise an experiment directory.
     Report {
@@ -217,18 +220,24 @@ enum Command {
         #[arg(long, default_value_t = 8080)]
         port: u16,
     },
-    /// Import a CSV arrival table (`time,quantity[,item_type]`) as a model.
+    /// Import CSV arrival/object/connection tables as a model.
     Import {
-        /// CSV file with arrival times.
+        /// Arrival table (`time,quantity[,item_type]`).
         #[arg(long, value_name = "CSV")]
-        csv: PathBuf,
+        csv: Option<PathBuf>,
+        /// Object table (`name,kind,pos_x,pos_y`); must contain a sink, a source is added when missing.
+        #[arg(long, value_name = "CSV")]
+        objects: Option<PathBuf>,
+        /// Connection table (`from,to,port,strategy`); when omitted the objects are chained in file order.
+        #[arg(long, value_name = "CSV", requires = "objects")]
+        connections: Option<PathBuf>,
         /// Model file to write.
         #[arg(long, value_name = "FILE")]
         out: PathBuf,
-        /// Model name (defaults to the CSV file stem).
+        /// Model name (defaults to the output file stem).
         #[arg(long)]
         name: Option<String>,
-        /// Time unit of the CSV timestamps.
+        /// Time unit of the arrival timestamps.
         #[arg(long, default_value = "seconds", value_name = "UNIT")]
         time_unit: String,
     },
@@ -517,6 +526,11 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             apply_run_overrides(&mut model, stop_time, warmup, &seed, replications).map_err(
                 |error| Failure::usage(error.context(format!("model {}", path.display()))),
             )?;
+            if resume.is_some() && !overrides.is_empty() {
+                return Err(Failure::usage(anyhow!(
+                    "--set cannot be combined with --resume; a checkpoint belongs to the model that produced it"
+                )));
+            }
             for entry in overrides {
                 let (object, param, value) = parse_override(&entry).map_err(Failure::usage)?;
                 model = model
@@ -581,6 +595,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             name,
             format,
             report_dir,
+            trace,
         } => {
             let model = load_model(&path)?;
             run_experiments(
@@ -588,6 +603,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                 name.as_deref(),
                 format,
                 report_dir.as_deref(),
+                trace,
                 quiet,
             )
         }
@@ -680,10 +696,20 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
         }
         Command::Import {
             csv,
+            objects,
+            connections,
             out,
             name,
             time_unit,
-        } => import_csv(&csv, &out, name.as_deref(), &time_unit, quiet),
+        } => import_csv(
+            csv.as_deref(),
+            objects.as_deref(),
+            connections.as_deref(),
+            &out,
+            name.as_deref(),
+            &time_unit,
+            quiet,
+        ),
         Command::Schema { out } => {
             let schema = schema::generate();
             let text = serde_json::to_string_pretty(&schema)
@@ -1173,11 +1199,52 @@ fn write_trace(path: &Path, trace: &openflex_core::TraceLog) -> Result<(), Failu
     Ok(())
 }
 
+/// Run every replication of one scenario with tracing enabled.
+///
+/// The files land in `directory`, which is the same directory
+/// `write_experiment_reports` uses for the scenario's own report. One
+/// replication writes `trace.jsonl`; several write `trace.rep0.jsonl`, …
+fn execute_scenario_traced(
+    model: &Model,
+    directory: &Path,
+    quiet: bool,
+) -> Result<SimReport, Failure> {
+    let configs = run_configs(model, &[]);
+    let several = configs.len() > 1;
+    let mut results = Vec::with_capacity(configs.len());
+    for (index, config) in &configs {
+        let (result, log) = simulate_traced(model, config, *index)?;
+        let file = if several {
+            directory.join(format!("trace.rep{index}.jsonl"))
+        } else {
+            directory.join("trace.jsonl")
+        };
+        write_trace(&file, &log)?;
+        note(
+            quiet,
+            &format!(
+                "{} {} ({} events{})",
+                i18n::t("wrote"),
+                file.display(),
+                log.len(),
+                if log.truncated {
+                    ", truncated at the event limit"
+                } else {
+                    ""
+                }
+            ),
+        );
+        results.push(result);
+    }
+    Ok(SimReport::from_replications(model, results))
+}
+
 fn run_experiments(
     model: &Model,
     name: Option<&str>,
     format: Format,
     report_dir: Option<&Path>,
+    trace: bool,
     quiet: bool,
 ) -> Result<(), Failure> {
     let experiments: Vec<_> = model
@@ -1219,7 +1286,20 @@ fn run_experiments(
             if let Some(warmup) = scenario.warmup {
                 scenario_model.run.warmup = warmup;
             }
-            let report = execute(&scenario_model, &[], None, false)?;
+            // Traces go next to the scenario's archived report, mirroring the
+            // layout `write_experiment_reports` uses below.
+            let trace_dir = if trace {
+                report_dir.map(|root| {
+                    root.join(report::sanitize(&experiment.name))
+                        .join(report::sanitize(&scenario.name))
+                })
+            } else {
+                None
+            };
+            let report = match trace_dir.as_deref() {
+                Some(directory) => execute_scenario_traced(&scenario_model, directory, quiet)?,
+                None => execute(&scenario_model, &[], None, false)?,
+            };
             scenario_reports.push(report::ScenarioReport {
                 name: scenario.name.clone(),
                 overrides: scenario.overrides.clone(),
@@ -1338,25 +1418,47 @@ fn parse_time_unit(value: &str) -> Result<&'static str, Failure> {
 }
 
 fn import_csv(
-    csv: &Path,
+    csv: Option<&Path>,
+    objects: Option<&Path>,
+    connections: Option<&Path>,
     out: &Path,
     name: Option<&str>,
     time_unit: &str,
     quiet: bool,
 ) -> Result<(), Failure> {
     let unit = parse_time_unit(time_unit)?;
-    let text = fs::read_to_string(csv).map_err(|error| {
-        Failure::runtime(anyhow!("could not read {}: {error}", csv.display())).with_path(csv)
-    })?;
-    let rows = import::parse_csv(&text).map_err(|error| Failure::usage(anyhow!(error)))?;
+    if csv.is_none() && objects.is_none() {
+        return Err(Failure::usage(anyhow!(
+            "import needs at least one input table: --csv (arrivals), --objects (and optionally --connections)"
+        )));
+    }
+
+    let arrivals = match read_table(csv, "arrivals")? {
+        Some(text) => import::parse_csv(&text).map_err(|error| Failure::usage(anyhow!(error)))?,
+        None => Vec::new(),
+    };
+    let object_rows = match read_table(objects, "objects")? {
+        Some(text) => {
+            import::parse_objects_csv(&text).map_err(|error| Failure::usage(anyhow!(error)))?
+        }
+        None => Vec::new(),
+    };
+    let connection_rows = match read_table(connections, "connections")? {
+        Some(text) => {
+            import::parse_connections_csv(&text).map_err(|error| Failure::usage(anyhow!(error)))?
+        }
+        None => Vec::new(),
+    };
+
     let model_name = name.map(str::to_string).unwrap_or_else(|| {
-        csv.file_stem()
+        out.file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .filter(|stem| !stem.is_empty())
             .unwrap_or_else(|| "imported".into())
     });
-    let (model, stop_time) = import::build_model(&model_name, unit, &rows)
-        .map_err(|error| Failure::usage(anyhow!(error)))?;
+    let (model, stop_time) =
+        import::build_model(&model_name, unit, &arrivals, &object_rows, &connection_rows)
+            .map_err(|error| Failure::usage(anyhow!(error)))?;
     if let Some(parent) = out.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -1370,8 +1472,10 @@ fn import_csv(
     note(
         quiet,
         &format!(
-            "imported {} arrival rows, stop time {} {}",
-            rows.len(),
+            "imported {} objects, {} connections, {} arrival rows; stop time {} {}",
+            object_rows.len(),
+            connection_rows.len(),
+            arrivals.len(),
             stop_time,
             i18n::unit(match unit {
                 "minutes" => TimeUnit::Minutes,
@@ -1382,4 +1486,21 @@ fn import_csv(
         ),
     );
     Ok(())
+}
+
+/// Read one optional import table, attaching its path to read errors.
+fn read_table(path: Option<&Path>, label: &str) -> Result<Option<String>, Failure> {
+    match path {
+        None => Ok(None),
+        Some(path) => {
+            let text = fs::read_to_string(path).map_err(|error| {
+                Failure::runtime(anyhow!(
+                    "could not read {label} table {}: {error}",
+                    path.display()
+                ))
+                .with_path(path)
+            })?;
+            Ok(Some(text))
+        }
+    }
 }

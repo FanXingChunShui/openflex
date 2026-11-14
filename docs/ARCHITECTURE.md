@@ -60,7 +60,7 @@ OpenFlex 的目标是：用 Rust 实现一个与 FlexSim 核心建模语义一�
 |---|---|
 | Source | 首件在 `first_arrival`（默认 0 = t=0 创建）；后续间隔按“上一批**离开** Source → 下一件到达”计时，下游阻塞时暂停到达节奏；也支持 `arrival_schedule`（表驱动、`repeat` 首行只首轮）与 `arrival_sequence`（上一批全部离开后推进） |
 | Queue / Rack | 收到即释放；攒批（`batch_size`）时整批一次性提交（离开时刻 = 批次释放时刻），`batch_max_wait` 到期强制放行 |
-| Processor | setup + process；故障立即打断加工、修复后补足剩余时间；操作员未到位时 `Blocked` |
+| Processor | setup + process；故障立即打断加工、修复后补足剩余时间；操作员未到位时 `Blocked`；`operator_preempt` 可抢占低优先级操作员占用（被抢占方暂停并补足剩余时间） |
 | Conveyor | 一维直线带：位置、速度、间距、`accumulating` 累积/非累积、容量；末端被阻塞时累积带继续压缩、非累积带整体冻结；`photo_eyes`（精确位置触发 `on_photo_eye`）、`stations`（停留加工、后车排队）与 `join_inputs`（两上游带公平轮转汇入） |
 | Combiner | 端口 1（第一条连接）为容器；pack 等待 `components_per_container` 个组件后只释放容器（组件不单独计内容）；join 每端口一件、合并为一件；batch 收集一批后按 setup+process 加工并逐件释放（带 `batch` 标签） |
 | Separator | `separate_mode`：`unpack`（默认）释放 `qty` 个零件 **加容器本身**（qty+1）；`split` 只释放 `qty` 个零件；0 = 拆出容器内全部组件；多输出端口按零件序号轮转分发 |
@@ -170,6 +170,20 @@ FlexSim 的公开帮助没有定义下面几项行为，但任何离散事件引
 `simulate_with_checkpoint` / `simulate_with_checkpoint_traced` 是底层 API。
 
 限制：快照不内嵌模型（要求同名、同对象列表、同 seed/warmup）；仅单复现；trace 不随续跑恢复。
+
+## Process Flow 等价模式
+
+FlexSim 的 Process Flow（token/block 图）暂未实现独立运行时。同样语义可用现有对象与触发器表达：
+
+| Process Flow 块 | OpenFlex 等价物 |
+|---|---|
+| Create | `source`（到达表或间隔分布） |
+| Delay | `processor`（process_time） |
+| Assign | `source.on_create` / 对象触发器里的 `set_label`、`set_item_type` |
+| Decision | 输出连接的 `strategy: by_condition`（表达式路由） |
+| Sink | `sink` |
+
+示例：`examples/objects/process-flow-equivalent.ofm`。若要实现真正的 token 运行时，前置工作是补 Processor 的 `on_entry/on_exit` 触发点与零延迟消息动作。
 
 ## 统计口径
 

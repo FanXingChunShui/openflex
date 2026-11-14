@@ -195,7 +195,8 @@ for file in \
   "$ROOT_DIR/docs/releasing.md" \
   "$ROOT_DIR/docs/verification/install-matrix.md" \
   "$ROOT_DIR/docs/verification/flexsim-comparison.md" \
-  "$ROOT_DIR/docs/verification/flexsim-mm1-example.csv"; do
+  "$ROOT_DIR/docs/verification/flexsim-mm1-example.csv" \
+  "$ROOT_DIR/docs/verification/wasm.md"; do
   if [ -f "$file" ]; then
     pass "exists: ${file#"$ROOT_DIR"/}"
   else
@@ -258,6 +259,18 @@ if [ "$SKIP_BUILD" -eq 1 ]; then
 else
   run_ok "cargo build --release -p openflex-cli" \
     cargo build --release --locked -p openflex-cli --manifest-path "$ROOT_DIR/Cargo.toml"
+fi
+
+# D3: the core must stay wasm32-compatible. Only run this when the target is
+# installed locally; CI always installs it (see the `wasm` job in ci.yml).
+section "wasm32 target (optional)"
+if command -v rustup >/dev/null 2>&1 &&
+  rustup target list --installed 2>/dev/null | grep -q '^wasm32-unknown-unknown$'; then
+  run_ok "cargo check -p openflex-core --target wasm32-unknown-unknown" \
+    cargo check --locked -p openflex-core --target wasm32-unknown-unknown \
+    --manifest-path "$ROOT_DIR/Cargo.toml"
+else
+  skip "wasm32-unknown-unknown not installed (rustup target add wasm32-unknown-unknown)"
 fi
 
 if [ -x "$BINARY" ]; then
@@ -617,6 +630,8 @@ if [ -x "$BINARY" ]; then
     bash "$ROOT_DIR/scripts/sign-checksums.sh" --file "$ROOT_DIR/Cargo.toml" --dry-run
   run_ok "compare-flexsim.sh --help lists --tolerance" \
     bash -c "bash '$ROOT_DIR/scripts/compare-flexsim.sh' --help | grep -q -- --tolerance"
+  run_ok "compare-flexsim.sh --help lists --report-a/--report-b" \
+    bash -c "bash '$ROOT_DIR/scripts/compare-flexsim.sh' --help | grep -q -- --report-b"
   run_ok "fuzz-smoke.sh --dry-run" \
     bash "$ROOT_DIR/scripts/fuzz-smoke.sh" --dry-run --mode fallback --iterations 5
 else
@@ -643,6 +658,7 @@ printf '  [x] new release tooling parses and answers --help (verify-install, sig
 printf '  [x] workflows / dependabot / winget manifests parse; deny.toml and fuzz/Cargo.toml parse\n'
 printf '  [ ] Code signing and macOS notarisation — scripts ready, certificates/secrets not configured (docs/releasing.md 6)\n'
 printf '  [ ] Real-machine MSI/deb/rpm install — scripts/verify-install.{sh,ps1} (docs/verification/install-matrix.md)\n'
+printf '  [x] openflex-core checks for wasm32-unknown-unknown (docs/verification/wasm.md; CI job wasm)\n'
 
 if [ "$FAILED" -gt 0 ]; then
   printf '\nRESULT: FAIL (%d failed check(s))\n' "$FAILED" >&2

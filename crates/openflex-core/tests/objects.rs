@@ -1327,3 +1327,190 @@ fn join_inputs_must_match_the_connections() {
     let error = Model::from_json(json).expect_err("join_inputs mismatch must fail");
     assert!(error.to_string().contains("join_inputs"), "{error}");
 }
+
+// ---------------------------------------------------------------------------
+// Operator preemption (A10)
+// ---------------------------------------------------------------------------
+
+fn operator_preempt_model(preempt: bool) -> String {
+    format!(
+        r#"{{
+      "format": "openflex-model", "version": 1, "name": "preempt-{preempt}",
+      "run": {{ "stop_time": 300.0, "warmup": 0.0, "seed": 1, "replications": 1 }},
+      "objects": [
+        {{ "name": "LowSource", "kind": "source", "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+            "max_arrivals": 1, "first_arrival": 0.0 }} }},
+        {{ "name": "HighSource", "kind": "source", "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+            "max_arrivals": 1, "first_arrival": 20.0 }} }},
+        {{ "name": "Low", "kind": "processor", "params": {{
+            "process_time": {{ "distribution": "constant", "value": 100.0 }},
+            "process_operator": "Dispatcher1", "operator_priority": 0 }} }},
+        {{ "name": "High", "kind": "processor", "params": {{
+            "process_time": {{ "distribution": "constant", "value": 5.0 }},
+            "process_operator": "Dispatcher1", "operator_priority": 10,
+            "operator_preempt": {preempt} }} }},
+        {{ "name": "K", "kind": "sink", "params": {{}} }},
+        {{ "name": "Dispatcher1", "kind": "dispatcher", "pos": [0, 0], "params": {{}} }},
+        {{ "name": "T", "kind": "transporter", "pos": [0, 0], "params": {{
+            "capacity": 1, "speed": 10.0, "home": "Dispatcher1" }} }}
+      ],
+      "connections": [
+        {{ "from": "LowSource", "to": "Low" }},
+        {{ "from": "Low", "to": "K" }},
+        {{ "from": "HighSource", "to": "High" }},
+        {{ "from": "High", "to": "K" }},
+        {{ "from": "Dispatcher1", "to": "T" }}
+      ]
+    }}"#
+    )
+}
+
+/// The urgent job preempts the operator, is processed first, and the
+/// interrupted job then resumes with its remaining processing time.
+#[test]
+fn operator_preempt_interrupts_and_resumes() {
+    let with = run(&operator_preempt_model(true));
+    let without = run(&operator_preempt_model(false));
+
+    // Both jobs finish in both runs.
+    assert_eq!(out(&with, "Low"), 1.0);
+    assert_eq!(out(&with, "High"), 1.0);
+    assert_eq!(input(&with, "K"), 2.0);
+    assert_eq!(input(&without, "K"), 2.0);
+
+    // Without preemption the urgent job waits for the 100-unit job.
+    assert!(
+        without.objects["High"].avg_stay_time.mean > 80.0,
+        "unpreempted high stay: {}",
+        without.objects["High"].avg_stay_time.mean
+    );
+    // With preemption it only waits for the interruption round trip.
+    assert!(
+        with.objects["High"].avg_stay_time.mean < 10.0,
+        "preempted high stay: {}",
+        with.objects["High"].avg_stay_time.mean
+    );
+    // The interrupted job resumes and completes, with blocked time recorded.
+    assert!(state_times(&with, "Low").blocked > 0.0);
+    assert_near(
+        with.objects["Low"].avg_stay_time.mean,
+        105.0,
+        1.0,
+        "resumed low stay",
+    );
+    assert_near(
+        without.objects["Low"].avg_stay_time.mean,
+        100.0,
+        1.0,
+        "uninterrupted low stay",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Push-back and drive-in racks (B2)
+// ---------------------------------------------------------------------------
+
+fn rack_storage_model(rack_type: &str, extra: &str) -> String {
+    format!(
+        r#"{{
+      "format": "openflex-model", "version": 1, "name": "rack-{rack_type}",
+      "run": {{ "stop_time": 101.0, "warmup": 0.0, "seed": 1, "replications": 1 }},
+      "objects": [
+        {{ "name": "Blue", "kind": "source", "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 10.0 }},
+            "items_per_arrival": 5, "max_arrivals": 1,
+            "first_arrival": 0.0, "item_type": 0 }} }},
+        {{ "name": "Red", "kind": "source", "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 10.0 }},
+            "items_per_arrival": 5, "max_arrivals": 1,
+            "first_arrival": 0.0, "item_type": 1 }} }},
+        {{ "name": "R", "kind": "rack", "params": {{
+            "capacity": 100, "rack_type": "{rack_type}"{extra} }} }},
+        {{ "name": "P", "kind": "processor", "params": {{
+            "process_time": {{ "distribution": "constant", "value": 20.0 }} }} }},
+        {{ "name": "KBlue", "kind": "sink", "params": {{}} }},
+        {{ "name": "KRed", "kind": "sink", "params": {{}} }}
+      ],
+      "connections": [
+        {{ "from": "Blue", "to": "R" }},
+        {{ "from": "Red", "to": "R" }},
+        {{ "from": "R", "to": "P" }},
+        {{ "from": "P", "to": "KBlue", "strategy": {{ "type": "by_item_type" }} }},
+        {{ "from": "P", "to": "KRed" }}
+      ]
+    }}"#
+    )
+}
+
+/// A push-back rack pushes new items to the front, so the newest items are
+/// retrieved first (LIFO); `levels * channels` limits how many items fit.
+#[test]
+fn push_back_rack_is_lifo_and_uses_levels_channels() {
+    let wide = run(include_str!("../../../examples/objects/rack-push-back.ofm"));
+    assert_eq!(input(&wide, "SinkRed"), 5.0);
+    assert_eq!(input(&wide, "SinkBlue"), 0.0);
+
+    let narrow = run(&rack_storage_model(
+        "push_back",
+        r#", "levels": 2, "channels": 2"#,
+    ));
+    assert_eq!(
+        narrow.objects["R"].max_content.mean, 4.0,
+        "levels x channels is the usable capacity"
+    );
+    assert_eq!(input(&narrow, "KBlue") + input(&narrow, "KRed"), 5.0);
+}
+
+/// A drive-in rack is loaded and unloaded from opposite ends, so it behaves
+/// FIFO; `channels * depth` limits how many items fit.
+#[test]
+fn drive_in_rack_is_fifo_and_uses_depth() {
+    let report = run(include_str!("../../../examples/objects/rack-drive-in.ofm"));
+    assert_eq!(input(&report, "SinkBlue"), 5.0);
+    assert_eq!(input(&report, "SinkRed"), 0.0);
+    assert_eq!(
+        report.objects["Rack1"].max_content.mean, 5.0,
+        "channels x depth is the usable capacity"
+    );
+}
+
+#[test]
+fn rack_channels_and_depth_must_be_positive() {
+    let json = r#"{
+      "format": "openflex-model", "version": 1, "name": "bad-rack",
+      "objects": [
+        { "name": "S", "kind": "source", "params": {} },
+        { "name": "R", "kind": "rack", "params": {
+            "rack_type": "push_back", "channels": 0 } },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [{ "from": "S", "to": "R" }, { "from": "R", "to": "K" }]
+    }"#;
+    let error = Model::from_json(json).expect_err("zero channels must fail validation");
+    assert!(error.to_string().contains("channels"), "{error}");
+}
+
+// ---------------------------------------------------------------------------
+// Process Flow pattern (B7 alternative)
+// ---------------------------------------------------------------------------
+
+/// The documented Process-Flow equivalent: Create + Assign (source trigger),
+/// Delay (processor), Decision (condition routing) and Sink (two sinks).
+#[test]
+fn process_flow_pattern_creates_assigns_delays_and_decides() {
+    let report = run(include_str!(
+        "../../../examples/objects/process-flow-equivalent.ofm"
+    ));
+    assert_eq!(out(&report, "Create"), 10.0);
+    assert_eq!(input(&report, "Delay"), 10.0);
+    assert_eq!(input(&report, "SinkUrgent"), 5.0);
+    assert_eq!(input(&report, "SinkNormal"), 5.0);
+    assert_near(
+        report.objects["Delay"].avg_stay_time.mean,
+        2.0,
+        1e-9,
+        "delay block",
+    );
+}

@@ -8,10 +8,10 @@
 
 | 组 | 状态 |
 |---|---|
-| P0 A1–A13 | ✅ 全部完成（A10 的 `operator_preempt` 抢占留 TODO；A4 用 `PortStrategy::Hold` 表达 −1） |
-| P1 | B1 MultiProcessor、B10 分布扩展、B11 Time Table、B12 trace（core+CLI）✅；B2 Rack 类型（floor/gravity）✅、B3 Conveyor（PhotoEye/Station/Join）✅、B4 路网+两段任务 ✅、检查点/续跑（core+CLI）✅；B2 push_back/drive_in 细化、B5 Fluid、B6 People/AGV、B7 Process Flow、B8 3D/GUI、B9 脚本/.fsm 未完成 |
-| P2 | C4 CLI 完整性、C5 并行复现、C6 JSON Schema、C7 质量工程、C8 i18n 基础 ✅；C1/C2/C3 的脚本与 CI 配置完成（Windows/Linux 真机安装与签名证书待环境） |
-| P3 | D1 对照工具与模板 ✅（无真实 FlexSim 数据）；D2 `.fsm`、D3 wasm/云端、D4 优化未做 |
+| P0 A1–A13 | ✅ 全部完成（A10 抢占已实现；A4 用 `PortStrategy::Hold` 表达 −1） |
+| P1 | B1 MultiProcessor、B10 分布扩展、B11 Time Table、B12 trace/检查点、B2 Rack 全部类型（floor/gravity/push_back/drive_in）、B3 Conveyor（PhotoEye/Station/Join）、B4 路网+两段任务 ✅；B7 Process Flow 未实现 token 运行时（已提供对象+触发器等价模式与前置条件）；B5 Fluid、B6 People/AGV、B8 3D/GUI、B9 脚本/.fsm 未完成 |
+| P2 | C4 CLI 完整性、C5 并行复现与基准、C6 JSON Schema、C7 质量工程（含 wasm job）、C8 i18n 基础 ✅；C1/C2/C3 的脚本与 CI 配置完成（Windows/Linux 真机安装与签名证书待环境） |
+| P3 | D1 对照工具（含双报告模式）✅；D3 core 的 wasm32 编译与 CI job ✅（CLI 可编译但不可运行，文档已声明）；D2 `.fsm`、D4 优化未做 |
 
 ## 摘要
 

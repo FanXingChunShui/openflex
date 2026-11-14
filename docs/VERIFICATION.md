@@ -80,15 +80,15 @@ bash -n packaging/install.sh packaging/uninstall.sh scripts/*.sh
 2026-11-14 在 macOS 15.8.1（x86_64）上用 `scripts/verify-install.sh` 跑通两种模式：
 
 - `--from-dir dist`：**22 项检查（PASS）**，产物由 `scripts/package-release.sh` 本地生成；
-- `--version 0.1.0`（`OPENFLEX_REPO=FanXingChunShui/openflex`）：**20 项检查（PASS）**，
-  真实从 GitHub Release 下载 v0.1.0 并安装。
+- `--version`（`OPENFLEX_REPO=FanXingChunShui/openflex`）：真实从 GitHub Release 下载并安装，
+  **v0.1.0 与 v0.4.0 各 20 项检查（PASS）**。
 
 两种模式都覆盖：安装到临时 prefix、校验 SHA-256、`--version`、`new`/`validate`/`run`
 （JSON + CSV）、安装回执、卸载与重复卸载。Windows 与 Linux 的真实安装**尚未执行**，
 原因与补齐方式见安装矩阵。
 
 CI（`.github/workflows/release.yml`）在 macOS / Windows / Linux 矩阵上重复构建与打包步骤；
-`scripts/verify-packaging.sh` 的 85 项本机检查是发布前的门槛（0 失败，2 跳过：本机无 pwsh、docker）。
+`scripts/verify-packaging.sh` 的 88 项本机检查是发布前的门槛（0 失败，2 跳过：本机无 pwsh、docker）。
 详见 [install.md](install.md) 与 [releasing.md](releasing.md)。
 
 ## 6. 性能基线
@@ -112,6 +112,7 @@ CI（`.github/workflows/release.yml`）在 macOS / Windows / Linux 矩阵上重�
 | `coverage` | cargo llvm-cov | 否（无阈值） | 生成 `lcov.info` 与 summary，先建立基线，后续再决定门槛 |
 | `fuzz` | cargo-fuzz（nightly） | 否（optional） | 模型 JSON 解析与表达式解析各 60 秒 libFuzzer |
 | `test-arm64` | cargo test | 否（optional） | GitHub 原生 arm64 runner 上跑一遍测试 |
+| `wasm` | cargo check/build（wasm32） | 是 | `openflex-core` 在 `wasm32-unknown-unknown` 上 check + release build，上传 rlib；CLI 不做 wasm 支持声明（见 [verification/wasm.md](verification/wasm.md)） |
 | `lint` | bash -n + shellcheck + YAML/TOML 解析 | 是 | 所有 shell 脚本与发布清单的语法门 |
 
 本地等价命令：
@@ -123,6 +124,7 @@ bash scripts/fuzz-smoke.sh --seconds 60       # 有 cargo-fuzz + nightly 时：�
 cargo deny check                              # 需要 cargo-deny
 cargo audit                                   # 需要 cargo-audit
 cargo llvm-cov --workspace --lcov --output-path lcov.info
+cargo check -p openflex-core --target wasm32-unknown-unknown   # 需要 rustup target add wasm32-unknown-unknown
 ```
 
 依赖更新由 `.github/dependabot.yml` 负责：cargo / GitHub Actions / Docker 基础镜像，
@@ -133,27 +135,77 @@ cargo llvm-cov --workspace --lcov --output-path lcov.info
 
 ## 8. 与外部仿真器的数值对照（D1）
 
-工具：`scripts/compare-flexsim.sh`（外部 CSV ↔ OpenFlex `report.json`），方法与报告模板见
-[docs/verification/flexsim-comparison.md](verification/flexsim-comparison.md)。
+工具：`scripts/compare-flexsim.sh`，两种模式：
+
+- 外部 CSV ↔ OpenFlex `report.json`（`--csv`）；
+- 两个 OpenFlex 报告直接对比（`--report-a`/`--report-b`，对象级差值，无需外部 CSV）。
+
+方法与报告模板见 [docs/verification/flexsim-comparison.md](verification/flexsim-comparison.md)。
 
 **净室边界**：本项目未运行 FlexSim，只接受外部提供的数据（真实 FlexSim 运行或公开材料）。
 
-当前记录：用**公开的 M/M/1 解析解**演示工具，5/5 指标在 ±5% 内
-（数据文件 `docs/verification/flexsim-mm1-example.csv`）。真实 FlexSim 对照仍待外部持证方
-提供数据，状态为「未验证」——不得写成「与 FlexSim 一致」。
+当前记录：
+
+- CSV 模式：用**公开的 M/M/1 解析解**演示，5/5 指标在 ±5% 内
+  （数据文件 `docs/verification/flexsim-mm1-example.csv`）；
+- 双报告模式：同一 `mm1` 模型 seed 1 vs seed 7，46 个指标中 44 个在 ±5% 内，
+  超出的是 `idle_fraction`（-5.4%，接近 0 的相对放大）与 `max_content`（-6.4%，整数统计），
+  属于随机噪声而非模型差异（CI95 可解释）。
+
+真实 FlexSim 对照仍待外部持证方提供数据，状态为「未验证」——不得写成「与 FlexSim 一致」。
+
+## 9. wasm32 目标（D3）
+
+`openflex-core` 从 v0.4.0 起可以为 `wasm32-unknown-unknown` 编译：
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo check -p openflex-core --target wasm32-unknown-unknown
+cargo build -p openflex-core --release --target wasm32-unknown-unknown
+# target/wasm32-unknown-unknown/release/libopenflex_core.rlib（约 5.0 MB）
+```
+
+边界（详见 [docs/verification/wasm.md](verification/wasm.md)）：
+
+| crate | wasm32 编译 | 能否在 wasm 运行时跑 |
+|---|---|---|
+| `openflex-core` / `openflex-model` | ✅ | 可以（RNG 需宿主提供 JS 后端） |
+| `openflex-report` | ✅ | 未验证（依赖 zip/xlsx） |
+| `openflex-cli` | ✅（std stub） | ❌ 需要 `std::fs`、argv、`process::exit`、`--parallel` 线程 |
+
+CI 的 `wasm` job 只把 `openflex-core` 当作支持目标并上传 rlib；浏览器可用的
+wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 
 ## 最近一次验收记录
 
 - 日期：2026-11-14
-- 版本：0.1.0（初始实现）
+- 版本：0.4.0（release 已发布，11 个产物）
 - `cargo test --workspace`：**82 passed / 0 failed**（17 CLI + 13 model + 10 golden + 21 objects + 11 report + 9 + 1 doctest）
 - `cargo clippy --workspace --all-targets`：**0 warning**
 - `cargo fmt --all --check`：通过
 - `bash scripts/acceptance.sh`：**全部 PASS**（mm1 / det-line / batching / breakdown / combiner-pack / separator-unpack）
-- `bash scripts/verify-packaging.sh`：**RESULT: PASS**（85 项通过 / 0 失败 / 2 跳过：本机无 pwsh、docker；
-  新增 11 个 shell 脚本的 bash -n 与 shellcheck、workflow/dependabot/winget YAML、deny.toml 与 fuzz/Cargo.toml 的 TOML 解析、
+- `bash scripts/verify-packaging.sh`：**RESULT: PASS**（88 项通过 / 0 失败 / 2 跳过：本机无 pwsh、docker；
+  含 11 个 shell 脚本的 bash -n 与 shellcheck、workflow/dependabot/winget YAML、deny.toml 与 fuzz/Cargo.toml 的 TOML 解析、
   新工具的 `--help` 与 dry-run）
+- `scripts/verify-install.sh --version 0.4.0`（真实 GitHub Release）：**PASS**，20 项
+- `cargo check` + `cargo build -p openflex-core --target wasm32-unknown-unknown`：**通过**
+  （release rlib 5,056,990 bytes）
+- `scripts/compare-flexsim.sh --report-a/--report-b`（双报告模式）：**已实现并实测**
 - 性能：release 构建下 M/M/1 约 20 万事件 / 0.95 s
+- 说明：本轮未重跑 `cargo test --workspace` / `acceptance.sh`（工作区有其他并行改动），
+  全量测试由 CI 的 `test` 与 `golden` job 覆盖；本轮只验收发布/质量链路。
+
+### 2026-11-14 wasm / 安装收尾（v0.4.0 基线）
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| `wasm` CI job（core check + release build + rlib artifact） | 已实跑（本机等价命令）+ CI 已配置 | `cargo check/build -p openflex-core --target wasm32-unknown-unknown` 通过；ci.yml `wasm` job |
+| wasm 边界文档 | 已完成 | `docs/verification/wasm.md`（core 可用、CLI 不可运行） |
+| v0.4.0 安装验证（macOS，GitHub Release） | 已实跑 | 20 项 PASS，见 [install-matrix](verification/install-matrix.md) |
+| Windows / Linux / deb / rpm / MSI 真机安装 | **待环境** | 脚本与命令清单就绪，见安装矩阵第 5 节 |
+| 签名/公证（macOS/Windows/GPG） | **CI 已配置，待证书** | release.yml 三处签名步骤均有 `if: env.X != ''`，secrets 为空时跳过；本机 dry-run 通过 |
+| Docker/GHCR 镜像 | **CI 已配置，未推送** | container.yml tag 触发，本机无 docker |
+| 真实 FlexSim 对照 | **待外部数据** | 工具与模板就绪；未运行 FlexSim |
 
 ### 2026-11-14 增补验证（C1/C2/C3/C7/D1）
 

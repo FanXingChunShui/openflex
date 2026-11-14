@@ -19,7 +19,7 @@
 //! |------|-----------|
 //! | `source` | inter-arrival mode: first item at `first_arrival` (0 = time zero), then one interval after the previous batch *left* the source; `arrival_schedule` / `arrival_sequence` modes (A2) create items from a table |
 //! | `queue`/`rack` | immediate release, optional batching with `batch_size` and `batch_max_wait` |
-//! | `processor` | setup + process, breakdown/repair with preemption, optional operator (dispatcher or resource pool) |
+//! | `processor` | setup + process, breakdown/repair with preemption, optional operator (dispatcher or resource pool) and `operator_preempt` task interruption (A10) |
 //! | `multiprocessor` | `slots` parallel setup/process pipelines in one object (B1); one operator crew of `slots` per busy period |
 //! | `conveyor` | item positions, accumulating or rigid transport, spacing and exit blocking; photo eyes fire `on_photo_eye`, stations dwell for their `process_time`, `join_inputs` merges upstream belts fairly (B3) |
 //! | `combiner` | port 1 container + `components_per_container` components; `pack` releases the container, `join` merges one item per port, `batch` runs setup/process and releases every item (A7) |
@@ -27,7 +27,7 @@
 //! | `merge` | one item per input port, optional `wait_for_all` gating |
 //! | `split` | round-robin or by-item-type distribution over the output ports |
 //! | `transporter`/`dispatcher` | two-leg operator tasks (travel to the home pickup point → load → travel to the requester → unload), euclidean or road-network travel, capacity (B4) |
-//! | `rack` | queue storage; `rack_type = gravity` / `push_back` release LIFO (B2) |
+//! | `rack` | queue storage (B2); `gravity`/`push_back` release LIFO, `drive_in` is FIFO; `channels`/`depth` narrow the usable capacity |
 //! | `resource` | counted resource pool with downtime windows |
 //! | any | optional `shifts` plan: off-shift pauses work and accumulates `off_shift` time |
 //!
@@ -55,6 +55,16 @@
 //! * A MultiProcessor requests its whole crew (`slots` operators) for a busy
 //!   period and holds it until every slot is idle again; it cannot run with a
 //!   partial crew, so a dispatcher/pool smaller than `slots` keeps it blocked.
+//! * Operator preemption (A10) interrupts a task whose operator is already
+//!   granted: the interrupted setup/process step is paused and its request is
+//!   re-queued, then resumed when an operator returns. Tasks still travelling
+//!   are not preempted, only single-capacity transporters are candidates, and
+//!   a partial multi-operator crew is not re-balanced.
+//! * There is no Process Flow token runtime. The supported blocks map onto
+//!   ordinary objects and triggers: Create -> `source`, Delay -> `processor`
+//!   (or a queue with a timer), Assign -> `on_create`/`on_entry` trigger
+//!   actions, Decision -> `by_condition` routing, Sink -> `sink`. See
+//!   `examples/objects/process-flow-equivalent.ofm`.
 //! * Repeating arrival schedules treat later passes' row times as offsets from
 //!   the previous pass's last row (the first row's time only applies once).
 //! * A released queue batch is committed at once: the items count as leaving
@@ -435,6 +445,8 @@ pub(crate) struct ObjectRt {
     operator_held: u32,
     operators_pending: u32,
     requesting_operator: bool,
+    /// A10: the current phase was paused because its operator was preempted.
+    operator_preempted: bool,
     operator_sources: Vec<OperatorSource>,
     /// Conveyor runtime.
     belt: Option<Belt>,
@@ -471,6 +483,8 @@ pub(crate) struct ObjectRt {
     position: [f64; 2],
     capacity: u32,
     tasks: usize,
+    /// Requester currently served by this transporter (A10 preemption).
+    serving_requester: Option<usize>,
     home: Option<usize>,
     assigned_dispatcher: Option<usize>,
     /// Dispatcher / resource request queue.
@@ -519,6 +533,7 @@ impl ObjectRt {
             operator_held: 0,
             operators_pending: 0,
             requesting_operator: false,
+            operator_preempted: false,
             operator_sources: Vec::new(),
             belt: None,
             belt_items: Vec::new(),
@@ -541,6 +556,7 @@ impl ObjectRt {
             position: object.pos,
             capacity: 1,
             tasks: 0,
+            serving_requester: None,
             home: None,
             assigned_dispatcher: None,
             requests: VecDeque::new(),
@@ -2047,7 +2063,9 @@ impl<'m> Simulation<'m> {
             ObjectParams::Source(_) => false,
             ObjectParams::Sink(_) => true,
             ObjectParams::Queue(params) => (object.effective_content() as u32) < params.max_content,
-            ObjectParams::Rack(params) => (object.effective_content() as u32) < params.capacity,
+            ObjectParams::Rack(params) => {
+                (object.effective_content() as u32) < rack_capacity(params)
+            }
             ObjectParams::Processor(params) => {
                 (object.effective_content() as u32) < params.max_content
             }
@@ -3129,6 +3147,12 @@ impl<'m> Simulation<'m> {
         self.objects[index].operators_pending =
             self.objects[index].operators_pending.saturating_sub(1);
         self.objects[index].requesting_operator = self.objects[index].operators_pending > 0;
+        // A10: an operator returned after a preemption; continue the paused
+        // setup/process step where it stopped.
+        if self.objects[index].operator_preempted && self.objects[index].operator_held > 0 {
+            self.objects[index].operator_preempted = false;
+            let _ = self.resume_phase(index);
+        }
         self.schedule(self.now, EventKind::Flow(index));
     }
 
@@ -3169,12 +3193,8 @@ impl<'m> Simulation<'m> {
     ///
     /// A10: requests are served highest `operator_priority` first; ties keep
     /// the arrival order, so a model without priorities behaves exactly like
-    /// v0.1.0.
-    ///
-    /// TODO(A10): `operator_preempt` is parsed and validated by the model layer
-    /// but not enforced here. Preemption needs a task-revocation path (a
-    /// transporter abandoning a load and re-queueing the request) which is out
-    /// of scope for this iteration; see docs/BACKLOG.md A10.
+    /// v0.1.0. A request with `operator_preempt` may interrupt a running task
+    /// of a lower priority (see [`Simulation::try_preempt`]).
     fn dispatch(&mut self, dispatcher: usize) -> Result<(), SimError> {
         if !self.objects[dispatcher].on_shift {
             return Ok(());
@@ -3182,11 +3202,16 @@ impl<'m> Simulation<'m> {
         while let Some(position) = self.pick_request(dispatcher) {
             let requester = self.objects[dispatcher].requests[position];
             let Some(transporter) = self.pick_transporter(dispatcher, requester) else {
+                // A10: a preemptive request may interrupt a lower-priority task.
+                if self.try_preempt(dispatcher, requester)? {
+                    continue;
+                }
                 break;
             };
             let pickup_travel = self.transport_pickup_travel(transporter);
             self.objects[dispatcher].requests.remove(position);
             self.objects[transporter].tasks += 1;
+            self.objects[transporter].serving_requester = Some(requester);
             self.objects[transporter].acc.input += 1;
             // A5: the operator is on its way; the destination counts it as an
             // in-transit item until it arrives.
@@ -3235,6 +3260,85 @@ impl<'m> Simulation<'m> {
             }
         }
         best.map(|(position, _)| position)
+    }
+
+    /// Priority of a queued operator request (A10); non-processors use 0.
+    fn request_priority(&self, index: usize) -> u32 {
+        self.processor_params(index)
+            .map(|params| params.operator_priority)
+            .unwrap_or(0)
+    }
+
+    /// Whether a request is allowed to interrupt a running task (A10).
+    fn request_preempts(&self, index: usize) -> bool {
+        self.processor_params(index)
+            .map(|params| params.operator_preempt)
+            .unwrap_or(false)
+    }
+
+    /// A10: interrupt a lower-priority transporter task for a preemptive
+    /// request. Returns `true` when a transporter was freed (the dispatch loop
+    /// then retries the assignment).
+    ///
+    /// Preemption is only modelled while the operator is actually in use (the
+    /// interrupted object pauses its setup/process step and re-queues its
+    /// request); tasks in transit are left alone. Only single-capacity
+    /// transporters are preempted, which keeps the partial-crew case for
+    /// `num_process_operators > 1` out of scope.
+    fn try_preempt(&mut self, dispatcher: usize, requester: usize) -> Result<bool, SimError> {
+        if !self.request_preempts(requester) {
+            return Ok(false);
+        }
+        let new_priority = self.request_priority(requester);
+        let mut victim: Option<(usize, usize)> = None;
+        for &transporter in &self.transporters[dispatcher] {
+            if self.objects[transporter].tasks != 1 {
+                continue;
+            }
+            let Some(low) = self.objects[transporter].serving_requester else {
+                continue;
+            };
+            if low == requester {
+                continue;
+            }
+            if self.request_priority(low) < new_priority {
+                victim = Some((transporter, low));
+                break;
+            }
+        }
+        let Some((transporter, low)) = victim else {
+            return Ok(false);
+        };
+        self.preempt_operator(low, transporter)?;
+        Ok(true)
+    }
+
+    /// Take the operator away from `index` and re-queue its request.
+    fn preempt_operator(&mut self, index: usize, transporter: usize) -> Result<(), SimError> {
+        let removed = self.objects[index].operator_sources.iter().position(
+            |source| matches!(source, OperatorSource::Transporter(t) if *t == transporter),
+        );
+        let Some(position) = removed else {
+            return Ok(());
+        };
+        self.objects[index].operator_sources.remove(position);
+        self.objects[index].operator_held = self.objects[index].operator_held.saturating_sub(1);
+        // Abort the transporter task (it is not counted as completed).
+        self.objects[transporter].serving_requester = None;
+        self.objects[transporter].tasks = self.objects[transporter].tasks.saturating_sub(1);
+        self.set_state(transporter, State::Idle);
+        // Pause the interrupted setup/process step and re-queue the request.
+        self.pause_phase(index);
+        self.objects[index].operator_preempted = true;
+        self.objects[index].requesting_operator = true;
+        self.objects[index].operators_pending += 1;
+        self.block(index, BlockReason::Transport);
+        if let Some(dispatcher) = self.objects[transporter].assigned_dispatcher {
+            // `pick_request` always serves the highest priority first, so the
+            // queue order itself does not matter.
+            self.objects[dispatcher].requests.push_back(index);
+        }
+        Ok(())
     }
 
     /// Pick an idle transporter for a request, with the travel time to the
@@ -3413,6 +3517,7 @@ impl<'m> Simulation<'m> {
     /// Mark one transporter task as complete and look for queued work.
     fn finish_task(&mut self, transporter: usize) -> Result<(), SimError> {
         self.objects[transporter].tasks = self.objects[transporter].tasks.saturating_sub(1);
+        self.objects[transporter].serving_requester = None;
         self.objects[transporter].acc.output += 1;
         self.set_state(transporter, State::Idle);
         if let Some(dispatcher) = self.objects[transporter].assigned_dispatcher {
@@ -4649,14 +4754,36 @@ fn object_field(sim: &Simulation<'_>, index: usize, field: &str) -> Option<Value
     }
 }
 
+/// Usable capacity of a rack (B2).
+///
+/// `capacity` stays the hard upper bound; the storage geometry narrows it:
+/// a push-back rack has `levels * channels` slots and a drive-in rack has
+/// `channels * depth` slots. Without the new fields the plain `capacity` is
+/// used, so existing models keep their behaviour.
+fn rack_capacity(params: &openflex_model::RackParams) -> u32 {
+    let geometry = match params.rack_type {
+        RackType::PushBack => params
+            .channels
+            .map(|channels| params.levels.saturating_mul(channels)),
+        RackType::DriveIn => params
+            .depth
+            .map(|depth| depth.saturating_mul(params.channels.unwrap_or(1))),
+        RackType::Floor | RackType::Gravity => None,
+    };
+    geometry
+        .unwrap_or(params.capacity)
+        .min(params.capacity)
+        .max(1)
+}
+
 /// Queue parameters for both queues and racks.
 fn queue_params_of(object: &Object) -> openflex_model::QueueParams {
     match &object.params {
         ObjectParams::Queue(params) => params.clone(),
         ObjectParams::Rack(params) => openflex_model::QueueParams {
-            max_content: params.capacity,
-            // B2: a gravity flow rack (and the push-back approximation)
-            // releases the most recently stored item first.
+            max_content: rack_capacity(params),
+            // B2: gravity and push-back racks release the most recently
+            // stored item first (LIFO); floor and drive-in racks are FIFO.
             order: if params.rack_type == RackType::Gravity
                 || params.rack_type == RackType::PushBack
             {

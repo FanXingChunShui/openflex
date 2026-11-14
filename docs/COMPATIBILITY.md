@@ -25,7 +25,7 @@
 | Transporter / TaskExecuter | `transporter` | 🟡 | 速度、装载/卸载时间、按坐标距离行驶、`home` 回程；`capacity` 解释为可并发操作员任务数（不搬运 flow item）；无任务序列/抢占/路网 |
 | Dispatcher | `dispatcher` | 🟡 | 把 Processor 的操作员请求派给最近的空闲 transporter；FIFO 队列，无优先级/抢占 |
 | Operator / Resource | `resource` | ✅ | 资源池容量与停机窗口 |
-| Rack | `rack` | 🟡 | `rack_type`：floor(FIFO)/gravity/push_back(LIFO)/drive_in(FIFO 近似)；无货位/巷道精细放置 |
+| Rack | `rack` | 🟡 | `rack_type`：floor(FIFO)/gravity(LIFO)/push_back(LIFO，levels×channels)/drive_in(FIFO，channels×depth)；无货位精细放置 |
 | 班次 / 计划停机 | `params.shifts` | ✅ | `[{start, duration, repeat_every}]`，停机进入 off_shift、暂停处理、恢复后继续 |
 | Time Table | `params.timetable` | ✅ | `{windows:[{start,end}]}`，与 shifts 取交集 |
 | BasicFR / BasicTE | `basic_fr` / `basic_te` | ✅ | 通用固定资源与执行器 |
@@ -52,9 +52,9 @@
 | Send To Port：Condition | `by_condition` | ✅ | 表达式求值，按顺序匹配 |
 | Send To Port：By Item Type | `by_item_type` | ✅ | |
 | Send To Port：By Label | `by_label` | ✅ | |
-| FlexScript / C++ 逻辑 | 表达式语言 + 动作 | 🟡 | 无任意脚本；支持变量、算术、比较、条件与少量函数 |
+| FlexScript / C++ 逻辑 | 表达式语言 + 动作 | 🟡 | 无任意脚本；支持变量、算术、比较、条件与少量函数；Processor 抢占见操作员参数 |
 | 全局表（Global Table） | — | ⛔ | 可用标签/参数覆盖模拟 |
-| Process Flow（流程图块） | — | 🟡 | 用对象 + 触发器表达；无可视化流程块编辑器 |
+| Process Flow（流程图块） | — | 🟡 | 未实现 token 运行时；提供对象+触发器等价模式（示例 process-flow-equivalent.ofm） |
 
 ## 运行与统计
 

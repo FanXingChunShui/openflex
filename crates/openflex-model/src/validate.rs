@@ -625,6 +625,22 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
             }
         }
         crate::model::ObjectParams::Rack(params) => {
+            if let Some(channels) = params.channels
+                && channels == 0
+            {
+                issues.push(ValidationIssue::new(
+                    location("channels"),
+                    "must be at least 1",
+                ));
+            }
+            if let Some(depth) = params.depth
+                && depth == 0
+            {
+                issues.push(ValidationIssue::new(
+                    location("depth"),
+                    "must be at least 1",
+                ));
+            }
             if params.capacity == 0 {
                 issues.push(ValidationIssue::new(
                     location("capacity"),

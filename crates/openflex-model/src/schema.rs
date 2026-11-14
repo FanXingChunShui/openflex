@@ -368,7 +368,9 @@ fn definitions() -> Value {
             "rack_type": {
                 "enum": ["floor", "gravity", "push_back", "drive_in"],
                 "default": "floor"
-            }
+            },
+            "channels": { "type": ["integer", "null"], "minimum": 1 },
+            "depth": { "type": ["integer", "null"], "minimum": 1 }
         })),
     );
     defs.insert("basic_fr_params".into(), params_schema(json!({})));

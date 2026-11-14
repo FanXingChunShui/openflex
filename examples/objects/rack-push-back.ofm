@@ -1,0 +1,31 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "rack-push-back",
+  "description": "Push-back rack (LIFO, levels x channels = 12 slots): the newest items leave first",
+  "time_unit": "seconds",
+  "run": { "stop_time": 101.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "BlueSource", "kind": "source", "pos": [0, 20], "params": {
+        "interarrival": { "distribution": "constant", "value": 10.0 },
+        "items_per_arrival": 5, "max_arrivals": 1,
+        "first_arrival": 0.0, "item_type": 0 } },
+    { "name": "RedSource", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "constant", "value": 10.0 },
+        "items_per_arrival": 5, "max_arrivals": 1,
+        "first_arrival": 0.0, "item_type": 1 } },
+    { "name": "Rack1", "kind": "rack", "pos": [5, 10], "params": {
+        "capacity": 100, "levels": 2, "channels": 6, "rack_type": "push_back" } },
+    { "name": "Processor1", "kind": "processor", "pos": [10, 10], "params": {
+        "process_time": { "distribution": "constant", "value": 20.0 } } },
+    { "name": "SinkBlue", "kind": "sink", "pos": [15, 20], "params": {} },
+    { "name": "SinkRed", "kind": "sink", "pos": [15, 0], "params": {} }
+  ],
+  "connections": [
+    { "from": "BlueSource", "to": "Rack1" },
+    { "from": "RedSource", "to": "Rack1" },
+    { "from": "Rack1", "to": "Processor1" },
+    { "from": "Processor1", "to": "SinkBlue", "strategy": { "type": "by_item_type" } },
+    { "from": "Processor1", "to": "SinkRed" }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "format": "openflex-model", "version": 1, "name": "operator-preempt",
+  "description": "Preemption (A10): the urgent job interrupts the running lower-priority task, which resumes afterwards",
+  "run": { "stop_time": 300.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "LowSource", "kind": "source", "params": {
+        "interarrival": { "distribution": "constant", "value": 1000.0 },
+        "max_arrivals": 1, "first_arrival": 0.0 } },
+    { "name": "HighSource", "kind": "source", "params": {
+        "interarrival": { "distribution": "constant", "value": 1000.0 },
+        "max_arrivals": 1, "first_arrival": 20.0 } },
+    { "name": "Low", "kind": "processor", "params": {
+        "process_time": { "distribution": "constant", "value": 100.0 },
+        "process_operator": "Dispatcher1", "operator_priority": 0 } },
+    { "name": "High", "kind": "processor", "params": {
+        "process_time": { "distribution": "constant", "value": 5.0 },
+        "process_operator": "Dispatcher1", "operator_priority": 10,
+        "operator_preempt": true } },
+    { "name": "K", "kind": "sink", "params": {} },
+    { "name": "Dispatcher1", "kind": "dispatcher", "pos": [0, 0], "params": {} },
+    { "name": "T", "kind": "transporter", "pos": [0, 0], "params": {
+        "capacity": 1, "speed": 10.0, "home": "Dispatcher1" } }
+  ],
+  "connections": [
+    { "from": "LowSource", "to": "Low" },
+    { "from": "Low", "to": "K" },
+    { "from": "HighSource", "to": "High" },
+    { "from": "High", "to": "K" },
+    { "from": "Dispatcher1", "to": "T" }
+  ]
+}

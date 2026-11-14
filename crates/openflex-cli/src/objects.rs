@@ -61,7 +61,7 @@ pub fn describe_kind(kind: ObjectKind) -> (&'static str, &'static str) {
         ),
         ObjectKind::Rack => (
             "Stores items in levels (a specialised queue).",
-            "capacity: integer, default 100\nlevels: integer, default 1\nrack_type: floor | gravity | push_back | drive_in (gravity/push_back are LIFO)",
+            "capacity: integer, default 100\nlevels: integer, default 1\nrack_type: floor | gravity | push_back | drive_in (gravity/push_back are LIFO)\nchannels: push-back lanes per level or drive-in lanes (capacity = levels*channels / channels*depth)\ndepth: drive-in lane depth",
         ),
         ObjectKind::BasicFr => (
             "A generic fixed resource.",

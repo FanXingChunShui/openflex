@@ -92,7 +92,9 @@ fn english(key: &str) -> &'static str {
              openflex run basic.ofm --until 500 --trace trace.jsonl --format json\n  \
              openflex run basic.ofm --until 1000 --save-checkpoint checkpoint.json\n  \
              openflex run basic.ofm --resume checkpoint.json --until 2000 --format json\n  \
-             cargo run --release -p openflex-cli --example bench_mm1 -- --stop 100000"
+             openflex experiment basic.ofm --report-dir experiments --trace\n  \
+             openflex import --objects objects.csv --connections connections.csv --out model.ofm\n  \
+             cargo run --release -p openflex-cli --example bench_mm1 -- --model examples/mm1.ofm --stop 100000"
         }
         "error_prefix" => "error:",
         "ok" => "ok",
@@ -171,7 +173,9 @@ fn chinese(key: &str) -> &'static str {
              openflex run basic.ofm --until 500 --trace trace.jsonl --format json\n  \
              openflex run basic.ofm --until 1000 --save-checkpoint checkpoint.json\n  \
              openflex run basic.ofm --resume checkpoint.json --until 2000 --format json\n  \
-             cargo run --release -p openflex-cli --example bench_mm1 -- --stop 100000"
+             openflex experiment basic.ofm --report-dir experiments --trace\n  \
+             openflex import --objects objects.csv --connections connections.csv --out model.ofm\n  \
+             cargo run --release -p openflex-cli --example bench_mm1 -- --model examples/mm1.ofm --stop 100000"
         }
         "error_prefix" => "错误：",
         "ok" => "通过",

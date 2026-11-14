@@ -7,6 +7,7 @@ CI 只证明「能构建出文件」，不证明「装上以后能跑」——�
   [`scripts/verify-install.ps1`](../../scripts/verify-install.ps1)（Windows）
 - 记录汇总：[`docs/VERIFICATION.md`](../VERIFICATION.md)
 - 安装文档：[`docs/install.md`](../install.md)
+- **当前基线：v0.4.0（2026-11-14，11 个产物）**；本页记录按时间倒序，最新在最前。
 
 ## 1. 判定标准
 
@@ -28,7 +29,7 @@ CI 只证明「能构建出文件」，不证明「装上以后能跑」——�
 
 | 平台 | tar.gz | zip | deb | rpm | msi | brew | docker |
 |---|---|---|---|---|---|---|---|
-| macOS（Apple Silicon / Intel） | ✅ `install.sh` 2026-11-14 | ➖ | ➖ | ➖ | ➖ | ❌ tap 未发布（模板已本地校验） | ❌ Docker 未安装 |
+| macOS（Apple Silicon / Intel） | ✅ `install.sh` v0.1.0 + v0.4.0（2026-11-14） | ➖ | ➖ | ➖ | ➖ | ❌ tap 未发布（模板已本地校验） | ❌ Docker 未安装 |
 | Linux x86_64 | ❌ | ➖ | ❌ | ❌ | ➖ | ❌ | ❌ |
 | Linux aarch64 | ❌ | ➖ | ❌ | ❌ | ➖ | ❌ | ❌ |
 | Windows x64 | ➖ | ❌ | ➖ | ➖ | ❌ | ➖ | ➖ |
@@ -37,7 +38,8 @@ CI 只证明「能构建出文件」，不证明「装上以后能跑」——�
 补充说明：
 
 - **macOS tar.gz**：在本机（macOS 15.8.1 x86_64）用 `scripts/verify-install.sh` 跑通两种模式：
-  `--from-dir`（22 项检查）与 `--version 0.1.0` 真实下载 GitHub Release（20 项检查），见第 4 节。
+  `--from-dir`（22 项检查）与 `--version` 真实下载 GitHub Release（v0.1.0 与 v0.4.0 各 20 项检查），
+  见第 4 节。
 - **Windows**：本仓库的验证是在 macOS 上开发的，没有 Windows 主机；`verify-install.ps1`
   在非 Windows 主机上只输出可复制的命令清单。需要有人在 Windows 10/11 上跑一次。
 - **deb/rpm**：`scripts/verify-install.sh --deb/--rpm` 已实现（deb 用私有 dpkg root，
@@ -92,6 +94,33 @@ MSI 验证前脚本会检查 `%LOCALAPPDATA%\OpenFlex\bin\openflex.exe` 是否�
 **已存在就 SKIP**，避免覆盖并卸载掉别人的真实安装。
 
 ## 4. 已完成的记录
+
+### 记录 2026-11-14 — macOS 15.8.1 (x86_64)，v0.4.0 GitHub Release 网络安装
+
+- 基线版本：**v0.4.0**（release 共 11 个文件：macOS/Linux tar.gz ×3、Windows zip ×2、MSI ×1、
+  deb ×2、rpm ×2 + `SHA256SUMS.txt`）
+- 命令：
+
+  ```sh
+  OPENFLEX_REPO=FanXingChunShui/openflex \
+    bash scripts/verify-install.sh --version 0.4.0 --report /tmp/install-rows.md
+  ```
+
+- 结果：**RESULT: PASS**，20 项检查，0 失败 0 跳过：
+
+  | 检查 | 结果 |
+  |---|---|
+  | 从 GitHub Release 下载 `openflex-0.4.0-universal-apple-darwin.tar.gz` | PASS |
+  | 安装到临时 prefix + SHA-256 校验 | PASS（3 项） |
+  | `--version` = `openflex 0.4.0` | PASS |
+  | `new` / `validate` / `run --format json`（合法 JSON，含 `objects`） | PASS |
+  | `run --format csv`（含 `Sink`） | PASS |
+  | 安装回执、卸载、重复卸载 | PASS（4 项） |
+
+- 备注：`--report` 追加的行是
+  `| Darwin 24.6.0 (x86_64) | network | unknown | 0.4.0 | PASS | … |`；
+  platform 列在网络模式下显示 `unknown` 是已知的显示缺陷（`install.sh` 在内部解析包名，
+  不回报给外层），不影响 PASS/FAIL 判定。
 
 ### 记录 2026-11-14 — macOS 15.8.1 (x86_64)，tar.gz + install.sh
 

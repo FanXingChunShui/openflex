@@ -1,0 +1,24 @@
+{
+  "format": "openflex-model", "version": 1, "name": "process-flow-equivalent",
+  "description": "Process Flow pattern without a token runtime: Create=Source, Delay=Processor, Assign=on_create label, Decision=by_condition routing, Sink=Sinks",
+  "run": { "stop_time": 200.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "Create", "kind": "source", "params": {
+        "interarrival": { "distribution": "constant", "value": 10.0 },
+        "max_arrivals": 10, "first_arrival": 0.0,
+        "triggers": { "on_create": [
+          { "action": "set_label", "name": "urgent", "value": "item.id % 2" }
+        ] } } },
+    { "name": "Delay", "kind": "processor", "params": {
+        "process_time": { "distribution": "constant", "value": 2.0 } } },
+    { "name": "SinkUrgent", "kind": "sink", "params": {} },
+    { "name": "SinkNormal", "kind": "sink", "params": {} }
+  ],
+  "connections": [
+    { "from": "Create", "to": "Delay" },
+    { "from": "Delay", "to": "SinkUrgent", "strategy": { "type": "by_condition", "conditions": [
+        { "condition": "item.label.urgent == 1", "port": 0 },
+        { "condition": "item.label.urgent == 0", "port": 1 } ] } },
+    { "from": "Delay", "to": "SinkNormal" }
+  ]
+}

@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.5.0 — 2026-11-14
+
+### 对象与运行时
+
+- **操作员抢占**：`operator_preempt` 可打断低优先级、已持有操作员的加工任务；被抢占方暂停并补足剩余时间。
+- **Rack 全部类型**：push_back（LIFO，`levels×channels`）、drive_in（FIFO，`channels×depth`）、floor、gravity；新增 `channels`/`depth`。
+- **Process Flow**：未实现独立 token 运行时（评估为 2–3 周工程）；新增对象+触发器等价模式示例与文档。
+- **experiment trace**：`--report-dir` + `--trace` 为每个场景/复现写 trace。
+- **`--resume` 与 `--set` 互斥**（快照语义保护）。
+
+### 工具与工程
+
+- **结构化 CSV 导入**：`import --objects/--connections`（name,kind,pos；from,to,port,strategy），可与到达表组合。
+- **基准扩展**：`bench_mm1 --model <path>`，输出 events/s 与 items/s。
+- **WebAssembly**：core 可 `cargo check/build --target wasm32-unknown-unknown`，CI 新增阻塞型 wasm job；CLI 可编译但不可运行（文档声明）。
+- **FlexSim 对照**：`compare-flexsim.sh` 新增双报告模式（对象级逐指标差值）。
+- 安装/签名流程复核（secrets 缺失时跳过），真机安装记录更新到 v0.4.0。
+
+### 验证
+
+- 228 个测试全绿（core 108：golden 10、objects 44、p0 16、checkpoint 6）。
+- 6 个黄金案例零回归；`acceptance.sh` 全 PASS；clippy 0 警告、fmt 干净。
+- `verify-packaging.sh` 88 项 PASS；`verify-install.sh` 对 v0.4.0 真实 release PASS（20 项）。
+
 ## v0.4.0 — 2026-11-14
 
 ### 对象与运行时

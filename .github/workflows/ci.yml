@@ -250,6 +250,68 @@ jobs:
         run: cargo test --workspace --locked
 
   # ---------------------------------------------------------------------------
+  # D3: the simulation core must stay wasm32-compatible so the browser/edge
+  # story does not rot. openflex-core is the only crate that is *supported* on
+  # wasm32: the CLI compiles there (std provides stubs) but cannot run, because
+  # it needs a filesystem, argv, process exit codes and, with --parallel,
+  # threads. See docs/verification/wasm.md.
+  # ---------------------------------------------------------------------------
+  wasm:
+    name: wasm32 (openflex-core)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust with the wasm32 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm32
+
+      - name: cargo check -p openflex-core --target wasm32-unknown-unknown
+        run: cargo check -p openflex-core --locked --target wasm32-unknown-unknown
+
+      - name: cargo build -p openflex-core --release --target wasm32-unknown-unknown
+        run: |
+          set -euo pipefail
+          cargo build -p openflex-core --release --locked --target wasm32-unknown-unknown
+          ls -l target/wasm32-unknown-unknown/release/*.rlib
+          {
+            echo "### wasm32 build"
+            echo ""
+            echo "openflex-core checks and builds for \`wasm32-unknown-unknown\`."
+            echo ""
+            echo '```'
+            ls -l target/wasm32-unknown-unknown/release/*.rlib
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record the wasm boundary (CLI is not a wasm target)
+        run: |
+          set -euo pipefail
+          # The CLI *compiles* for wasm32 (std stubs exist) but cannot run: it
+          # reads model files from disk, parses argv, exits the process and can
+          # spawn threads for --parallel. Do not claim wasm support for it.
+          {
+            echo ""
+            echo "openflex-cli is **not** a supported wasm target: \`std::fs\` (model files),"
+            echo "argv parsing, process exit codes and the \`--parallel\` thread pool all need a"
+            echo "host OS. A browser build needs a wasm-bindgen wrapper (cdylib) around"
+            echo "openflex-core; that is the remaining part of D3 in docs/BACKLOG.md."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the wasm rlib
+        uses: actions/upload-artifact@v4
+        with:
+          name: openflex-core-wasm32
+          path: target/wasm32-unknown-unknown/release/*.rlib
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
   # Repository hygiene: every shell script parses, is shellcheck-clean at
   # warning level, and every YAML/TOML file the release pipeline consumes is
   # syntactically valid.

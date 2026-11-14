@@ -392,3 +392,6 @@ git push origin v0.2.0-rc.1
 - 所有安装脚本只写用户目录，从不调用 `sudo`，也不会修改系统级 PATH。
 - 卸载不会主动编辑你的 `~/.zshrc` / `~/.bashrc`，需要手动删除 `export PATH=...` 那一行。
 - 裸 macOS 二进制无法 staple 公证票据（Gatekeeper 在线校验）；脚本会明确说明这一点。
+- wasm 支持只到 `openflex-core` 的编译层面：`cargo check/build --target wasm32-unknown-unknown`
+  通过，但还没有 wasm-bindgen 导出层（cdylib），CLI 也不是可运行的 wasm 目标
+  （`std::fs`/argv/线程），详见 [verification/wasm.md](verification/wasm.md)。

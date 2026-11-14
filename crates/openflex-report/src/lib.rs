@@ -29,7 +29,7 @@ mod sim;
 mod xlsx;
 
 pub use compare::{Comparison, MetricComparison, ObjectComparison, ReportRef, compare_reports};
-pub use experiment::{ExperimentReport, ScenarioReport, write_experiment_reports};
+pub use experiment::{ExperimentReport, ScenarioReport, sanitize, write_experiment_reports};
 pub use sim::{
     REPLICATIONS_CSV, REPORT_CSV, REPORT_JSON, REPORT_MARKDOWN, to_csv, to_json, to_markdown,
     to_replications_csv, to_table, write_reports,

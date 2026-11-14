@@ -1416,6 +1416,14 @@ pub struct RackParams {
     /// Storage type (B2); controls the release order of the rack.
     #[serde(default)]
     pub rack_type: RackType,
+    /// Push-back racks: parallel lanes per level. When set, the usable
+    /// capacity is `levels * channels` (bounded by `capacity`).
+    #[serde(default)]
+    pub channels: Option<u32>,
+    /// Drive-in racks: storage depth of a lane. When set, the usable capacity
+    /// is `channels * depth` (bounded by `capacity`).
+    #[serde(default)]
+    pub depth: Option<u32>,
 
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
@@ -1441,6 +1449,8 @@ impl Default for RackParams {
             capacity: 100,
             levels: 1,
             rack_type: RackType::Floor,
+            channels: None,
+            depth: None,
             shifts: Vec::new(),
             timetable: None,
             pull: None,
