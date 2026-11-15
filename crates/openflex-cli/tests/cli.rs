@@ -2814,6 +2814,10 @@ fn studio_can_add_and_delete_objects_through_the_api() {
         "id=\"timeseries-interval\"",
         "id=\"timeseries-object\"",
         "id=\"global-tables\"",
+        "id=\"step-event\"",
+        "id=\"next-event\"",
+        "id=\"event-list\"",
+        "data-event-list",
         "data-table-editor",
         "data-table-cell",
         "id=\"add-table-row\"",
@@ -3663,6 +3667,10 @@ fn studio_global_table_editor_updates_the_model() {
     let html = http_body(&http_get(&address, "/")).to_string();
     for marker in [
         "id=\"global-tables\"",
+        "id=\"step-event\"",
+        "id=\"next-event\"",
+        "id=\"event-list\"",
+        "data-event-list",
         "data-table-editor",
         "data-table-cell",
         "id=\"add-table-row\"",
@@ -3792,4 +3800,60 @@ fn studio_native_handle_pause_and_resume() {
 
     let reset = http_request(&address, "POST", "/api/reset", Some("{}"));
     assert!(http_status(&reset).contains("200 OK"));
+}
+
+#[test]
+fn studio_step_event_uses_the_native_handle() {
+    let dir = TempDir::new("studio-step-event");
+    let model = dir.write("demo.ofm", MODEL);
+    let (_server, address) = start_studio(&model);
+
+    let preview = http_get(&address, "/api/next-event");
+    assert!(
+        http_status(&preview).contains("200 OK"),
+        "preview: {preview}"
+    );
+    let preview = json(http_body(&preview));
+    assert!(preview["event"].is_object(), "no next event: {preview}");
+    assert!(preview["event"]["kind"].is_string());
+    assert!(preview["event"]["time"].is_f64());
+
+    let mut events = 0;
+    for _ in 0..500 {
+        let response = http_request(&address, "POST", "/api/step-event", Some("{}"));
+        assert!(
+            http_status(&response).contains("200 OK"),
+            "step event: {}",
+            http_body(&response)
+        );
+        let response = json(http_body(&response));
+        if response["finished"] == true {
+            break;
+        }
+        assert!(response["event"].is_object(), "event missing: {response}");
+        assert!(response["event"]["seq"].is_u64(), "seq missing: {response}");
+        assert!(
+            response["event"]["object"].is_string(),
+            "object missing: {response}"
+        );
+        events += 1;
+    }
+    assert!(events > 0, "no events were stepped");
+
+    // Native step_event stops at the last event; advance the remaining time
+    // to the model stop_time before comparing with a one-shot run.
+    let finish = http_request(&address, "POST", "/api/step", Some(r#"{"until":200}"#));
+    assert!(
+        http_status(&finish).contains("200 OK"),
+        "finish: {}",
+        http_body(&finish)
+    );
+    let last_report = json(http_body(&finish))["report"].clone();
+
+    let direct = http_request(&address, "POST", "/api/run", Some("{}"));
+    assert_eq!(
+        last_report,
+        json(http_body(&direct)),
+        "stepping every event (then advancing to stop) must equal one direct run"
+    );
 }

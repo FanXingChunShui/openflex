@@ -1,0 +1,19 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "escalator",
+  "time_unit": "seconds",
+  "description": "An escalator carries people like a conveyor: 10 length units at 2 per time unit = 5 time units of travel",
+  "run": {"stop_time": 200.0, "warmup": 0.0, "seed": 1, "replications": 1},
+  "objects": [
+    {"name": "Source1", "kind": "source", "params": {
+      "interarrival": {"distribution": "constant", "value": 10.0}, "first_arrival": 0.0}},
+    {"name": "Escalator1", "kind": "escalator", "params": {
+      "speed": 2.0, "length": 10.0, "item_spacing": 1.0, "max_content": 50}},
+    {"name": "Sink1", "kind": "sink", "params": {}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Escalator1"},
+    {"from": "Escalator1", "to": "Sink1"}
+  ]
+}

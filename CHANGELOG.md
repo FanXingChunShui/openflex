@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.18.0 — 2026-11-15
+
+### 逐事件单步
+
+- `SimulationHandle::step_event()`（每次恰好一个事件，返回 `EventPreview{time,seq,kind,object}`）与 `next_event()` 预览；
+  `(time, seq)` 严格单调。修复 `step_event` 的统计漂移（`stats_at` 只读快照、去掉中途 finalize、phase 用 phase_start），
+  逐事件步进与一次性运行**逐位一致**。
+- Studio 新增 Step Event、Preview next event、事件列表（当前高亮，最多 200 条）。
+
+### 对象
+
+- 新增 `robot`（3D 欧氏含 z）、`crane`（max(垂直,水平)）、`asrs_vehicle`（network）、`escalator`（复用 conveyor 皮带）；
+  参数复用 `TransporterParams`/`ConveyorParams`；示例 `robot.ofm`/`crane.ofm`/`asrs-vehicle.ofm`/`escalator.ofm`。
+- schema 同步 4 个新 kind（共 28 个）。
+
+### 验证
+
+- 424 个测试全绿（core 含 handle 9、engine_integration 24；CLI 78；model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.18.0 三平台产物发布并 SHA256 校验。
+
 ## v0.17.0 — 2026-11-15
 
 ### 运行控制与对象

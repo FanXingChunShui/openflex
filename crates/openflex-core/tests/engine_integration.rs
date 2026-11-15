@@ -684,3 +684,105 @@ fn rack_bay_walking_time_delays_picks() {
         "no bays means no walking"
     );
 }
+
+// ---------------------------------------------------------------------------
+// task-50: robot / crane / AS/RS vehicle / escalator
+// ---------------------------------------------------------------------------
+
+/// Build a dispatcher model whose single task executer serves a processor at
+/// height `z`; `kind` is one of transporter/robot/crane/asrs_vehicle.
+fn executer_model(kind: &str, executer_z: f64, processor_z: f64, network: &str) -> String {
+    format!(
+        r#"{{
+      "format": "openflex-model", "version": 1, "name": "executer",
+      "run": {{ "stop_time": 200.0, "warmup": 0.0, "seed": 1, "replications": 1 }},
+      "objects": [
+        {{ "name": "S", "kind": "source", "z": {processor_z}, "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 10.0 }}, "first_arrival": 0.0 }} }},
+        {{ "name": "P", "kind": "processor", "z": {processor_z}, "params": {{
+            "process_time": {{ "distribution": "constant", "value": 4.0 }},
+            "process_operator": "Dispatcher1" }} }},
+        {{ "name": "K", "kind": "sink", "params": {{}} }},
+        {{ "name": "Dispatcher1", "kind": "dispatcher", "params": {{}} }},
+        {{ "name": "E", "kind": "{kind}", "pos": [0, 0], "z": {executer_z}, "params": {{
+            "capacity": 1, "speed": 2.0, "home": "Dispatcher1"{network} }} }}
+      ],
+      "connections": [
+        {{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }},
+        {{ "from": "Dispatcher1", "to": "E" }}
+      ]
+    }}"#
+    )
+}
+
+/// A robot travels in 3D: the height difference counts even when the plan
+/// position is identical.
+#[test]
+fn robot_travels_in_three_dimensions() {
+    let flat = run(&executer_model("transporter", 0.0, 10.0, ""));
+    let robot = run(&executer_model("robot", 0.0, 10.0, ""));
+    assert!(
+        out(&robot, "P") < out(&flat, "P"),
+        "the robot must pay for the height difference: {} vs {}",
+        out(&robot, "P"),
+        out(&flat, "P"),
+    );
+}
+
+/// A crane moves vertically and horizontally at the same time, so a diagonal
+/// haul is shorter than the robot's straight 3D line.
+#[test]
+fn crane_is_faster_than_a_robot_on_a_diagonal() {
+    let robot = run(&executer_model("robot", 0.0, 10.0, ""));
+    let crane = run(&executer_model("crane", 0.0, 10.0, ""));
+    assert!(out(&crane, "P") > 0.0);
+    assert!(
+        out(&crane, "P") >= out(&robot, "P"),
+        "the crane never travels the longer 3D diagonal: {} vs {}",
+        out(&crane, "P"),
+        out(&robot, "P"),
+    );
+}
+
+/// An AS/RS vehicle follows its network instead of the straight line.
+#[test]
+fn asrs_vehicle_uses_the_network() {
+    let straight = run(&executer_model("asrs_vehicle", 0.0, 10.0, ""));
+    let network = run(&executer_model(
+        "asrs_vehicle",
+        0.0,
+        10.0,
+        r#", "network": [{ "from": "Dispatcher1", "to": "P", "distance": 40.0 }]"#,
+    ));
+    assert!(out(&straight, "P") > 0.0);
+    assert!(
+        out(&network, "P") < out(&straight, "P"),
+        "network travel must cost more: {} vs {}",
+        out(&network, "P"),
+        out(&straight, "P"),
+    );
+}
+
+/// An escalator moves people like a conveyor: length / speed is the travel
+/// time.
+#[test]
+fn escalator_transports_like_a_conveyor() {
+    let report = run(r#"{
+      "format": "openflex-model", "version": 1, "name": "escalator",
+      "run": { "stop_time": 200.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+      "objects": [
+        { "name": "S", "kind": "source", "params": {
+            "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+        { "name": "E", "kind": "escalator", "params": {
+            "speed": 2.0, "length": 10.0, "item_spacing": 1.0, "max_content": 50 } },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [ { "from": "S", "to": "E" }, { "from": "E", "to": "K" } ]
+    }"#);
+    assert_eq!(input(&report, "K"), 20.0);
+    assert!(
+        (report.objects["E"].avg_stay_time.mean - 5.0).abs() < 1e-9,
+        "escalator travel time: {}",
+        report.objects["E"].avg_stay_time.mean
+    );
+}

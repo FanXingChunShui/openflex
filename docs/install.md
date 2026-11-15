@@ -235,7 +235,7 @@ msiexec /i openflex-0.10.0-windows-x64.msi
 按用户安装（`perUser`），装到 `%LOCALAPPDATA%\OpenFlex\bin` 并自动加入用户 PATH，不需要管理员权限。
 卸载：设置 → 应用 → OpenFlex → 卸载，或 `msiexec /x openflex-0.10.0-windows-x64.msi`。
 
-### Docker / GHCR — 已发布到 0.16.0，`latest` 已同步
+### Docker / GHCR — 已发布到 0.16.0（0.17.0 镜像超过 25 分钟仍未出现，见下）
 
 GHCR 镜像由 [`.github/workflows/container.yml`](../.github/workflows/container.yml) 在 tag 时
 构建并推送。**当前 registry 状态（2026-11-15 用 `scripts/verify-ghcr.sh` 核对）**：
@@ -249,6 +249,7 @@ GHCR 镜像由 [`.github/workflows/container.yml`](../.github/workflows/containe
 | `0.14.0` | 200 | linux/amd64, linux/arm64 | `176855f8165a` |
 | `0.15.0` | 200 | linux/amd64, linux/arm64 | `101a38093806` |
 | `0.16.0` | 200 | linux/amd64, linux/arm64 | `ec55f04c8938` |
+| `0.17.0` | ❌ 尚未出现 | — | 发布后 **25 分钟**检查仍 404（历史 10–25 分钟）；请检查 Actions 里 container workflow 的 v0.17.0 run |
 | `latest` | 200 | linux/amd64, linux/arm64 | `ec55f04c8938`（= 0.16.0） |
 
 ```sh

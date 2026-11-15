@@ -70,6 +70,11 @@
                        border-radius: 6px; }
   #timeseries-chart { width: 100%; height: 160px; background: white; border: 1px solid #cbd5e1;
                       border-radius: 6px; }
+  #event-list { display: flex; flex-direction: column; gap: 2px; max-height: 150px; overflow: auto;
+                font-size: 11px; }
+  .event-row { display: grid; grid-template-columns: 64px 90px 1fr; gap: 6px; padding: 2px 4px;
+               border-radius: 4px; color: #334155; }
+  .event-row.current { background: #fef3c7; font-weight: 600; }
   .table-editor { border-collapse: collapse; width: 100%; font-size: 11px; }
   .table-editor th, .table-editor td { border: 1px solid #cbd5e1; padding: 2px; }
   .table-editor input { padding: 2px 4px; font-size: 11px; }
@@ -176,6 +181,12 @@
       <button id="resume" type="button">Resume</button>
       <button id="reset" type="button">Reset</button>
     </div>
+    <div class="row" id="event-controls">
+      <button id="step-event" type="button">Step event</button>
+      <button id="next-event" type="button">Preview next event</button>
+      <span id="event-preview" class="muted"></span>
+    </div>
+    <div id="event-list" data-event-list="1"></div>
     <div class="row" id="breakpoint-controls">
       <label class="muted">Breakpoint object <input id="breakpoint-object" placeholder="e.g. Processor1"></label>
       <span id="step-info" class="muted"></span>
@@ -262,6 +273,7 @@ const state = {
   contextObject: 0,
   timeseries: null,
   selectedTable: null,
+  events: [],
   scenarios: [{ name: "baseline", overrides: "" }],
 };
 
@@ -1394,8 +1406,11 @@ async function resetStudio() {
     state.lastStep = 0;
     state.runState = "stopped";
     state.runPaused = false;
+    state.events = [];
+    renderEventList();
     setRunState("Stopped");
     $("step-info").textContent = "step state reset";
+    $("event-preview").textContent = "";
     setStatus("step state reset");
   } catch (error) {
     setStatus(error.message, true);
@@ -1515,6 +1530,59 @@ async function stepRequest(until, objectName) {
   });
 }
 
+async function stepEvent() {
+  setStatus("stepping one event…");
+  try {
+    const response = await api("/api/step-event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    state.lastStep = Number(response.state ? response.state.now : state.lastStep);
+    state.report = response.report;
+    state.runState = "paused";
+    state.runPaused = true;
+    setRunState(response.finished ? "Stopped" : "Paused");
+    if (response.event) {
+      state.events.push(response.event);
+      if (state.events.length > 200) state.events.shift();
+    }
+    renderEventList();
+    renderReport(response.report);
+    $("step-info").textContent = `t=${state.lastStep.toFixed(4)}`;
+    if (response.finished) {
+      setStatus("no more events in this run");
+    } else if (response.event) {
+      setStatus(`event ${response.event.kind} on ${response.event.object || "simulation"} at t=${response.event.time.toFixed(4)}`);
+    }
+    await previewNextEvent(true);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+async function previewNextEvent(silent) {
+  try {
+    const response = await api("/api/next-event");
+    if (response.event) {
+      $("event-preview").textContent = `next: ${response.event.kind} ${response.event.object || ""} t=${Number(response.event.time).toFixed(3)}`;
+    } else {
+      $("event-preview").textContent = "no more events";
+    }
+  } catch (error) {
+    if (!silent) setStatus(error.message, true);
+  }
+}
+
+function renderEventList() {
+  const list = $("event-list");
+  const rows = state.events.slice(-50).map((event, index, all) => {
+    const current = index === all.length - 1 ? " current" : "";
+    return `<div class="event-row${current}"><span>t=${Number(event.time).toFixed(3)}</span><span>${escapeText(event.kind)}</span><span>${escapeText(event.object || "simulation")}</span></div>`;
+  }).join("");
+  list.innerHTML = rows || '<p class="muted">No events stepped yet.</p>';
+}
+
 // Run control uses the core SimulationHandle through /api/step, /api/pause and
 // /api/resume; the loop only decides how far to advance each visible segment.
 async function runLoop(token) {
@@ -1577,6 +1645,9 @@ async function runModel() {
     return;
   }
   state.lastStep = 0;
+  state.events = [];
+  renderEventList();
+  $("event-preview").textContent = "";
   state.runPaused = false;
   state.runState = "running";
   state.runToken += 1;
@@ -2158,6 +2229,8 @@ $("save-flow-json").addEventListener("click", saveFlowJson);
 $("undo").addEventListener("click", undoEdit);
 $("redo").addEventListener("click", redoEdit);
 $("step").addEventListener("click", stepOnce);
+$("step-event").addEventListener("click", stepEvent);
+$("next-event").addEventListener("click", () => previewNextEvent(false));
 $("step-forward").addEventListener("click", stepForward);
 $("resume").addEventListener("click", resumeStudio);
 $("reset").addEventListener("click", resetStudio);
@@ -2193,6 +2266,7 @@ window.addEventListener("keydown", event => {
   if (event.key.toLowerCase() === "y") { event.preventDefault(); redoEdit(); }
 });
 
+renderEventList();
 renderScenarioList();
 loadAll();
 requestAnimationFrame(animationFrame);

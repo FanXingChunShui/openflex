@@ -7,7 +7,7 @@ CI 只证明「能构建出文件」，不证明「装上以后能跑」——�
   [`scripts/verify-install.ps1`](../../scripts/verify-install.ps1)（Windows）
 - 记录汇总：[`docs/VERIFICATION.md`](../VERIFICATION.md)
 - 安装文档：[`docs/install.md`](../install.md)
-- **当前基线：v0.16.0（2026-11-15，11 个产物）**；本页记录按时间倒序，最新在最前。
+- **当前基线：v0.17.0（2026-11-15，11 个产物）**；本页记录按时间倒序，最新在最前。
 
 ## 1. 判定标准
 
@@ -29,7 +29,7 @@ CI 只证明「能构建出文件」，不证明「装上以后能跑」——�
 
 | 平台 | tar.gz | zip | deb | rpm | msi | brew | docker |
 |---|---|---|---|---|---|---|---|
-| macOS（Apple Silicon / Intel） | ✅ `install.sh` v0.1.0 / v0.4.0 / v0.10.0 / v0.11.0 / v0.12.0 / v0.13.0 / v0.14.0 / v0.16.0（2026-11-15） | ➖ | ➖ | ➖ | ➖ | ❌ tap 未创建（公式已同步到 v0.16.0 真实校验和） | 🟡 GHCR 镜像 0.10.0–0.16.0 均已发布并 CI 冒烟，本机无 docker 未本地跑 |
+| macOS（Apple Silicon / Intel） | ✅ `install.sh` v0.1.0 / v0.4.0 / v0.10.0 / v0.11.0 / v0.12.0 / v0.13.0 / v0.14.0 / v0.16.0 / v0.17.0（2026-11-15） | ➖ | ➖ | ➖ | ➖ | ❌ tap 未创建（公式已同步到 v0.17.0 真实校验和） | 🟡 GHCR 镜像 0.10.0–0.16.0 已发布并 CI 冒烟；0.17.0 发布 25 分钟后仍 404（待查 container run），本机无 docker 未本地跑 |
 | Linux x86_64 | ❌ | ➖ | ❌ | ❌ | ➖ | ❌ | ❌ |
 | Linux aarch64 | ❌ | ➖ | ❌ | ❌ | ➖ | ❌ | ❌ |
 | Windows x64 | ➖ | ❌ | ➖ | ➖ | ❌ | ➖ | ➖ |
@@ -39,7 +39,7 @@ CI 只证明「能构建出文件」，不证明「装上以后能跑」——�
 
 - **macOS tar.gz**：在本机（macOS 15.8.1 x86_64）用 `scripts/verify-install.sh` 跑通两种模式：
   `--from-dir`（22 项检查）与 `--version` 真实下载 GitHub Release
-  （v0.1.0 / v0.4.0 / v0.10.0 / v0.11.0 / v0.12.0 / v0.13.0 / v0.14.0 / v0.16.0 各 20 项检查），见第 4 节。
+  （v0.1.0 / v0.4.0 / v0.10.0 / v0.11.0 / v0.12.0 / v0.13.0 / v0.14.0 / v0.16.0 / v0.17.0 各 20 项检查），见第 4 节。
 - **Windows**：本仓库的验证是在 macOS 上开发的，没有 Windows 主机；`verify-install.ps1`
   在非 Windows 主机上只输出可复制的命令清单。需要有人在 Windows 10/11 上跑一次。
 - **deb/rpm**：`scripts/verify-install.sh --deb/--rpm` 已实现（deb 用私有 dpkg root，
@@ -97,6 +97,21 @@ MSI 验证前脚本会检查 `%LOCALAPPDATA%\OpenFlex\bin\openflex.exe` 是否�
 **已存在就 SKIP**，避免覆盖并卸载掉别人的真实安装。
 
 ## 4. 已完成的记录
+
+### 记录 2026-11-15 — macOS 15.8.1 (x86_64)，v0.17.0 GitHub Release 网络安装
+
+- 基线版本：**v0.17.0**（11 个产物）
+- 命令：
+
+  ```sh
+  OPENFLEX_REPO=FanXingChunShui/openflex \
+    bash scripts/verify-install.sh --version 0.17.0 --report /tmp/install-rows.md
+  ```
+
+- 结果：**RESULT: PASS**，20 项检查，0 失败 0 跳过（下载 → SHA-256 → 安装 →
+  `--version`=0.17.0 → `new`/`validate`/`run` JSON+CSV → 回执 → 卸载 → 重复卸载）。
+- 备注：`--report` 行 `| Darwin 24.6.0 (x86_64) | network | unknown | 0.17.0 | PASS | 2026-11-15 … |`
+  （platform 列为 `unknown` 是已知显示缺陷，不影响判定）。
 
 ### 记录 2026-11-15 — macOS 15.8.1 (x86_64)，v0.16.0 GitHub Release 网络安装
 
@@ -318,7 +333,7 @@ MSI 验证前脚本会检查 `%LOCALAPPDATA%\OpenFlex\bin\openflex.exe` 是否�
 | **命令清单** | 任意机器（无需安装） | `bash scripts/verify-install.sh --print-commands` 打印 macOS/Linux/Windows 全套可复制命令与判定标准 |
 | brew | **创建 `FanXingChunShui/homebrew-openflex` 仓库**（公式已同步到 v0.14.0） | 按 [packaging/homebrew/README.md](../../packaging/homebrew/README.md) 复制 `Formula/openflex.rb` 并推送 |
 | brew 本地校验 | 一台受支持的 Homebrew 环境 | `brew audit --strict --new Formula/openflex.rb` + `brew install --build-from-source` |
-| docker | 有 Docker 的机器 | `docker run --rm ghcr.io/fanxingchunshui/openflex:0.14.0 --version`（0.14.0 镜像已发布，待本地确认） |
+| docker | 有 Docker 的机器 | `docker run --rm ghcr.io/fanxingchunshui/openflex:0.17.0 --version`（0.17.0 镜像发布后；当前已发布到 0.16.0） |
 | winget / scoop | 提交清单（已同步 v0.14.0 的 URL/SHA256） | 提 PR 到 `microsoft/winget-pkgs` / 自建 bucket |
 
 > 每填一格，请同时更新 [docs/VERIFICATION.md](../VERIFICATION.md) 的「安装验证」章节，

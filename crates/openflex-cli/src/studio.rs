@@ -57,6 +57,13 @@ const MAX_REPLICATIONS: u32 = 100;
 struct RunnerReply {
     report: openflex_core::SimReport,
     state: openflex_core::SimulationState,
+    event: Option<openflex_core::EventPreview>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct RunnerEventReply {
+    event: Option<openflex_core::EventPreview>,
+    state: openflex_core::SimulationState,
 }
 
 enum RunnerCommand {
@@ -69,6 +76,12 @@ enum RunnerCommand {
     },
     Resume {
         reply: std::sync::mpsc::Sender<Result<RunnerReply, String>>,
+    },
+    StepEvent {
+        reply: std::sync::mpsc::Sender<Result<RunnerReply, String>>,
+    },
+    NextEvent {
+        reply: std::sync::mpsc::Sender<Result<RunnerEventReply, String>>,
     },
     Reset {
         reply: std::sync::mpsc::Sender<Result<RunnerReply, String>>,
@@ -120,6 +133,20 @@ impl NativeRunner {
 
     fn resume(&self) -> Result<RunnerReply, String> {
         self.request(|reply| RunnerCommand::Resume { reply })
+    }
+
+    fn step_event(&self) -> Result<RunnerReply, String> {
+        self.request(|reply| RunnerCommand::StepEvent { reply })
+    }
+
+    fn next_event(&self) -> Result<RunnerEventReply, String> {
+        let (reply, received) = std::sync::mpsc::channel();
+        self.sender
+            .send(RunnerCommand::NextEvent { reply })
+            .map_err(|_| "the simulation worker stopped".to_string())?;
+        received
+            .recv()
+            .map_err(|_| "the simulation worker stopped".to_string())?
     }
 
     fn reset(&self) -> Result<RunnerReply, String> {
@@ -179,6 +206,7 @@ fn run_worker(model: Model, receiver: std::sync::mpsc::Receiver<RunnerCommand>) 
                 let _ = reply.send(Ok(RunnerReply {
                     report,
                     state: simulation.state(),
+                    event: None,
                 }));
             }
             RunnerCommand::Pause { reply } => {
@@ -206,6 +234,7 @@ fn run_worker(model: Model, receiver: std::sync::mpsc::Receiver<RunnerCommand>) 
                 let _ = reply.send(Ok(RunnerReply {
                     report,
                     state: simulation.state(),
+                    event: None,
                 }));
             }
             RunnerCommand::Resume { reply } => {
@@ -227,6 +256,54 @@ fn run_worker(model: Model, receiver: std::sync::mpsc::Receiver<RunnerCommand>) 
                 let _ = reply.send(Ok(RunnerReply {
                     report,
                     state: simulation.state(),
+                    event: None,
+                }));
+            }
+            RunnerCommand::StepEvent { reply } => {
+                if handle.is_none() {
+                    match openflex_core::SimulationHandle::new(&model, &config, 0) {
+                        Ok(created) => handle = Some(created),
+                        Err(error) => {
+                            let _ = reply.send(Err(error.to_string()));
+                            continue;
+                        }
+                    }
+                }
+                let simulation = handle.as_mut().expect("handle was just created");
+                match simulation.step_event() {
+                    Ok(event) => {
+                        let mut report_model = model.clone();
+                        report_model.run.stop_time = simulation.now();
+                        report_model.run.replications = 1;
+                        let report = openflex_core::SimReport::from_replications(
+                            &report_model,
+                            vec![simulation.result()],
+                        );
+                        let _ = reply.send(Ok(RunnerReply {
+                            report,
+                            state: simulation.state(),
+                            event,
+                        }));
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error.to_string()));
+                    }
+                }
+            }
+            RunnerCommand::NextEvent { reply } => {
+                if handle.is_none() {
+                    match openflex_core::SimulationHandle::new(&model, &config, 0) {
+                        Ok(created) => handle = Some(created),
+                        Err(error) => {
+                            let _ = reply.send(Err(error.to_string()));
+                            continue;
+                        }
+                    }
+                }
+                let simulation = handle.as_ref().expect("handle was just created");
+                let _ = reply.send(Ok(RunnerEventReply {
+                    event: simulation.next_event(),
+                    state: simulation.state(),
                 }));
             }
             RunnerCommand::Reset { reply } => {
@@ -240,6 +317,7 @@ fn run_worker(model: Model, receiver: std::sync::mpsc::Receiver<RunnerCommand>) 
                         items_completed: 0,
                         objects: std::collections::BTreeMap::new(),
                     },
+                    event: None,
                 }));
             }
             RunnerCommand::Shutdown => break,
@@ -365,6 +443,8 @@ fn handle_connection(
         ("POST", "/api/model/objects") => add_object(&mut stream, state, model_path, &request.body),
         ("POST", "/api/run") => run_model_endpoint(&mut stream, state, &request.body),
         ("POST", "/api/step") => step_endpoint(&mut stream, state, &request.body),
+        ("POST", "/api/step-event") => step_event_endpoint(&mut stream, state),
+        ("GET", "/api/next-event") => next_event_endpoint(&mut stream, state),
         ("POST", "/api/pause") => {
             let runner = ensure_runner(state);
             match runner.pause() {
@@ -1621,6 +1701,53 @@ fn table_endpoint(
         model,
         serde_json::json!({ "table": request.table }),
     )
+}
+
+fn next_event_endpoint(stream: &mut TcpStream, state: &mut StudioState) -> std::io::Result<()> {
+    let runner = ensure_runner(state);
+    match runner.next_event() {
+        Ok(reply) => write_json(
+            stream,
+            "200 OK",
+            &serde_json::json!({
+                "now": reply.state.now,
+                "event": reply.event,
+                "finished": reply.event.is_none(),
+            })
+            .to_string(),
+        ),
+        Err(error) => write_json(
+            stream,
+            "500 Internal Server Error",
+            &serde_json::json!({ "ok": false, "error": error }).to_string(),
+        ),
+    }
+}
+
+/// Advance exactly one engine event through the native simulation handle.
+fn step_event_endpoint(stream: &mut TcpStream, state: &mut StudioState) -> std::io::Result<()> {
+    let runner = ensure_runner(state);
+    match runner.step_event() {
+        Ok(reply) => {
+            let finished = reply.event.is_none();
+            write_json(
+                stream,
+                "200 OK",
+                &serde_json::json!({
+                    "report": reply.report,
+                    "state": reply.state,
+                    "event": reply.event,
+                    "finished": finished,
+                })
+                .to_string(),
+            )
+        }
+        Err(error) => write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": error }).to_string(),
+        ),
+    }
 }
 
 /// Read one HTTP request with strict header/body limits.

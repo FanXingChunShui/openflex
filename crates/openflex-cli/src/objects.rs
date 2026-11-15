@@ -100,6 +100,22 @@ pub fn describe_kind(kind: ObjectKind) -> (&'static str, &'static str) {
             "A generic task executer.",
             "speed: distance per time unit, default 1\ncapacity: integer, default 1",
         ),
+        ObjectKind::Robot => (
+            "A mobile robot: a task executer that travels in three dimensions.",
+            "capacity: integer, default 1\nspeed: distance per time unit, default 1\nload_time / unload_time: distributions\nhome: optional object name\nnetwork: optional [{from,to,distance}]",
+        ),
+        ObjectKind::Crane => (
+            "A gantry crane: vertical and horizontal travel in one leg.",
+            "capacity: integer, default 1\nspeed: distance per time unit, default 1\nload_time / unload_time: distributions\nhome: optional object name",
+        ),
+        ObjectKind::AsrsVehicle => (
+            "An AS/RS vehicle: a task executer that travels on a network.",
+            "capacity: integer, default 1\nspeed: distance per time unit, default 1\nload_time / unload_time: distributions\nhome: optional object name\nnetwork: optional [{from,to,distance}]",
+        ),
+        ObjectKind::Escalator => (
+            "A continuous people conveyor.",
+            "speed: distance per time unit, default 1\nlength: default 10\nitem_spacing: default 1\nmax_content: default 1000",
+        ),
     }
 }
 

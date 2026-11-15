@@ -702,6 +702,72 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                 );
             }
         }
+        crate::model::ObjectParams::Escalator(params) => {
+            if params.speed <= 0.0 {
+                issues.push(ValidationIssue::new(location("speed"), "must be positive"));
+            }
+            if let Some(curve) = params.curve {
+                if !curve.radius.is_finite() || curve.radius <= 0.0 {
+                    issues.push(ValidationIssue::new(
+                        location("curve.radius"),
+                        "must be positive",
+                    ));
+                }
+                if !curve.angle.is_finite() || curve.angle <= 0.0 || curve.angle > 360.0 {
+                    issues.push(ValidationIssue::new(
+                        location("curve.angle"),
+                        "must be between 0 and 360 degrees",
+                    ));
+                }
+            }
+            if params.length <= 0.0 {
+                issues.push(ValidationIssue::new(location("length"), "must be positive"));
+            }
+            if params.item_spacing <= 0.0 {
+                issues.push(ValidationIssue::new(
+                    location("item_spacing"),
+                    "must be positive",
+                ));
+            }
+            if params.max_content == 0 {
+                issues.push(ValidationIssue::new(
+                    location("max_content"),
+                    "must be at least 1",
+                ));
+            }
+            for (i, eye) in params.photo_eyes.iter().enumerate() {
+                if !eye.position.is_finite() || eye.position <= 0.0 || eye.position >= params.length
+                {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("photo_eyes[{i}].position")),
+                        "must be inside the belt (0 < position < length)",
+                    ));
+                }
+            }
+            if let Some(inputs) = params.join_inputs
+                && inputs < 2
+            {
+                issues.push(ValidationIssue::new(
+                    location("join_inputs"),
+                    "a join conveyor needs at least two inputs",
+                ));
+            }
+            for (i, station) in params.stations.iter().enumerate() {
+                if !station.position.is_finite()
+                    || station.position <= 0.0
+                    || station.position >= params.length
+                {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("stations[{i}].position")),
+                        "must be inside the belt (0 < position < length)",
+                    ));
+                }
+                distribution!(
+                    &format!("stations[{i}].process_time"),
+                    &station.process_time
+                );
+            }
+        }
         crate::model::ObjectParams::Combiner(params) => {
             distribution!("setup_time", &params.setup_time);
             distribution!("process_time", &params.process_time);
@@ -719,6 +785,87 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
             }
         }
         crate::model::ObjectParams::Transporter(params) => {
+            if params.capacity == 0 {
+                issues.push(ValidationIssue::new(
+                    location("capacity"),
+                    "must be at least 1",
+                ));
+            }
+            if params.speed <= 0.0 {
+                issues.push(ValidationIssue::new(location("speed"), "must be positive"));
+            }
+            distribution!("load_time", &params.load_time);
+            distribution!("unload_time", &params.unload_time);
+            for (i, edge) in params.network.iter().enumerate() {
+                if edge.from.trim().is_empty() || edge.to.trim().is_empty() {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("network[{i}]")),
+                        "network edges need a from and a to node",
+                    ));
+                }
+                if !edge.distance.is_finite() || edge.distance <= 0.0 {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("network[{i}].distance")),
+                        "must be positive",
+                    ));
+                }
+            }
+        }
+        crate::model::ObjectParams::Robot(params) => {
+            if params.capacity == 0 {
+                issues.push(ValidationIssue::new(
+                    location("capacity"),
+                    "must be at least 1",
+                ));
+            }
+            if params.speed <= 0.0 {
+                issues.push(ValidationIssue::new(location("speed"), "must be positive"));
+            }
+            distribution!("load_time", &params.load_time);
+            distribution!("unload_time", &params.unload_time);
+            for (i, edge) in params.network.iter().enumerate() {
+                if edge.from.trim().is_empty() || edge.to.trim().is_empty() {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("network[{i}]")),
+                        "network edges need a from and a to node",
+                    ));
+                }
+                if !edge.distance.is_finite() || edge.distance <= 0.0 {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("network[{i}].distance")),
+                        "must be positive",
+                    ));
+                }
+            }
+        }
+        crate::model::ObjectParams::Crane(params) => {
+            if params.capacity == 0 {
+                issues.push(ValidationIssue::new(
+                    location("capacity"),
+                    "must be at least 1",
+                ));
+            }
+            if params.speed <= 0.0 {
+                issues.push(ValidationIssue::new(location("speed"), "must be positive"));
+            }
+            distribution!("load_time", &params.load_time);
+            distribution!("unload_time", &params.unload_time);
+            for (i, edge) in params.network.iter().enumerate() {
+                if edge.from.trim().is_empty() || edge.to.trim().is_empty() {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("network[{i}]")),
+                        "network edges need a from and a to node",
+                    ));
+                }
+                if !edge.distance.is_finite() || edge.distance <= 0.0 {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("network[{i}].distance")),
+                        "must be positive",
+                    ));
+                }
+            }
+        }
+        crate::model::ObjectParams::AsrsVehicle(params) => {
             if params.capacity == 0 {
                 issues.push(ValidationIssue::new(
                     location("capacity"),

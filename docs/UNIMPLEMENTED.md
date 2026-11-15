@@ -15,7 +15,7 @@
 | 5 | **Conveyor 曲线与完整合流** | 直线带、PhotoEye/Station/Join（入口轮转）；✅ 可选 `curve: {radius, angle}`，按弧长计入行程时间（速度不变） | 无 3D 转弯几何/多段曲线/斜坡、无 Join 的 slug/gap 精细策略、无 Merge Controller、无电机/转盘/Transfers、PhotoEye 无遮挡持续状态/计数 | L |
 | 6 | **Rack 货位精细放置** | (level,aisle,bay) 分配 + 行走时间 + pick_policy | 无空位查表/并发取货、无 SKU/批次策略 | S |
 | 7 | **MultiProcessor 完整语义** | 多槽并行、每槽 setup/process、整批 crew 申请 | 无每槽独立操作员/故障、无槽位选择策略（优先级/最短队列） | M |
-| 8 | **缺失对象** | Emptier（经 basic_fr.emptier） | Robot/Crane/ASRSvehicle、Conveyor 电机/转盘、Fluid 泵/混合器、Escalator 等 | L–XL |
+| 8 | **缺失对象** | Emptier + Robot/Crane/ASRS/Escalator 最小族 | Conveyor 电机/转盘、Fluid 泵/混合器、独立人员密度/碰撞模型 | M |
 | 9 | **全局表（Global Table）** | schema/校验/访问器 + 表达式 `table(...)` 只读访问 | 写入/表驱动参数更新未支持 | S |
 | 10 | **完整任务序列** | 固定两段 + `task_sequence` 追加段折算时间 | 无任意重排/条件分支、无物理载货量、无路网节点图 | L |
 | 11 | **完整触发器集合** | OnCreate/Entry/Exit/Receive/Message/Breakdown/Repair/PhotoEye | 无 OnContentChange/OnStateChange/OnDraw/OnReset/OnStop/OnResume 等 | M |
@@ -35,7 +35,7 @@
 
 | # | 功能 | 现状 | 缺口 | 工作量 |
 |---|---|---|---|---|
-| 18 | **交互式运行控制** | 原生 `SimulationHandle` step/pause/resume/state + Studio 控件 | 无逐事件单步/trace 回放/实时时钟速度 | S |
+| 18 | **交互式运行控制** | 原生句柄 step/pause/resume/state/snapshot + 逐事件 step_event/next_event + Studio Step Event/事件列表 | 无 trace 回放/实时时钟速度 | S |
 | 19 | **检查点多复现/续跑 trace** | 单复现快照；trace 不随续跑 | 多复现检查点、续跑段 trace、无限定时器以 null 存取的完整语义 | S–M |
 | 20 | **统计高级方法** | t 区间/Little 检查、`run --timeseries` 区间平均 content 序列 | 无批均值法/方差缩减/自相关处理；时间序列为区间平均而非瞬时点 | M |
 | 21 | **Experimenter UI** | CLI `experiment` + Studio Experimenter（场景×复现对比表） | 无场景对比图表/参数选择器 | S |

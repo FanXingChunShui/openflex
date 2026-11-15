@@ -142,3 +142,138 @@ fn step_until_validates_its_target() {
     assert!(handle.step_until(25.0).is_err(), "backwards");
     assert!(handle.step_until(250.0).is_err(), "past stop_time");
 }
+
+// ---------------------------------------------------------------------------
+// task-50: event-by-event stepping
+// ---------------------------------------------------------------------------
+
+/// Stepping event by event and then advancing to the stop time equals a single
+/// run.
+#[test]
+fn step_event_walks_the_whole_run() {
+    let model = line_model();
+    let config = config(200.0);
+    let direct = simulate(&model, &config, 0).expect("direct run");
+
+    let mut handle = SimulationHandle::new(&model, &config, 0).expect("handle");
+    let mut events = 0usize;
+    while handle.step_event().expect("step").is_some() {
+        events += 1;
+        assert!(events < 100_000, "event loop must terminate");
+    }
+    assert!(events > 0, "the model must have events");
+    handle.step_until(200.0).expect("advance to stop");
+    assert_eq!(handle.result(), direct);
+}
+
+/// `next_event` previews the head of the calendar and the preview returned by
+/// `step_event` matches it; previews never move backwards.
+#[test]
+fn next_event_previews_the_calendar() {
+    let model = line_model();
+    let config = config(200.0);
+    let mut handle = SimulationHandle::new(&model, &config, 0).expect("handle");
+
+    let first = handle.next_event().expect("first event");
+    assert_eq!(
+        first.object.as_deref(),
+        Some("S"),
+        "the first event is an arrival"
+    );
+    assert_eq!(first.kind, "arrive");
+    assert_eq!(first.time, 0.0);
+
+    let mut previous = (f64::NEG_INFINITY, 0u64);
+    let mut seen = 0usize;
+    while let Some(preview) = handle.next_event() {
+        assert!(
+            (preview.time, preview.seq) > previous,
+            "preview order must follow (time, seq)"
+        );
+        previous = (preview.time, preview.seq);
+        let handled = handle.step_event().expect("step").expect("event");
+        assert_eq!(handled, preview, "the step must handle the previewed event");
+        seen += 1;
+        if seen >= 50 {
+            break;
+        }
+    }
+    assert!(seen > 0);
+}
+
+/// After the horizon is reached `next_event` and `step_event` both report
+/// "nothing to do".
+#[test]
+fn stepping_stops_at_the_horizon() {
+    let model = line_model();
+    let config = config(100.0);
+    let mut handle = SimulationHandle::new(&model, &config, 0).expect("handle");
+    handle.step_until(100.0).expect("step");
+    assert!(
+        handle.next_event().is_none(),
+        "no event left before stop_time"
+    );
+    assert!(handle.step_event().expect("step").is_none());
+}
+
+/// A complex model (setup, blocked time, queueing) must produce the same
+/// time-weighted statistics whether it is stepped event by event or run once.
+#[test]
+fn step_event_matches_a_single_run_on_a_complex_model() {
+    let model = model(
+        r#"{
+      "format": "openflex-model", "version": 1, "name": "handle-complex",
+      "run": { "stop_time": 300.0, "warmup": 0.0, "seed": 3, "replications": 1 },
+      "objects": [
+        { "name": "S", "kind": "source", "params": {
+            "interarrival": { "distribution": "exponential", "mean": 4.0 } } },
+        { "name": "Q", "kind": "queue", "params": { "max_content": 1000 } },
+        { "name": "P", "kind": "processor", "params": {
+            "setup_time": { "distribution": "constant", "value": 2.0 },
+            "process_time": { "distribution": "exponential", "mean": 5.0 },
+            "failure": {
+              "mtbf": { "distribution": "constant", "value": 60.0 },
+              "mttr": { "distribution": "constant", "value": 10.0 } } } },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [
+        { "from": "S", "to": "Q" }, { "from": "Q", "to": "P" }, { "from": "P", "to": "K" }
+      ]
+    }"#,
+    );
+    let config = config(300.0);
+    let direct = simulate(&model, &config, 0).expect("direct run");
+
+    let mut handle = SimulationHandle::new(&model, &config, 0).expect("handle");
+    while handle.step_event().expect("step").is_some() {
+        // Reading the state must not disturb the run (the studio does this on
+        // every frame).
+        let _ = handle.state();
+    }
+    handle.step_until(300.0).expect("advance to stop");
+    let stepped = handle.result();
+    assert_eq!(stepped.items_created, direct.items_created);
+    assert_eq!(stepped.items_completed, direct.items_completed);
+    for (name, expected) in &direct.objects {
+        let actual = &stepped.objects[name];
+        assert!(
+            (actual.utilization - expected.utilization).abs() < 1e-9,
+            "{name} utilization: {} vs {}",
+            actual.utilization,
+            expected.utilization
+        );
+        assert!(
+            (actual.avg_content - expected.avg_content).abs() < 1e-9,
+            "{name} avg_content: {} vs {}",
+            actual.avg_content,
+            expected.avg_content
+        );
+        assert!(
+            (actual.state_times.blocked - expected.state_times.blocked).abs() < 1e-9,
+            "{name} blocked: {} vs {}",
+            actual.state_times.blocked,
+            expected.state_times.blocked
+        );
+    }
+    assert_eq!(stepped, direct, "the full result must match");
+}

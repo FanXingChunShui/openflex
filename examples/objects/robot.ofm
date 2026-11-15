@@ -1,0 +1,24 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "robot",
+  "time_unit": "seconds",
+  "description": "A robot task executer travels in 3D: the processor sits 10 height units above the robot home",
+  "run": {"stop_time": 200.0, "warmup": 0.0, "seed": 1, "replications": 1},
+  "objects": [
+    {"name": "Source1", "kind": "source", "z": 10, "params": {
+      "interarrival": {"distribution": "constant", "value": 10.0}, "first_arrival": 0.0}},
+    {"name": "Processor1", "kind": "processor", "z": 10, "params": {
+      "process_time": {"distribution": "constant", "value": 4.0},
+      "process_operator": "Dispatcher1"}},
+    {"name": "Sink1", "kind": "sink", "params": {}},
+    {"name": "Dispatcher1", "kind": "dispatcher", "params": {}},
+    {"name": "Robot1", "kind": "robot", "pos": [0, 0], "z": 0, "params": {
+      "capacity": 1, "speed": 2.0, "home": "Dispatcher1"}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Processor1"},
+    {"from": "Processor1", "to": "Sink1"},
+    {"from": "Dispatcher1", "to": "Robot1"}
+  ]
+}

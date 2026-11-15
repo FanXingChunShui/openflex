@@ -842,7 +842,7 @@ impl ObjectRt {
             on_shift: true,
         };
         match &object.params {
-            ObjectParams::Conveyor(params) => {
+            ObjectParams::Conveyor(params) | ObjectParams::Escalator(params) => {
                 // B3 curve: the straight length plus the arc length of an
                 // optional curved section (same speed).
                 let curve = params
@@ -916,7 +916,7 @@ impl ObjectRt {
             ObjectKind::Separator => {
                 self.content.len() + usize::from(!self.pending_parts.is_empty())
             }
-            ObjectKind::Conveyor => self.belt_items.len(),
+            ObjectKind::Conveyor | ObjectKind::Escalator => self.belt_items.len(),
             ObjectKind::Merge => self.merge_slots.iter().flatten().count(),
             ObjectKind::MultiProcessor => {
                 self.content.len() + self.lanes.iter().filter(|lane| lane.item.is_some()).count()
@@ -1085,6 +1085,62 @@ impl ObjectRt {
         }
     }
 
+    /// Statistics at `now` **without** touching the accumulators (task-50).
+    ///
+    /// `stats()` assumes `finalize()` already ran; this variant adds the still
+    /// open interval on a copy, so callers can read statistics as often as they
+    /// like (the studio does it on every frame) without changing the numbers.
+    fn stats_at(&self, now: f64, elapsed: f64) -> ObjectStats {
+        let denom = elapsed.max(1e-12);
+        let dt = (now - self.last_state_change).max(0.0);
+        let mut states = self.acc.states;
+        let mut detail = self.acc.detail;
+        match self.state {
+            State::Idle => states.idle += dt,
+            State::Busy => {
+                states.busy += dt;
+                // The phase detail runs on its own clock (`phase_start`).
+                let phase_dt = (now - self.phase_start).max(0.0);
+                match self.phase {
+                    Phase::Setup => detail.setup += phase_dt,
+                    Phase::Processing => detail.processing += phase_dt,
+                    _ => {}
+                }
+            }
+            State::Blocked => {
+                states.blocked += dt;
+                match self.block_reason {
+                    BlockReason::Operator => detail.waiting_operator += dt,
+                    BlockReason::Transport => detail.waiting_transport += dt,
+                    BlockReason::Output => {}
+                }
+            }
+            State::Down => states.down += dt,
+            State::OffShift => states.off_shift += dt,
+        }
+        states.setup = detail.setup;
+        states.processing = detail.processing;
+        states.waiting_for_operator = detail.waiting_operator;
+        states.waiting_for_transport = detail.waiting_transport;
+        let content_dt = (now - self.last_content_change).max(0.0);
+        let content_integral = self.acc.content_integral + self.held() as f64 * content_dt;
+        ObjectStats {
+            kind: self.kind,
+            input_count: self.acc.input,
+            output_count: self.acc.output,
+            avg_content: content_integral / denom,
+            max_content: self.acc.max_content.max(self.held() as u32),
+            avg_stay_time: if self.acc.stay_count > 0 {
+                self.acc.stay_sum / self.acc.stay_count as f64
+            } else {
+                0.0
+            },
+            state_times: states,
+            utilization: states.busy / denom,
+            throughput: self.acc.output as f64 / denom,
+        }
+    }
+
     fn stats(&self, elapsed: f64) -> ObjectStats {
         let denom = elapsed.max(1e-12);
         let mut state_times = self.acc.states;
@@ -1242,6 +1298,19 @@ pub fn resume_from_checkpoint(
     Ok(sim.replication_result(index, resume_at))
 }
 
+/// Summary of one scheduled event (task-50).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventPreview {
+    /// Model time the event fires.
+    pub time: f64,
+    /// Insertion sequence number (breaks ties between events at the same time).
+    pub seq: u64,
+    /// Stable event name (`arrive`, `flow`, `process_done`, …).
+    pub kind: String,
+    /// Name of the object the event belongs to, if any.
+    pub object: Option<String>,
+}
+
 /// A live simulation that can be advanced incrementally (task-47).
 ///
 /// The one-shot helpers ([`simulate_until`], [`resume_from_checkpoint`]) build a
@@ -1302,7 +1371,6 @@ impl<'m> SimulationHandle<'m> {
         self.sim.pause_at = Some(time);
         self.sim.run_events()?;
         self.sim.now = time;
-        self.sim.finalize_stats();
         Ok(())
     }
 
@@ -1316,7 +1384,6 @@ impl<'m> SimulationHandle<'m> {
             return Err(err);
         }
         self.sim.drain_instant_events()?;
-        self.sim.finalize_stats();
         self.paused = true;
         Ok(())
     }
@@ -1332,6 +1399,20 @@ impl<'m> SimulationHandle<'m> {
         }
         self.paused = false;
         Ok(())
+    }
+
+    /// task-50: handle exactly one event. `None` means the event calendar is
+    /// exhausted for the current horizon (stop time or pause point).
+    pub fn step_event(&mut self) -> Result<Option<EventPreview>, SimError> {
+        if self.paused {
+            self.resume()?;
+        }
+        self.sim.step_one_event()
+    }
+
+    /// task-50: the next event that would be handled, without handling it.
+    pub fn next_event(&self) -> Option<EventPreview> {
+        self.sim.peek_event()
     }
 
     /// Checkpoint of the current state (same format as [`simulate_until`]).
@@ -1351,7 +1432,7 @@ impl<'m> SimulationHandle<'m> {
         let elapsed = (self.sim.now - self.sim.config.warmup).max(0.0);
         let mut objects = BTreeMap::new();
         for object in &self.sim.objects {
-            objects.insert(object.name.clone(), object.stats(elapsed));
+            objects.insert(object.name.clone(), object.stats_at(self.sim.now, elapsed));
         }
         SimulationState {
             now: self.sim.now,
@@ -1591,6 +1672,9 @@ impl<'m> Simulation<'m> {
                 ObjectParams::Person(params) => params.home.clone(),
                 ObjectParams::Agv(params) => params.home.clone(),
                 ObjectParams::Elevator(params) => params.home.clone(),
+                ObjectParams::Robot(params) => params.home.clone(),
+                ObjectParams::Crane(params) => params.home.clone(),
+                ObjectParams::AsrsVehicle(params) => params.home.clone(),
                 _ => None,
             };
             if let Some(home) = home
@@ -2044,6 +2128,62 @@ impl<'m> Simulation<'m> {
         Ok(())
     }
 
+    /// task-50: preview the next event without consuming it.
+    fn peek_event(&self) -> Option<EventPreview> {
+        let Reverse(next) = self.events.peek()?;
+        let horizon = match self.pause_at {
+            Some(pause) => pause.min(self.config.stop_time),
+            None => self.config.stop_time,
+        };
+        if next.time >= horizon - EPS {
+            return None;
+        }
+        let (index, kind, _) = describe_event(&next.kind);
+        Some(EventPreview {
+            time: next.time,
+            seq: next.seq,
+            kind: kind.to_string(),
+            object: index.map(|index| self.objects[index].name.clone()),
+        })
+    }
+
+    /// task-50: handle exactly one event.
+    fn step_one_event(&mut self) -> Result<Option<EventPreview>, SimError> {
+        let Some(Reverse(next)) = self.events.peek() else {
+            return Ok(None);
+        };
+        let horizon = match self.pause_at {
+            Some(pause) => pause.min(self.config.stop_time),
+            None => self.config.stop_time,
+        };
+        if next.time >= horizon - EPS {
+            return Ok(None);
+        }
+        let (object, kind, _) = describe_event(&next.kind);
+        let preview = EventPreview {
+            time: next.time,
+            seq: next.seq,
+            kind: kind.to_string(),
+            object: object.map(|index| self.objects[index].name.clone()),
+        };
+        let Some(Reverse(event)) = self.events.pop() else {
+            return Ok(None);
+        };
+        if event.time > self.now {
+            self.now = event.time;
+        }
+        self.event_count += 1;
+        if self.event_count > MAX_EVENTS {
+            return Err(SimError::EventLimit(MAX_EVENTS));
+        }
+        self.record_trace(event.time, event.seq, &event.kind);
+        self.handle(event.kind)?;
+        if let Some(err) = self.trigger_error.take() {
+            return Err(err);
+        }
+        Ok(Some(preview))
+    }
+
     /// Fire a run-level trigger (`on_stop` / `on_resume`) on every object.
     fn fire_run_triggers(&mut self, trigger: SimTrigger) {
         for index in 0..self.objects.len() {
@@ -2057,7 +2197,10 @@ impl<'m> Simulation<'m> {
         let elapsed = (final_time - self.config.warmup).max(0.0);
         let mut objects = BTreeMap::new();
         for object in &self.objects {
-            objects.insert(object.name.clone(), object.stats(elapsed));
+            objects.insert(
+                object.name.clone(),
+                object.stats_at(self.now.max(final_time), elapsed),
+            );
         }
         let items_in_system: u64 = self
             .objects
@@ -2815,7 +2958,7 @@ impl<'m> Simulation<'m> {
             ObjectParams::MultiProcessor(params) => {
                 (object.effective_content() as u32) < params.slots.max(1)
             }
-            ObjectParams::Conveyor(params) => object
+            ObjectParams::Conveyor(params) | ObjectParams::Escalator(params) => object
                 .belt
                 .as_ref()
                 .is_some_and(|belt| belt.entry_free(params.max_content)),
@@ -2845,6 +2988,9 @@ impl<'m> Simulation<'m> {
             | ObjectParams::Person(_)
             | ObjectParams::Agv(_)
             | ObjectParams::Elevator(_)
+            | ObjectParams::Robot(_)
+            | ObjectParams::Crane(_)
+            | ObjectParams::AsrsVehicle(_)
             | ObjectParams::Dispatcher(_)
             | ObjectParams::Resource(_) => false,
             ObjectParams::BasicFr(params) => {
@@ -2877,7 +3023,7 @@ impl<'m> Simulation<'m> {
             ObjectKind::Queue | ObjectKind::Rack => self.flow_queue(index)?,
             ObjectKind::Processor => self.flow_processor(index)?,
             ObjectKind::MultiProcessor => self.flow_multiprocessor(index)?,
-            ObjectKind::Conveyor => self.flow_conveyor(index)?,
+            ObjectKind::Conveyor | ObjectKind::Escalator => self.flow_conveyor(index)?,
             ObjectKind::Combiner => self.flow_combiner(index)?,
             ObjectKind::Separator => self.flow_separator(index)?,
             ObjectKind::Merge => self.flow_merge(index)?,
@@ -3164,7 +3310,7 @@ impl<'m> Simulation<'m> {
                     self.flow_processor(target)?;
                 }
             }
-            ObjectKind::Conveyor => {
+            ObjectKind::Conveyor | ObjectKind::Escalator => {
                 self.sync_belt(target);
                 self.process_belt_stops(target)?;
                 self.objects[target].note_content(now);
@@ -5646,9 +5792,11 @@ impl<'m> Simulation<'m> {
 
     fn transport_load_time(&mut self, transporter: usize) -> f64 {
         let distribution = match &self.model.objects[transporter].params {
-            ObjectParams::Transporter(params) | ObjectParams::Person(params) => {
-                params.load_time.clone()
-            }
+            ObjectParams::Transporter(params)
+            | ObjectParams::Person(params)
+            | ObjectParams::Robot(params)
+            | ObjectParams::Crane(params)
+            | ObjectParams::AsrsVehicle(params) => params.load_time.clone(),
             ObjectParams::Agv(params) => params.load_time.clone(),
             _ => Distribution::Constant { value: 0.0 },
         };
@@ -5657,9 +5805,11 @@ impl<'m> Simulation<'m> {
 
     fn transport_unload_time(&mut self, transporter: usize) -> f64 {
         let distribution = match &self.model.objects[transporter].params {
-            ObjectParams::Transporter(params) | ObjectParams::Person(params) => {
-                params.unload_time.clone()
-            }
+            ObjectParams::Transporter(params)
+            | ObjectParams::Person(params)
+            | ObjectParams::Robot(params)
+            | ObjectParams::Crane(params)
+            | ObjectParams::AsrsVehicle(params) => params.unload_time.clone(),
             ObjectParams::Agv(params) => params.unload_time.clone(),
             _ => Distribution::Constant { value: 0.0 },
         };
@@ -5795,6 +5945,23 @@ impl<'m> Simulation<'m> {
         if self.transport_is_elevator(transporter) {
             return (self.objects[from].z - self.objects[to].z).abs();
         }
+        match self.objects[transporter].kind {
+            // task-50: a robot moves in three dimensions.
+            ObjectKind::Robot => {
+                let dx = self.objects[to].position[0] - self.objects[from].position[0];
+                let dy = self.objects[to].position[1] - self.objects[from].position[1];
+                let dz = self.objects[to].z - self.objects[from].z;
+                return (dx * dx + dy * dy + dz * dz).sqrt();
+            }
+            // task-50: a gantry crane travels vertically and horizontally at
+            // the same time, so one leg is the longer of the two.
+            ObjectKind::Crane => {
+                let dz = (self.objects[to].z - self.objects[from].z).abs();
+                let horizontal = distance(self.objects[from].position, self.objects[to].position);
+                return dz.max(horizontal);
+            }
+            _ => {}
+        }
         if self.objects[transporter].kind == ObjectKind::Person
             && let Some(grid) = self.model.grid.as_ref()
             && let Some(distance) =
@@ -5803,9 +5970,11 @@ impl<'m> Simulation<'m> {
             return distance;
         }
         let edges: Vec<NetworkEdge> = match &self.model.objects[transporter].params {
-            ObjectParams::Transporter(params) | ObjectParams::Person(params) => {
-                params.network.clone()
-            }
+            ObjectParams::Transporter(params)
+            | ObjectParams::Person(params)
+            | ObjectParams::Robot(params)
+            | ObjectParams::Crane(params)
+            | ObjectParams::AsrsVehicle(params) => params.network.clone(),
             ObjectParams::Agv(params) => params.network.clone(),
             _ => Vec::new(),
         };
@@ -5873,6 +6042,8 @@ impl<'m> Simulation<'m> {
             }
             ObjectParams::Agv(params) => params.speed.max(EPS),
             ObjectParams::Elevator(params) => params.speed.max(EPS),
+            ObjectParams::Robot(params) | ObjectParams::Crane(params) => params.speed.max(EPS),
+            ObjectParams::AsrsVehicle(params) => params.speed.max(EPS),
             _ => 1.0,
         }
     }
@@ -7602,7 +7773,13 @@ fn grid_distance(grid: &Grid, from: [f64; 2], to: [f64; 2]) -> Option<f64> {
 fn is_task_executer_kind(kind: ObjectKind) -> bool {
     matches!(
         kind,
-        ObjectKind::Transporter | ObjectKind::Person | ObjectKind::Agv | ObjectKind::Elevator
+        ObjectKind::Transporter
+            | ObjectKind::Person
+            | ObjectKind::Agv
+            | ObjectKind::Elevator
+            | ObjectKind::Robot
+            | ObjectKind::Crane
+            | ObjectKind::AsrsVehicle
     )
 }
 
