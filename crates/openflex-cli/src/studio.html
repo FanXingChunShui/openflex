@@ -68,6 +68,14 @@
                border-radius: 6px; }
   #replication-chart { width: 100%; height: 150px; background: white; border: 1px solid #cbd5e1;
                        border-radius: 6px; }
+  #timeseries-chart { width: 100%; height: 160px; background: white; border: 1px solid #cbd5e1;
+                      border-radius: 6px; }
+  .context-menu { position: fixed; z-index: 20; display: flex; flex-direction: column; gap: 2px;
+                  background: #ffffff; border: 1px solid #94a3b8; border-radius: 6px;
+                  padding: 4px; box-shadow: 0 6px 18px rgba(15,23,42,.18); min-width: 130px; }
+  .context-menu button { border: none; text-align: left; padding: 5px 10px; border-radius: 4px;
+                         background: transparent; }
+  .context-menu button:hover { background: #e2e8f0; }
   .scenario-card { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px;
                    display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
   .scenario-card textarea { min-height: 56px; }
@@ -89,6 +97,10 @@
     <div class="row">
       <button id="reload" type="button">Reload</button>
       <button id="run" class="primary" type="button">Run</button>
+      <button id="pause-run" type="button">Pause</button>
+      <button id="resume-run" type="button">Resume</button>
+      <button id="stop-run" type="button">Stop</button>
+      <span id="run-state" class="muted">Stopped</span>
       <button id="undo" data-undo="1" type="button" disabled>Undo</button>
       <button id="redo" data-redo="1" type="button" disabled>Redo</button>
     </div>
@@ -191,11 +203,23 @@
           </select>
         </label>
         <button id="export-png" type="button">Export PNG</button>
+        <button id="export-csv" type="button">Export CSV</button>
       </div>
       <canvas id="replication-chart" aria-label="Per-replication scatter"></canvas>
+      <div class="row">
+        <label class="muted">Time series interval <input id="timeseries-interval" type="number" step="any" value="10"></label>
+        <label class="muted">Object <select id="timeseries-object"></select></label>
+        <button id="load-timeseries" type="button">Load time series</button>
+      </div>
+      <canvas id="timeseries-chart" aria-label="Content time series"></canvas>
     </div>
   </section>
 </main>
+<div id="object-menu" class="context-menu" hidden>
+  <button type="button" data-action="rename">Rename</button>
+  <button type="button" data-action="duplicate">Duplicate</button>
+  <button type="button" data-action="delete">Delete</button>
+</div>
 <script>
 "use strict";
 const state = {
@@ -226,6 +250,11 @@ const state = {
   replicationMetric: "throughput",
   flowDrag: null,
   flowConnect: null,
+  runState: "stopped",
+  runPaused: false,
+  runToken: 0,
+  contextObject: 0,
+  timeseries: null,
   scenarios: [{ name: "baseline", overrides: "" }],
 };
 
@@ -452,6 +481,10 @@ async function loadAll() {
     state.model = model;
     state.kinds = catalog.objects || [];
     state.selected = Math.min(state.selected, Math.max(0, model.objects.length - 1));
+    state.lastStep = 0;
+    state.runState = "stopped";
+    state.runPaused = false;
+    setRunState("Stopped");
     state.selectedBlock = Math.min(
       state.selectedBlock,
       Math.max(0, ((model.process_flow && model.process_flow.blocks) || []).length - 1)
@@ -480,6 +513,70 @@ function renderAddKinds() {
     .map(kind => `<option value="${escapeText(kind.kind)}">${escapeText(kind.kind)}</option>`)
     .join("");
   if (previous) select.value = previous;
+}
+
+function setRunState(label) {
+  $("run-state").textContent = label;
+}
+
+function showObjectMenu(x, y) {
+  const menu = $("object-menu");
+  menu.hidden = false;
+  menu.style.left = `${Math.min(x, window.innerWidth - 160)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - 140)}px`;
+  menu.focus();
+}
+
+function hideObjectMenu() {
+  $("object-menu").hidden = true;
+}
+
+async function contextRename() {
+  hideObjectMenu();
+  const object = state.model && state.model.objects[state.contextObject];
+  if (!object) return;
+  const name = window.prompt("New object name", object.name);
+  if (!name || name.trim() === object.name) return;
+  try {
+    const response = await api(`/api/model/objects/${encodeURIComponent(object.name)}/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    state.model = response.model;
+    clearHistory();
+    renderAll();
+    setStatus(`renamed to ${response.renamed}; ${response.references_updated} references updated`);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+async function contextDuplicate() {
+  hideObjectMenu();
+  const object = state.model && state.model.objects[state.contextObject];
+  if (!object) return;
+  try {
+    const response = await api(`/api/model/objects/${encodeURIComponent(object.name)}/duplicate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    state.model = response.model;
+    state.selected = response.model.objects.length - 1;
+    clearHistory();
+    renderAll();
+    setStatus(`duplicated as ${response.duplicated}`);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+async function contextDelete() {
+  hideObjectMenu();
+  state.selected = state.contextObject;
+  state.originalName = null;
+  await deleteObject();
 }
 
 function renderObjectList() {
@@ -525,6 +622,15 @@ function renderObjectList() {
         state.selected = index;
         renderObjectList();
         renderEditor();
+      });
+      button.addEventListener("contextmenu", event => {
+        event.preventDefault();
+        commitEdit();
+        state.contextObject = index;
+        state.selected = index;
+        renderObjectList();
+        renderEditor();
+        showObjectMenu(event.clientX, event.clientY);
       });
       details.appendChild(button);
     });
@@ -1111,42 +1217,22 @@ async function saveFlowJson() {
 // Run / report / canvas
 // -------------------------------------------------------------------------
 
-async function runModel() {
-  setStatus("running…");
-  try {
-    const report = await api("/api/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    });
-    state.report = report;
-    state.lastStep = Number(report.stop_time);
-    $("step-info").textContent = `run finished at t=${Number(report.stop_time).toFixed(2)}`;
-    renderReport(report);
-    setStatus(`run finished at t=${Number(report.stop_time).toFixed(2)}`);
-  } catch (error) {
-    setStatus(error.message, true);
-  }
-}
-
 async function stepStudio(until, objectName) {
-  const body = { until: Number(until) };
-  if (objectName) body.object = objectName;
   setStatus(`stepping to ${Number(until).toFixed(2)}…`);
   try {
-    const response = await api("/api/step", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const response = await stepRequest(until, objectName);
     state.lastStep = Number(response.stepped_to);
     state.report = response.report;
+    state.runState = "paused";
+    state.runPaused = true;
+    setRunState(response.breakpoint ? "Paused (breakpoint)" : "Paused");
+    $("step-info").textContent = `t=${state.lastStep.toFixed(2)}`;
     renderReport(response.report);
-    const hit = response.breakpoint;
-    $("step-info").textContent = hit
-      ? `breakpoint: ${hit.event} on ${hit.object} at t=${Number(hit.time).toFixed(2)}`
-      : `stepped to t=${Number(response.stepped_to).toFixed(2)}`;
-    setStatus(hit ? `breakpoint hit: ${hit.object} ${hit.event}` : `stepped to ${Number(response.stepped_to).toFixed(2)}`);
+    if (response.breakpoint) {
+      setStatus(`breakpoint hit: ${response.breakpoint.object} ${response.breakpoint.event}`);
+    } else {
+      setStatus(`stepped to t=${Number(response.stepped_to).toFixed(2)}`);
+    }
   } catch (error) {
     setStatus(error.message, true);
   }
@@ -1154,7 +1240,9 @@ async function stepStudio(until, objectName) {
 
 async function stepOnce() {
   const value = Number($("step-until").value);
-  const until = Number.isFinite(value) && value > 0 ? value : (state.lastStep || 0) + (Number($("step-size").value) || 10);
+  const until = Number.isFinite(value) && value > 0
+    ? value
+    : (state.lastStep || 0) + (Number($("step-size").value) || 10);
   await stepStudio(until, $("breakpoint-object").value.trim());
 }
 
@@ -1164,7 +1252,11 @@ async function stepForward() {
 }
 
 async function resumeStudio() {
-  const until = state.model && state.model.run ? Number(state.model.run.stop_time) : Number($("step-until").value);
+  if (state.runState === "running") return;
+  const value = Number($("step-until").value);
+  const until = Number.isFinite(value) && value > 0
+    ? value
+    : Number(state.model && state.model.run ? state.model.run.stop_time : 0);
   await stepStudio(until, $("breakpoint-object").value.trim());
 }
 
@@ -1176,6 +1268,9 @@ async function resetStudio() {
       body: "{}",
     });
     state.lastStep = 0;
+    state.runState = "stopped";
+    state.runPaused = false;
+    setRunState("Stopped");
     $("step-info").textContent = "step state reset";
     setStatus("step state reset");
   } catch (error) {
@@ -1284,6 +1379,209 @@ function renderExperimentResults(experiment) {
       <thead><tr><th>Scenario</th><th>Completed</th><th>Throughput</th><th>Avg WIP</th><th>Util</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="5" class="muted">no scenarios</td></tr>'}</tbody>
     </table>`;
+}
+
+async function stepRequest(until, objectName) {
+  const body = { until: Number(until) };
+  if (objectName) body.object = objectName;
+  return api("/api/step", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+async function runLoop(token) {
+  const stop = Number(state.model.run.stop_time);
+  const warmup = Number(state.model.run.warmup || 0);
+  const size = Math.max(1, (stop - warmup) / 20);
+  while (state.runState === "running" && token === state.runToken) {
+    if (state.lastStep >= stop) {
+      state.runState = "stopped";
+      setRunState("Stopped");
+      setStatus(`run finished at t=${stop.toFixed(2)}`);
+      return;
+    }
+    const target = Math.min(stop, state.lastStep + size);
+    let response;
+    try {
+      response = await stepRequest(target, $("breakpoint-object").value.trim());
+    } catch (error) {
+      state.runState = "stopped";
+      state.runPaused = false;
+      setRunState("Stopped");
+      setStatus(error.message, true);
+      return;
+    }
+    if (token !== state.runToken) return;
+    state.lastStep = Number(response.stepped_to);
+    state.report = response.report;
+    $("step-info").textContent = `running t=${state.lastStep.toFixed(2)} / ${stop.toFixed(2)}`;
+    if (response.breakpoint) {
+      state.runPaused = true;
+      state.runState = "paused";
+      setRunState("Paused (breakpoint)");
+      setStatus(`breakpoint hit: ${response.breakpoint.object} ${response.breakpoint.event}`);
+      renderReport(response.report);
+      return;
+    }
+    renderReport(response.report);
+    if (state.runPaused) {
+      state.runState = "paused";
+      setRunState("Paused");
+      setStatus(`paused at t=${state.lastStep.toFixed(2)}`);
+      return;
+    }
+    // Small yield so the Pause button can interrupt a fast model.
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+}
+
+async function runModel() {
+  if (!state.model || !state.model.run) return;
+  if (state.runState === "running") return;
+  try {
+    await api("/api/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+  } catch (error) {
+    setStatus(error.message, true);
+    return;
+  }
+  state.lastStep = 0;
+  state.runPaused = false;
+  state.runState = "running";
+  state.runToken += 1;
+  setRunState("Running");
+  await runLoop(state.runToken);
+}
+
+function pauseRun() {
+  if (state.runState !== "running") return;
+  state.runPaused = true;
+  setRunState("Pausing…");
+}
+
+function stopRun() {
+  state.runToken += 1;
+  state.runState = "stopped";
+  state.runPaused = false;
+  setRunState("Stopped");
+  setStatus("run stopped");
+  api("/api/reset", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  }).catch(() => {});
+}
+
+async function resumeRun() {
+  if (state.runState !== "paused" && state.runState !== "stopped") return;
+  state.runPaused = false;
+  state.runState = "running";
+  state.runToken += 1;
+  setRunState("Running");
+  await runLoop(state.runToken);
+}
+
+function exportCsv() {
+  const report = state.report;
+  if (!report) {
+    setStatus("run or step the model before exporting metrics", true);
+    return;
+  }
+  const header = "object,kind,input,output,avg_wip,max_wip,avg_stay_time,utilization,throughput";
+  const rows = Object.entries(report.objects || {}).map(([name, stats]) => [
+    name,
+    stats.kind,
+    stats.input_count.mean,
+    stats.output_count.mean,
+    stats.avg_content.mean,
+    stats.max_content.mean,
+    stats.avg_stay_time.mean,
+    stats.utilization.mean,
+    stats.throughput.mean,
+  ].map(value => {
+    const text = String(value);
+    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  }).join(","));
+  const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv;charset=utf-8" });
+  const link = document.createElement("a");
+  link.download = "openflex-object-metrics.csv";
+  link.href = URL.createObjectURL(blob);
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+async function loadTimeSeries() {
+  const interval = Number($("timeseries-interval").value);
+  if (!Number.isFinite(interval) || interval <= 0) {
+    setStatus("time series interval must be positive", true);
+    return;
+  }
+  setStatus("loading time series…");
+  try {
+    const payload = await api("/api/timeseries", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ interval }),
+    });
+    state.timeseries = payload;
+    const select = $("timeseries-object");
+    select.innerHTML = (payload.objects || [])
+      .map(name => `<option value="${escapeText(name)}">${escapeText(name)}</option>`)
+      .join("");
+    drawTimeseriesChart();
+    setStatus(`time series loaded (${(payload.series || []).length} samples)`);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+function drawTimeseriesChart() {
+  const chart = $("timeseries-chart");
+  const width = chart.clientWidth || 320;
+  const height = chart.clientHeight || 160;
+  const ratio = window.devicePixelRatio || 1;
+  chart.width = Math.max(1, Math.round(width * ratio));
+  chart.height = Math.max(1, Math.round(height * ratio));
+  const ctx = chart.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  const payload = state.timeseries;
+  if (!payload || !payload.series || payload.series.length === 0) return;
+  const selected = $("timeseries-object").value || (payload.objects || [])[0];
+  const points = payload.series.filter(row => row.object === selected);
+  if (points.length === 0) return;
+  const maxY = Math.max(...points.map(point => point.content), 1e-9);
+  const maxT = Math.max(...points.map(point => point.time), 1e-9);
+  const left = 34, right = 10, top = 22, bottom = 22;
+  ctx.fillStyle = "#0f172a";
+  ctx.font = "600 11px system-ui, sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText(`Content: ${selected}`, 8, 14);
+  ctx.strokeStyle = "#cbd5e1";
+  ctx.beginPath();
+  ctx.moveTo(left, top);
+  ctx.lineTo(left, height - bottom);
+  ctx.lineTo(width - right, height - bottom);
+  ctx.stroke();
+  ctx.strokeStyle = "#1d4ed8";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  points.forEach((point, index) => {
+    const x = left + (width - left - right) * (point.time / maxT);
+    const y = height - bottom - (height - top - bottom) * (point.content / maxY);
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.fillStyle = "#475569";
+  ctx.font = "9px system-ui, sans-serif";
+  ctx.fillText(`t=${maxT.toFixed(0)}`, width - right - 30, height - 6);
+  ctx.fillText(maxY.toFixed(1), 4, top + 4);
 }
 
 function renderReport(report) {
@@ -1674,6 +1972,21 @@ $("object-search").addEventListener("input", event => {
 });
 $("reload").addEventListener("click", loadAll);
 $("run").addEventListener("click", runModel);
+$("pause-run").addEventListener("click", pauseRun);
+$("resume-run").addEventListener("click", resumeRun);
+$("stop-run").addEventListener("click", stopRun);
+$("object-menu").addEventListener("click", event => {
+  const action = event.target && event.target.dataset && event.target.dataset.action;
+  if (action === "rename") contextRename();
+  else if (action === "duplicate") contextDuplicate();
+  else if (action === "delete") contextDelete();
+});
+document.addEventListener("click", event => {
+  if (!event.target.closest("#object-menu")) hideObjectMenu();
+});
+$("export-csv").addEventListener("click", exportCsv);
+$("load-timeseries").addEventListener("click", loadTimeSeries);
+$("timeseries-object").addEventListener("change", drawTimeseriesChart);
 $("save-object").addEventListener("click", saveObject);
 $("revert-object").addEventListener("click", revertObject);
 $("delete-object").addEventListener("click", deleteObject);

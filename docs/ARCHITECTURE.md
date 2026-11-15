@@ -259,8 +259,11 @@ valve 用 `pressure_open/pressure_close` 滞回自动启闭（trace `fluid_valve
   `table(name,row,col)` 与 `table.<Name>.<row>.<col>` / `table.<Name>.<column>`（首行）。
 - `Connection.kind: "a" | "s"`：S 连接不参与输出端口编号与 SendToPort 路由，仅作为资源链接（Dispatcher→Transporter 团队识别用）；
   A 与缺省完全等价。
-- 触发器枚举 13 个点：OnContentChange（接收/取出 item）、OnStateChange（状态真变化）、OnReset（warmup 重置）已执行；
-  OnStop/OnResume 需运行控制（当前引擎无暂停事件）。生命周期触发器使用合成 item，`trigger_depth` 防递归。
+- 触发器枚举 14 个点：OnContentChange/OnStateChange/OnReset/OnStop/OnResume 已执行（OnStop/OnResume 由
+  `simulate_until`/`resume_from_checkpoint` 触发），OnDraw 仅 schema/校验。生命周期触发器使用合成 item，`trigger_depth` 防递归。
+- 运行控制：`simulate_until(model, config, index, stop_at)` 跑到暂停点并触发 OnStop，返回 checkpoint；
+  `resume_from_checkpoint(..., resume_at)` 恢复并触发 OnResume。旧 `simulate`/`simulate_with_checkpoint` 不触发这两个触发器。
+- 任务序列：`DispatcherParams.task_sequence`（travel/load/unload）把超出标准两段式的部分折算为额外时间，经 `TransportSettle` 结算。
 - 模型迁移：`migrate_json` 校验版本并提供 v1→v2 钩子；CLI `openflex migrate` 可规范化输出（字段级迁移待 v2）。
 
 ## 性能基线

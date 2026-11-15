@@ -520,3 +520,127 @@ fn emptier_max_items_limits_a_sweep() {
     assert_eq!(input(&report, "K"), 6.0);
     assert!(report.replications[0].items_in_system > 0);
 }
+
+// ---------------------------------------------------------------------------
+// Rack levels and pick policy (task-44)
+// ---------------------------------------------------------------------------
+
+/// A rack with three levels and `level_order` still releases everything, and
+/// the aisle geometry bounds the usable capacity.
+#[test]
+fn rack_level_order_releases_every_item() {
+    let report = run(r#"{
+      "format": "openflex-model", "version": 1, "name": "rack-levels",
+      "run": { "stop_time": 200.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+      "objects": [
+        { "name": "S", "kind": "source", "params": {
+            "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+        { "name": "R", "kind": "rack", "params": {
+            "capacity": 12, "levels": 3, "aisles": 2,
+            "pick_policy": "level_order" } },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [ { "from": "S", "to": "R" }, { "from": "R", "to": "K" } ]
+    }"#);
+    assert_eq!(out(&report, "S"), 20.0);
+    assert_eq!(input(&report, "K"), 20.0);
+    assert_eq!(report.replications[0].items_in_system as f64, 0.0);
+}
+
+/// `nearest` also drains the rack completely (it only changes the order).
+#[test]
+fn rack_nearest_policy_releases_every_item() {
+    let report = run(r#"{
+      "format": "openflex-model", "version": 1, "name": "rack-nearest",
+      "run": { "stop_time": 200.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+      "objects": [
+        { "name": "S", "kind": "source", "params": {
+            "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+        { "name": "R", "kind": "rack", "params": {
+            "capacity": 12, "levels": 2, "pick_policy": "nearest" } },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [ { "from": "S", "to": "R" }, { "from": "R", "to": "K" } ]
+    }"#);
+    assert_eq!(input(&report, "K"), 20.0);
+}
+
+// ---------------------------------------------------------------------------
+// Dispatcher task sequence (task-44)
+// ---------------------------------------------------------------------------
+
+/// An extra `travel` leg in the dispatcher's task sequence costs one more trip
+/// per task, so the processor finishes fewer items.
+#[test]
+fn task_sequence_extra_travel_slows_the_executer() {
+    let template = |sequence: &str| {
+        format!(
+            r#"{{
+      "format": "openflex-model", "version": 1, "name": "task-sequence",
+      "run": {{ "stop_time": 400.0, "warmup": 0.0, "seed": 1, "replications": 1 }},
+      "objects": [
+        {{ "name": "S", "kind": "source", "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 10.0 }}, "first_arrival": 0.0 }} }},
+        {{ "name": "P", "kind": "processor", "params": {{
+            "process_time": {{ "distribution": "constant", "value": 4.0 }},
+            "process_operator": "Dispatcher1" }} }},
+        {{ "name": "K", "kind": "sink", "params": {{}} }},
+        {{ "name": "Dispatcher1", "kind": "dispatcher", "pos": [100, 0], "params": {{ {sequence} }} }},
+        {{ "name": "Transporter1", "kind": "transporter", "pos": [100, 0], "params": {{
+            "capacity": 1, "speed": 1.0, "home": "Dispatcher1" }} }}
+      ],
+      "connections": [
+        {{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }},
+        {{ "from": "Dispatcher1", "to": "Transporter1" }}
+      ]
+    }}"#
+        )
+    };
+    let standard = run(&template(""));
+    let extra_leg = run(&template(
+        r#""task_sequence": ["travel", "travel", "travel", "load", "unload"]"#,
+    ));
+    assert!(
+        out(&extra_leg, "P") < out(&standard, "P"),
+        "an extra travel leg must cost time: {} vs {}",
+        out(&extra_leg, "P"),
+        out(&standard, "P"),
+    );
+}
+
+/// A sequence with the standard legs changes nothing.
+#[test]
+fn task_sequence_standard_legs_match_the_default() {
+    let template = |sequence: &str| {
+        format!(
+            r#"{{
+      "format": "openflex-model", "version": 1, "name": "task-sequence-std",
+      "run": {{ "stop_time": 300.0, "warmup": 0.0, "seed": 1, "replications": 1 }},
+      "objects": [
+        {{ "name": "S", "kind": "source", "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 10.0 }}, "first_arrival": 0.0 }} }},
+        {{ "name": "P", "kind": "processor", "params": {{
+            "process_time": {{ "distribution": "constant", "value": 4.0 }},
+            "process_operator": "Dispatcher1" }} }},
+        {{ "name": "K", "kind": "sink", "params": {{}} }},
+        {{ "name": "Dispatcher1", "kind": "dispatcher", "pos": [20, 0], "params": {{ {sequence} }} }},
+        {{ "name": "Transporter1", "kind": "transporter", "pos": [20, 0], "params": {{
+            "capacity": 1, "speed": 1.0, "home": "Dispatcher1" }} }}
+      ],
+      "connections": [
+        {{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }},
+        {{ "from": "Dispatcher1", "to": "Transporter1" }}
+      ]
+    }}"#
+        )
+    };
+    let default = run(&template(""));
+    let standard = run(&template(
+        r#""task_sequence": ["travel", "travel", "load", "unload"]"#,
+    ));
+    assert_eq!(
+        out(&standard, "P"),
+        out(&default, "P"),
+        "the standard sequence must match the default behaviour"
+    );
+}

@@ -186,6 +186,10 @@ pub enum SimTrigger {
     OnStop,
     /// The object resumed after a stop.
     OnResume,
+    /// The 3D view is redrawn (flexsim `OnDraw`). Schema/validation only for
+    /// now: OpenFlex has no renderer, and the FlexSim rule "never use random
+    /// functions in OnDraw" therefore applies to future integrations.
+    OnDraw,
 }
 
 impl SimTrigger {
@@ -204,6 +208,7 @@ impl SimTrigger {
             SimTrigger::OnReset => "on_reset",
             SimTrigger::OnStop => "on_stop",
             SimTrigger::OnResume => "on_resume",
+            SimTrigger::OnDraw => "on_draw",
         }
     }
 }
@@ -243,6 +248,10 @@ pub struct Triggers {
     /// Object resumed (see [`SimTrigger::OnResume`]).
     #[serde(default)]
     pub on_resume: Vec<Action>,
+    /// The 3D view is redrawn (see [`SimTrigger::OnDraw`]); schema/validation
+    /// only, the renderer integration is a follow-up.
+    #[serde(default)]
+    pub on_draw: Vec<Action>,
 }
 
 impl Triggers {
@@ -261,6 +270,7 @@ impl Triggers {
             SimTrigger::OnReset => self.on_reset.clone(),
             SimTrigger::OnStop => self.on_stop.clone(),
             SimTrigger::OnResume => self.on_resume.clone(),
+            SimTrigger::OnDraw => self.on_draw.clone(),
         }
     }
 
@@ -278,5 +288,6 @@ impl Triggers {
             && self.on_reset.is_empty()
             && self.on_stop.is_empty()
             && self.on_resume.is_empty()
+            && self.on_draw.is_empty()
     }
 }

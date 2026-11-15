@@ -14,6 +14,10 @@
 //! - `POST /api/run` — run the current model, returns a `SimReport` JSON
 //! - `POST /api/step` — incrementally advance to a time/object breakpoint
 //! - `POST /api/reset` — forget the incremental step state
+//!
+//! Pause/Resume in the UI is implemented by segmenting a run through
+//! `/api/step` (checkpoint state). When the engine gains a native pause/resume
+//! API this endpoint can be replaced without changing the page contract.
 //! - `POST /api/experiment` — run scenario/override experiments
 //! - `GET /health` — liveness probe
 //!
@@ -168,6 +172,32 @@ fn handle_connection(
         }
         ("POST", "/api/experiment") => {
             experiment_endpoint(&mut stream, &state.model, &request.body)
+        }
+        ("POST", "/api/timeseries") => {
+            timeseries_endpoint(&mut stream, &state.model, &request.body)
+        }
+        (method, path) if method == "POST" && path.starts_with("/api/model/objects/") => {
+            if let Some(old) = path
+                .strip_prefix("/api/model/objects/")
+                .and_then(|rest| rest.strip_suffix("/rename"))
+            {
+                let old = match percent_decode(old) {
+                    Ok(name) => name,
+                    Err(error) => return bad_path(&mut stream, error),
+                };
+                rename_object(&mut stream, state, model_path, &old, &request.body)
+            } else if let Some(old) = path
+                .strip_prefix("/api/model/objects/")
+                .and_then(|rest| rest.strip_suffix("/duplicate"))
+            {
+                let old = match percent_decode(old) {
+                    Ok(name) => name,
+                    Err(error) => return bad_path(&mut stream, error),
+                };
+                duplicate_object(&mut stream, state, model_path, &old)
+            } else {
+                not_found(&mut stream)
+            }
         }
         (method, path) if method == "DELETE" && path.starts_with("/api/model/objects/") => {
             let name = match percent_decode(path.trim_start_matches("/api/model/objects/")) {
@@ -910,6 +940,336 @@ fn percent_decode(input: &str) -> Result<String, String> {
         }
     }
     String::from_utf8(decoded).map_err(|_| format!("invalid UTF-8 in path '{input}'"))
+}
+
+fn bad_path(stream: &mut TcpStream, error: String) -> std::io::Result<()> {
+    write_json(
+        stream,
+        "400 Bad Request",
+        &serde_json::json!({ "ok": false, "error": error }).to_string(),
+    )
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RenameRequest {
+    name: String,
+}
+
+/// Rename an object and update connections/references that point at it.
+fn rename_object(
+    stream: &mut TcpStream,
+    state: &mut StudioState,
+    model_path: &Path,
+    old_name: &str,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let request: RenameRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return write_json(
+                stream,
+                "400 Bad Request",
+                &serde_json::json!({ "ok": false, "error": format!("invalid rename request: {error}") })
+                    .to_string(),
+            );
+        }
+    };
+    let new_name = request.name.trim();
+    if new_name.is_empty() {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": "the new object name cannot be empty" })
+                .to_string(),
+        );
+    }
+    if new_name == old_name {
+        return write_json(
+            stream,
+            "200 OK",
+            &serde_json::json!({ "ok": true, "renamed": new_name, "model": state.model })
+                .to_string(),
+        );
+    }
+    let mut value = serde_json::to_value(&state.model).unwrap_or_else(|_| serde_json::json!({}));
+    let Some(objects) = value
+        .get_mut("objects")
+        .and_then(|objects| objects.as_array_mut())
+    else {
+        return write_json(
+            stream,
+            "500 Internal Server Error",
+            &serde_json::json!({ "ok": false, "error": "model has no objects array" }).to_string(),
+        );
+    };
+    if objects
+        .iter()
+        .any(|object| object.get("name").and_then(|name| name.as_str()) == Some(new_name))
+    {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": format!("an object named '{new_name}' already exists") })
+                .to_string(),
+        );
+    }
+    let Some(index) = objects
+        .iter()
+        .position(|object| object.get("name").and_then(|name| name.as_str()) == Some(old_name))
+    else {
+        return write_json(
+            stream,
+            "404 Not Found",
+            &serde_json::json!({ "ok": false, "error": format!("unknown object '{old_name}'") })
+                .to_string(),
+        );
+    };
+    objects[index]["name"] = serde_json::json!(new_name);
+    let mut references = 0;
+    if let Some(connections) = value
+        .get_mut("connections")
+        .and_then(|connections| connections.as_array_mut())
+    {
+        for connection in connections {
+            for side in ["from", "to"] {
+                if connection.get(side).and_then(|name| name.as_str()) == Some(old_name) {
+                    connection[side] = serde_json::json!(new_name);
+                    references += 1;
+                }
+            }
+        }
+    }
+    if let Some(objects) = value
+        .get_mut("objects")
+        .and_then(|objects| objects.as_array_mut())
+    {
+        for object in objects {
+            if let Some(params) = object.get_mut("params") {
+                references += rename_references(params, old_name, new_name);
+            }
+        }
+    }
+    let new_model = match Model::from_json(&value.to_string()) {
+        Ok(model) => model,
+        Err(error) => {
+            return write_json(
+                stream,
+                "422 Unprocessable Entity",
+                &serde_json::json!({ "ok": false, "error": format!("invalid model after rename: {error}") })
+                    .to_string(),
+            );
+        }
+    };
+    persist_model(
+        stream,
+        state,
+        model_path,
+        new_model,
+        serde_json::json!({ "renamed": new_name, "references_updated": references }),
+    )
+}
+
+/// Recursively rename `home`/`charger`-style references.
+fn rename_references(value: &mut serde_json::Value, old: &str, new: &str) -> usize {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut updated = 0;
+            let keys: Vec<String> = map.keys().cloned().collect();
+            for key in keys {
+                let replace = matches!(
+                    key.as_str(),
+                    "home"
+                        | "charger"
+                        | "dispatcher"
+                        | "home_floor"
+                        | "setup_operator"
+                        | "process_operator"
+                ) && map.get(&key).and_then(|value| value.as_str()) == Some(old);
+                if replace {
+                    map.insert(key, serde_json::json!(new));
+                    updated += 1;
+                } else if let Some(child) = map.get_mut(&key) {
+                    updated += rename_references(child, old, new);
+                }
+            }
+            updated
+        }
+        serde_json::Value::Array(items) => items
+            .iter_mut()
+            .map(|item| rename_references(item, old, new))
+            .sum(),
+        _ => 0,
+    }
+}
+
+/// Copy an object with a unique name and a small position offset.
+fn duplicate_object(
+    stream: &mut TcpStream,
+    state: &mut StudioState,
+    model_path: &Path,
+    name: &str,
+) -> std::io::Result<()> {
+    let mut value = serde_json::to_value(&state.model).unwrap_or_else(|_| serde_json::json!({}));
+    let Some(objects) = value
+        .get_mut("objects")
+        .and_then(|objects| objects.as_array_mut())
+    else {
+        return write_json(
+            stream,
+            "500 Internal Server Error",
+            &serde_json::json!({ "ok": false, "error": "model has no objects array" }).to_string(),
+        );
+    };
+    let Some(source) = objects
+        .iter()
+        .find(|object| object.get("name").and_then(|name| name.as_str()) == Some(name))
+        .cloned()
+    else {
+        return write_json(
+            stream,
+            "404 Not Found",
+            &serde_json::json!({ "ok": false, "error": format!("unknown object '{name}'") })
+                .to_string(),
+        );
+    };
+    let copy_name = unique_copy_name(objects, name);
+    let mut copy = source;
+    copy["name"] = serde_json::json!(copy_name);
+    if let Some(pos) = copy.get_mut("pos").and_then(|pos| pos.as_array_mut()) {
+        if let Some(x) = pos.first_mut() {
+            *x = serde_json::json!(x.as_f64().unwrap_or(0.0) + 40.0);
+        }
+        if let Some(y) = pos.get_mut(1) {
+            *y = serde_json::json!(y.as_f64().unwrap_or(0.0) + 40.0);
+        }
+    }
+    objects.push(copy);
+    let new_model = match Model::from_json(&value.to_string()) {
+        Ok(model) => model,
+        Err(error) => {
+            return write_json(
+                stream,
+                "422 Unprocessable Entity",
+                &serde_json::json!({ "ok": false, "error": format!("invalid model after duplicate: {error}") })
+                    .to_string(),
+            );
+        }
+    };
+    persist_model(
+        stream,
+        state,
+        model_path,
+        new_model,
+        serde_json::json!({ "duplicated": copy_name }),
+    )
+}
+
+fn unique_copy_name(objects: &[serde_json::Value], source: &str) -> String {
+    for suffix in 2.. {
+        let candidate = format!("{source}Copy{suffix}");
+        if !objects.iter().any(|object| {
+            object.get("name").and_then(|name| name.as_str()) == Some(candidate.as_str())
+        }) {
+            return candidate;
+        }
+    }
+    unreachable!("an unused suffix always exists")
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct TimeseriesRequest {
+    interval: f64,
+}
+
+/// Sample interval-average object content for the dashboard timeseries chart.
+fn timeseries_endpoint(stream: &mut TcpStream, model: &Model, body: &[u8]) -> std::io::Result<()> {
+    let request: TimeseriesRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return write_json(
+                stream,
+                "400 Bad Request",
+                &serde_json::json!({ "ok": false, "error": format!("invalid timeseries request: {error}") })
+                    .to_string(),
+            );
+        }
+    };
+    if !request.interval.is_finite() || request.interval <= 0.0 {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": "interval must be positive" }).to_string(),
+        );
+    }
+    let stop = model.run.stop_time;
+    let warmup = model.run.warmup;
+    if stop <= warmup {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": "stop_time must be greater than warm-up" })
+                .to_string(),
+        );
+    }
+    if (stop - warmup) / request.interval > 5_000.0 {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": "too many samples; increase interval" })
+                .to_string(),
+        );
+    }
+    let seed = openflex_core::derive_seed(model.run.seed, 0);
+    let mut previous = None;
+    let mut previous_time = warmup;
+    let mut previous_cumulative = std::collections::BTreeMap::new();
+    let mut rows = Vec::new();
+    let mut target = warmup + request.interval;
+    let mut object_names = Vec::new();
+    loop {
+        let target_time = target.min(stop);
+        let config = openflex_core::SimConfig {
+            stop_time: target_time,
+            warmup,
+            seed,
+        };
+        let (result, checkpoint) =
+            match openflex_core::simulate_with_checkpoint(model, &config, 0, previous.as_ref()) {
+                Ok(result) => result,
+                Err(error) => return write_sim_error(stream, error),
+            };
+        previous = Some(checkpoint);
+        let elapsed = (target_time - warmup).max(0.0);
+        let duration = (target_time - previous_time).max(f64::EPSILON);
+        for (name, stats) in &result.objects {
+            if object_names.is_empty() || !object_names.contains(name) {
+                object_names.push(name.clone());
+            }
+            let cumulative = stats.avg_content * elapsed;
+            let before = previous_cumulative.get(name).copied().unwrap_or(0.0);
+            let content = ((cumulative - before) / duration).max(0.0);
+            rows.push(serde_json::json!({
+                "time": target_time,
+                "object": name,
+                "content": content,
+                "utilization": stats.utilization,
+            }));
+            previous_cumulative.insert(name.clone(), cumulative);
+        }
+        previous_time = target_time;
+        if target_time >= stop {
+            break;
+        }
+        target += request.interval;
+    }
+    let payload = serde_json::json!({
+        "interval": request.interval,
+        "stop_time": stop,
+        "warmup": warmup,
+        "objects": object_names,
+        "series": rows,
+    });
+    write_json(stream, "200 OK", &payload.to_string())
 }
 
 /// Read one HTTP request with strict header/body limits.

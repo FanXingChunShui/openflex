@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.16.0 — 2026-11-15
+
+### 对象与运行时
+
+- **Rack 按层取货**：`aisles` + `pick_policy`（level_order/nearest/fifo），入架打 level 标签，按层/最近层取货。
+- **OnStop / OnResume**：`simulate_until`（暂停点触发 OnStop + checkpoint）与 `resume_from_checkpoint`（恢复触发 OnResume）；
+  旧 API 不触发，行为不变。
+- **任务序列**：`DispatcherParams.task_sequence`（travel/load/unload）追加段折算额外时间。
+- **Global Table 可写**：`set_cell`/`insert_row`/`remove_row`/`Model::set_table_cell`；**表驱动 Source 到达**
+  （`arrival_schedule_from_table` 从表解析 time/quantity/item_type/labels）；**OnDraw** 触发器 schema/校验。
+- **Studio**：Pause/Resume/Stop 运行控制（checkpoint 分段）、模型树右键 Rename/Duplicate/Delete、Dashboard CSV 导出与时间序列折线图。
+
+### 验证
+
+- 406 个测试全绿（core 180、model 109、CLI 75、report 16）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.16.0 三平台产物发布并 SHA256 校验。
+
 ## v0.15.0 — 2026-11-15
 
 ### 引擎集成

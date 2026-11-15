@@ -734,6 +734,15 @@ pub struct SourceParams {
     /// `interarrival` and `arrival_schedule`.
     #[serde(default)]
     pub arrival_sequence: Option<Vec<SequenceRow>>,
+    /// Name of a global table whose rows define the arrival schedule (B7).
+    ///
+    /// The table must have a `time` (or `arrival_time`) column and may have
+    /// `quantity`, `item_type` and extra numeric label columns. Mutually
+    /// exclusive with `interarrival`, `arrival_schedule` and
+    /// `arrival_sequence`. The engine resolves the table with
+    /// [`Model::apply_table_reference`] (integration is a follow-up).
+    #[serde(default)]
+    pub arrival_schedule_from_table: Option<String>,
     /// Optional object-level process flow (B7). Its `create` blocks can run at
     /// t = 0 or whenever this object receives an item (`on_entry`), and its
     /// `transfer` blocks can inject tokens as flow items into other objects.
@@ -774,7 +783,7 @@ impl SourceParams {
         if let Some(style) = self.arrival_style {
             return style;
         }
-        if self.arrival_schedule.is_some() {
+        if self.arrival_schedule_from_table.is_some() || self.arrival_schedule.is_some() {
             ArrivalStyle::ArrivalSchedule
         } else if self.arrival_sequence.is_some() {
             ArrivalStyle::ArrivalSequence
@@ -788,12 +797,19 @@ impl SourceParams {
         self.effective_arrival_style() == ArrivalStyle::InterArrivalTime
     }
 
-    /// The arrival schedule when the source is in that mode.
+    /// The arrival schedule when the source is in that mode and the schedule
+    /// is inline. A table-driven source returns `None` here; resolve it with
+    /// [`Model::apply_table_reference`].
     pub fn arrival_schedule(&self) -> Option<&ArrivalSchedule> {
         match self.effective_arrival_style() {
             ArrivalStyle::ArrivalSchedule => self.arrival_schedule.as_ref(),
             _ => None,
         }
+    }
+
+    /// The global table backing this source's arrival schedule, if any.
+    pub fn arrival_schedule_table(&self) -> Option<&str> {
+        self.arrival_schedule_from_table.as_deref()
     }
 
     /// The arrival sequence rows when the source is in that mode.
@@ -816,6 +832,7 @@ impl Default for SourceParams {
             arrival_style: None,
             arrival_schedule: None,
             arrival_sequence: None,
+            arrival_schedule_from_table: None,
             item_type: 0,
             labels: BTreeMap::new(),
             process_flow: None,
@@ -1643,6 +1660,25 @@ impl Default for ElevatorParams {
     }
 }
 
+/// One leg of a dispatcher task sequence (task-44).
+///
+/// The engine already performs the standard sequence `travel` (to the pickup
+/// point), `travel` (to the requester), `load`, `unload`, `travel` (home). A
+/// model can add extra legs: every additional `travel` costs one more trip
+/// between the pickup point and the requester, every `load`/`unload` costs the
+/// task executer's load/unload time again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStep {
+    /// One trip between the pickup point and the requester.
+    #[default]
+    Travel,
+    /// The task executer's load time.
+    Load,
+    /// The task executer's unload time.
+    Unload,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct DispatcherParams {
@@ -1650,6 +1686,11 @@ pub struct DispatcherParams {
     /// queued at once (0 = unlimited).
     #[serde(default)]
     pub max_tasks: u32,
+
+    /// Optional task sequence (task-44). Empty keeps the standard
+    /// travel → load → unload → travel behaviour.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub task_sequence: Vec<TaskStep>,
 
     /// Optional object-level process flow (B7). Its `create` blocks can run at
     /// t = 0 or whenever this object receives an item (`on_entry`), and its
@@ -1799,6 +1840,19 @@ impl RackType {
     }
 }
 
+/// Take-away order of a rack when several levels hold items (task-44).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RackPickPolicy {
+    /// Release in arrival order (the historical behaviour).
+    #[default]
+    Fifo,
+    /// Release the item on the lowest occupied level first.
+    LevelOrder,
+    /// Release the item whose level is closest to the previous pick.
+    Nearest,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RackParams {
@@ -1817,6 +1871,15 @@ pub struct RackParams {
     /// is `channels * depth` (bounded by `capacity`).
     #[serde(default)]
     pub depth: Option<u32>,
+
+    /// Number of aisles. When set, the usable capacity is also bounded by
+    /// `levels * aisles` (task-44).
+    #[serde(default)]
+    pub aisles: Option<u32>,
+
+    /// Which item the rack releases next (task-44).
+    #[serde(default)]
+    pub pick_policy: RackPickPolicy,
 
     /// Minimum time an item stays in the rack before it may be released
     /// (0 = release as soon as the downstream object accepts).
@@ -1856,6 +1919,8 @@ impl Default for RackParams {
             channels: None,
             depth: None,
             min_dwell: 0.0,
+            aisles: None,
+            pick_policy: RackPickPolicy::Fifo,
             shifts: Vec::new(),
             process_flow: None,
             timetable: None,
@@ -2685,6 +2750,48 @@ impl GlobalTable {
         let column = self.columns.iter().position(|name| name == column)?;
         self.rows.get(row)?.get(column)
     }
+
+    /// Set one cell of an existing row.
+    ///
+    /// The table shape is defined by `columns`; an out-of-range row or column
+    /// is an error rather than a silent resize.
+    pub fn set_cell(&mut self, row: usize, column: usize, value: TableCell) -> Result<(), String> {
+        let width = self.columns.len();
+        if column >= width {
+            return Err(format!(
+                "column {column} is out of range (table has {width} columns)"
+            ));
+        }
+        let row_count = self.rows.len();
+        let cells = self
+            .rows
+            .get_mut(row)
+            .ok_or_else(|| format!("row {row} is out of range (table has {row_count} rows)"))?;
+        cells[column] = value;
+        Ok(())
+    }
+
+    /// Append a row; its width must match the column count.
+    pub fn insert_row(&mut self, row: Vec<TableCell>) -> Result<(), String> {
+        if row.len() != self.columns.len() {
+            return Err(format!(
+                "row has {} cells but the table has {} columns",
+                row.len(),
+                self.columns.len()
+            ));
+        }
+        self.rows.push(row);
+        Ok(())
+    }
+
+    /// Remove the row at `index`, returning it (`None` when out of range).
+    pub fn remove_row(&mut self, index: usize) -> Option<Vec<TableCell>> {
+        if index < self.rows.len() {
+            Some(self.rows.remove(index))
+        } else {
+            None
+        }
+    }
 }
 
 /// Deserialise the global table map while rejecting duplicate table names.
@@ -2762,6 +2869,14 @@ pub struct Model {
     pub metadata: BTreeMap<String, serde_json::Value>,
 }
 
+/// Index of the first column matching one of `names`.
+fn find_table_column(table: &GlobalTable, names: &[&str]) -> Option<usize> {
+    table
+        .columns
+        .iter()
+        .position(|column| names.iter().any(|name| column == name))
+}
+
 fn default_format() -> String {
     FORMAT_NAME.to_string()
 }
@@ -2822,6 +2937,110 @@ impl Model {
     /// A named global table, if the model defines it.
     pub fn table(&self, name: &str) -> Option<&GlobalTable> {
         self.global_tables.get(name)
+    }
+
+    /// Mutable access to a named global table (for in-memory edits after
+    /// validation).
+    pub fn table_mut(&mut self, name: &str) -> Option<&mut GlobalTable> {
+        self.global_tables.get_mut(name)
+    }
+
+    /// Set one cell of a global table in memory.
+    ///
+    /// This is the model-level editing API used by tools such as the Studio
+    /// table editor; it does not validate or persist the model (call
+    /// [`Model::validate`] afterwards).
+    pub fn set_table_cell(
+        &mut self,
+        table: &str,
+        row: usize,
+        column: usize,
+        value: TableCell,
+    ) -> Result<(), ModelError> {
+        let target = self.global_tables.get_mut(table).ok_or_else(|| {
+            ModelError::Invalid(vec![ValidationIssue::new(
+                format!("global_tables.{table}"),
+                "unknown global table",
+            )])
+        })?;
+        target.set_cell(row, column, value).map_err(|message| {
+            ModelError::Invalid(vec![ValidationIssue::new(
+                format!("global_tables.{table}.rows[{row}]"),
+                message,
+            )])
+        })
+    }
+
+    /// Resolve a global table into an [`ArrivalSchedule`].
+    ///
+    /// Column convention: `time` (or `arrival_time`) is required and must be
+    /// numeric; `quantity` (optional, default 1) and `item_type` (optional)
+    /// are numeric; every other numeric column becomes an item label named
+    /// after the column. This is the model-layer half of the table-driven
+    /// arrival parameter, so the engine can resolve
+    /// [`SourceParams::arrival_schedule_from_table`] once at load time.
+    pub fn apply_table_reference(&self, table_name: &str) -> Result<ArrivalSchedule, String> {
+        let table = self
+            .table(table_name)
+            .ok_or_else(|| format!("unknown global table '{table_name}'"))?;
+        let time_column = find_table_column(table, &["time", "arrival_time"]).ok_or_else(|| {
+            format!("global table '{table_name}' needs a 'time' or 'arrival_time' column")
+        })?;
+        let quantity_column = find_table_column(table, &["quantity"]);
+        let item_type_column = find_table_column(table, &["item_type", "type"]);
+        let mut rows = Vec::with_capacity(table.rows.len());
+        for (position, cells) in table.rows.iter().enumerate() {
+            let time = cells
+                .get(time_column)
+                .and_then(TableCell::as_number)
+                .ok_or_else(|| {
+                    format!("global table '{table_name}' row {position}: time must be numeric")
+                })?;
+            if !time.is_finite() || time < 0.0 {
+                return Err(format!(
+                    "global table '{table_name}' row {position}: time must be a non-negative finite number"
+                ));
+            }
+            let quantity = match quantity_column {
+                Some(index) => cells
+                    .get(index)
+                    .and_then(TableCell::as_number)
+                    .ok_or_else(|| {
+                        format!(
+                            "global table '{table_name}' row {position}: quantity must be numeric"
+                        )
+                    })?
+                    .round()
+                    .max(0.0) as u32,
+                None => 1,
+            };
+            let item_type = item_type_column
+                .and_then(|index| cells.get(index))
+                .and_then(TableCell::as_number)
+                .map(|value| value.round().max(0.0) as u32);
+            let mut labels = BTreeMap::new();
+            for (column_index, column_name) in table.columns.iter().enumerate() {
+                if column_index == time_column
+                    || Some(column_index) == quantity_column
+                    || Some(column_index) == item_type_column
+                {
+                    continue;
+                }
+                if let Some(value) = cells.get(column_index).and_then(TableCell::as_number) {
+                    labels.insert(column_name.clone(), value);
+                }
+            }
+            rows.push(ArrivalRow {
+                time,
+                quantity,
+                item_type,
+                labels,
+            });
+        }
+        Ok(ArrivalSchedule {
+            rows,
+            repeat: false,
+        })
     }
 
     /// Connections leaving `name`, in port order.

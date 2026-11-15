@@ -96,7 +96,7 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
                 "height must be finite",
             ));
         }
-        issues.extend(validate_object(object));
+        issues.extend(validate_object(model, object));
         if let crate::model::ObjectParams::Agv(params) = &object.params
             && let Some(charger) = &params.charger
             && model.object(charger).is_none()
@@ -368,7 +368,7 @@ fn validate_connection(
     issues
 }
 
-fn validate_object(object: &Object) -> Vec<ValidationIssue> {
+fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
     let location = |field: &str| format!("objects.{}.{}", object.name, field);
     let mut issues = Vec::new();
 
@@ -410,15 +410,57 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
                     "arrival_schedule and arrival_sequence are mutually exclusive",
                 ));
             }
+            if params.arrival_schedule_from_table.is_some()
+                && (params.arrival_schedule.is_some() || params.arrival_sequence.is_some())
+            {
+                issues.push(ValidationIssue::new(
+                    location("arrival_schedule_from_table"),
+                    "arrival_schedule_from_table cannot be combined with arrival_schedule or arrival_sequence",
+                ));
+            }
             if style != ArrivalStyle::InterArrivalTime && interarrival_set {
                 issues.push(ValidationIssue::new(
                     location("interarrival"),
-                    "interarrival cannot be combined with arrival_schedule or arrival_sequence",
+                    "interarrival cannot be combined with a table arrival mode",
                 ));
+            }
+            if let Some(table_name) = &params.arrival_schedule_from_table {
+                if let Some(explicit) = params.arrival_style
+                    && explicit != ArrivalStyle::ArrivalSchedule
+                {
+                    issues.push(ValidationIssue::new(
+                        location("arrival_style"),
+                        "arrival_style must be arrival_schedule when arrival_schedule_from_table is set",
+                    ));
+                }
+                match model.apply_table_reference(table_name) {
+                    Err(message) => issues.push(ValidationIssue::new(
+                        location("arrival_schedule_from_table"),
+                        message,
+                    )),
+                    Ok(schedule) => {
+                        let mut previous = f64::NEG_INFINITY;
+                        for (index, row) in schedule.rows.iter().enumerate() {
+                            if row.time < previous {
+                                issues.push(ValidationIssue::new(
+                                    location(&format!(
+                                        "arrival_schedule_from_table.rows[{index}].time"
+                                    )),
+                                    "arrival times must be non-decreasing",
+                                ));
+                            } else {
+                                previous = row.time;
+                            }
+                        }
+                    }
+                }
             }
             match style {
                 ArrivalStyle::InterArrivalTime => {
-                    if params.arrival_schedule.is_some() || params.arrival_sequence.is_some() {
+                    if params.arrival_schedule.is_some()
+                        || params.arrival_sequence.is_some()
+                        || params.arrival_schedule_from_table.is_some()
+                    {
                         issues.push(ValidationIssue::new(
                             location("arrival_style"),
                             "arrival_style is inter_arrival_time but a table arrival mode is configured",
@@ -427,7 +469,9 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
                     distribution!("interarrival", &params.interarrival);
                 }
                 ArrivalStyle::ArrivalSchedule => {
-                    if let Some(schedule) = &params.arrival_schedule {
+                    if params.arrival_schedule_from_table.is_some() {
+                        // Resolved from a global table above.
+                    } else if let Some(schedule) = &params.arrival_schedule {
                         if schedule.rows.is_empty() {
                             issues.push(ValidationIssue::new(
                                 location("arrival_schedule.rows"),
@@ -1096,6 +1140,7 @@ fn validate_trigger_scripts(object: &Object) -> Vec<ValidationIssue> {
         ("on_reset", &triggers.on_reset),
         ("on_stop", &triggers.on_stop),
         ("on_resume", &triggers.on_resume),
+        ("on_draw", &triggers.on_draw),
     ];
     for (trigger, actions) in lists {
         for (position, action) in actions.iter().enumerate() {

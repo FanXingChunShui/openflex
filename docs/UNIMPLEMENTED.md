@@ -13,11 +13,11 @@
 | 3 | **AGV 交通控制** | transporter alias + 电池；✅ 取货段途中耗尽就地停车充电并 `TransportResume` 续跑、同节点占用等待（0.5 步重试）；示例 agv-traffic/agv-battery | 无单向路网边/路网节点图、无充电桩容量/排队、无完整死锁避免、不搬运 flow item | L |
 | 4 | **电梯门控** | 门开/关时间、超载折算、井道互斥、召唤/方向 | 无独立门态统计/对向调度/多轿厢群控 | S |
 | 5 | **Conveyor 曲线与完整合流** | 直线带、PhotoEye/Station/Join（入口轮转）；✅ 可选 `curve: {radius, angle}`，按弧长计入行程时间（速度不变） | 无 3D 转弯几何/多段曲线/斜坡、无 Join 的 slug/gap 精细策略、无 Merge Controller、无电机/转盘/Transfers、PhotoEye 无遮挡持续状态/计数 | L |
-| 6 | **Rack 货位精细放置** | 四类顺序/容量 + `min_dwell` 最小滞留 | 无 level/aisle 坐标与按层取货、无按 SKU/批次策略 | M |
+| 6 | **Rack 货位精细放置** | 四类 + `min_dwell` + `aisles`/`pick_policy` 按层取货 | 无真实货位寻址（level/aisle/bay 坐标与行走时间）、无按 SKU/批次策略 | M |
 | 7 | **MultiProcessor 完整语义** | 多槽并行、每槽 setup/process、整批 crew 申请 | 无每槽独立操作员/故障、无槽位选择策略（优先级/最短队列） | M |
 | 8 | **缺失对象** | Emptier（经 basic_fr.emptier） | Robot/Crane/ASRSvehicle、Conveyor 电机/转盘、Fluid 泵/混合器、Escalator 等 | L–XL |
 | 9 | **全局表（Global Table）** | schema/校验/访问器 + 表达式 `table(...)` 只读访问 | 写入/表驱动参数更新未支持 | S |
-| 10 | **完整任务序列** | 固定“取货→送达→回 home”两段 | 无自定义多段序列（travel/load/unload 组合）、无载货量（capacity=并发任务数而非物理载货）、无交通路网节点图（`network` 只是距离表） | L |
+| 10 | **完整任务序列** | 固定两段 + `task_sequence` 追加段折算时间 | 无任意重排/条件分支、无物理载货量、无路网节点图 | L |
 | 11 | **完整触发器集合** | OnCreate/Entry/Exit/Receive/Message/Breakdown/Repair/PhotoEye | 无 OnContentChange/OnStateChange/OnDraw/OnReset/OnStop/OnResume 等 | M |
 | 12 | **A/S 连接与 Pull 细节** | 基础 Pull（strategy/requirement） | 无 A/S 连接端口语义、无 Pull 的完整策略（按端口条件等） | S–M |
 | 13 | **Processor 故障细节** | 立即打断+补足剩余时间、MTBF/MTTR、first_failure_time、状态计时 | 无故障期间操作员释放策略、无 Down Behavior 动作复用 | S |

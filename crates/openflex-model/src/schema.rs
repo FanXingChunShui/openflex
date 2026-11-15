@@ -176,7 +176,8 @@ fn definitions() -> Value {
                 "on_state_change": { "type": "array", "items": { "$ref": "#/$defs/action" } },
                 "on_reset": { "type": "array", "items": { "$ref": "#/$defs/action" } },
                 "on_stop": { "type": "array", "items": { "$ref": "#/$defs/action" } },
-                "on_resume": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+                "on_resume": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_draw": { "type": "array", "items": { "$ref": "#/$defs/action" } }
             },
             "additionalProperties": false
         }),
@@ -268,6 +269,10 @@ fn definitions() -> Value {
             "arrival_style": { "enum": ["inter_arrival_time", "arrival_schedule", "arrival_sequence"] },
             "arrival_schedule": { "$ref": "#/$defs/arrival_schedule" },
             "arrival_sequence": { "type": "array", "items": { "$ref": "#/$defs/sequence_row" } },
+            "arrival_schedule_from_table": {
+                "type": "string",
+                "description": "Global table whose rows define the arrival schedule (time / quantity / item_type / label columns)."
+            },
             "item_type": { "type": "integer", "minimum": 0, "default": 0 },
             "labels": { "type": "object", "additionalProperties": { "type": "number" } }
         }),
@@ -1177,9 +1182,15 @@ mod tests {
             "on_reset",
             "on_stop",
             "on_resume",
+            "on_draw",
         ] {
             assert!(triggers.get(field).is_some(), "triggers.{field}");
         }
+        assert!(
+            schema["$defs"]["source_params"]["properties"]
+                .get("arrival_schedule_from_table")
+                .is_some()
+        );
         assert!(schema["$defs"]["global_table"].get("properties").is_some());
         assert!(schema["$defs"]["table_cell"].get("oneOf").is_some());
         assert_eq!(

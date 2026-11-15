@@ -132,8 +132,8 @@ use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 use openflex_model::{
     Action, ArrivalStyle, CombinerMode, ConditionalPort, ConnectionKind, Distribution,
     DowntimeWindow, EvalContext, FlowBlockKind, Grid, Model, NetworkEdge, Object, ObjectKind,
-    ObjectParams, PortStrategy, ProcessFlow, PullParams, QueueOrder, RackType, SeparateMode,
-    SimTrigger, TableCell, TransferMode, Value,
+    ObjectParams, PortStrategy, ProcessFlow, PullParams, QueueOrder, RackPickPolicy, RackType,
+    SeparateMode, SimTrigger, TableCell, TaskStep, TransferMode, Value,
 };
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
@@ -261,6 +261,8 @@ pub(crate) enum EventKind {
     DwellDone(usize),
     /// An Emptier (`basic_fr` with `emptier`) sweeps its upstream objects.
     EmptierSweep(usize),
+    /// task-44: the extra legs of a dispatcher task sequence finished.
+    TransportSettle(usize),
     /// A shift window starts or ends.
     ShiftChange(usize),
     /// A linear availability calendar (B11) window starts or ends.
@@ -692,6 +694,9 @@ pub(crate) struct ObjectRt {
     /// Earliest instant a rack item finishes its minimum dwell time (B2).
     #[serde(default = "infinite_time::default", with = "infinite_time")]
     dwell_at: f64,
+    /// Level of the last item a rack released (task-44 `nearest` policy).
+    #[serde(default)]
+    last_picked_level: Option<u32>,
     /// B3: photo eyes and stations, sorted by position.
     belt_stops: Vec<BeltStop>,
     /// B3: per-item flags of the stops already handled, aligned with
@@ -793,6 +798,7 @@ impl ObjectRt {
             belt_last_update: now,
             belt_tick_at: f64::INFINITY,
             dwell_at: f64::INFINITY,
+            last_picked_level: None,
             belt_stops: Vec::new(),
             belt_handled: Vec::new(),
             join_inputs: 0,
@@ -1156,6 +1162,75 @@ pub fn simulate_with_checkpoint(
     Ok((result, checkpoint))
 }
 
+/// task-44: run until `stop_at`, fire `on_stop` on every object, and return a
+/// checkpoint that [`resume_from_checkpoint`] can continue from.
+///
+/// Unlike [`simulate_with_checkpoint`] this entry point **does** run the
+/// `on_stop` triggers; the regular checkpoint API keeps the old behaviour of
+/// saving a snapshot without firing run-level triggers.
+pub fn simulate_until(
+    model: &Model,
+    config: &SimConfig,
+    index: u32,
+    stop_at: f64,
+) -> Result<(ReplicationResult, Checkpoint), SimError> {
+    model.validate()?;
+    if stop_at <= 0.0 {
+        return Err(SimError::Config("stop_at must be positive".into()));
+    }
+    if stop_at > config.stop_time + EPS {
+        return Err(SimError::Config(
+            "stop_at must not exceed the configured stop_time".into(),
+        ));
+    }
+    let mut sim = Simulation::new(model, config.clone(), false)?;
+    sim.pause_at = Some(stop_at);
+    sim.run_events()?;
+    sim.now = stop_at;
+    sim.fire_run_triggers(SimTrigger::OnStop);
+    if let Some(err) = sim.trigger_error.take() {
+        return Err(err);
+    }
+    // Actions of the trigger (`release_item`, `send_message`) belong to the
+    // pause instant, so they run before the snapshot is taken.
+    sim.drain_instant_events()?;
+    sim.finalize_stats();
+    let checkpoint = sim.snapshot();
+    let result = sim.replication_result(index, stop_at);
+    Ok((result, checkpoint))
+}
+
+/// task-44: continue a run paused by [`simulate_until`], fire `on_resume` on
+/// every object and run to `resume_at`.
+pub fn resume_from_checkpoint(
+    model: &Model,
+    config: &SimConfig,
+    index: u32,
+    checkpoint: &Checkpoint,
+    resume_at: f64,
+) -> Result<ReplicationResult, SimError> {
+    model.validate()?;
+    if resume_at <= checkpoint.now + EPS {
+        return Err(SimError::Config(
+            "resume_at must be later than the checkpoint time".into(),
+        ));
+    }
+    let mut resumed_config = config.clone();
+    resumed_config.stop_time = resume_at;
+    let mut sim = Simulation::new(model, resumed_config, false)?;
+    sim.restore(checkpoint)?;
+    sim.now = checkpoint.now;
+    sim.pause_at = Some(resume_at);
+    sim.fire_run_triggers(SimTrigger::OnResume);
+    if let Some(err) = sim.trigger_error.take() {
+        return Err(err);
+    }
+    sim.run_events()?;
+    sim.now = resume_at;
+    sim.finalize_stats();
+    Ok(sim.replication_result(index, resume_at))
+}
+
 /// Like [`simulate_with_checkpoint`], but also records the event trace.
 ///
 /// Tracing a *resumed* run is not supported (the event log would only cover
@@ -1270,6 +1345,9 @@ struct Simulation<'m> {
     scripts: HashMap<String, CompiledScript>,
     /// Trigger location of the actions currently being applied (script errors).
     action_location: String,
+    /// task-44: stop the event loop when the clock reaches this time (the
+    /// `on_stop` / `on_resume` controlled run); `None` = run to `stop_time`.
+    pause_at: Option<f64>,
     /// Shaft group currently travelled by an elevator: a shared shaft admits
     /// one cabin at a time (task-36).
     shaft_owner: HashMap<String, usize>,
@@ -1422,6 +1500,7 @@ impl<'m> Simulation<'m> {
             process_flow,
             scripts,
             action_location: String::new(),
+            pause_at: None,
             shaft_owner: HashMap::new(),
             trigger_depth: 0,
             trigger_error: None,
@@ -1763,7 +1842,11 @@ impl<'m> Simulation<'m> {
     fn run_events(&mut self) -> Result<(), SimError> {
         while let Some(Reverse(next)) = self.events.peek() {
             let next_time = next.time;
-            if next_time >= self.config.stop_time - EPS {
+            let horizon = match self.pause_at {
+                Some(pause) => pause.min(self.config.stop_time),
+                None => self.config.stop_time,
+            };
+            if next_time >= horizon - EPS {
                 break;
             }
             let Some(Reverse(event)) = self.events.pop() else {
@@ -1782,7 +1865,72 @@ impl<'m> Simulation<'m> {
                 return Err(err);
             }
         }
+        // task-44: align the clock with the pause point so the snapshot and the
+        // reported statistics stop exactly there.
+        if let Some(pause) = self.pause_at
+            && self.now < pause
+        {
+            self.now = pause;
+        }
         Ok(())
+    }
+
+    /// Process the events scheduled at the current instant. A run-level trigger
+    /// may schedule work (`release_item`, `send_message`) that belongs to the
+    /// pause instant; without this the pause would swallow it.
+    fn drain_instant_events(&mut self) -> Result<(), SimError> {
+        let now = self.now;
+        while let Some(Reverse(next)) = self.events.peek() {
+            if next.time > now + EPS {
+                break;
+            }
+            let Some(Reverse(event)) = self.events.pop() else {
+                break;
+            };
+            self.event_count += 1;
+            if self.event_count > MAX_EVENTS {
+                return Err(SimError::EventLimit(MAX_EVENTS));
+            }
+            self.handle(event.kind)?;
+            if let Some(err) = self.trigger_error.take() {
+                return Err(err);
+            }
+        }
+        Ok(())
+    }
+
+    /// Fire a run-level trigger (`on_stop` / `on_resume`) on every object.
+    fn fire_run_triggers(&mut self, trigger: SimTrigger) {
+        for index in 0..self.objects.len() {
+            self.fire_lifecycle_trigger(index, trigger);
+        }
+    }
+
+    /// Build the replication result at `final_time` (the caller finalised the
+    /// accumulators first).
+    fn replication_result(&self, index: u32, final_time: f64) -> ReplicationResult {
+        let elapsed = (final_time - self.config.warmup).max(0.0);
+        let mut objects = BTreeMap::new();
+        for object in &self.objects {
+            objects.insert(object.name.clone(), object.stats(elapsed));
+        }
+        let items_in_system: u64 = self
+            .objects
+            .iter()
+            .map(|object| (object.held() + object.out_pending.len()) as u64)
+            .sum();
+        ReplicationResult {
+            index,
+            seed: self.config.seed,
+            final_time,
+            warmup: self.config.warmup,
+            items_in_system,
+            items_created: self.stats_created,
+            items_completed: self.stats_completed,
+            objects,
+            process_flow: self.flow_replication(elapsed),
+            fluid: self.fluid_replication(elapsed),
+        }
     }
 
     /// Statistics run until the stop time even if no event lands exactly there.
@@ -1928,6 +2076,7 @@ impl<'m> Simulation<'m> {
             EventKind::BatchTimeout(index) => self.handle_batch_timeout(index),
             EventKind::DwellDone(index) => self.handle_dwell_done(index),
             EventKind::EmptierSweep(index) => self.handle_emptier_sweep(index),
+            EventKind::TransportSettle(transporter) => self.finish_task(transporter),
             EventKind::ShiftChange(index) => self.handle_shift_change(index),
             EventKind::TimetableChange(index) => self.handle_timetable_change(index),
             EventKind::FlowCreate(block) => self.handle_flow_create(block),
@@ -2834,6 +2983,16 @@ impl<'m> Simulation<'m> {
                 self.trigger_actions_run(target, SimTrigger::OnExit, &mut item)?;
             }
             ObjectKind::Queue | ObjectKind::Rack => {
+                // task-44: rstack items carry the level they were stored on so
+                // `level_order` / `nearest` can pick by level.
+                if self.objects[target].kind == ObjectKind::Rack {
+                    let levels = match &self.model.objects[target].params {
+                        ObjectParams::Rack(params) => params.levels.max(1),
+                        _ => 1,
+                    };
+                    let level = (self.objects[target].content.len() as u32) % levels;
+                    item.labels.insert("level".to_string(), f64::from(level));
+                }
                 self.objects[target].push_content(now, item);
                 self.set_state(target, State::Busy);
                 self.schedule(now, EventKind::Flow(target));
@@ -3278,7 +3437,18 @@ impl<'m> Simulation<'m> {
                 self.objects[index].touch();
                 return Ok(());
             }
-            let position = self.pick_queue_position(index, &params.order);
+            let position = {
+                let policy = match &self.model.objects[index].params {
+                    ObjectParams::Rack(params) => params.pick_policy,
+                    _ => RackPickPolicy::Fifo,
+                };
+                self.pick_rack_position(index, policy)
+                    .unwrap_or_else(|| self.pick_queue_position(index, &params.order))
+            };
+            let picked_level = self.objects[index]
+                .content
+                .get(position)
+                .and_then(|item| item.labels.get("level").copied());
             if min_dwell > 0.0
                 && let Some(next) = self.objects[index].content.get(position)
                 && self.now + EPS < next.entry_time + min_dwell
@@ -3302,6 +3472,36 @@ impl<'m> Simulation<'m> {
             self.objects[index].acc.output += 1;
             self.objects[index].acc.stay_sum += self.now - item.entry_time;
             self.objects[index].acc.stay_count += 1;
+            if let Some(level) = picked_level {
+                self.objects[index].last_picked_level = Some(level.max(0.0) as u32);
+            }
+        }
+    }
+
+    /// task-44: the rack position the pick policy wants next (`None` = use the
+    /// ordinary queue order).
+    fn pick_rack_position(&self, index: usize, policy: RackPickPolicy) -> Option<usize> {
+        let content = &self.objects[index].content;
+        if content.is_empty() {
+            return None;
+        }
+        let level_of =
+            |item: &FlowItem| item.labels.get("level").copied().unwrap_or(0.0).max(0.0) as u32;
+        match policy {
+            RackPickPolicy::Fifo => None,
+            RackPickPolicy::LevelOrder => content
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, item)| level_of(item))
+                .map(|(position, _)| position),
+            RackPickPolicy::Nearest => {
+                let reference = self.objects[index].last_picked_level.unwrap_or(0);
+                content
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, item)| level_of(item).abs_diff(reference))
+                    .map(|(position, _)| position)
+            }
         }
     }
 
@@ -5577,13 +5777,60 @@ impl<'m> Simulation<'m> {
             self.schedule(self.now + door_close, EventKind::TransportHome(transporter));
             return Ok(());
         }
-        self.finish_task(transporter)
+        self.settle_task(transporter)
     }
 
     fn handle_transport_home(&mut self, transporter: usize) -> Result<(), SimError> {
         if let Some(home) = self.objects[transporter].home {
             self.objects[transporter].position = self.objects[home].position;
             self.objects[transporter].z = self.objects[home].z;
+        }
+        self.settle_task(transporter)
+    }
+
+    /// task-44: extra time the dispatcher's `task_sequence` adds to one task.
+    ///
+    /// The engine always performs the standard sequence (travel to the pickup
+    /// point, travel to the requester, load, unload, travel home). Every
+    /// additional `travel` leg costs one more pickup+leg trip, every extra
+    /// `load`/`unload` costs the executer's load/unload time again.
+    fn task_sequence_extra(&mut self, transporter: usize) -> f64 {
+        let Some(dispatcher) = self.objects[transporter].assigned_dispatcher else {
+            return 0.0;
+        };
+        let sequence = match &self.model.objects[dispatcher].params {
+            ObjectParams::Dispatcher(params) => params.task_sequence.clone(),
+            _ => Vec::new(),
+        };
+        if sequence.is_empty() {
+            return 0.0;
+        }
+        let count = |step: TaskStep| sequence.iter().filter(|entry| **entry == step).count();
+        let extra_travels = count(TaskStep::Travel).saturating_sub(2);
+        let extra_loads = count(TaskStep::Load).saturating_sub(1);
+        let extra_unloads = count(TaskStep::Unload).saturating_sub(1);
+        if extra_travels + extra_loads + extra_unloads == 0 {
+            return 0.0;
+        }
+        let trip = match self.objects[transporter].serving_requester {
+            Some(requester) => {
+                self.transport_leg_travel(transporter, requester)
+                    + self.transport_pickup_travel(transporter)
+            }
+            None => 0.0,
+        };
+        let load = self.transport_load_time(transporter);
+        let unload = self.transport_unload_time(transporter);
+        extra_travels as f64 * trip + extra_loads as f64 * load + extra_unloads as f64 * unload
+    }
+
+    /// task-44: settle the task sequence before the task counts as finished.
+    fn settle_task(&mut self, transporter: usize) -> Result<(), SimError> {
+        let extra = self.task_sequence_extra(transporter);
+        if extra > EPS && self.now + extra < self.config.stop_time - EPS {
+            self.set_state(transporter, State::Busy);
+            self.schedule(self.now + extra, EventKind::TransportSettle(transporter));
+            return Ok(());
         }
         self.finish_task(transporter)
     }
@@ -6856,6 +7103,7 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
         EventKind::BatchTimeout(index) => (Some(*index), "batch_timeout", None),
         EventKind::DwellDone(index) => (Some(*index), "dwell_done", None),
         EventKind::EmptierSweep(index) => (Some(*index), "emptier_sweep", None),
+        EventKind::TransportSettle(transporter) => (Some(*transporter), "transport_settle", None),
         EventKind::ShiftChange(index) => (Some(*index), "shift_change", None),
         EventKind::TimetableChange(index) => (Some(*index), "timetable_change", None),
         EventKind::TransportPickup(transporter, requester) => (
@@ -7536,6 +7784,10 @@ fn flow_block_kind_name(kind: &FlowBlockKind) -> &'static str {
 /// `channels * depth` slots. Without the new fields the plain `capacity` is
 /// used, so existing models keep their behaviour.
 fn rack_capacity(params: &openflex_model::RackParams) -> u32 {
+    // task-44: aisles bound the usable capacity as well (`levels * aisles`).
+    let by_aisles = params
+        .aisles
+        .map(|aisles| params.levels.saturating_mul(aisles.max(1)));
     let geometry = match params.rack_type {
         RackType::PushBack => params
             .channels
@@ -7546,6 +7798,7 @@ fn rack_capacity(params: &openflex_model::RackParams) -> u32 {
         RackType::Floor | RackType::Gravity => None,
     };
     geometry
+        .or(by_aisles)
         .unwrap_or(params.capacity)
         .min(params.capacity)
         .max(1)
@@ -7651,5 +7904,82 @@ mod tests {
         assert_eq!(sim.objects[processor].held(), 1);
         assert_eq!(sim.objects[processor].effective_content(), 4);
         assert_eq!(sim.objects[processor].acc.max_content, 1);
+    }
+
+    fn rack_model() -> Model {
+        Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "rack",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "R", "kind": "rack", "params": { "capacity": 10, "levels": 3 } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "R" }, { "from": "R", "to": "K" } ]
+        }"#,
+        )
+        .expect("model")
+    }
+
+    /// task-44: items stored in a rack carry the level they were put on.
+    #[test]
+    fn rack_assigns_levels_on_entry() {
+        let model = rack_model();
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let rack = sim.by_name["R"];
+        for expected in 0..3 {
+            assert!(sim.receive_item(rack, 0, item()).expect("receive"));
+            let level = sim.objects[rack]
+                .content
+                .last()
+                .and_then(|item| item.labels.get("level"))
+                .copied();
+            assert_eq!(
+                level,
+                Some(expected as f64),
+                "level label of item {expected}"
+            );
+        }
+    }
+
+    /// task-44: `level_order` releases the lowest level first, `nearest` the
+    /// level closest to the previous pick.
+    #[test]
+    fn rack_pick_policy_orders_by_level() {
+        let model = rack_model();
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let rack = sim.by_name["R"];
+        for level in [2.0, 0.0, 1.0] {
+            let mut item = item();
+            item.labels.insert("level".to_string(), level);
+            sim.objects[rack].content.push(item);
+        }
+        assert_eq!(
+            sim.pick_rack_position(rack, RackPickPolicy::LevelOrder),
+            Some(1),
+            "level 0 is the first item"
+        );
+        assert_eq!(
+            sim.pick_rack_position(rack, RackPickPolicy::Fifo),
+            None,
+            "fifo defers to the queue order"
+        );
+        sim.objects[rack].last_picked_level = Some(2);
+        assert_eq!(
+            sim.pick_rack_position(rack, RackPickPolicy::Nearest),
+            Some(0),
+            "level 2 is closest to the previous pick"
+        );
     }
 }

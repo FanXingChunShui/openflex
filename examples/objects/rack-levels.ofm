@@ -1,0 +1,19 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "rack-levels",
+  "time_unit": "seconds",
+  "description": "Rack with three levels and two aisles: items are stored with a level label and released lowest level first",
+  "run": {"stop_time": 200.0, "warmup": 0.0, "seed": 1, "replications": 1},
+  "objects": [
+    {"name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+      "interarrival": {"distribution": "constant", "value": 10.0}, "first_arrival": 0.0}},
+    {"name": "Rack1", "kind": "rack", "pos": [5, 0], "params": {
+      "capacity": 12, "levels": 3, "aisles": 2, "pick_policy": "level_order"}},
+    {"name": "Sink1", "kind": "sink", "pos": [10, 0], "params": {}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Rack1"},
+    {"from": "Rack1", "to": "Sink1"}
+  ]
+}

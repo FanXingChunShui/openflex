@@ -2801,6 +2801,18 @@ fn studio_can_add_and_delete_objects_through_the_api() {
         "data-object-tree",
         "data-kind-group",
         "tree-kind",
+        "id=\"pause-run\"",
+        "id=\"resume-run\"",
+        "id=\"stop-run\"",
+        "id=\"run-state\"",
+        "id=\"object-menu\"",
+        "data-action=\"rename\"",
+        "data-action=\"duplicate\"",
+        "id=\"export-csv\"",
+        "id=\"timeseries-chart\"",
+        "id=\"load-timeseries\"",
+        "id=\"timeseries-interval\"",
+        "id=\"timeseries-object\"",
         "id=\"flow-canvas\"",
         "flow-node",
         "draggable",
@@ -3540,4 +3552,98 @@ fn optimize_custom_weights_change_the_weighted_score() {
             stderr(&invalid)
         );
     }
+}
+
+#[test]
+fn studio_rename_and_duplicate_keep_the_model_valid() {
+    let dir = TempDir::new("studio-rename");
+    let model = dir.write("demo.ofm", MODEL);
+    let (_server, address) = start_studio(&model);
+
+    let renamed = http_request(
+        &address,
+        "POST",
+        "/api/model/objects/Processor1/rename",
+        Some(r#"{"name":"ProcX"}"#),
+    );
+    assert!(
+        http_status(&renamed).contains("200 OK"),
+        "rename: {}",
+        http_body(&renamed)
+    );
+    let renamed = json(http_body(&renamed));
+    assert_eq!(renamed["renamed"], "ProcX");
+    assert!(renamed["references_updated"].as_u64().unwrap_or_default() >= 2);
+    let text = fs::read_to_string(&model).expect("read model");
+    assert!(!text.contains("\"Processor1\""));
+    assert!(text.contains("\"from\": \"ProcX\""));
+    assert!(text.contains("\"to\": \"ProcX\""));
+    let validate = openflex(&["validate", &path_str(&model)]);
+    assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
+
+    let duplicated = http_request(
+        &address,
+        "POST",
+        "/api/model/objects/ProcX/duplicate",
+        Some("{}"),
+    );
+    assert!(
+        http_status(&duplicated).contains("200 OK"),
+        "duplicate: {}",
+        http_body(&duplicated)
+    );
+    let duplicated = json(http_body(&duplicated));
+    assert_eq!(duplicated["duplicated"], "ProcXCopy2");
+    assert_eq!(
+        duplicated["model"]["objects"].as_array().map(Vec::len),
+        Some(5)
+    );
+    let validate = openflex(&["validate", &path_str(&model)]);
+    assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
+
+    let bad = http_request(
+        &address,
+        "POST",
+        "/api/model/objects/ProcX/rename",
+        Some(r#"{"name":"Sink1"}"#),
+    );
+    assert!(http_status(&bad).contains("422"), "bad rename: {bad}");
+}
+
+#[test]
+fn studio_timeseries_endpoint_returns_samples() {
+    let dir = TempDir::new("studio-timeseries");
+    let model = dir.write("demo.ofm", MODEL);
+    let (_server, address) = start_studio(&model);
+
+    let response = http_request(
+        &address,
+        "POST",
+        "/api/timeseries",
+        Some(r#"{"interval":50}"#),
+    );
+    assert!(
+        http_status(&response).contains("200 OK"),
+        "timeseries: {}",
+        http_body(&response)
+    );
+    let payload = json(http_body(&response));
+    assert_eq!(payload["interval"], 50.0);
+    let objects = payload["objects"].as_array().expect("objects");
+    assert!(objects.iter().any(|name| name == "Queue1"));
+    let series = payload["series"].as_array().expect("series");
+    assert!(!series.is_empty());
+    for row in series {
+        let time = row["time"].as_f64().expect("time");
+        assert!((50.0..=200.0).contains(&time));
+        assert!(row["content"].as_f64().is_some());
+    }
+
+    let invalid = http_request(
+        &address,
+        "POST",
+        "/api/timeseries",
+        Some(r#"{"interval":0}"#),
+    );
+    assert!(http_status(&invalid).contains("422"), "invalid: {invalid}");
 }
