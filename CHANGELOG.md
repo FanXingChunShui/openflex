@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.33.0 — 2026-11-16
+
+### Studio
+
+- **事件列表导出 CSV**（time/seq/kind/object/detail）、**检查点列表导出 JSON**、**3D 视角预设**（等距/俯视/前视/侧视）。
+
+### 文档
+
+- 性能噪声结论落定：v0.31/v0.32 的 10–18% 偏差经 load 5.3 下 10k 复测（67,032 events/s，与 v0.30 的 75,366 同属波动）
+  确认为测量噪声，**不是代码回归**；performance.md 与 VERIFICATION 已去掉“待确认”措辞。
+- Fluid：确认 pressure-mode 已有 tank→pipe 压力传播（`ρgh`），但 **volume 传递/pipe acceptance 仍走旧逻辑**，
+  导致 Darcy 场景 pipe throughput=0——已记录为阻塞点与下轮方案（`acceptance = darcy Q × dt`）。
+
+### 验证
+
+- 473 个测试全绿（core 242、CLI 83、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.33.0 三平台产物发布并 SHA256 校验。
+
 ## v0.32.0 — 2026-11-15
 
 ### Fluid
