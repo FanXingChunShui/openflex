@@ -435,7 +435,9 @@ ghcr.io/fanxingchunshui/openflex:latest
 | `0.30.0` | ✅ 可用（tag 发布后约 33 分钟出现；container run `43731896900` success，35 分钟） | `7b37e5401daa` |
 | `0.31.0` | ✅ 可用（tag 发布后约 24 分钟出现） | `e4d9e72a706d` |
 | `0.32.0` | ✅ 可用（tag 发布后约 32 分钟出现） | `158ad687b5b8` |
-| `latest` | ✅ 指向 0.32.0 | `158ad687b5b8` |
+| `0.33.0` | ✅ 可用 | `d79065bf17d9` |
+| `0.34.0` | ⏳ tag 已发布，镜像构建中（经验 24–35 分钟） | — |
+| `latest` | ✅ 指向 0.33.0 | `d79065bf17d9` |
 
 **container run 观察与经验值（2026-11-15）**：GHCR 镜像由 tag 触发的 `container` workflow 构建，
 耗时基本由 step「Build and push multi-arch image」里的 QEMU arm64 构建决定：
@@ -487,9 +489,9 @@ buildx 多架构（amd64 + arm64）推送 → `docker pull` 后再次 `--version
 发布后验证（有 Docker 的机器）：
 
 ```sh
-docker run --rm ghcr.io/fanxingchunshui/openflex:0.32.0 --version   # openflex 0.32.0
+docker run --rm ghcr.io/fanxingchunshui/openflex:0.33.0 --version   # openflex 0.33.0
 docker run --rm -v "$PWD/examples:/models:ro" \
-  ghcr.io/fanxingchunshui/openflex:0.32.0 run /models/golden/mm1.ofm --format json | head -c 200
+  ghcr.io/fanxingchunshui/openflex:0.33.0 run /models/golden/mm1.ofm --format json | head -c 200
 ```
 
 没有 Docker 时的替代检查（本仓库用的方法）：查询 registry 的 manifest 是否存在、是否为

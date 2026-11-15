@@ -59,6 +59,13 @@
   #scene { display: block; width: 100%; height: 100%; cursor: grab; }
   #webgl { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
            display: none; background: #f1f5f9; }
+  #heatmap-legend { position: absolute; right: 10px; bottom: 34px; z-index: 4; width: 170px;
+                    background: rgba(248,250,252,.92); border: 1px solid #cbd5e1; border-radius: 6px;
+                    padding: 5px 7px; font-size: 10px; color: #475569; }
+  #heatmap-legend[hidden] { display: none; }
+  .heatmap-bar { height: 8px; border-radius: 4px; margin: 3px 0;
+                 background: linear-gradient(90deg, #16a34a, #facc15, #dc2626); }
+  .heatmap-scale { display: flex; justify-content: space-between; font-family: ui-monospace, monospace; }
   #axis-indicator { position: absolute; left: 10px; bottom: 34px; width: 76px; height: 76px;
                     pointer-events: none; z-index: 4; }
   #webgl-labels { position: absolute; inset: 0; pointer-events: none; z-index: 3; display: none;
@@ -220,6 +227,11 @@
     <canvas id="scene" aria-label="3D model view" data-drag-object="1" data-group-drag="1" data-occlusion="1" data-box-select="1" data-marquee-3d="1" data-axis="1"></canvas>
     <canvas id="webgl" data-webgl="1" aria-label="WebGL 3D view"></canvas>
     <div id="webgl-labels" data-webgl-labels="1" data-webgl-depth="1"></div>
+    <div id="heatmap-legend" data-heatmap="1" hidden>
+      <span id="heatmap-title">Utilization</span>
+      <div class="heatmap-bar"></div>
+      <div class="heatmap-scale"><span id="heatmap-min">0</span><span id="heatmap-max">1</span></div>
+    </div>
     <svg id="axis-indicator" data-axis="1" viewBox="0 0 76 76" aria-label="X Y Z axes">
       <line x1="12" y1="64" x2="58" y2="64" stroke="#dc2626" stroke-width="2"/>
       <line x1="12" y1="64" x2="12" y2="18" stroke="#16a34a" stroke-width="2"/>
@@ -241,6 +253,13 @@
       <button type="button" data-view-preset="front">Front</button>
       <button type="button" data-view-preset="side">Side</button>
       <button id="grid-toggle" type="button" data-grid-toggle="1">Grid on</button>
+      <label class="muted" data-heatmap="1">Heatmap
+        <select id="heatmap-metric" data-heatmap-metric="1">
+          <option value="utilization">Utilization</option>
+          <option value="throughput">Throughput</option>
+          <option value="wip">WIP</option>
+        </select>
+      </label>
       <button id="export-layout" type="button" data-export-layout="1">Export layout</button>
       <button id="import-layout" type="button" data-import-layout="1">Import layout</button>
       <input id="import-layout-file" type="file" accept="application/json,.json" hidden>
@@ -368,6 +387,7 @@ const state = {
   renderMode: "canvas",
   webglLabelNodes: new Map(),
   timelinePulse: null,
+  heatmapMetric: "utilization",
   checkpoints: null,
   dragging: false,
   lastX: 0,
@@ -2108,6 +2128,7 @@ function updateTimeline(report) {
 
 function renderReport(report) {
   updateTimeline(report);
+  updateHeatmapUi();
   const rows = Object.entries(report.objects || {}).map(([name, stats]) => {
     const cell = value => Number(value || 0).toFixed(2);
     return `<tr><td>${escapeText(name)}</td><td>${cell(stats.throughput.mean)}</td>
@@ -2605,6 +2626,68 @@ function mat4LookAt(eye, center, up) {
   ];
 }
 
+function heatmapStats() {
+  const report = state.report;
+  if (!report || !report.objects) return null;
+  const metric = state.heatmapMetric;
+  const entries = Object.entries(report.objects).map(([name, stats]) => {
+    let value = 0;
+    if (metric === "throughput") value = Number(stats.throughput.mean || 0);
+    else if (metric === "wip") value = Number(stats.avg_content.mean || 0);
+    else value = Number(stats.utilization.mean || 0);
+    return { name, value };
+  });
+  if (entries.length === 0) return null;
+  let min = Math.min(...entries.map(entry => entry.value));
+  let max = Math.max(...entries.map(entry => entry.value));
+  if (metric === "utilization") {
+    min = 0;
+    max = Math.max(1, max);
+  }
+  return { metric, min, max, entries };
+}
+
+function heatmapHex(name) {
+  const stats = heatmapStats();
+  if (!stats) return null;
+  const entry = stats.entries.find(candidate => candidate.name === name);
+  if (!entry) return null;
+  const span = stats.max - stats.min;
+  const t = span <= 1e-12 ? 0.5 : Math.max(0, Math.min(1, (entry.value - stats.min) / span));
+  const stops = [
+    { at: 0, rgb: [22, 163, 74] },
+    { at: 0.5, rgb: [250, 204, 21] },
+    { at: 1, rgb: [220, 38, 38] },
+  ];
+  let left = stops[0];
+  let right = stops[stops.length - 1];
+  for (let index = 0; index < stops.length - 1; index += 1) {
+    if (t >= stops[index].at && t <= stops[index + 1].at) {
+      left = stops[index];
+      right = stops[index + 1];
+      break;
+    }
+  }
+  const local = (t - left.at) / Math.max(1e-9, right.at - left.at);
+  const rgb = left.rgb.map((value, index) => Math.round(value + (right.rgb[index] - value) * local));
+  return `#${rgb.map(value => value.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function updateHeatmapUi() {
+  const legend = $("heatmap-legend");
+  const stats = heatmapStats();
+  if (!legend) return;
+  if (!stats) {
+    legend.hidden = true;
+    return;
+  }
+  legend.hidden = false;
+  const labels = { utilization: "Utilization", throughput: "Throughput", wip: "Avg WIP" };
+  $("heatmap-title").textContent = labels[stats.metric] || stats.metric;
+  $("heatmap-min").textContent = stats.min.toFixed(stats.metric === "utilization" ? 2 : 1);
+  $("heatmap-max").textContent = stats.max.toFixed(stats.metric === "utilization" ? 2 : 1);
+}
+
 function timelineSlot(index, count) {
   if (state.timelinePulse == null || !state.report || !state.report.stop_time) return false;
   const stop = Number(state.report.stop_time) || 1;
@@ -2771,12 +2854,16 @@ function drawWebGL(now) {
     boxes.push({ object, index, corners, center: [x, y, z + objectHeight / 2], labelWorld });
     const highlighted = object.name === selectedName;
     const isMulti = multi.has(index);
-    const baseHex = object.kind.startsWith("fluid") ? "#bae6fd"
+    let baseHex = object.kind.startsWith("fluid") ? "#bae6fd"
       : object.kind === "source" ? "#dcfce7"
       : object.kind === "sink" ? "#fee2e2"
       : object.kind === "processor" ? "#dbeafe" : "#e2e8f0";
+    if (state.report && state.heatmapMetric) {
+      baseHex = heatmapHex(object.name) || baseHex;
+    }
     const pulse = timelineSlot(index, model.objects.length);
-    const topHex = highlighted ? "#fef3c7" : isMulti ? "#baf3ff" : pulse ? "#fde68a" : baseHex;
+    let topHex = highlighted ? "#fef3c7" : isMulti ? "#baf3ff" : pulse ? "#fde68a" : baseHex;
+    if (state.report && state.heatmapMetric) topHex = heatmapHex(object.name) || topHex;
     const top = hexRgb(topHex);
     const side = hexRgb("#cbd5e1");
     const dark = hexRgb("#94a3b8");
@@ -3082,7 +3169,9 @@ function drawScene2d(now, width, height) {
     const left = item.point.x - item.width / 2;
     const top = item.point.y - item.height / 2;
     const pulse = timelineSlot(item.index, objects.length);
-    ctx.fillStyle = selected ? "#fef3c7" : multi ? "#e0f2fe" : pulse ? "#fde68a" : topShade;
+    let fill = selected ? "#fef3c7" : multi ? "#e0f2fe" : pulse ? "#fde68a" : topShade;
+    if (state.report && state.heatmapMetric) fill = heatmapHex(item.object.name) || fill;
+    ctx.fillStyle = fill;
     ctx.strokeStyle = selected ? "#f59e0b" : multi ? "#0284c7" : "#334155";
     ctx.lineWidth = selected ? 2.2 : multi ? 1.6 : 1;
     ctx.fillRect(left, top, item.width, item.height);
@@ -3283,6 +3372,9 @@ function drawScene(now) {
     if (highlighted) topShade = "#fef3c7";
     else if (multi) topShade = "#e0f2fe";
     else if (timelineSlot(box.index, model.objects.length)) topShade = "#fde68a";
+    if (state.report && state.heatmapMetric) {
+      topShade = heatmapHex(box.object.name) || topShade;
+    }
     face([b0, b1, t1, t0], "#94a3b8");
     face([b1, b2, t2, t1], "#cbd5e1");
     face([t0, t1, t2, t3], topShade);
@@ -3775,6 +3867,13 @@ $("marquee-3d").addEventListener("click", () => {
   setStatus(state.marqueeMode ? "3D marquee mode: drag empty space" : "3D marquee mode off");
 });
 $("apply-batch-pos").addEventListener("click", applyBatchPosition);
+$("heatmap-metric").addEventListener("change", event => {
+  state.heatmapMetric = event.target.value;
+  updateHeatmapUi();
+  setStatus(`heatmap: ${event.target.value}`);
+  drawScene(state.clock);
+  if (state.renderMode === "webgl" && !state.view2d) drawWebGL(state.clock);
+});
 $("grid-toggle").addEventListener("click", () => {
   state.gridVisible = !state.gridVisible;
   $("grid-toggle").textContent = state.gridVisible ? "Grid on" : "Grid off";

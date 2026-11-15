@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.35.0 — 2026-11-16
+
+### Studio
+
+- **指标热力图**：工具栏选择 Utilization（默认）/Throughput/WIP，报告产生后 3D（Canvas/WebGL）与 2D 对象按绿→黄→红插值着色；
+  右下角图例显示当前指标与 min/max。
+
+### 对象现状勘察（下轮落地）
+
+- Person：已有 8 邻接/密度折减，缺“同格/相邻等待”（需让行事件与死锁避免）；
+- AGV：`charger` 目前只是标签（无容量排队），可复用 resource 的 capacity/requests；
+- 电梯：门开/关仅用于延迟，`StateTimes` 缺 opening/open/closing 累计（3 字段 + 2 处累计点）。
+
+### 验证
+
+- 473 个测试全绿（core 242、CLI 83、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.35.0 三平台产物发布并 SHA256 校验。
+
 ## v0.34.0 — 2026-11-16
 
 ### Studio

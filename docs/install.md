@@ -235,7 +235,7 @@ msiexec /i openflex-0.10.0-windows-x64.msi
 按用户安装（`perUser`），装到 `%LOCALAPPDATA%\OpenFlex\bin` 并自动加入用户 PATH，不需要管理员权限。
 卸载：设置 → 应用 → OpenFlex → 卸载，或 `msiexec /x openflex-0.10.0-windows-x64.msi`。
 
-### Docker / GHCR — 已发布到 0.32.0，`latest` 已同步
+### Docker / GHCR — 已发布到 0.33.0（0.34.0 随 tag 构建，经验 24–35 分钟）
 
 GHCR 镜像由 [`.github/workflows/container.yml`](../.github/workflows/container.yml) 在 tag 时
 构建并推送。**当前 registry 状态（2026-11-15 用 `scripts/verify-ghcr.sh` 核对）**：
@@ -265,12 +265,14 @@ GHCR 镜像由 [`.github/workflows/container.yml`](../.github/workflows/containe
 | `0.30.0` | 200 | linux/amd64, linux/arm64 | `7b37e5401daa` |
 | `0.31.0` | 200 | linux/amd64, linux/arm64 | `e4d9e72a706d` |
 | `0.32.0` | 200 | linux/amd64, linux/arm64 | `158ad687b5b8` |
-| `latest` | 200 | linux/amd64, linux/arm64 | `158ad687b5b8`（= 0.32.0） |
+| `0.33.0` | 200 | linux/amd64, linux/arm64 | `d79065bf17d9` |
+| `0.34.0` | ⏳ 待推送 | — | 构建中（经验 24–35 分钟） |
+| `latest` | 200 | linux/amd64, linux/arm64 | `d79065bf17d9`（= 0.33.0） |
 
 ```sh
-docker run --rm ghcr.io/fanxingchunshui/openflex:0.32.0 --version   # openflex 0.32.0
+docker run --rm ghcr.io/fanxingchunshui/openflex:0.33.0 --version   # openflex 0.33.0
 docker run --rm ghcr.io/fanxingchunshui/openflex:latest --version
-docker run --rm -v "$PWD:/workspace" ghcr.io/fanxingchunshui/openflex:0.32.0 \
+docker run --rm -v "$PWD:/workspace" ghcr.io/fanxingchunshui/openflex:0.33.0 \
   run /workspace/model.ofm
 ```
 

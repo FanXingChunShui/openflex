@@ -11,7 +11,7 @@
 | 1 | **Fluid 真实压力/温度/密度** | ✅ 压差驱动 pipe 流量（`flow = k·Δp`，`k` 由 `flow_rate` 标定）、tank `p=ρ·g·h`（density/gravity 参数）、valve 压差滞回 `pressure_open/close` 自动重开、pipe `temperature` 黏度修正、背压与 `pressure` 报告；示例 fluid-pressure/fluid-backpressure | 无多相流/泵与阀特性曲线、无管满/可压缩效应 | L |
 | 2 | **Person 人群模型** | ✅ `grid` 8 邻接 Dijkstra（对角 √2、禁切角）、局部密度（邻格 -15%、同格 -50%，下限 40%）、全局速度折减；示例 person-avoidance/person-grid | 无个体路径重规划/排队避让、无动态障碍、无楼梯/电梯换乘、无社会力模型 | L |
 | 3 | **AGV 交通控制** | transporter alias + 电池；✅ 取货段途中耗尽就地停车充电并 `TransportResume` 续跑、同节点占用等待（0.5 步重试）；示例 agv-traffic/agv-battery | 无单向路网边/路网节点图、无充电桩容量/排队、无完整死锁避免、不搬运 flow item | L |
-| 4 | **电梯门控** | 门开/关时间、超载折算、井道互斥、召唤/方向 | 无独立门态统计/对向调度/多轿厢群控 | S |
+| 4 | **电梯门控** | 门开/关时间、超载折算、井道互斥、召唤/方向 | 无门态时间统计（opening/open/closing）/对向调度/多轿厢群控 | S |
 | 5 | **Conveyor 曲线与完整合流** | 直线带、PhotoEye/Station/Join（入口轮转）；✅ 可选 `curve: {radius, angle}`，按弧长计入行程时间（速度不变） | 无 3D 转弯几何/多段曲线/斜坡、无 Join 的 slug/gap 精细策略、无 Merge Controller、无电机/转盘/Transfers、PhotoEye 无遮挡持续状态/计数 | L |
 | 6 | **Rack 货位精细放置** | (level,aisle,bay) 分配 + 行走时间 + pick_policy | 无空位查表/并发取货、无 SKU/批次策略 | S |
 | 7 | **MultiProcessor 完整语义** | 多槽并行、每槽 setup/process、整批 crew 申请 | 无每槽独立操作员/故障、无槽位选择策略（优先级/最短队列） | M |
