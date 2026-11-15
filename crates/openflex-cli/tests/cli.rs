@@ -914,6 +914,10 @@ fn http_body(response: &str) -> &str {
 }
 
 /// Start `openflex studio --port 0 --no-open` and return its address.
+///
+/// stderr is consumed by a background thread for the whole lifetime of the
+/// process: if the pipe were closed after reading the first line, the server's
+/// next `eprintln!` would raise SIGPIPE and kill it on Linux.
 fn start_studio(model: &Path) -> (ServerChild, String) {
     let mut child = Command::new(BIN)
         .args(["studio", &path_str(model), "--port", "0", "--no-open"])
@@ -922,16 +926,21 @@ fn start_studio(model: &Path) -> (ServerChild, String) {
         .spawn()
         .expect("could not start `openflex studio`");
     let stderr = child.stderr.take().expect("piped stderr");
-    let mut reader = BufReader::new(stderr);
-    let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .expect("could not read the studio address");
+    let (sender, receiver) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            let _ = sender.send(line);
+        }
+    });
+    let first = receiver
+        .recv_timeout(Duration::from_secs(10))
+        .expect("studio did not print its address");
     let server = ServerChild { child };
-    let url = line
+    let url = first
         .split_once("listening on ")
         .map(|(_, rest)| rest.split_whitespace().next().unwrap_or_default())
-        .unwrap_or_else(|| panic!("no studio URL in {line:?}"));
+        .unwrap_or_else(|| panic!("no studio URL in {first:?}"));
     let address = url
         .strip_prefix("http://")
         .unwrap_or_else(|| panic!("unexpected studio URL {url:?}"))
