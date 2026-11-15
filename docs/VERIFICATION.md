@@ -94,23 +94,23 @@ pwsh、docker，registry 检查默认关闭；清单已同步到 v0.13.0）。
 
 ## 6. 性能基线
 
-在 2026-11 的 macOS 15.8.1 x86_64 机器上，release 构建（**v0.31.0**，测量时系统负载较高，见下）：
+在 2026-11 的 macOS 15.8.1 x86_64 机器上，release 构建（**v0.32.0**，测量时系统负载较高，见下）：
 
 | 场景 | 规模 | 用时 / 吞吐 |
 |---|---|---|
 | M/M/1 长仿真（`bench_mm1`） | 120,318 事件 | 0.079 s → **1.52M events/s**、252,802 items/s（v0.16 基线） |
 | 多复现 | 5 × 48000 时间单位 | < 0.2 s |
-| 大模型 10k 对象 | 15,000 事件 | validate 0.10 s / run 0.24 s → 61,740 events/s |
-| 大模型 100k 对象 | 150,000 事件 | validate **0.82 s** / run **2.54 s** → 约 58,950 events/s，峰值 399 MB |
+| 大模型 10k 对象 | 15,000 事件 | validate 0.10 s / run 0.24 s → 63,775 events/s |
+| 大模型 100k 对象 | 150,000 事件 | validate **0.87 s** / run **2.70 s** → 约 55,643 events/s，峰值 391 MB |
 
-> v0.31.0 测量期间 load average 16–21（后台容器构建），数值比 v0.30.0 在 load 3.2 时（0.75 s / 2.29 s）高约 10–14%；
-> 属于负载噪声还是真实回归需低负载复测，详见 [performance.md](verification/performance.md)。
+> v0.31（load 16–21）与 v0.32（load 5.3）都在高负载下测得，数值比 v0.30.0 在 load 3.2 时（0.75 s / 2.29 s）
+> 高约 10–18%；属于负载噪声还是真实回归需低负载复测，详见 [performance.md](verification/performance.md)。
 
 **规模结论**：10× 对象带来约 9–11× 时间，**接近线性**；v0.25.0 相比 v0.11.0 的
 85.12 s / 271.56 s 快约 **115×**（一次 run 从 4.5 分钟降到 2.3 秒）。
 
 **CI 性能门槛（`bench` job）**：每个 PR 跑 10k 对象基准，
-**validate < 2 s、run < 5 s** 为硬门槛（v0.31.0 高负载基线 0.10 s / 0.24 s，仍留 **20–21×** 余量），
+**validate < 2 s、run < 5 s** 为硬门槛（v0.32.0 高负载基线 0.10 s / 0.24 s，仍留 **20–21×** 余量），
 超限直接失败；结果写进 job summary 并作为 artifact 保留。理由与调整方法见
 [performance.md](verification/performance.md) §4.1。
 
@@ -300,12 +300,12 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 ## 最近一次验收记录
 
 - 日期：2026-11-15
-- 版本：**0.31.0**（release 已发布，11 个产物；上一轮复核了 v0.30.0）
+- 版本：**0.32.0**（release 已发布，11 个产物；本轮同时复核了 v0.31.0）
 - `cargo test --workspace`：**未在本轮重跑**——工作区有并行开发（Cargo.toml / fluid 等），
   全量测试由 CI 的 `test` / `golden` / `test-arm64` job 覆盖；覆盖率基线在干净检出上测（见下）。
 - `cargo llvm-cov` 行覆盖率基线（干净 v0.10.0 检出）：**77.91%**（函数 75.75% / 区域 76.33%；
   v0.12.0 未重测）
-- `scripts/sync-package-manifests.sh --version 0.31.0 --check`：**清单已一致**（lead 已同步）
+- `scripts/sync-package-manifests.sh --version 0.32.0`：**5 个文件更新成功**（`--check` 通过）
   （homebrew version + 3 sha256、winget 三件套、scoop version/url/hash/extract_dir），
   `--check` 复核通过
 - `scripts/release.sh --dry-run`：**5 步顺序正确**（预检 → bump → sync → verify → 提示），
@@ -314,7 +314,7 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
   含 12 个 shell 脚本的 bash -n 与 shellcheck、workflow/dependabot/winget YAML、
   deny.toml 与 fuzz/Cargo.toml 的 TOML 解析、wasm32 检查、新工具的 `--help` 与 dry-run，
   以及 winget/scoop/homebrew 清单版本与 sha256 的一致性检查、bench/sync/verify-ghcr 脚本与文档站配置检查）
-- `scripts/verify-install.sh --version 0.31.0`（真实 GitHub Release）：**PASS**，20 项
+- `scripts/verify-install.sh --version 0.32.0`（真实 GitHub Release）：**PASS**，20 项（v0.31.0 也于本轮实跑通过）
 - `cargo check` + `cargo build -p openflex-core --target wasm32-unknown-unknown`：**通过**
 - `mdbook build docs`（mdBook 0.5.4）：**成功**，11 个顶层页面 + 4 个 verification 页面（约 3.7 MB），
   `index.html` = 「OpenFlex 文档」；生成物已删除（见第 10 节）
@@ -354,21 +354,23 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 | v0.29.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS（2026-11-15），见 [install-matrix](verification/install-matrix.md) |
 | v0.30.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS（2026-11-15），见 [install-matrix](verification/install-matrix.md) |
 | v0.31.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS（2026-11-16），见 [install-matrix](verification/install-matrix.md) |
-| Homebrew 公式（v0.31.0 真实 sha256） | **已完成**（`ruby -c` 通过）；tap 待创建 | `packaging/homebrew/openflex.rb` |
+| v0.32.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS（2026-11-16），见 [install-matrix](verification/install-matrix.md) |
+| Homebrew 公式（v0.32.0 真实 sha256） | **已完成**（`ruby -c` 通过）；tap 待创建 | `packaging/homebrew/openflex.rb` |
 | Homebrew `brew audit` / `brew install --build-from-source` | **待环境** | 本机 Homebrew 非 Tier 1 配置，audit 被 SIGTERM；命令见 `packaging/homebrew/README.md` |
-| winget / scoop 清单（v0.31.0 URL/SHA256） | **已完成，待提交** | `packaging/winget/`、`packaging/scoop/openflex.json`；由 `sync-package-manifests.sh` 同步 |
-| GHCR 镜像发布与验证 | **0.10.0–0.30.0 + latest（=0.30.0）全部 200**（0.30.0 在发布约 33 分钟后出现）；0.31.0 随 tag 构建中 | `scripts/verify-ghcr.sh` 核对；docker 本地运行**待环境** |
+| winget / scoop 清单（v0.32.0 URL/SHA256） | **已完成，待提交** | `packaging/winget/`、`packaging/scoop/openflex.json`；由 `sync-package-manifests.sh` 同步 |
+| GHCR 镜像发布与验证 | **0.10.0–0.31.0 + latest（=0.31.0）全部 200**（0.31.0 在发布约 24 分钟后出现）；0.32.0 随 tag 构建中 | `scripts/verify-ghcr.sh` 核对；docker 本地运行**待环境** |
 | container run `43726461023`（v0.28.0） | **已 completed / success** | 14:49:36 → 15:22:38（33 分钟，含 QEMU arm64 构建）；上一轮看到的 in_progress 是正常构建阶段，非卡死 |
 | container run `43729706956`（v0.29.0） | **已 completed / success** | 15:24:29 → 15:57:25（33 分钟） |
 | container run `43731896900`（v0.30.0） | **已 completed / success** | 15:48:11 → 16:23:22（35 分钟）；经验值：tag → 镜像可用 25–35 分钟 |
-| container run（v0.31.0） | **进行中** | 16:35:20 创建，按经验 25–35 分钟（预计 17:00–17:10Z 可用） |
+| container run（v0.31.0） | **已推送，run 收尾中** | 16:35:20 创建；镜像 24 分钟后可用（GHCR 200），run 仍在 buildx 收尾 |
+| container run（v0.32.0） | **进行中** | 16:53:03 创建，按经验 25–35 分钟 |
 | container workflow 加固 | **已完成** | `timeout-minutes: 45`、`provenance: false`、推送后 registry API 复核、失败时打印 buildx/docker 诊断 |
 | GHCR registry 检查工具 | **已完成** | `scripts/verify-ghcr.sh`（无需 docker/token；支持 `--retry`/`--expect-latest`/`--json`） |
 | Windows / Linux / deb / rpm / MSI 真机安装 | **待环境** | 脚本与命令清单就绪，见安装矩阵第 5 节 |
 | 签名/公证（macOS/Windows/GPG） | **CI 已配置，待证书**（2026-11-15 复核） | release.yml 5 处签名步骤 `if: env.X != ''`；三套脚本 dry-run 通过 |
 | 10 万对象性能基准（v0.11.0） | **已实跑** | validate 85.12 s / run 271.56 s / 552 events/s / 峰值 397 MB，见 [performance.md](verification/performance.md) |
 | 文档站（mdBook） | **已构建验证**（mdBook 0.5.4） | 11+4 页面，`index.html`=「OpenFlex 文档」；配置见第 10 节 |
-| 包管理器清单同步到 v0.31.0 | **已完成** | `sync-package-manifests.sh --version 0.31.0 --check` 通过（lead 已同步） |
+| 包管理器清单同步到 v0.32.0 | **已完成** | `sync-package-manifests.sh --version 0.32.0`；`--check` 通过 |
 | 发布 checklist 脚本（`scripts/release.sh`） | **已完成并实测** | dry-run 输出 1→5 顺序；`prepare`/`publish`/`all` 三阶段；错误路径 exit 1/2；已接入 verify-packaging（含 bash -n 与 `--help` 检查） |
 | 任务序列「额外段插入原始时间线」 | **关闭为已知简化** | `docs/UNIMPLEMENTED.md` 第 10 项已标注：额外段在 `settle_task` 收尾阶段逐段调度，未插入 load/unload 之间；行为由 `crates/openflex-core/tests/task_sequence_timeline.rs` 固定（v0.28.0 已随 release 提交） |
 | CI 性能门槛（`bench` job，10k 对象） | **已实跑**（本机等价命令 + 负向测试） | validate < 2 s、run < 5 s；本机 0.14 s / 0.40 s；见 [performance.md](verification/performance.md) §4.1 |

@@ -2096,6 +2096,7 @@ function updateTimeline(report) {
 }
 
 function renderReport(report) {
+  updateTimeline(report);
   const rows = Object.entries(report.objects || {}).map(([name, stats]) => {
     const cell = value => Number(value || 0).toFixed(2);
     return `<tr><td>${escapeText(name)}</td><td>${cell(stats.throughput.mean)}</td>
