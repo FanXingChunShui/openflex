@@ -7,7 +7,7 @@ CI 只证明「能构建出文件」，不证明「装上以后能跑」——�
   [`scripts/verify-install.ps1`](../../scripts/verify-install.ps1)（Windows）
 - 记录汇总：[`docs/VERIFICATION.md`](../VERIFICATION.md)
 - 安装文档：[`docs/install.md`](../install.md)
-- **当前基线：v0.4.0（2026-11-14，11 个产物）**；本页记录按时间倒序，最新在最前。
+- **当前基线：v0.10.0（2026-11-15，11 个产物）**；本页记录按时间倒序，最新在最前。
 
 ## 1. 判定标准
 
@@ -29,7 +29,7 @@ CI 只证明「能构建出文件」，不证明「装上以后能跑」——�
 
 | 平台 | tar.gz | zip | deb | rpm | msi | brew | docker |
 |---|---|---|---|---|---|---|---|
-| macOS（Apple Silicon / Intel） | ✅ `install.sh` v0.1.0 + v0.4.0（2026-11-14） | ➖ | ➖ | ➖ | ➖ | ❌ tap 未发布（模板已本地校验） | ❌ Docker 未安装 |
+| macOS（Apple Silicon / Intel） | ✅ `install.sh` v0.1.0 / v0.4.0 / v0.10.0（2026-11-15） | ➖ | ➖ | ➖ | ➖ | ❌ tap 未创建（公式已填 v0.10.0 真实校验和） | 🟡 GHCR 镜像已发布并 CI 冒烟，本机无 docker 未本地跑 |
 | Linux x86_64 | ❌ | ➖ | ❌ | ❌ | ➖ | ❌ | ❌ |
 | Linux aarch64 | ❌ | ➖ | ❌ | ❌ | ➖ | ❌ | ❌ |
 | Windows x64 | ➖ | ❌ | ➖ | ➖ | ❌ | ➖ | ➖ |
@@ -38,18 +38,21 @@ CI 只证明「能构建出文件」，不证明「装上以后能跑」——�
 补充说明：
 
 - **macOS tar.gz**：在本机（macOS 15.8.1 x86_64）用 `scripts/verify-install.sh` 跑通两种模式：
-  `--from-dir`（22 项检查）与 `--version` 真实下载 GitHub Release（v0.1.0 与 v0.4.0 各 20 项检查），
-  见第 4 节。
+  `--from-dir`（22 项检查）与 `--version` 真实下载 GitHub Release
+  （v0.1.0 / v0.4.0 / v0.10.0 各 20 项检查），见第 4 节。
 - **Windows**：本仓库的验证是在 macOS 上开发的，没有 Windows 主机；`verify-install.ps1`
   在非 Windows 主机上只输出可复制的命令清单。需要有人在 Windows 10/11 上跑一次。
 - **deb/rpm**：`scripts/verify-install.sh --deb/--rpm` 已实现（deb 用私有 dpkg root，
   rpm 用 `rpm2cpio` 解包），但本机没有 `dpkg`/`rpm2cpio`，所以未执行。
-- **brew**：公式模板通过 `ruby -c` 与 `brew audit` 的手工步骤记录在
-  [`packaging/homebrew/README.md`](../../packaging/homebrew/README.md)；tap 尚未发布，
-  所以没有「用户视角」的 `brew install` 验证。
-- **docker**：本机没有 Docker；镜像构建由
-  [`.github/workflows/container.yml`](../../.github/workflows/container.yml) 在 tag 时
-  执行（含 `--version` 与一次模型冒烟），GHCR 镜像尚未发布。
+- **brew**：公式已填 v0.10.0 的真实 `sha256` 并通过 `ruby -c`；tap 仓库
+  `FanXingChunShui/homebrew-openflex` **尚未创建**，所以没有「用户视角」的
+  `brew install` 验证。本机 `brew audit --strict` 受 Homebrew 支持层级限制（macOS 15 +
+  `/usr/local`，报 “not a Tier 1 configuration”）无法完成，需在受支持环境或 tap CI 里跑。
+  步骤见 [`packaging/homebrew/README.md`](../../packaging/homebrew/README.md)。
+- **docker**：GHCR 镜像**已发布**（`ghcr.io/fanxingchunshui/openflex:0.10.0`、`latest`，
+  linux/amd64 + linux/arm64 manifest list）；CI 在推送前后各跑一次 `--version` 与
+  `run examples/golden/mm1.ofm` 冒烟。本机没有 Docker，**没有在本地再跑一次
+  `docker run`**，所以状态是 🟡 而不是 ✅。
 
 ## 3. 如何执行
 
@@ -94,6 +97,32 @@ MSI 验证前脚本会检查 `%LOCALAPPDATA%\OpenFlex\bin\openflex.exe` 是否�
 **已存在就 SKIP**，避免覆盖并卸载掉别人的真实安装。
 
 ## 4. 已完成的记录
+
+### 记录 2026-11-15 — macOS 15.8.1 (x86_64)，v0.10.0 GitHub Release 网络安装
+
+- 基线版本：**v0.10.0**（release 共 11 个文件：macOS/Linux tar.gz ×3、Windows zip ×2、MSI ×1、
+  deb ×2、rpm ×2 + `SHA256SUMS.txt`；发布于 2026-11-15T01:12:51Z）
+- 命令：
+
+  ```sh
+  OPENFLEX_REPO=FanXingChunShui/openflex \
+    bash scripts/verify-install.sh --version 0.10.0 --report /tmp/install-rows.md
+  ```
+
+- 结果：**RESULT: PASS**，20 项检查，0 失败 0 跳过：
+
+  | 检查 | 结果 |
+  |---|---|
+  | 从 GitHub Release 下载 `openflex-0.10.0-universal-apple-darwin.tar.gz`（6.5 MB） | PASS |
+  | 安装到临时 prefix + SHA-256 校验 | PASS（3 项） |
+  | `--version` = `openflex 0.10.0` | PASS |
+  | `new` / `validate` / `run --format json`（合法 JSON，含 `objects`） | PASS |
+  | `run --format csv`（含 `Sink`） | PASS |
+  | 安装回执、卸载、重复卸载 | PASS（4 项） |
+
+- 备注：`--report` 追加的行是
+  `| Darwin 24.6.0 (x86_64) | network | unknown | 0.10.0 | PASS | 2026-11-15 … |`；
+  platform 列的 `unknown` 是已知显示缺陷（`install.sh` 不回报包名），不影响判定。
 
 ### 记录 2026-11-14 — macOS 15.8.1 (x86_64)，v0.4.0 GitHub Release 网络安装
 
@@ -187,9 +216,10 @@ MSI 验证前脚本会检查 `%LOCALAPPDATA%\OpenFlex\bin\openflex.exe` 是否�
 |---|---|---|
 | Windows zip / MSI | 一台 Windows 10/11（x64，可选 arm64） | 在 Windows 上 `verify-install.ps1`，把输出贴回本页 |
 | Linux tar.gz / deb / rpm | 一台 Ubuntu 22.04+ 或 Fedora/Debian | `verify-install.sh --from-dir dist --deb … --rpm …` |
-| brew | 发布 `homebrew-openflex` tap | 按 [packaging/homebrew/README.md](../../packaging/homebrew/README.md) |
-| docker | 有 Docker 的机器，或等 CI 的 GHCR 推送 | `docker build -f packaging/Dockerfile -t openflex:test .` 后跑 `--version` 与一次 `run` |
-| winget / scoop | 提交清单 | 用 `packaging/winget/`、`packaging/scoop/` 模板 |
+| brew | **创建 `FanXingChunShui/homebrew-openflex` 仓库**（公式已就绪） | 按 [packaging/homebrew/README.md](../../packaging/homebrew/README.md) 复制 `Formula/openflex.rb` 并推送 |
+| brew 本地校验 | 一台受支持的 Homebrew 环境 | `brew audit --strict --new Formula/openflex.rb` + `brew install --build-from-source` |
+| docker | 有 Docker 的机器 | `docker run --rm ghcr.io/fanxingchunshui/openflex:0.10.0 --version`（镜像已发布，待本地确认） |
+| winget / scoop | 提交清单（已填 v0.10.0 的 URL/SHA256） | 提 PR 到 `microsoft/winget-pkgs` / 自建 bucket |
 
 > 每填一格，请同时更新 [docs/VERIFICATION.md](../VERIFICATION.md) 的「安装验证」章节，
 > 让两个页面不出现互相矛盾的状态。

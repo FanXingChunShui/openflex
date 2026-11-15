@@ -1,0 +1,22 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "fluid-backpressure",
+  "description": "Fluid backpressure (B5): a closed valve stops the tank from releasing, so the tank fills and overflows",
+  "time_unit": "seconds",
+  "run": { "stop_time": 60.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "fluid_step": 0.1,
+  "objects": [
+    { "name": "Generator1", "kind": "fluid_generator", "params": { "flow_rate": 10.0 } },
+    { "name": "Tank1", "kind": "fluid_tank", "params": {
+        "capacity": 100.0, "initial_level": 0.0, "max_outflow": 10.0 } },
+    { "name": "Valve1", "kind": "fluid_valve", "params": {
+        "ratio": 1.0, "pressure_threshold": 15.0 } },
+    { "name": "Sink1", "kind": "fluid_sink", "params": {} }
+  ],
+  "connections": [
+    { "from": "Generator1", "to": "Tank1" },
+    { "from": "Tank1", "to": "Valve1" },
+    { "from": "Valve1", "to": "Sink1" }
+  ]
+}

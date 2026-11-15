@@ -2771,8 +2771,20 @@ fn studio_can_add_and_delete_objects_through_the_api() {
         "id=\"save-flow\"",
         "id=\"speed\"",
         "id=\"pause-animation\"",
+        "id=\"block-list\"",
+        "id=\"add-block\"",
+        "id=\"add-flow-connection\"",
+        "id=\"undo\"",
+        "id=\"redo\"",
+        "data-undo=\"1\"",
+        "data-redo=\"1\"",
+        "undoStack",
+        "redoStack",
+        "data-field",
+        "OBJECT_FIELDS",
+        "BLOCK_FIELDS",
     ] {
-        assert!(html.contains(marker), "missing control {marker}");
+        assert!(html.contains(marker), "missing marker {marker}");
     }
 
     // Add a queue: safe defaults, auto name and position, validated and saved.
@@ -2907,4 +2919,69 @@ fn studio_delete_cleans_references_to_the_object() {
     );
     let validate = openflex(&["validate", &path_str(&model)]);
     assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
+}
+
+#[test]
+fn studio_flow_block_editor_can_add_a_block_that_validates() {
+    let dir = TempDir::new("studio-flow-block");
+    let model = dir.write("flow.ofm", FLOW_MODEL);
+    let (_server, address) = start_studio(&model);
+
+    let html = http_body(&http_get(&address, "/")).to_string();
+    for marker in [
+        "id=\"block-list\"",
+        "id=\"add-block\"",
+        "id=\"delete-block\"",
+        "data-field",
+    ] {
+        assert!(
+            html.contains(marker),
+            "missing block editor marker {marker}"
+        );
+    }
+
+    // This mirrors what the block editor does: append a Delay block between
+    // Delay1 and Assign1, then save the whole model.
+    let mut current = json(http_body(&http_get(&address, "/api/model")));
+    current["process_flow"]["blocks"]
+        .as_array_mut()
+        .expect("blocks")
+        .push(serde_json::json!({
+            "id": "Delay2",
+            "kind": "delay",
+            "time": { "distribution": "constant", "value": 3.0 }
+        }));
+    let connections = current["process_flow"]["connections"]
+        .as_array_mut()
+        .expect("flow connections");
+    for connection in connections.iter_mut() {
+        if connection["from"] == "Delay1" && connection["to"] == "Assign1" {
+            connection["to"] = serde_json::json!("Delay2");
+        }
+    }
+    connections.push(serde_json::json!({ "from": "Delay2", "to": "Assign1" }));
+
+    let save = http_request(
+        &address,
+        "POST",
+        "/api/model",
+        Some(&serde_json::to_string(&current).expect("serialise")),
+    );
+    assert!(
+        http_status(&save).contains("200 OK"),
+        "save block: {}",
+        http_body(&save)
+    );
+    let text = fs::read_to_string(&model).expect("read model");
+    assert!(
+        text.contains("\"Delay2\""),
+        "new block missing from the file"
+    );
+    let validate = openflex(&["validate", &path_str(&model)]);
+    assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
+
+    let run = http_request(&address, "POST", "/api/run", Some("{}"));
+    assert!(http_status(&run).contains("200 OK"));
+    let report = json(http_body(&run));
+    assert_eq!(report["process_flow"]["tokens_created"], 10.0);
 }

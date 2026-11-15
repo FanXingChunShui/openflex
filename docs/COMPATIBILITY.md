@@ -19,7 +19,7 @@
 | Sink | `sink` | ✅ | 吞吐与停留时间统计 |
 | Combiner | `combiner` | ✅ | pack / join / batch（setup+process）；容器先到、等待组件数 |
 | Separator | `separator` | ✅ | `separate_mode: unpack`（qty+1 件）/ `split`（qty 件）；0 = 容器内全部组件 |
-| Conveyor | `conveyor` | ✅ | 速度、长度、间距、累积/非累积、容量；`photo_eyes` 光电门、`stations` 停留加工、`join_inputs` 两带汇入（入口轮转简化）；无曲线 |
+| Conveyor | `conveyor` | ✅ | 速度、长度、间距、累积/非累积、容量、`curve{radius,angle}` 弧长；`photo_eyes`/`stations`/`join_inputs`；无多段曲线 |
 | Merge | `merge` | ✅ | 多输入合流；可选等待全部输入 |
 | Split | `split` | ✅ | 轮询或按 item type 分流 |
 | Transporter / TaskExecuter | `transporter` | 🟡 | 速度、装载/卸载时间、`network` 最短路、`home` 取货、两段任务；`capacity`=并发任务数（不搬运 flow item）；无多段自定义任务序列 |
@@ -30,7 +30,7 @@
 | Time Table | `params.timetable` | ✅ | `{windows:[{start,end}]}`，与 shifts 取交集 |
 | BasicFR / BasicTE | `basic_fr` / `basic_te` | ✅ | 通用固定资源与执行器 |
 | MultiProcessor | `multiprocessor` | ✅ | 多槽并行加工，每槽 setup/process，操作员按忙碌期申请 |
-| Fluid（流体） | `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_pipe` / `fluid_sink` | 🟡 | 固定步长、液位/溢出/吞吐、pipe 延迟、valve 压力阈值（入口流量近似）；无压力/温度/密度 |
+| Fluid（流体） | `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_pipe` / `fluid_sink` | 🟡 | 固定步长、液位/溢出/吞吐、pipe 延迟与背压、valve 压力阈值（入口流量近似，含闭锁）；无真实压力传播/温度/密度 |
 | People / A* 行走 | `person` | 🟡 | `grid` 4 邻接 A* + 拥堵速度折减；无对角移动/个体避让 |
 | AGV / 交通控制 | `agv` | 🟡 | transporter alias + 电池（容量/耗电/充电）；无交通控制/途中耗尽 |
 | Elevator / 电梯 | `elevator` | 🟡 | 垂直运输、停靠、召唤/方向优先；无门控/超载/井道冲突 |
@@ -54,8 +54,8 @@
 | Send To Port：By Label | `by_label` | ✅ | |
 | FlexScript / C++ 逻辑 | 表达式 + rhai 脚本 | ✅ | `action: script` / `script_condition`（条件用 `result` 标签约定）；沙箱无文件/网络/随机 |
 | 全局表（Global Table） | — | ⛔ | 可用标签/参数覆盖模拟 |
-| Process Flow（流程图块） | `model.process_flow` / `params.process_flow` | 🟡 | 模型级+对象级 create/delay/assign/decision/sink/transfer(to_object/from_object)；块无容量/触发器 |
-| FlexScript 脚本 | `action: script` / `script_condition` | ✅ | rhai 沙箱，触发器/路由/流程决策执行；条件用 `result` 标签约定 |
+| Process Flow（流程图块） | `model.process_flow` / `params.process_flow` | 🟡 | 模型级+对象级 create/delay/assign/decision/sink/transfer(to/from)；块无容量/触发器；Studio 可编辑块与连接 |
+| FlexScript 脚本 | `action: script` / `script_condition` | ✅ | rhai 沙箱，触发器/路由/流程决策；条件可直接返回布尔（兼容 `result` 标签）；查询 `object_content/state/utilization`；动作 `set_state/create_item/move_item` |
 
 ## 运行与统计
 
@@ -73,7 +73,7 @@
 | 置信区间 | 报告 | ✅ | 正态近似 `1.96·se` |
 | OptQuest 优化 | — | ⛔ | 未实现 |
 | Dashboard / 图表 | 报告 + Studio 柱状图 | 🟡 | Studio 有吞吐柱状图；无完整 Dashboard/模板 |
-| 3D 视图 / 模型树 / GUI | `openflex studio` | 🟡 | 本地 Web Studio：Canvas 3D 近似投影、增删对象/参数编辑/运行/动画；无 GPU 渲染/完整模型树 |
+| 3D 视图 / 模型树 / GUI | `openflex studio` | 🟡 | 本地 Web Studio：Canvas 3D、字段级动态表单、增删对象、Process Flow 块编辑、撤销/重做、运行/动画；无 GPU 渲染 |
 | 导出 Excel / 数据库 | CSV / JSON / xlsx | ✅ | `run --xlsx` 输出 Summary/Objects/Replications 三个 sheet |
 
 ## 文件与集成

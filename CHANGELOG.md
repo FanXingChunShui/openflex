@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.11.0 — 2026-11-15
+
+### 对象与运行时
+
+- **Fluid 背压/压力**：两阶段 acceptance 结算——tank 始终接收（溢流统计）但释放受下游限制；valve 关闭/低于阈值时
+  acceptance=0，上游液位上升；pipe 保留下游收不下的体积；报告新增 `pressure`（平均入口流量）。
+- **Conveyor 曲线**：`curve{radius, angle}` 弧长追加到带长（速度不变），直线段行为不变。
+- **FlexScript 扩展**：条件可直接返回布尔（兼容 `result` 标签）；新增 `object_content/object_state/object_utilization`
+  查询与 `set_state/create_item/move_item` 动作（容量检查、计数、日志）。
+
+### Studio
+
+- 字段级动态表单（按 kind，含 20 种分布子表单）；Process Flow 块列表/块表单/连接增删；撤销/重做（Ctrl+Z/Y）；
+  保留 Advanced JSON。
+
+### 工程与发布
+
+- CI：覆盖率 **60% 行覆盖硬门槛**（基线 77.91%）、fuzz 60s→180s、arm64 必跑。
+- Homebrew 公式升级为可发布状态（真实 v0.10.0 sha256）、winget/scoop 清单更新、GHCR 镜像已核实（amd64+arm64）；
+  `verify-packaging.sh` 新增清单版本/sha 一致性检查（89 项 PASS）。
+
+### 验证
+
+- 326 个测试全绿（core 154：golden 10、objects 46、p0 16、process_flow 12、fluid 9、b6 10、script 5 等）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.11.0 三平台产物发布并 SHA256 校验。
+
 ## v0.10.0 — 2026-11-15
 
 ### FlexScript 脚本执行

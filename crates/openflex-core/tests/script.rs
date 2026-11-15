@@ -107,3 +107,60 @@ fn script_runtime_errors_carry_the_trigger_location() {
     assert!(text.contains("Source1"), "{text}");
     assert!(text.contains("on_create"), "{text}");
 }
+
+#[test]
+fn script_actions_create_move_and_set_state() {
+    let model = model(include_str!("../../../examples/objects/script-actions.ofm"));
+    let config = SimConfig {
+        stop_time: 100.0,
+        warmup: 0.0,
+        seed: 1,
+    };
+    let (result, trace) = simulate_traced(&model, &config, 0).expect("run");
+    // Source1 creates three items in Queue1, a later script moves one to Sink2.
+    assert_eq!(result.objects["Queue1"].input_count, 5);
+    assert_eq!(result.objects["Queue1"].output_count, 1);
+    assert_eq!(result.objects["Sink2"].input_count, 1);
+    let logs: Vec<&String> = trace
+        .events
+        .iter()
+        .filter(|event| event.event == "script_log")
+        .map(|event| &event.message)
+        .collect();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0], "idle");
+    // set_state("busy") applied to the source at t = 0.
+    assert!(result.objects["Source1"].utilization > 0.5);
+}
+
+#[test]
+fn script_condition_can_return_a_boolean_and_query_objects() {
+    let json = r#"{
+      "format": "openflex-model", "version": 1, "name": "script-bool",
+      "run": { "stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+      "objects": [
+        { "name": "S1", "kind": "source", "params": {
+            "interarrival": { "distribution": "constant", "value": 10.0 },
+            "max_arrivals": 2, "first_arrival": 0.0 } },
+        { "name": "S2", "kind": "source", "params": {
+            "interarrival": { "distribution": "constant", "value": 1000.0 },
+            "max_arrivals": 1, "first_arrival": 25.0 } },
+        { "name": "Q", "kind": "queue", "params": { "max_content": 10 } },
+        { "name": "KA", "kind": "sink", "params": {} },
+        { "name": "KB", "kind": "sink", "params": {} }
+      ],
+      "connections": [
+        { "from": "S1", "to": "Q" },
+        { "from": "S2", "to": "KA", "strategy": { "type": "by_condition", "conditions": [
+            { "script_condition": "object_content(\"Q\") >= 1.0 && time > 20.0", "port": 0 },
+            { "condition": "1 == 1", "port": 1 } ] } },
+        { "from": "S2", "to": "KB" }
+      ]
+    }"#;
+    let model = model(json);
+    let report = run_model(&model).expect("run");
+    // The direct boolean expression is true: two items are buffered in Q when
+    // the third source arrives, so it routes to KA.
+    assert_eq!(report.objects["KA"].input_count.mean, 1.0);
+    assert_eq!(report.objects["KB"].input_count.mean, 0.0);
+}

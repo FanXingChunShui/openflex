@@ -638,6 +638,75 @@ else
   skip "release tooling dry-runs (no binary)"
 fi
 
+# ---------------------------------------------------------------- manifests
+section "Package-manager manifests match the workspace version"
+check_packager_manifests() {
+  python3 - "$ROOT_DIR" "$VERSION" <<'PY'
+import json
+import re
+import sys
+
+root, version = sys.argv[1], sys.argv[2]
+errors = []
+
+
+def read(path):
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+# Homebrew: version must equal the workspace version, sha256 must be real.
+brew = read(root + "/packaging/homebrew/openflex.rb")
+match = re.search(r'^\s*version "(?P<version>[^"]+)"', brew, re.M)
+if not match or match.group("version") != version:
+    errors.append("homebrew: version is %r, workspace is %r" % (match.group("version") if match else None, version))
+if "REPLACE_WITH_SHA256" in brew:
+    errors.append("homebrew: sha256 placeholders are still present")
+for digest in re.findall(r'sha256 "([^"]+)"', brew):
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        errors.append("homebrew: sha256 %r is not a 64-char hex digest" % digest)
+
+# winget: all three manifests carry the same PackageVersion.
+for name in (
+    "FanXingChunShui.OpenFlex.yaml",
+    "FanXingChunShui.OpenFlex.installer.yaml",
+    "FanXingChunShui.OpenFlex.locale.en-US.yaml",
+):
+    path = root + "/packaging/winget/" + name
+    text = read(path)
+    found = re.search(r"^PackageVersion:\s*(\S+)", text, re.M)
+    if not found or found.group(1) != version:
+        errors.append("winget %s: PackageVersion is %r" % (name, found.group(1) if found else None))
+
+installer = read(root + "/packaging/winget/FanXingChunShui.OpenFlex.installer.yaml")
+url = re.search(r"InstallerUrl:\s*(\S+)", installer)
+if not url or ("v%s/" % version) not in url.group(1) or ("-%s-" % version) not in url.group(1):
+    errors.append("winget: InstallerUrl does not point at v%s" % version)
+digest = re.search(r"InstallerSha256:\s*(\S+)", installer)
+if not digest or not re.fullmatch(r"[0-9a-f]{64}", digest.group(1)):
+    errors.append("winget: InstallerSha256 is missing or not a 64-char hex digest")
+
+# scoop: version and every architecture entry.
+scoop = json.loads(read(root + "/packaging/scoop/openflex.json"))
+if scoop.get("version") != version:
+    errors.append("scoop: version is %r, workspace is %r" % (scoop.get("version"), version))
+for arch, spec in (scoop.get("architecture") or {}).items():
+    if ("-%s-" % version) not in spec.get("url", ""):
+        errors.append("scoop %s: url does not contain -%s-" % (arch, version))
+    if not re.fullmatch(r"[0-9a-f]{64}", spec.get("hash", "")):
+        errors.append("scoop %s: hash is not a 64-char hex digest" % arch)
+    if version not in spec.get("extract_dir", ""):
+        errors.append("scoop %s: extract_dir does not mention %s" % (arch, version))
+
+if errors:
+    for error in errors:
+        print("  manifest check: " + error, file=sys.stderr)
+    sys.exit(1)
+print("winget, scoop and homebrew manifests match %s" % version)
+PY
+}
+run_ok "winget / scoop / homebrew manifests match $VERSION" check_packager_manifests
+
 # ---------------------------------------------------------------- summary
 section "Summary"
 printf '  passed:  %d\n' "$PASSED"
@@ -656,6 +725,7 @@ printf '  [ ] .deb/.rpm via nfpm and .msi via WiX — CI only (tools not install
 printf '  [ ] Docker image build — CI only (set OPENFLEX_VERIFY_DOCKER=1 with docker installed)\n'
 printf '  [x] new release tooling parses and answers --help (verify-install, sign-*, compare-flexsim, fuzz-smoke)\n'
 printf '  [x] workflows / dependabot / winget manifests parse; deny.toml and fuzz/Cargo.toml parse\n'
+printf '  [x] winget / scoop / homebrew manifests carry the workspace version and real sha256 values\n'
 printf '  [ ] Code signing and macOS notarisation — scripts ready, certificates/secrets not configured (docs/releasing.md 6)\n'
 printf '  [ ] Real-machine MSI/deb/rpm install — scripts/verify-install.{sh,ps1} (docs/verification/install-matrix.md)\n'
 printf '  [x] openflex-core checks for wasm32-unknown-unknown (docs/verification/wasm.md; CI job wasm)\n'

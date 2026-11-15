@@ -206,18 +206,12 @@ fn valve_pressure_threshold_closes_the_line() {
     let model = Model::from_json(&json).expect("model");
     let report = run_model(&model).expect("run");
     let fluid = report.fluid.as_ref().expect("fluid report");
-    // The incoming 10/s is below the 15/s threshold, so the valve stays shut
-    // and the pipe fills up instead of forwarding.
-    assert_near(block(fluid, "Sink1").throughput, 0.0, 1e-9, "closed sink");
-    assert_near(block(fluid, "Valve1").throughput, 0.0, 1e-9, "closed valve");
-    // No backpressure is modelled: the pipe keeps its 5s in-transit volume and
-    // the closed valve simply drops what reaches it.
-    assert_near(
-        block(fluid, "Pipe1").level_max,
-        50.0,
-        0.5,
-        "pipe stays pressurised",
-    );
+    // The valve latches closed after the first quantised pressure measurement,
+    // so at most one step of volume passes.
+    assert!(block(fluid, "Sink1").throughput <= 0.02);
+    assert!(block(fluid, "Valve1").throughput <= 0.02);
+    // Backpressure: the pipe buffers the arriving volume instead of dropping it.
+    assert!(block(fluid, "Pipe1").level_max > 100.0);
 }
 
 #[test]
@@ -250,4 +244,22 @@ fn invalid_pipe_and_threshold_params_are_rejected() {
         Model::from_json(bad_threshold).is_err(),
         "negative threshold"
     );
+}
+
+#[test]
+fn closed_valve_backpressures_the_tank() {
+    let model = Model::from_json(include_str!(
+        "../../../examples/objects/fluid-backpressure.ofm"
+    ))
+    .expect("model");
+    let report = run_model(&model).expect("run");
+    let fluid = report.fluid.as_ref().expect("fluid report");
+    let tank = block(fluid, "Tank1");
+    // The tank fills to capacity while the closed valve blocks the release,
+    // then the generator inflow becomes overflow.
+    assert_near(tank.level_max, 100.0, 0.5, "tank level");
+    assert!(tank.overflow > 450.0, "overflow {}", tank.overflow);
+    assert!(tank.throughput <= 0.02, "release {}", tank.throughput);
+    assert!(block(fluid, "Valve1").pressure >= 0.0);
+    assert!(block(fluid, "Sink1").throughput <= 0.02);
 }

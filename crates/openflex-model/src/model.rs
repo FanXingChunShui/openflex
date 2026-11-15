@@ -1284,6 +1284,16 @@ pub struct ConveyorStation {
     pub process_time: Distribution,
 }
 
+/// A curved conveyor section (B3 extension): travel length is the arc length.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConveyorCurve {
+    /// Curve radius in layout units.
+    pub radius: f64,
+    /// Turn angle in degrees.
+    pub angle: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConveyorParams {
@@ -1309,6 +1319,10 @@ pub struct ConveyorParams {
     /// `None`/`1` keeps the plain single-belt behaviour.
     #[serde(default)]
     pub join_inputs: Option<u32>,
+    /// Optional curved section appended after the straight length; its arc
+    /// length adds travel distance at the same speed.
+    #[serde(default)]
+    pub curve: Option<ConveyorCurve>,
 
     /// Optional object-level process flow (B7). Its `create` blocks can run at
     /// t = 0 or whenever this object receives an item (`on_entry`), and its
@@ -1345,6 +1359,7 @@ impl Default for ConveyorParams {
             photo_eyes: Vec::new(),
             stations: Vec::new(),
             join_inputs: None,
+            curve: None,
             shifts: Vec::new(),
             process_flow: None,
             timetable: None,

@@ -1,0 +1,28 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "script-actions",
+  "description": "FlexScript actions (D2): create_item adds items to Queue1, a later script moves one to Sink2, set_state + object queries",
+  "time_unit": "seconds",
+  "run": { "stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "Source1", "kind": "source", "params": {
+        "interarrival": { "distribution": "constant", "value": 1000.0 },
+        "max_arrivals": 1, "first_arrival": 0.0,
+        "triggers": { "on_create": [
+          { "action": "script",
+            "source": "create_item(\"Queue1\", 3); set_state(\"busy\"); log(object_state(\"Queue1\"));" } ] } } },
+    { "name": "Source2", "kind": "source", "params": {
+        "interarrival": { "distribution": "constant", "value": 1000.0 },
+        "max_arrivals": 1, "first_arrival": 10.0,
+        "triggers": { "on_create": [
+          { "action": "script", "source": "move_item(\"Queue1\", \"Sink2\");" } ] } } },
+    { "name": "Queue1", "kind": "queue", "params": { "max_content": 50 } },
+    { "name": "Sink1", "kind": "sink", "params": {} },
+    { "name": "Sink2", "kind": "sink", "params": {} }
+  ],
+  "connections": [
+    { "from": "Source1", "to": "Queue1" },
+    { "from": "Source2", "to": "Queue1" }
+  ]
+}

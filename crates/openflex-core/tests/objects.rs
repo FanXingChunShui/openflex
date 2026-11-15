@@ -1554,3 +1554,26 @@ fn processor_on_entry_and_on_exit_triggers_fire() {
     assert_eq!(input(&report, "SinkUrgent"), 10.0);
     assert_eq!(input(&report, "SinkNormal"), 0.0);
 }
+
+#[test]
+fn conveyor_curve_adds_arc_length_to_travel_time() {
+    let model = model(include_str!("../../../examples/objects/conveyor-curve.ofm"));
+    let config = openflex_core::SimConfig {
+        stop_time: 100.0,
+        warmup: 0.0,
+        seed: 1,
+    };
+    let (result, trace) = openflex_core::simulate_traced(&model, &config, 0).expect("run");
+    // 5 straight + 90deg radius-2 arc (pi) = 8.141592653589793 at speed 1.
+    let exit = trace
+        .events
+        .iter()
+        .find(|event| event.event == "belt_tick")
+        .expect("belt tick");
+    let expected = 5.0 + std::f64::consts::FRAC_PI_2 * 2.0;
+    assert!(
+        (exit.time - expected).abs() < 1e-9,
+        "{exit:?} vs {expected}"
+    );
+    assert_eq!(result.items_completed, 1);
+}

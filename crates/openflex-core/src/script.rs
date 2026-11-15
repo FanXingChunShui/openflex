@@ -27,6 +27,16 @@
 //! | `send_message(target, delay)` | schedule a message to another object |
 //! | `release_item()` | release the item the object is currently holding |
 //! | `log(message)` | append a message to the simulation log |
+//! | `object_content(name)` | buffered item count of another object |
+//! | `object_state(name)` | current state name of another object |
+//! | `object_utilization(name)` | busy time fraction of another object |
+//! | `set_state(name)` | request a finite state (`idle`/`busy`/`blocked`/`down`/`off_shift`) |
+//! | `create_item(object, count)` | create flow items at an object |
+//! | `move_item(from, to)` | move one buffered item between objects |
+//!
+//! A script used as a condition may simply evaluate to a boolean
+//! (e.g. `item_type == 1 && time < 10.0`); a `result` label is still honoured
+//! for backwards compatibility.
 //!
 //! Model time can also be read through the `time` variable; mutating
 //! `item_type` directly (`item_type = 3;`) is honoured as well.
@@ -59,6 +69,17 @@ pub const DEFAULT_MAX_ARRAY_SIZE: usize = 1_024;
 /// Default maximum number of entries in a map a script may create.
 pub const DEFAULT_MAX_MAP_SIZE: usize = 1_024;
 
+/// Read-only snapshot of one object for script queries.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ScriptObjectInfo {
+    /// Number of flow items currently buffered in the object.
+    pub content: f64,
+    /// Current state name (`idle`, `busy`, `blocked`, `down`, `off_shift`).
+    pub state: String,
+    /// Busy time fraction in the current run.
+    pub utilization: f64,
+}
+
 /// The values a script can observe for one execution.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ScriptContext {
@@ -70,6 +91,9 @@ pub struct ScriptContext {
     pub item_id: u64,
     /// Numeric labels currently on the item.
     pub labels: BTreeMap<String, f64>,
+    /// Read-only object snapshot for `object_content`/`object_state`/
+    /// `object_utilization` (empty when the script has no model access).
+    pub objects: BTreeMap<String, ScriptObjectInfo>,
 }
 
 impl ScriptContext {
@@ -80,6 +104,7 @@ impl ScriptContext {
             item_type,
             item_id,
             labels: BTreeMap::new(),
+            objects: BTreeMap::new(),
         }
     }
 
@@ -117,6 +142,15 @@ pub struct ScriptOutcome {
     pub messages: Vec<ScriptMessage>,
     /// Messages collected by `log`.
     pub logs: Vec<String>,
+    /// Direct boolean result of the script expression (`None` for a statement
+    /// script or a non-boolean value).
+    pub condition: Option<bool>,
+    /// State name requested by `set_state`.
+    pub state: Option<String>,
+    /// Objects requested by `create_item(object, count)`.
+    pub create_items: Vec<(String, u32)>,
+    /// Object pairs requested by `move_item(from, to)`.
+    pub move_items: Vec<(String, String)>,
 }
 
 impl ScriptOutcome {
@@ -126,6 +160,10 @@ impl ScriptOutcome {
             && !self.release_item
             && self.messages.is_empty()
             && self.logs.is_empty()
+            && self.condition.is_none()
+            && self.state.is_none()
+            && self.create_items.is_empty()
+            && self.move_items.is_empty()
     }
 }
 
@@ -161,6 +199,7 @@ impl CompiledScript {
     pub fn run(&self, context: &mut ScriptContext) -> Result<ScriptOutcome, ScriptError> {
         let state = Arc::new(Mutex::new(RunState {
             labels: context.labels.clone(),
+            objects: context.objects.clone(),
             ..RunState::default()
         }));
         let mut engine = Engine::new();
@@ -178,9 +217,10 @@ impl CompiledScript {
         scope.push("time", context.time);
         scope.push("item_type", i64::from(context.item_type));
         scope.push("item_id", u64_to_i64(context.item_id));
-        let _: Dynamic = engine
+        let value: Dynamic = engine
             .eval_ast_with_scope::<Dynamic>(&mut scope, &self.ast)
             .map_err(|error| map_eval_error(*error, self.max_operations))?;
+        let condition = value.as_bool().ok();
 
         let scope_item_type = scope
             .get_value::<i64>("item_type")
@@ -195,6 +235,10 @@ impl CompiledScript {
             release_item: state.release_item,
             messages: std::mem::take(&mut state.messages),
             logs: std::mem::take(&mut state.logs),
+            condition,
+            state: state.state.take(),
+            create_items: std::mem::take(&mut state.create_items),
+            move_items: std::mem::take(&mut state.move_items),
         })
     }
 
@@ -277,6 +321,10 @@ struct RunState {
     release_item: bool,
     messages: Vec<ScriptMessage>,
     logs: Vec<String>,
+    objects: BTreeMap<String, ScriptObjectInfo>,
+    state: Option<String>,
+    create_items: Vec<(String, u32)>,
+    move_items: Vec<(String, String)>,
 }
 
 /// Register the documented sandbox API on a per-run engine.
@@ -315,6 +363,51 @@ fn register_api(engine: &mut Engine, state: Arc<Mutex<RunState>>) {
     let shared = state.clone();
     engine.register_fn("log", move |message: &str| {
         lock(&shared).logs.push(message.to_string());
+    });
+
+    let shared = state.clone();
+    engine.register_fn("object_content", move |name: &str| -> f64 {
+        lock(&shared)
+            .objects
+            .get(name)
+            .map_or(0.0, |object| object.content)
+    });
+
+    let shared = state.clone();
+    engine.register_fn("object_state", move |name: &str| -> String {
+        lock(&shared)
+            .objects
+            .get(name)
+            .map(|object| object.state.clone())
+            .unwrap_or_default()
+    });
+
+    let shared = state.clone();
+    engine.register_fn("object_utilization", move |name: &str| -> f64 {
+        lock(&shared)
+            .objects
+            .get(name)
+            .map_or(0.0, |object| object.utilization)
+    });
+
+    let shared = state.clone();
+    engine.register_fn("set_state", move |state_name: &str| {
+        lock(&shared).state = Some(state_name.to_string());
+    });
+
+    let shared = state.clone();
+    engine.register_fn("create_item", move |object: &str, count: i64| {
+        lock(&shared).create_items.push((
+            object.to_string(),
+            u32::try_from(count.max(0)).unwrap_or(u32::MAX),
+        ));
+    });
+
+    let shared = state.clone();
+    engine.register_fn("move_item", move |from: &str, to: &str| {
+        lock(&shared)
+            .move_items
+            .push((from.to_string(), to.to_string()));
     });
 }
 

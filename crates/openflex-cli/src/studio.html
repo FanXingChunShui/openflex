@@ -16,30 +16,45 @@
   header .file { color: #94a3b8; font-size: 12px; }
   #status { margin-left: auto; font-size: 12px; color: #cbd5e1; max-width: 45vw; overflow: hidden;
             text-overflow: ellipsis; white-space: nowrap; }
-  main { flex: 1; display: grid; grid-template-columns: 320px minmax(0, 1fr) 360px;
+  main { flex: 1; display: grid; grid-template-columns: 380px minmax(0, 1fr) 360px;
          gap: 1px; background: #cbd5e1; min-height: 0; }
   aside, section { background: #f8fafc; min-height: 0; overflow: auto; }
   aside { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
   section.view { position: relative; overflow: hidden; background: #f1f5f9; }
   section.report { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
   h2 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: #475569; }
-  .row { display: flex; gap: 8px; }
+  h3 { margin: 6px 0 0; font-size: 12px; color: #475569; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   button { font: inherit; padding: 5px 12px; border-radius: 6px; border: 1px solid #334155;
            background: #ffffff; cursor: pointer; }
   button:hover { background: #e2e8f0; }
+  button:disabled { opacity: .45; cursor: default; }
   button.primary { background: #1d4ed8; border-color: #1d4ed8; color: white; }
   button.primary:hover { background: #2563eb; }
-  #object-list { display: flex; flex-direction: column; gap: 4px; }
-  .object-button { text-align: left; display: flex; justify-content: space-between; gap: 8px; }
-  .object-button.active { background: #dbeafe; border-color: #1d4ed8; }
-  .object-button .kind { color: #64748b; font-size: 12px; }
-  #editor { display: flex; flex-direction: column; gap: 8px; }
-  #editor label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: #475569; }
+  button.danger { color: #b91c1c; border-color: #b91c1c; }
+  #object-list, #block-list { display: flex; flex-direction: column; gap: 4px; }
+  .object-button, .block-button { text-align: left; display: flex; justify-content: space-between;
+                                  gap: 8px; }
+  .object-button.active, .block-button.active { background: #dbeafe; border-color: #1d4ed8; }
+  .object-button .kind, .block-button .kind { color: #64748b; font-size: 12px; }
+  #editor, #param-form, #block-editor, #block-form { display: flex; flex-direction: column; gap: 8px; }
+  #editor label, #block-editor label, .field-group label { display: flex; flex-direction: column;
+                                                            gap: 2px; font-size: 12px; color: #475569; }
+  .field-group { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px; display: flex;
+                 flex-direction: column; gap: 6px; }
+  .field-group .head { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+                       color: #64748b; }
+  .param-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   input, select, textarea { font: inherit; padding: 4px 6px; border: 1px solid #94a3b8;
-                            border-radius: 5px; background: white; color: #0f172a; }
-  textarea { min-height: 150px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                            border-radius: 5px; background: white; color: #0f172a; width: 100%; }
+  input[type=checkbox] { width: auto; }
+  textarea { min-height: 120px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
              font-size: 12px; }
+  details { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px; }
+  summary { cursor: pointer; font-size: 12px; color: #475569; }
   .muted { color: #64748b; font-size: 12px; }
+  .flow-connection { display: grid; grid-template-columns: 1fr 1fr 52px 30px;
+                     gap: 4px; align-items: center; }
   #scene { display: block; width: 100%; height: 100%; cursor: grab; }
   #scene.dragging { cursor: grabbing; }
   .hint { position: absolute; left: 12px; bottom: 10px; font-size: 12px; color: #64748b;
@@ -64,24 +79,62 @@
     <div class="row">
       <button id="reload" type="button">Reload</button>
       <button id="run" class="primary" type="button">Run</button>
+      <button id="undo" data-undo="1" type="button" disabled>Undo</button>
+      <button id="redo" data-redo="1" type="button" disabled>Redo</button>
     </div>
+
     <h2>Objects</h2>
     <div class="row">
       <select id="add-kind" aria-label="kind of the new object"></select>
       <button id="add-object" type="button">Add</button>
     </div>
     <div id="object-list"><p class="muted">loading…</p></div>
+
     <h2>Edit object</h2>
     <div id="editor"><p class="muted">Select an object to edit its name, kind and parameters.</p></div>
+    <div id="param-form"></div>
+    <details>
+      <summary>Advanced parameters (JSON)</summary>
+      <textarea id="edit-params" spellcheck="false"></textarea>
+    </details>
+    <div class="row" id="object-actions" hidden>
+      <button id="save-object" class="primary" type="button">Save model</button>
+      <button id="revert-object" type="button">Revert</button>
+      <button id="delete-object" class="danger" type="button">Delete</button>
+    </div>
+
     <h2>Process flow</h2>
-    <label class="muted" for="edit-process-flow">Model-level process_flow (JSON, null to remove)</label>
-    <textarea id="edit-process-flow" spellcheck="false"></textarea>
-    <button id="save-flow" type="button">Save process flow</button>
+    <div id="flow-editor">
+      <div class="row">
+        <select id="add-block-kind" aria-label="kind of the new block">
+          <option value="create">create</option>
+          <option value="delay">delay</option>
+          <option value="assign">assign</option>
+          <option value="decision">decision</option>
+          <option value="sink">sink</option>
+          <option value="transfer">transfer</option>
+        </select>
+        <button id="add-block" type="button">Add block</button>
+      </div>
+      <div id="block-list"><p class="muted">This model has no process flow.</p></div>
+      <div id="block-editor"></div>
+      <h3>Connections</h3>
+      <div id="flow-connections"></div>
+      <button id="add-flow-connection" type="button">Add connection</button>
+      <button id="save-flow" class="primary" type="button">Save process flow</button>
+    </div>
+    <details>
+      <summary>Advanced process_flow (JSON)</summary>
+      <textarea id="edit-process-flow" spellcheck="false"></textarea>
+      <button id="save-flow-json" type="button">Save JSON</button>
+    </details>
   </aside>
+
   <section class="view">
     <canvas id="scene" aria-label="3D model view"></canvas>
     <div class="hint">drag to rotate · wheel to zoom</div>
   </section>
+
   <section class="report">
     <h2>Report</h2>
     <div class="row" id="animation-controls">
@@ -98,6 +151,7 @@ const state = {
   model: null,
   kinds: [],
   selected: 0,
+  selectedBlock: 0,
   yaw: 45,
   pitch: 30,
   zoom: 1,
@@ -109,22 +163,120 @@ const state = {
   speed: 1,
   paused: false,
   originalName: null,
+  originalObject: null,
   clock: 0,
   lastNow: 0,
+  undoStack: [],
+  redoStack: [],
+  pendingSnapshot: null,
 };
 
 const $ = id => document.getElementById(id);
 const scene = $("scene");
 const chart = $("chart");
 
+const DISTRIBUTIONS = {
+  constant: ["value"], uniform: ["min", "max"], normal: ["mean", "stddev"],
+  exponential: ["mean"], triangular: ["min", "mode", "max"], gamma: ["shape", "scale"],
+  weibull: ["shape", "scale"], lognormal: ["meanlog", "sdlog"], erlang: ["shape", "scale"],
+  beta: ["alpha", "beta"], integer_uniform: ["min", "max"], pareto: ["shape", "scale"],
+  log_logistic: ["alpha", "beta"], rayleigh: ["sigma"], binomial: ["n", "p"],
+  poisson: ["mean"], geometric: ["p"], negative_binomial: ["r", "p"], bernoulli: ["p"],
+};
+
+const OBJECT_FIELDS = {
+  source: [
+    { path: "interarrival", type: "distribution" },
+    { path: "items_per_arrival", type: "number" },
+    { path: "max_arrivals", type: "number" },
+    { path: "first_arrival", type: "number" },
+    { path: "stop_time", type: "number" },
+    { path: "item_type", type: "number" },
+  ],
+  queue: [
+    { path: "max_content", type: "number" }, { path: "order", type: "text" },
+    { path: "batch_size", type: "number" }, { path: "batch_max_wait", type: "number" },
+  ],
+  processor: [
+    { path: "process_time", type: "distribution" }, { path: "setup_time", type: "distribution" },
+    { path: "max_content", type: "number" }, { path: "changeover_time", type: "distribution" },
+  ],
+  multiprocessor: [
+    { path: "process_time", type: "distribution" }, { path: "max_content", type: "number" },
+  ],
+  sink: [],
+  combiner: [
+    { path: "components_per_container", type: "number" },
+    { path: "mode", type: "enum", options: ["pack", "join", "batch"] },
+  ],
+  separator: [
+    { path: "split_count", type: "number" },
+    { path: "separate_mode", type: "enum", options: ["unpack", "split"] },
+  ],
+  conveyor: [
+    { path: "speed", type: "number" }, { path: "length", type: "number" },
+    { path: "accumulating", type: "boolean" }, { path: "item_spacing", type: "number" },
+    { path: "max_content", type: "number" },
+  ],
+  merge: [{ path: "wait_for_all", type: "boolean" }],
+  split: [{ path: "by_item_type", type: "boolean" }],
+  transporter: [
+    { path: "capacity", type: "number" }, { path: "speed", type: "number" },
+    { path: "load_time", type: "distribution" }, { path: "unload_time", type: "distribution" },
+    { path: "home", type: "text" },
+  ],
+  person: [
+    { path: "capacity", type: "number" }, { path: "speed", type: "number" },
+    { path: "load_time", type: "distribution" }, { path: "unload_time", type: "distribution" },
+    { path: "home", type: "text" },
+  ],
+  agv: [
+    { path: "capacity", type: "number" }, { path: "speed", type: "number" },
+    { path: "load_time", type: "distribution" }, { path: "unload_time", type: "distribution" },
+    { path: "home", type: "text" },
+  ],
+  elevator: [
+    { path: "capacity", type: "number" }, { path: "speed", type: "number" },
+    { path: "stop_time", type: "distribution" }, { path: "home", type: "text" },
+  ],
+  dispatcher: [{ path: "max_tasks", type: "number" }],
+  resource: [{ path: "capacity", type: "number" }],
+  rack: [
+    { path: "capacity", type: "number" }, { path: "levels", type: "number" },
+    { path: "rack_type", type: "enum", options: ["floor", "gravity", "push_back", "drive_in"] },
+    { path: "channels", type: "number" }, { path: "depth", type: "number" },
+  ],
+  basic_fr: [],
+  basic_te: [{ path: "speed", type: "number" }, { path: "capacity", type: "number" }],
+  fluid_generator: [{ path: "flow_rate", type: "number" }, { path: "stop_time", type: "number" }],
+  fluid_tank: [
+    { path: "capacity", type: "number" }, { path: "initial_level", type: "number" },
+    { path: "max_outflow", type: "number" },
+  ],
+  fluid_valve: [{ path: "open", type: "boolean" }, { path: "ratio", type: "number" }],
+  fluid_sink: [],
+};
+
+const BLOCK_FIELDS = {
+  create: [
+    { path: "quantity", type: "number" }, { path: "first_arrival", type: "number" },
+    { path: "max_creations", type: "number" }, { path: "interarrival", type: "distribution" },
+  ],
+  delay: [{ path: "time", type: "distribution" }],
+  assign: [{ path: "actions", type: "json" }],
+  decision: [{ path: "conditions", type: "json" }],
+  sink: [],
+  transfer: [{ path: "object", type: "text" }, { path: "quantity", type: "number" }],
+};
+
+const BLOCK_PREFIX = { create: "Create", delay: "Delay", assign: "Assign", decision: "Decide", sink: "Sink", transfer: "Transfer" };
+
 function setStatus(text, isError = false) {
   const status = $("status");
   status.textContent = text;
   status.className = isError ? "error" : "";
   clearTimeout(state.statusTimer);
-  if (!isError) {
-    state.statusTimer = setTimeout(() => { status.textContent = ""; }, 5000);
-  }
+  if (!isError) state.statusTimer = setTimeout(() => { status.textContent = ""; }, 5000);
 }
 
 async function api(path, options = {}) {
@@ -132,9 +284,7 @@ async function api(path, options = {}) {
   const text = await response.text();
   let data;
   try { data = JSON.parse(text); } catch (_) { data = { raw: text }; }
-  if (!response.ok) {
-    throw new Error(data.error || data.raw || `${response.status} ${response.statusText}`);
-  }
+  if (!response.ok) throw new Error(data.error || data.raw || `${response.status} ${response.statusText}`);
   return data;
 }
 
@@ -144,6 +294,93 @@ function escapeText(text) {
   })[ch]);
 }
 
+function getPath(object, path) {
+  return path.split(".").reduce((value, key) => (value == null ? undefined : value[key]), object);
+}
+
+function setPath(object, path, value) {
+  const parts = path.split(".");
+  let cursor = object;
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    if (cursor[parts[index]] == null || typeof cursor[parts[index]] !== "object") cursor[parts[index]] = {};
+    cursor = cursor[parts[index]];
+  }
+  cursor[parts[parts.length - 1]] = value;
+}
+
+function deletePath(object, path) {
+  const parts = path.split(".");
+  let cursor = object;
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    cursor = cursor[parts[index]];
+    if (cursor == null) return;
+  }
+  delete cursor[parts[parts.length - 1]];
+}
+
+function snapshot() { return JSON.stringify(state.model); }
+
+function rememberNow() {
+  state.undoStack.push(snapshot());
+  if (state.undoStack.length > 50) state.undoStack.shift();
+  state.redoStack = [];
+  state.pendingSnapshot = null;
+  updateHistoryButtons();
+}
+
+function beginEdit() {
+  if (!state.pendingSnapshot) state.pendingSnapshot = snapshot();
+}
+
+function commitEdit() {
+  if (state.pendingSnapshot && state.pendingSnapshot !== snapshot()) {
+    state.undoStack.push(state.pendingSnapshot);
+    if (state.undoStack.length > 50) state.undoStack.shift();
+    state.redoStack = [];
+  }
+  state.pendingSnapshot = null;
+  updateHistoryButtons();
+}
+
+function clearHistory() {
+  state.undoStack = [];
+  state.redoStack = [];
+  state.pendingSnapshot = null;
+  updateHistoryButtons();
+}
+
+function updateHistoryButtons() {
+  $("undo").disabled = state.undoStack.length === 0;
+  $("redo").disabled = state.redoStack.length === 0;
+}
+
+function undoEdit() {
+  if (state.undoStack.length === 0) return;
+  state.redoStack.push(snapshot());
+  state.model = JSON.parse(state.undoStack.pop());
+  state.pendingSnapshot = null;
+  clampSelection();
+  renderAll();
+  setStatus("undo (unsaved)");
+}
+
+function redoEdit() {
+  if (state.redoStack.length === 0) return;
+  state.undoStack.push(snapshot());
+  state.model = JSON.parse(state.redoStack.pop());
+  state.pendingSnapshot = null;
+  clampSelection();
+  renderAll();
+  setStatus("redo (unsaved)");
+}
+
+function clampSelection() {
+  const objects = state.model.objects || [];
+  state.selected = Math.max(0, Math.min(state.selected, objects.length - 1));
+  const blocks = (state.model.process_flow && state.model.process_flow.blocks) || [];
+  state.selectedBlock = Math.max(0, Math.min(state.selectedBlock, blocks.length - 1));
+}
+
 async function loadAll() {
   setStatus("loading model…");
   try {
@@ -151,14 +388,25 @@ async function loadAll() {
     state.model = model;
     state.kinds = catalog.objects || [];
     state.selected = Math.min(state.selected, Math.max(0, model.objects.length - 1));
-    renderAddKinds();
-    renderObjectList();
-    renderEditor();
-    $("edit-process-flow").value = JSON.stringify(model.process_flow ?? null, null, 2);
+    state.selectedBlock = Math.min(
+      state.selectedBlock,
+      Math.max(0, ((model.process_flow && model.process_flow.blocks) || []).length - 1)
+    );
+    clearHistory();
+    renderAll();
     setStatus("model loaded");
   } catch (error) {
     setStatus(error.message, true);
   }
+}
+
+function renderAll() {
+  renderAddKinds();
+  renderObjectList();
+  renderEditor();
+  renderFlow();
+  $("edit-process-flow").value = JSON.stringify(state.model.process_flow ?? null, null, 2);
+  updateHistoryButtons();
 }
 
 function renderAddKinds() {
@@ -168,77 +416,6 @@ function renderAddKinds() {
     .map(kind => `<option value="${escapeText(kind.kind)}">${escapeText(kind.kind)}</option>`)
     .join("");
   if (previous) select.value = previous;
-}
-
-async function addObject() {
-  const kind = $("add-kind").value;
-  if (!kind) return;
-  setStatus(`adding ${kind}…`);
-  try {
-    const response = await api("/api/model/objects", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind }),
-    });
-    state.selected = response.model.objects.length - 1;
-    state.model = response.model;
-    renderObjectList();
-    renderEditor();
-    $("edit-process-flow").value = JSON.stringify(state.model.process_flow ?? null, null, 2);
-    setStatus(`added ${response.added}`);
-  } catch (error) {
-    setStatus(error.message, true);
-  }
-}
-
-async function deleteObject() {
-  const object = state.model && state.model.objects[state.selected];
-  if (!object) return;
-  const name = state.originalName || object.name;
-  if (!window.confirm(`Delete ${name} and connections/references to it?`)) return;
-  setStatus(`deleting ${name}…`);
-  try {
-    const response = await api(`/api/model/objects/${encodeURIComponent(name)}`, {
-      method: "DELETE",
-    });
-    state.model = response.model;
-    state.selected = Math.max(0, Math.min(state.selected, state.model.objects.length - 1));
-    renderObjectList();
-    renderEditor();
-    $("edit-process-flow").value = JSON.stringify(state.model.process_flow ?? null, null, 2);
-    setStatus(`removed ${response.removed}; cleaned ${response.connections_removed} connections, ${response.references_cleaned} references`);
-  } catch (error) {
-    setStatus(error.message, true);
-  }
-}
-
-async function saveProcessFlow() {
-  let flow;
-  try {
-    flow = JSON.parse($("edit-process-flow").value || "null");
-  } catch (error) {
-    setStatus(`process_flow is not valid JSON: ${error.message}`, true);
-    return;
-  }
-  const model = { ...state.model };
-  if (flow === null || (flow && Object.keys(flow).length === 0)) {
-    delete model.process_flow;
-  } else {
-    model.process_flow = flow;
-  }
-  setStatus("saving process flow…");
-  try {
-    const response = await api("/api/model", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(model),
-    });
-    state.model = response.model || model;
-    await loadAll();
-    setStatus("process flow saved");
-  } catch (error) {
-    setStatus(error.message, true);
-  }
 }
 
 function renderObjectList() {
@@ -254,6 +431,7 @@ function renderObjectList() {
     button.className = "object-button" + (index === state.selected ? " active" : "");
     button.innerHTML = `<span>${escapeText(object.name)}</span><span class="kind">${escapeText(object.kind)}</span>`;
     button.addEventListener("click", () => {
+      commitEdit();
       state.selected = index;
       renderObjectList();
       renderEditor();
@@ -262,39 +440,139 @@ function renderObjectList() {
   });
 }
 
+function fieldControl(field, value) {
+  const path = escapeText(field.path);
+  if (field.type === "distribution") {
+    const distribution = value && value.distribution ? value.distribution : "";
+    const options = [`<option value="">(unset)</option>`]
+      .concat(Object.keys(DISTRIBUTIONS).map(name =>
+        `<option value="${name}"${name === distribution ? " selected" : ""}>${name}</option>`))
+      .join("");
+    const parameters = distribution
+      ? DISTRIBUTIONS[distribution].map(parameter => `
+          <label>${parameter}
+            <input data-dist="${path}" data-param="${parameter}" type="number" step="any"
+                   value="${value && Number.isFinite(Number(value[parameter])) ? Number(value[parameter]) : ""}">
+          </label>`).join("")
+      : "";
+    return `<div class="field-group" data-field="${path}" data-type="distribution">
+      <span class="head">${escapeText(field.path)}</span>
+      <select data-dist-select="${path}">${options}</select>
+      <div class="param-grid">${parameters}</div>
+    </div>`;
+  }
+  if (field.type === "boolean") {
+    return `<label><span>${escapeText(field.path)}</span>
+      <input data-field="${path}" data-type="boolean" type="checkbox"${value === true ? " checked" : ""}></label>`;
+  }
+  if (field.type === "enum") {
+    const options = [`<option value="">(default)</option>`]
+      .concat((field.options || []).map(option =>
+        `<option value="${escapeText(option)}"${value === option ? " selected" : ""}>${escapeText(option)}</option>`))
+      .join("");
+    return `<label><span>${escapeText(field.path)}</span>
+      <select data-field="${path}" data-type="enum">${options}</select></label>`;
+  }
+  if (field.type === "json") {
+    const text = value == null ? "" : JSON.stringify(value, null, 2);
+    return `<label><span>${escapeText(field.path)} (JSON)</span>
+      <textarea data-field="${path}" data-type="json" spellcheck="false">${escapeText(text)}</textarea></label>`;
+  }
+  const text = value == null ? "" : String(value);
+  return `<label><span>${escapeText(field.path)}</span>
+    <input data-field="${path}" data-type="${field.type === "number" ? "number" : "text"}"
+      ${field.type === "number" ? 'type="number" step="any"' : 'type="text"'}
+      value="${escapeText(text)}"></label>`;
+}
+
+function renderFields(container, data, schema, onMutate) {
+  if (schema.length === 0) {
+    container.innerHTML = '<p class="muted">This kind has no editable fields; use the JSON editor for extras.</p>';
+    return;
+  }
+  container.innerHTML = `<div class="field-group">${schema.map(field => fieldControl(field, getPath(data, field.path))).join("")}</div>`;
+  container.querySelectorAll("[data-field]").forEach(input => {
+    input.addEventListener("focusin", beginEdit);
+    const update = () => {
+      const path = input.dataset.field;
+      const type = input.dataset.type;
+      if (type === "boolean") {
+        setPath(data, path, input.checked);
+      } else if (type === "number") {
+        if (input.value === "") deletePath(data, path);
+        else if (Number.isFinite(Number(input.value))) setPath(data, path, Number(input.value));
+      } else if (type === "json") {
+        try { setPath(data, path, JSON.parse(input.value || "null")); } catch (_) { return; }
+      } else {
+        if (input.value === "") deletePath(data, path);
+        else setPath(data, path, input.value);
+      }
+      onMutate();
+    };
+    input.addEventListener("input", update);
+    input.addEventListener("change", () => { commitEdit(); update(); });
+  });
+  container.querySelectorAll("[data-dist-select]").forEach(select => {
+    select.addEventListener("focusin", beginEdit);
+    select.addEventListener("change", () => {
+      commitEdit();
+      const path = select.dataset.distSelect;
+      if (!select.value) {
+        deletePath(data, path);
+      } else {
+        const value = { distribution: select.value };
+        DISTRIBUTIONS[select.value].forEach(parameter => { value[parameter] = 0; });
+        setPath(data, path, value);
+      }
+      onMutate(true);
+    });
+  });
+  container.querySelectorAll("[data-dist]").forEach(input => {
+    input.addEventListener("focusin", beginEdit);
+    const update = () => {
+      const path = `${input.dataset.dist}.${input.dataset.param}`;
+      if (input.value === "") setPath(data, path, 0);
+      else if (Number.isFinite(Number(input.value))) setPath(data, path, Number(input.value));
+      onMutate();
+    };
+    input.addEventListener("input", update);
+    input.addEventListener("change", () => { commitEdit(); update(); });
+  });
+}
+
 function renderEditor() {
-  const editor = $("editor");
   const object = state.model && state.model.objects[state.selected];
+  const editor = $("editor");
   if (!object) {
     editor.innerHTML = '<p class="muted">Select an object to edit.</p>';
+    $("param-form").innerHTML = "";
+    $("object-actions").hidden = true;
+    state.originalName = null;
+    state.originalObject = null;
     return;
   }
   state.originalName = object.name;
+  state.originalObject = JSON.parse(JSON.stringify(object));
   const options = state.kinds.map(kind =>
     `<option value="${escapeText(kind.kind)}"${kind.kind === object.kind ? " selected" : ""}>${escapeText(kind.kind)}</option>`
   ).join("");
-  const params = JSON.stringify(object.params || {}, null, 2);
   editor.innerHTML = `
     <label>Name <input id="edit-name" value="${escapeText(object.name)}"></label>
     <label>Kind <select id="edit-kind">${options}</select></label>
     <div class="row">
       <label>pos x <input id="edit-pos-x" type="number" step="any" value="${Number((object.pos || [0, 0])[0])}"></label>
       <label>pos y <input id="edit-pos-y" type="number" step="any" value="${Number((object.pos || [0, 0])[1])}"></label>
-    </div>
-    <label>Key parameters (JSON) <textarea id="edit-params" spellcheck="false">${escapeText(params)}</textarea></label>
-    <div class="row">
-      <button id="save-object" class="primary" type="button">Save model</button>
-      <button id="revert-object" type="button">Revert</button>
-      <button id="delete-object" type="button">Delete</button>
-    </div>
-    <p class="muted">Editing redraws the 3D view immediately; Save validates the whole model on the server and writes the .ofm file.</p>`;
-  $("save-object").addEventListener("click", saveObject);
-  $("revert-object").addEventListener("click", renderEditor);
-  $("delete-object").addEventListener("click", deleteObject);
+    </div>`;
+  $("object-actions").hidden = false;
+  $("edit-params").value = JSON.stringify(object.params || {}, null, 2);
 
-  // Live re-projection: mutate the in-memory model as the user types; the
-  // render loop picks changes up without a server round-trip.
-  const live = () => {
+  renderFields($("param-form"), object.params || (object.params = {}),
+    OBJECT_FIELDS[object.kind] || [], rerender => {
+      if (rerender) renderEditor();
+      else $("edit-params").value = JSON.stringify(object.params, null, 2);
+    });
+
+  const liveIdentity = () => {
     const target = state.model.objects[state.selected];
     if (!target) return;
     const previousName = target.name;
@@ -308,43 +586,87 @@ function renderEditor() {
     }
     target.kind = $("edit-kind").value;
     target.pos = [Number($("edit-pos-x").value) || 0, Number($("edit-pos-y").value) || 0];
-    try {
-      target.params = JSON.parse($("edit-params").value || "{}");
-    } catch (_) {
-      // Keep the last valid parameters while the JSON is mid-edit.
-    }
   };
-  ["edit-name", "edit-kind", "edit-pos-x", "edit-pos-y", "edit-params"].forEach(id => {
-    $(id).addEventListener("input", live);
+  ["edit-name", "edit-kind", "edit-pos-x", "edit-pos-y"].forEach(id => {
+    $(id).addEventListener("focusin", beginEdit);
+    $(id).addEventListener("input", liveIdentity);
+    $(id).addEventListener("change", () => { commitEdit(); liveIdentity(); renderEditor(); });
   });
+
+}
+
+async function addObject() {
+  const kind = $("add-kind").value;
+  if (!kind) return;
+  setStatus(`adding ${kind}…`);
+  try {
+    const response = await api("/api/model/objects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind }),
+    });
+    state.model = response.model;
+    state.selected = response.model.objects.length - 1;
+    clearHistory();
+    renderAll();
+    setStatus(`added ${response.added}`);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+async function deleteObject() {
+  const object = state.model && state.model.objects[state.selected];
+  if (!object) return;
+  const name = state.originalName || object.name;
+  if (!window.confirm(`Delete ${name} and connections/references to it?`)) return;
+  setStatus(`deleting ${name}…`);
+  try {
+    const response = await api(`/api/model/objects/${encodeURIComponent(name)}`, { method: "DELETE" });
+    state.model = response.model;
+    state.selected = Math.max(0, Math.min(state.selected, state.model.objects.length - 1));
+    clearHistory();
+    renderAll();
+    setStatus(`removed ${response.removed}; cleaned ${response.connections_removed} connections, ${response.references_cleaned} references`);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+function revertObject() {
+  const current = state.model && state.model.objects[state.selected];
+  if (!current) return;
+  if (state.originalName && current.name !== state.originalName) {
+    for (const connection of state.model.connections || []) {
+      if (connection.from === current.name) connection.from = state.originalName;
+      if (connection.to === current.name) connection.to = state.originalName;
+    }
+  }
+  if (state.originalObject) {
+    state.model.objects[state.selected] = JSON.parse(JSON.stringify(state.originalObject));
+  }
+  renderEditor();
+  renderObjectList();
+  setStatus("reverted (unsaved)");
 }
 
 async function saveObject() {
+  if (!state.model) return;
   const object = state.model.objects[state.selected];
+  if (!object) return;
   const oldName = state.originalName || object.name;
-  let params;
-  try {
-    params = JSON.parse($("edit-params").value || "{}");
-  } catch (error) {
-    setStatus(`parameters are not valid JSON: ${error.message}`, true);
-    return;
-  }
-  const next = {
-    ...object,
-    name: $("edit-name").value.trim(),
-    kind: $("edit-kind").value,
-    params,
-  };
-  if (!next.name) {
+  const nextName = $("edit-name").value.trim();
+  if (!nextName) {
     setStatus("the object name cannot be empty", true);
     return;
   }
-  const model = state.model;
-  model.objects[state.selected] = next;
-  if (oldName !== next.name) {
-    for (const connection of model.connections || []) {
-      if (connection.from === oldName) connection.from = next.name;
-      if (connection.to === oldName) connection.to = next.name;
+  object.name = nextName;
+  object.kind = $("edit-kind").value;
+  object.pos = [Number($("edit-pos-x").value) || 0, Number($("edit-pos-y").value) || 0];
+  if (oldName !== nextName) {
+    for (const connection of state.model.connections || []) {
+      if (connection.from === oldName) connection.from = nextName;
+      if (connection.to === oldName) connection.to = nextName;
     }
   }
   setStatus("saving…");
@@ -352,15 +674,223 @@ async function saveObject() {
     const response = await api("/api/model", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(model),
+      body: JSON.stringify(state.model),
     });
     setStatus(`saved ${response.objects} objects`);
+    clearHistory();
     await loadAll();
   } catch (error) {
     setStatus(error.message, true);
     await loadAll();
   }
 }
+
+// -------------------------------------------------------------------------
+// Process flow editor
+// -------------------------------------------------------------------------
+
+function ensureFlow() {
+  if (!state.model.process_flow) state.model.process_flow = { blocks: [], connections: [] };
+  if (!state.model.process_flow.blocks) state.model.process_flow.blocks = [];
+  if (!state.model.process_flow.connections) state.model.process_flow.connections = [];
+  return state.model.process_flow;
+}
+
+function renderFlow() {
+  const flow = state.model.process_flow;
+  const list = $("block-list");
+  if (!flow || !flow.blocks || flow.blocks.length === 0) {
+    list.innerHTML = '<p class="muted">This model has no process flow.</p>';
+    $("block-editor").innerHTML = "";
+    $("flow-connections").innerHTML = "";
+    $("edit-process-flow").value = JSON.stringify(flow ?? null, null, 2);
+    return;
+  }
+  list.innerHTML = "";
+  flow.blocks.forEach((block, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "block-button" + (index === state.selectedBlock ? " active" : "");
+    button.innerHTML = `<span>${escapeText(block.id)}</span><span class="kind">${escapeText(block.kind)}</span>`;
+    button.addEventListener("click", () => {
+      commitEdit();
+      state.selectedBlock = index;
+      renderFlow();
+    });
+    list.appendChild(button);
+  });
+  renderBlockEditor(flow);
+  renderFlowConnections(flow);
+  $("edit-process-flow").value = JSON.stringify(flow, null, 2);
+}
+
+function renderBlockEditor(flow) {
+  const block = flow.blocks[state.selectedBlock];
+  if (!block) {
+    $("block-editor").innerHTML = "";
+    return;
+  }
+  $("block-editor").innerHTML = `
+    <div class="row">
+      <label>id <input id="block-id" value="${escapeText(block.id)}"></label>
+      <button id="delete-block" class="danger" type="button">Delete block</button>
+    </div>`;
+  $("block-id").addEventListener("focusin", beginEdit);
+  $("block-id").addEventListener("input", () => {
+    const previous = block.id;
+    const next = $("block-id").value;
+    if (next && next !== previous) {
+      for (const connection of flow.connections || []) {
+        if (connection.from === previous) connection.from = next;
+        if (connection.to === previous) connection.to = next;
+      }
+      block.id = next;
+    }
+    syncFlowJson(flow);
+  });
+  $("block-id").addEventListener("change", () => { commitEdit(); renderFlow(); });
+  $("delete-block").addEventListener("click", () => {
+    rememberNow();
+    flow.blocks.splice(state.selectedBlock, 1);
+    flow.connections = flow.connections.filter(connection =>
+      connection.from !== block.id && connection.to !== block.id);
+    state.selectedBlock = Math.max(0, Math.min(state.selectedBlock, flow.blocks.length - 1));
+    renderFlow();
+  });
+  renderFields($("block-form") || (() => {
+    const form = document.createElement("div");
+    form.id = "block-form";
+    $("block-editor").appendChild(form);
+    return form;
+  })(), block, BLOCK_FIELDS[block.kind] || [], rerender => {
+    if (rerender) renderFlow();
+    else syncFlowJson(flow);
+  });
+}
+
+function syncFlowJson(flow) {
+  $("edit-process-flow").value = JSON.stringify(flow, null, 2);
+}
+
+function renderFlowConnections(flow) {
+  const container = $("flow-connections");
+  const ids = flow.blocks.map(block => block.id);
+  container.innerHTML = "";
+  (flow.connections || []).forEach((connection, index) => {
+    const row = document.createElement("div");
+    row.className = "flow-connection";
+    row.innerHTML = `
+      <select data-flow-from="${index}">${ids.map(id =>
+        `<option value="${escapeText(id)}"${connection.from === id ? " selected" : ""}>${escapeText(id)}</option>`).join("")}</select>
+      <select data-flow-to="${index}">${ids.map(id =>
+        `<option value="${escapeText(id)}"${connection.to === id ? " selected" : ""}>${escapeText(id)}</option>`).join("")}</select>
+      <input data-flow-port="${index}" type="number" min="0" step="1" value="${connection.port ?? 0}">
+      <button data-flow-remove="${index}" type="button" title="Remove connection">×</button>`;
+    row.querySelector(`[data-flow-from="${index}"]`).addEventListener("change", event => {
+      rememberNow(); connection.from = event.target.value; syncFlowJson(flow);
+    });
+    row.querySelector(`[data-flow-to="${index}"]`).addEventListener("change", event => {
+      rememberNow(); connection.to = event.target.value; syncFlowJson(flow);
+    });
+    row.querySelector(`[data-flow-port="${index}"]`).addEventListener("change", event => {
+      rememberNow(); connection.port = Number(event.target.value) || 0; syncFlowJson(flow);
+    });
+    row.querySelector(`[data-flow-remove="${index}"]`).addEventListener("click", () => {
+      rememberNow(); flow.connections.splice(index, 1); renderFlow();
+    });
+    container.appendChild(row);
+  });
+}
+
+function addBlock() {
+  const kind = $("add-block-kind").value;
+  rememberNow();
+  const flow = ensureFlow();
+  const prefix = BLOCK_PREFIX[kind] || "Block";
+  let index = 1;
+  while (flow.blocks.some(block => block.id === `${prefix}${index}`)) index += 1;
+  const block = { id: `${prefix}${index}`, kind };
+  if (kind === "create") {
+    block.quantity = 1; block.first_arrival = 0; block.max_creations = 1;
+    block.interarrival = { distribution: "constant", value: 1000 };
+  } else if (kind === "delay") {
+    block.time = { distribution: "constant", value: 1 };
+  } else if (kind === "assign") {
+    block.actions = [];
+  } else if (kind === "decision") {
+    block.conditions = [];
+  } else if (kind === "transfer") {
+    block.object = ""; block.quantity = 1;
+  }
+  flow.blocks.push(block);
+  state.selectedBlock = flow.blocks.length - 1;
+  renderFlow();
+  setStatus(`added block ${block.id} (unsaved)`);
+}
+
+function addFlowConnection() {
+  const flow = ensureFlow();
+  if (flow.blocks.length < 2) {
+    setStatus("add at least two blocks before connecting them", true);
+    return;
+  }
+  rememberNow();
+  flow.connections.push({ from: flow.blocks[0].id, to: flow.blocks[1].id, port: 0 });
+  renderFlow();
+}
+
+async function saveFlow() {
+  const flow = state.model.process_flow;
+  if (!flow || !flow.blocks || flow.blocks.length === 0) {
+    setStatus("the process flow has no blocks", true);
+    return;
+  }
+  setStatus("saving process flow…");
+  try {
+    const response = await api("/api/model", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(state.model),
+    });
+    setStatus(`process flow saved (${response.objects} objects)`);
+    clearHistory();
+    await loadAll();
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+async function saveFlowJson() {
+  let flow;
+  try {
+    flow = JSON.parse($("edit-process-flow").value || "null");
+  } catch (error) {
+    setStatus(`process_flow is not valid JSON: ${error.message}`, true);
+    return;
+  }
+  if (flow === null || (flow && Object.keys(flow).length === 0)) {
+    delete state.model.process_flow;
+  } else {
+    state.model.process_flow = flow;
+  }
+  setStatus("saving process flow…");
+  try {
+    const response = await api("/api/model", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(state.model),
+    });
+    setStatus(`process flow saved (${response.objects} objects)`);
+    clearHistory();
+    await loadAll();
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+// -------------------------------------------------------------------------
+// Run / report / canvas
+// -------------------------------------------------------------------------
 
 async function runModel() {
   setStatus("running…");
@@ -486,7 +1016,6 @@ function drawScene(now) {
     return { object, center, size, depth, height, index };
   });
 
-  // Connections first, so boxes sit on top of them.
   ctx.strokeStyle = "#475569";
   ctx.lineWidth = 1.4;
   for (const connection of model.connections || []) {
@@ -509,7 +1038,6 @@ function drawScene(now) {
     ctx.fill();
   }
 
-  // Animation: one marker per connection, advanced by the speed control.
   const progress = (now || 0) * 0.6;
   (model.connections || []).forEach((connection, index) => {
     const from = boxes.find(box => box.object.name === connection.from);
@@ -525,7 +1053,6 @@ function drawScene(now) {
     ctx.fill();
   });
 
-  // Painter's algorithm: farther boxes first.
   const projected = boxes.map(box => {
     const corners = [];
     const footprint = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
@@ -607,14 +1134,42 @@ scene.addEventListener("wheel", event => {
 
 $("reload").addEventListener("click", loadAll);
 $("run").addEventListener("click", runModel);
+$("save-object").addEventListener("click", saveObject);
+$("revert-object").addEventListener("click", revertObject);
+$("delete-object").addEventListener("click", deleteObject);
+$("edit-params").addEventListener("focusin", beginEdit);
+$("edit-params").addEventListener("input", () => {
+  const target = state.model && state.model.objects[state.selected];
+  if (!target) return;
+  try {
+    target.params = JSON.parse($("edit-params").value || "{}");
+    renderFields($("param-form"), target.params, OBJECT_FIELDS[target.kind] || [], rerender => {
+      if (rerender) renderEditor();
+    });
+  } catch (_) {
+    // keep the last valid parameters while typing
+  }
+});
+$("edit-params").addEventListener("change", commitEdit);
 $("add-object").addEventListener("click", addObject);
-$("save-flow").addEventListener("click", saveProcessFlow);
+$("add-block").addEventListener("click", addBlock);
+$("add-flow-connection").addEventListener("click", addFlowConnection);
+$("save-flow").addEventListener("click", saveFlow);
+$("save-flow-json").addEventListener("click", saveFlowJson);
+$("undo").addEventListener("click", undoEdit);
+$("redo").addEventListener("click", redoEdit);
 $("speed").addEventListener("input", event => { state.speed = Number(event.target.value); });
 $("pause-animation").addEventListener("click", event => {
   state.paused = !state.paused;
   event.target.textContent = state.paused ? "Play" : "Pause";
 });
-window.addEventListener("resize", () => { drawChart(state.report || { objects: {} }); });
+window.addEventListener("keydown", event => {
+  if (!(event.ctrlKey || event.metaKey)) return;
+  const tag = (event.target && event.target.tagName) || "";
+  if (["INPUT", "TEXTAREA", "SELECT"].includes(tag)) return;
+  if (event.key.toLowerCase() === "z") { event.preventDefault(); event.shiftKey ? redoEdit() : undoEdit(); }
+  if (event.key.toLowerCase() === "y") { event.preventDefault(); redoEdit(); }
+});
 
 loadAll();
 requestAnimationFrame(animationFrame);

@@ -1,0 +1,21 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "conveyor-curve",
+  "description": "Conveyor curve (B3): 5 straight + 90deg radius-2 arc = 8.1416 travel at speed 1",
+  "time_unit": "seconds",
+  "run": { "stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "Source1", "kind": "source", "params": {
+        "interarrival": { "distribution": "constant", "value": 1000.0 },
+        "max_arrivals": 1, "first_arrival": 0.0 } },
+    { "name": "Conveyor1", "kind": "conveyor", "params": {
+        "speed": 1.0, "length": 5.0, "item_spacing": 0.5, "max_content": 10,
+        "curve": { "radius": 2.0, "angle": 90.0 } } },
+    { "name": "Sink1", "kind": "sink", "params": {} }
+  ],
+  "connections": [
+    { "from": "Source1", "to": "Conveyor1" },
+    { "from": "Conveyor1", "to": "Sink1" }
+  ]
+}

@@ -187,6 +187,8 @@ pub struct ReplicationFluidObject {
     pub throughput: f64,
     /// Volume lost to overflow (tanks only).
     pub overflow: f64,
+    /// Average incoming flow rate (simplified pressure proxy).
+    pub pressure: f64,
 }
 
 /// Fluid statistics of one replication.
@@ -413,6 +415,7 @@ pub struct FluidObjectReport {
     pub level_max: f64,
     pub throughput: f64,
     pub overflow: f64,
+    pub pressure: f64,
 }
 
 /// Aggregated fluid statistics of the whole run.
@@ -611,6 +614,7 @@ fn aggregate_fluid(replications: &[ReplicationResult]) -> Option<FluidReport> {
                 level_max: sample_mean(|object| object.level_max),
                 throughput: sample_mean(|object| object.throughput),
                 overflow: sample_mean(|object| object.overflow),
+                pressure: sample_mean(|object| object.pressure),
             }
         })
         .collect();

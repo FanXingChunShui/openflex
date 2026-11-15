@@ -8,11 +8,11 @@
 
 | # | 功能 | 现状 | 缺口 | 工作量 |
 |---|---|---|---|---|
-| 1 | **Fluid 真实压力/温度/密度** | 用入口流量近似 `pressure_threshold`；固定步长 | 无压力传播/背压（阀门关闭时上游体积被丢弃，pipe 保留在途量）、无温度/密度/多相流、无泵/阀特性曲线 | L |
+| 1 | **Fluid 真实压力/温度/密度** | ✅ 入口流量近似压力/阈值开关；**背压**（阀关闭时上游 tank 只接收不排放，液位上升并计溢流；pipe 延迟缓冲并保留在途量）；报告含 `pressure`（入口流量均值）；固定步长 | 无温度/密度/多相流、无泵/阀特性曲线、无真实压力传播/管满背压 | L |
 | 2 | **Person 人群模型** | `grid` 4 邻接 A* + 全局速度折减（每忙碌 person -10%，最低 50%） | 无对角/8 邻接、无个体避让/排队、无动态障碍、无楼梯/电梯换乘、无密度场/社会力模型 | L |
 | 3 | **AGV 交通控制** | transporter alias + 电池（任务完成后扣电） | 无途中耗尽、无充电桩容量/排队、无交通管制/死锁避免、不搬运 flow item（只做操作员任务） | L |
 | 4 | **电梯门控** | 垂直运输、停靠、召唤/方向优先、capacity=并发任务数 | 无门状态机/超载/召唤按钮/井道冲突/多轿厢 | M |
-| 5 | **Conveyor 曲线与完整合流** | 直线带、PhotoEye/Station/Join（入口轮转） | 无曲线/转弯几何、无 Join 的 slug/gap 精细策略、无 Merge Controller、无电机/转盘/Transfers、PhotoEye 无遮挡持续状态/计数 | L |
+| 5 | **Conveyor 曲线与完整合流** | 直线带、PhotoEye/Station/Join（入口轮转）；✅ 可选 `curve: {radius, angle}`，按弧长计入行程时间（速度不变） | 无 3D 转弯几何/多段曲线/斜坡、无 Join 的 slug/gap 精细策略、无 Merge Controller、无电机/转盘/Transfers、PhotoEye 无遮挡持续状态/计数 | L |
 | 6 | **Rack 货位精细放置** | floor/gravity/push_back/drive_in 的顺序与容量 | 无货位/巷道坐标、无按 SKU/批次取货策略、无最小滞留时间（Storage Object 语义） | M |
 | 7 | **MultiProcessor 完整语义** | 多槽并行、每槽 setup/process、整批 crew 申请 | 无每槽独立操作员/故障、无槽位选择策略（优先级/最短队列） | M |
 | 8 | **缺失对象** | — | Emptier、BasicFR 完整语义、Robot/Crane/ASRSvehicle、Conveyor 电机/转盘、Fluid 泵/混合器、Escalator 等 | L–XL |
@@ -27,9 +27,9 @@
 | # | 功能 | 现状 | 缺口 | 工作量 |
 |---|---|---|---|---|
 | 14 | **Process Flow 块容量/触发器** | create/delay/assign/decision/sink/transfer(to/from) | 无块级排队容量、无块级触发器、无可视化编辑（studio 仅 JSON 文本） | M |
-| 15 | **FlexScript 条件布尔返回** | 脚本条件通过把 `result` 标签设为正值表示真 | 脚本不能直接返回布尔值；需要 script 层暴露求值结果 | S |
-| 16 | **FlexScript API 范围** | `time/item_type/item_id/label/set_label/set_item_type/send_message/release_item/log` | 不能读取对象统计/状态、不能创建/移动 item、无全局变量/表、无函数库（虽 rhai 支持，但 API 未暴露） | M |
-| 17 | **脚本动作扩展** | set_label/set_item_type/increment_label/send_message/destroy_item/release_item/script | 无 set_state/create_item/move_item/send_delayed_message 之外的完整动作集 | S–M |
+| 15 | **FlexScript 条件布尔返回** | ✅ 条件脚本可直接返回布尔表达式（如 `time < 10.0`）；仍兼容 `result` 标签为真的旧写法 | — | S |
+| 16 | **FlexScript API 范围** | ✅ 新增 `object_content/object_state/object_utilization`、`set_state/create_item/move_item`；加原有 `time/item_type/item_id/label/set_label/set_item_type/send_message/release_item/log` | 无全局变量/表、无完整函数库、无 `send_delayed_message` 等其余动作 | M |
+| 17 | **脚本动作扩展** | ✅ set_label/set_item_type/increment_label/send_message/destroy_item/release_item/script + `set_state/create_item/move_item` | 无完整 FlexSim 动作集（如 `send_delayed_message`/全局表写入） | S–M |
 
 ## 3. 运行、统计与优化
 
@@ -56,8 +56,8 @@
 | # | 功能 | 现状 | 缺口 | 工作量 |
 |---|---|---|---|---|
 | 28 | **完整 3D 渲染** | Studio 是 Canvas 2D 等距/透视近似投影 | 无 WebGL/GPU 渲染、光照/材质、3D 动画对象（当前用圆点近似流动） | L |
-| 29 | **模型树/属性面板** | 对象列表 + params JSON 编辑 | 无层级模型树、字段级表单（按 kind 动态表单） | M |
-| 30 | **流程图可视化编辑** | Process Flow 仅 JSON 文本域 | 无拖拽 block 编辑器 | L |
+| 29 | **模型树/属性面板** | 对象列表 + 字段级动态表单（按 kind）+ Advanced JSON | 无层级模型树 | S |
+| 30 | **流程图可视化编辑** | Studio 块列表/块表单/连接增删 + JSON | 无拖拽画布 | M |
 | 31 | **撤销/重做/协作** | 无 | 编辑历史、多用户协作 | L |
 
 ## 6. 发布与验证
@@ -69,7 +69,7 @@
 | 34 | **包管理器/容器发布** | Homebrew/winget/scoop 模板、GHCR workflow 就绪 | 未发布 tap/镜像/清单；Docker 未实际 build | S–M |
 | 35 | **真实 FlexSim 对照** | `compare-flexsim.sh` 双报告模式 + 模板 | 无真实 FlexSim 运行数据（净室边界；需外部提供） | — |
 | 36 | **性能规模** | 约 1.8M events/s（bench）；最大实测约 20 万事件 | 10 万对象/1 亿事件未测；无 CI 性能门槛；并行仅复现级 | M |
-| 37 | **CI 质量门槛** | deny/audit/coverage/fuzz/arm64（部分 optional） | 覆盖率无阈值、fuzz 仅短跑、aarch64 为 optional、dependabot Actions PR 未合并 | S |
+| 37 | **CI 质量门槛** | deny/audit/coverage（60% 行覆盖硬门槛）/fuzz 180s/arm64 必跑 | dependabot Actions PR 未合并 | S |
 
 ## 7. 文档与本地化
 
@@ -82,6 +82,6 @@
 
 - 随机数使用 ChaCha12，与 FlexSim 不同，因此数值统计一致但不会逐位相同。
 - 同刻事件排序为 `(time, seq)`，由 OpenFlex 自定义并已在 ARCHITECTURE 公开。
-- 脚本条件用 `result` 标签约定（`Value::Number > 0` 为真）。
+- 脚本条件优先使用脚本的布尔返回值；未返回布尔时回退到 `result` 标签约定（`> 0` 为真）。
 - 3D 布局 `pos` 是 2D + 可选 `z`，不是完整 3D 坐标。
 - 故障立即打断并补足剩余加工时间（文档已声明）。

@@ -3,7 +3,7 @@
 OpenFlex 是单文件命令行程序：装好之后没有后台服务、没有配置目录（除非你自己指定），
 模型都是普通 JSON 文件。本页覆盖 macOS、Windows、Linux 的安装、PATH 设置、校验与卸载。
 
-- 当前版本：`0.1.0`
+- 当前版本：`0.10.0`
 - 支持平台：macOS 11+（Apple Silicon / Intel，通用二进制）、Windows 10/11（x64，arm64 可选）、
   Linux（x86_64 / aarch64，glibc 2.31+）
 - 需要 Rust 1.97+ 的只有「从源码构建」一种方式
@@ -34,13 +34,13 @@ curl -fsSL https://raw.githubusercontent.com/openflex/openflex/main/packaging/in
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/openflex/openflex/main/packaging/install.sh \
-  | bash -s -- --version 0.1.0 --prefix "$HOME/.local"
+  | bash -s -- --version 0.10.0 --prefix "$HOME/.local"
 ```
 
 已经下载过本仓库时，直接跑本地脚本也可以：
 
 ```sh
-bash packaging/install.sh --version 0.1.0
+bash packaging/install.sh --version 0.10.0
 bash packaging/install.sh --help
 ```
 
@@ -70,7 +70,7 @@ irm https://raw.githubusercontent.com/openflex/openflex/main/packaging/install.p
 指定版本与目录（默认 `%LOCALAPPDATA%\OpenFlex\bin`）：
 
 ```powershell
-.\packaging\install.ps1 -Version 0.1.0 -InstallDir "$env:LOCALAPPDATA\OpenFlex\bin"
+.\packaging\install.ps1 -Version 0.10.0 -InstallDir "$env:LOCALAPPDATA\OpenFlex\bin"
 ```
 
 离线安装：
@@ -115,7 +115,7 @@ $env:Path = "$env:LOCALAPPDATA\OpenFlex\bin;$env:Path"
 验证安装：
 
 ```sh
-openflex --version    # openflex 0.1.0
+openflex --version    # openflex 0.10.0
 openflex --help
 ```
 
@@ -126,15 +126,15 @@ openflex --help
 
 | 平台 | 文件名 |
 |---|---|
-| macOS（Apple Silicon + Intel 通用） | `openflex-0.1.0-universal-apple-darwin.tar.gz` |
-| Linux x86_64 | `openflex-0.1.0-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux aarch64 | `openflex-0.1.0-aarch64-unknown-linux-gnu.tar.gz` |
-| Windows x64 | `openflex-0.1.0-x86_64-pc-windows-msvc.zip` |
-| Windows arm64（可选） | `openflex-0.1.0-aarch64-pc-windows-msvc.zip` |
+| macOS（Apple Silicon + Intel 通用） | `openflex-0.10.0-universal-apple-darwin.tar.gz` |
+| Linux x86_64 | `openflex-0.10.0-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux aarch64 | `openflex-0.10.0-aarch64-unknown-linux-gnu.tar.gz` |
+| Windows x64 | `openflex-0.10.0-x86_64-pc-windows-msvc.zip` |
+| Windows arm64（可选） | `openflex-0.10.0-aarch64-pc-windows-msvc.zip` |
 
 ```sh
 # macOS / Linux
-VERSION=0.1.0
+VERSION=0.10.0
 PLATFORM=universal-apple-darwin     # 或 x86_64-unknown-linux-gnu / aarch64-unknown-linux-gnu
 BASE=https://github.com/openflex/openflex/releases/download/v$VERSION
 curl -fLO "$BASE/openflex-$VERSION-$PLATFORM.tar.gz"
@@ -147,7 +147,7 @@ install -m 755 "openflex-$VERSION-$PLATFORM/openflex" "$HOME/.local/bin/openflex
 
 ```powershell
 # Windows
-$Version = '0.1.0'
+$Version = '0.10.0'
 $Platform = 'x86_64-pc-windows-msvc'
 $Base = "https://github.com/openflex/openflex/releases/download/v$Version"
 Invoke-WebRequest "$Base/openflex-$Version-$Platform.zip" -OutFile openflex.zip
@@ -161,7 +161,7 @@ Copy-Item ".\openflex-$Version-$Platform\openflex.exe" "$env:LOCALAPPDATA\OpenFl
 压缩包内只有一个顶层目录，结构如下：
 
 ```text
-openflex-0.1.0-x86_64-unknown-linux-gnu/
+openflex-0.10.0-x86_64-unknown-linux-gnu/
 ├── openflex
 └── README.md
 ```
@@ -178,11 +178,11 @@ xattr -d com.apple.quarantine "$HOME/.local/bin/openflex"
 
 ## 方式三：包管理器
 
-### Homebrew（macOS / Linux）— 模板已就绪，tap 尚未发布
+### Homebrew（macOS / Linux）— 公式已就绪，tap 仓库尚未创建
 
-仓库内有公式模板 [packaging/homebrew/openflex.rb](../packaging/homebrew/openflex.rb)，
-但 **Homebrew tap 还没有发布**：`brew install openflex` 目前会失败（找不到公式）。
-下面是现在就能用的方式，以及 tap 发布后的命令。
+公式 [packaging/homebrew/openflex.rb](../packaging/homebrew/openflex.rb) 已经填好
+**v0.10.0 的真实校验和**，但 `FanXingChunShui/homebrew-openflex` **tap 仓库还没有创建**，
+所以 `brew install fanxingchunshui/openflex/openflex` 现在会失败（找不到 tap）。
 
 现在可用（从 clone 下来的仓库安装，走真实 release 包）：
 
@@ -190,28 +190,25 @@ xattr -d com.apple.quarantine "$HOME/.local/bin/openflex"
 git clone https://github.com/FanXingChunShui/openflex.git
 cd openflex
 brew install --build-from-source ./packaging/homebrew/openflex.rb
-openflex --version
+brew test openflex
+openflex --version          # openflex 0.10.0
 brew uninstall openflex
 ```
 
-> 模板里的 `sha256` 是占位符，直接从模板装会校验失败；先把三个占位符换成
-> 本次 release `SHA256SUMS.txt` 里的值（tap 发布步骤见
-> [packaging/homebrew/README.md](../packaging/homebrew/README.md)）。
-
-tap 发布后的命令（当前**不可用**，仅作预告）：
+tap 创建后（当前**不可用**，仅作预告）：
 
 ```sh
 brew install fanxingchunshui/openflex/openflex
 ```
 
-tap 的创建、公式更新、`brew audit` / `brew test` 校验步骤见
+tap 的创建、公式更新、`brew audit --strict` / `brew test` 校验步骤见
 [packaging/homebrew/README.md](../packaging/homebrew/README.md)；每次发版要改的
-`version` 与 `sha256` 见 [docs/releasing.md](releasing.md)。
+`version` 与三个 `sha256` 见 [docs/releasing.md](releasing.md)。
 
 ### Debian / Ubuntu（.deb）
 
 ```sh
-sudo dpkg -i openflex_0.1.0_amd64.deb      # arm64 机器用 openflex_0.1.0_arm64.deb
+sudo dpkg -i openflex_0.10.0_amd64.deb      # arm64 机器用 openflex_0.10.0_arm64.deb
 openflex --version
 # 卸载
 sudo dpkg -r openflex
@@ -220,7 +217,7 @@ sudo dpkg -r openflex
 ### Fedora / RHEL / openSUSE（.rpm）
 
 ```sh
-sudo rpm -i openflex-0.1.0-1.x86_64.rpm    # aarch64 用 openflex-0.1.0-1.aarch64.rpm
+sudo rpm -i openflex-0.10.0-1.x86_64.rpm    # aarch64 用 openflex-0.10.0-1.aarch64.rpm
 openflex --version
 # 卸载
 sudo rpm -e openflex
@@ -232,46 +229,55 @@ deb/rpm 把程序装到 `/usr/bin/openflex`，文档装到 `/usr/share/doc/openf
 ### Windows MSI
 
 ```powershell
-msiexec /i openflex-0.1.0-windows-x64.msi
+msiexec /i openflex-0.10.0-windows-x64.msi
 ```
 
 按用户安装（`perUser`），装到 `%LOCALAPPDATA%\OpenFlex\bin` 并自动加入用户 PATH，不需要管理员权限。
-卸载：设置 → 应用 → OpenFlex → 卸载，或 `msiexec /x openflex-0.1.0-windows-x64.msi`。
+卸载：设置 → 应用 → OpenFlex → 卸载，或 `msiexec /x openflex-0.10.0-windows-x64.msi`。
 
-### Docker — 本地可构建，GHCR 镜像尚未发布
+### Docker / GHCR — 镜像已发布
 
-仓库里有[多阶段 Dockerfile](../packaging/Dockerfile)（`rust:1-slim-bookworm` 构建 →
-`debian:bookworm-slim` 运行），可以自己构建：
+GHCR 镜像已随 v0.10.0 发布（`.github/workflows/container.yml` 在 tag 时构建并推送）：
 
 ```sh
-docker build -f packaging/Dockerfile -t openflex:0.1.0 .
-docker run --rm openflex:0.1.0 --version
-docker run --rm -v "$PWD:/workspace" openflex:0.1.0 run /workspace/model.ofm
+docker run --rm ghcr.io/fanxingchunshui/openflex:0.10.0 --version   # openflex 0.10.0
+docker run --rm ghcr.io/fanxingchunshui/openflex:latest --version
+docker run --rm -v "$PWD:/workspace" ghcr.io/fanxingchunshui/openflex:0.10.0 \
+  run /workspace/model.ofm
+```
+
+| 项 | 值 |
+|---|---|
+| 镜像 | `ghcr.io/fanxingchunshui/openflex` |
+| 标签 | `0.10.0`、`v0.10.0`、`latest` |
+| 架构 | `linux/amd64`、`linux/arm64`（同一 manifest list） |
+| 验证 | 推送前在 CI 里跑 `--version` 与 `run examples/golden/mm1.ofm`；推送后 `docker pull` 再跑一遍 |
+
+本地自己构建（不依赖 registry）：
+
+```sh
+docker build -f packaging/Dockerfile -t openflex:0.10.0 .
+docker run --rm openflex:0.10.0 --version
 ```
 
 镜像默认入口是 `openflex`，不带参数时执行 `openflex --help`。容器内以非 root 用户
-（uid 10001）运行，工作目录是 `/workspace`。
-
-GHCR 镜像（`ghcr.io/fanxingchunshui/openflex`）由
-[`.github/workflows/container.yml`](../.github/workflows/container.yml) 在**打 tag 时**
-构建并推送（linux/amd64 + linux/arm64，tag 版本与 `latest`），并会先在本机跑
-`--version` 与一次 M/M/1 模型冒烟。**镜像尚未发布**，所以下面这条命令现在会失败，
-发布后才是正确用法：
+（uid 10001）运行，工作目录是 `/workspace`。镜像未签名（cosign/notation 未接入），
+生产环境请用 digest 固定版本：
 
 ```sh
-docker run --rm ghcr.io/fanxingchunshui/openflex:0.1.0 --version
+docker pull ghcr.io/fanxingchunshui/openflex@sha256:ee76d8ea10ebbc400c3de2b1f1175989f466f9a3d0591e3c008ab8b15097839a
 ```
 
-推送依赖 GitHub Actions 的 `GITHUB_TOKEN`（`packages: write`），不需要额外 secrets；
-fork 仓库需要把 workflow 里的镜像名改成自己的 owner。
+（该 digest 是 v0.10.0 与 `latest` 共同指向的 OCI manifest list，2026-11-15 核对。）
 
-### winget（Windows）— 清单模板，尚未提交
+### winget（Windows）— 清单已更新到 v0.10.0，尚未提交
 
-`packaging/winget/` 下有 winget 的三件套清单模板（version / installer / locale），
-但**还没有提交到 microsoft/winget-pkgs**，所以 `winget install OpenFlex` 现在不存在。
+`packaging/winget/` 下的三件套清单（version / installer / locale）**已填好 v0.10.0 的
+URL 与 MSI SHA256**，但**还没有提交到 microsoft/winget-pkgs**，所以
+`winget install OpenFlex` 现在不存在。
 
-模板里需要按版本替换的字段、MSI 的 SHA256 来源、以及为什么暂时没有 `ProductCode`，
-都写在 [packaging/winget/FanXingChunShui.OpenFlex.installer.yaml](../packaging/winget/FanXingChunShui.OpenFlex.installer.yaml)
+提交步骤、占位符核对方法、以及为什么暂时没有 `ProductCode`，写在
+[packaging/winget/FanXingChunShui.OpenFlex.installer.yaml](../packaging/winget/FanXingChunShui.OpenFlex.installer.yaml)
 的文件头注释里。清单提交后用户才能这样装：
 
 ```powershell
@@ -280,15 +286,15 @@ winget upgrade FanXingChunShui.OpenFlex
 ```
 
 在提交之前，Windows 用户请用 [方式一](#方式一一键安装脚本推荐) 的 `install.ps1`，或
-直接下载 MSI（见下文「Windows MSI」）。
+直接下载 MSI（见上文「Windows MSI」）。
 
-### Scoop（Windows）— 清单模板，尚未发布 bucket
+### Scoop（Windows）— 清单已更新到 v0.10.0，尚未发布 bucket
 
-`packaging/scoop/openflex.json` 是 Scoop 清单模板（含 `checkver` / `autoupdate`），
-但**没有发布到任何 bucket**，`scoop install openflex` 现在不可用。
+`packaging/scoop/openflex.json` **已填好 v0.10.0 的 URL/hash/extract_dir**
+（含 `checkver` / `autoupdate`），但**没有发布到任何 bucket**，
+`scoop install openflex` 现在不可用。
 
-自建 bucket 后可以这样用（需要先把模板里的 `version`、`hash`、`extract_dir`
-替换成本次 release 的值）：
+自建 bucket 后：
 
 ```powershell
 scoop bucket add openflex https://github.com/FanXingChunShui/scoop-bucket
@@ -326,13 +332,13 @@ cargo test --workspace
 
 ```sh
 # macOS
-shasum -a 256 openflex-0.1.0-universal-apple-darwin.tar.gz
+shasum -a 256 openflex-0.10.0-universal-apple-darwin.tar.gz
 
 # Linux
-sha256sum openflex-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+sha256sum openflex-0.10.0-x86_64-unknown-linux-gnu.tar.gz
 
 # Windows PowerShell
-Get-FileHash .\openflex-0.1.0-x86_64-pc-windows-msvc.zip -Algorithm SHA256
+Get-FileHash .\openflex-0.10.0-x86_64-pc-windows-msvc.zip -Algorithm SHA256
 ```
 
 把输出与 [Releases](https://github.com/openflex/openflex/releases) 里 `SHA256SUMS.txt`

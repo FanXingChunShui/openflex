@@ -77,18 +77,18 @@ bash -n packaging/install.sh packaging/uninstall.sh scripts/*.sh
 
 状态表与记录模板：[docs/verification/install-matrix.md](verification/install-matrix.md)。
 
-2026-11-14 在 macOS 15.8.1（x86_64）上用 `scripts/verify-install.sh` 跑通两种模式：
+2026-11-14/15 在 macOS 15.8.1（x86_64）上用 `scripts/verify-install.sh` 跑通两种模式：
 
 - `--from-dir dist`：**22 项检查（PASS）**，产物由 `scripts/package-release.sh` 本地生成；
 - `--version`（`OPENFLEX_REPO=FanXingChunShui/openflex`）：真实从 GitHub Release 下载并安装，
-  **v0.1.0 与 v0.4.0 各 20 项检查（PASS）**。
+  **v0.1.0、v0.4.0、v0.10.0 各 20 项检查（PASS）**（v0.10.0 于 2026-11-15 复跑）。
 
 两种模式都覆盖：安装到临时 prefix、校验 SHA-256、`--version`、`new`/`validate`/`run`
 （JSON + CSV）、安装回执、卸载与重复卸载。Windows 与 Linux 的真实安装**尚未执行**，
 原因与补齐方式见安装矩阵。
 
 CI（`.github/workflows/release.yml`）在 macOS / Windows / Linux 矩阵上重复构建与打包步骤；
-`scripts/verify-packaging.sh` 的 88 项本机检查是发布前的门槛（0 失败，2 跳过：本机无 pwsh、docker）。
+`scripts/verify-packaging.sh` 的 89 项本机检查是发布前的门槛（0 失败，2 跳过：本机无 pwsh、docker）。
 详见 [install.md](install.md) 与 [releasing.md](releasing.md)。
 
 ## 6. 性能基线
@@ -109,9 +109,9 @@ CI（`.github/workflows/release.yml`）在 macOS / Windows / Linux 矩阵上重�
 |---|---|---|---|
 | `deny` | cargo-deny | 是 | `deny.toml`：许可白名单（MIT / Apache-2.0 / BSD / ISC / Unicode-3.0 …）、禁止 yanked、禁止未知 registry |
 | `audit` | cargo-audit | 否（informational） | RustSec 漏洞报告打印并上传 artifact（保留 30 天）；`continue-on-error` |
-| `coverage` | cargo llvm-cov | 否（无阈值） | 生成 `lcov.info` 与 summary，先建立基线，后续再决定门槛 |
-| `fuzz` | cargo-fuzz（nightly） | 否（optional） | 模型 JSON 解析与表达式解析各 60 秒 libFuzzer |
-| `test-arm64` | cargo test | 否（optional） | GitHub 原生 arm64 runner 上跑一遍测试 |
+| `coverage` | cargo llvm-cov | **是（60% 行覆盖）** | 生成 `lcov.info` 与 summary，并用 `--fail-under-lines 60` 卡门槛；v0.10.0 基线 77.91% |
+| `fuzz` | cargo-fuzz（nightly） | 否（optional） | 模型 JSON 解析与表达式解析各 **180 秒** libFuzzer |
+| `test-arm64` | cargo test | **是（必跑）** | GitHub 原生 `ubuntu-24.04-arm` runner 上跑一遍测试（此前是 optional） |
 | `wasm` | cargo check/build（wasm32） | 是 | `openflex-core` 在 `wasm32-unknown-unknown` 上 check + release build，上传 rlib；CLI 不做 wasm 支持声明（见 [verification/wasm.md](verification/wasm.md)） |
 | `lint` | bash -n + shellcheck + YAML/TOML 解析 | 是 | 所有 shell 脚本与发布清单的语法门 |
 
@@ -123,7 +123,8 @@ bash scripts/fuzz-smoke.sh --mode fallback    # 没有 nightly 时：变异模�
 bash scripts/fuzz-smoke.sh --seconds 60       # 有 cargo-fuzz + nightly 时：真实 libFuzzer
 cargo deny check                              # 需要 cargo-deny
 cargo audit                                   # 需要 cargo-audit
-cargo llvm-cov --workspace --lcov --output-path lcov.info
+cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+cargo llvm-cov report --fail-under-lines 60    # CI 的覆盖率门槛
 cargo check -p openflex-core --target wasm32-unknown-unknown   # 需要 rustup target add wasm32-unknown-unknown
 ```
 
@@ -132,6 +133,40 @@ cargo check -p openflex-core --target wasm32-unknown-unknown   # 需要 rustup t
 
 `fuzz/` 是独立的 cargo-fuzz workspace（不在主 workspace 内，`cargo test --workspace` 不受影响）；
 在 stable 工具链上无法运行 libFuzzer，所以 CI 把它设为 optional，本地用 fallback 模式兜底。
+fuzz 时长在 v0.10.0 之后从每个 target 60 秒提到 **180 秒**（仍不阻塞 PR）。
+
+`test-arm64` 从 optional 改为必跑：`ubuntu-24.04-arm` 已对公开仓库正式可用。
+如果某天该 runner 不可用（fork 配额、私有仓库额度），在该 job 上加回
+`continue-on-error: true` 并在本文件记录原因，避免把"runner 起不来"误报成"测试挂了"。
+
+### 覆盖率基线（v0.10.0，2026-11-15）
+
+在干净的 `7ccb5ed`（v0.10.0）检出上测得：
+
+| 指标 | 覆盖 | 未覆盖 / 总数 |
+|---|---|---|
+| 行（lines） | **77.91%** | 3515 / 15912 |
+| 函数（functions） | 75.75% | 317 / 1307 |
+| 区域（regions） | 76.33% | 4477 / 18918 |
+
+CI 的 `coverage` job 把门槛设在 **60% 行覆盖率**（`--fail-under-lines 60`），比基线低约
+18 个点，给新增/低覆盖模块留出空间；覆盖率提升后再往上调。当前最低的模块：
+`studio.rs` ~4%、`serve.rs` ~22%、`compare.rs` ~32%、`distribution.rs` ~49%、
+`model.rs` ~57%（UI/CLI 与 schema 层，主要靠集成测试覆盖）。
+
+测法（本机）：
+
+```sh
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --locked
+cargo llvm-cov --workspace --locked --summary-only
+cargo llvm-cov report --fail-under-lines 60   # CI 用的门槛
+```
+
+> 覆盖率必须在**测试通过的检出**上测。v0.10.0 发布后主分支仍有未完成的 fluid 工作，
+> 工作区的 `cargo test` 当前不绿（`crates/openflex-core/tests/fluid.rs` 有 3 个断言失败），
+> 因此这次基线是在 `git worktree add /tmp/of-cov 7ccb5ed` 的干净检出上测的，
+> 没有在并行开发中的工作区测——避免把别人的半成品算进基线。
 
 ## 8. 与外部仿真器的数值对照（D1）
 
@@ -178,24 +213,40 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 
 ## 最近一次验收记录
 
-- 日期：2026-11-14
-- 版本：0.4.0（release 已发布，11 个产物）
-- `cargo test --workspace`：**82 passed / 0 failed**（17 CLI + 13 model + 10 golden + 21 objects + 11 report + 9 + 1 doctest）
-- `cargo clippy --workspace --all-targets`：**0 warning**
-- `cargo fmt --all --check`：通过
-- `bash scripts/acceptance.sh`：**全部 PASS**（mm1 / det-line / batching / breakdown / combiner-pack / separator-unpack）
-- `bash scripts/verify-packaging.sh`：**RESULT: PASS**（88 项通过 / 0 失败 / 2 跳过：本机无 pwsh、docker；
-  含 11 个 shell 脚本的 bash -n 与 shellcheck、workflow/dependabot/winget YAML、deny.toml 与 fuzz/Cargo.toml 的 TOML 解析、
-  新工具的 `--help` 与 dry-run）
-- `scripts/verify-install.sh --version 0.4.0`（真实 GitHub Release）：**PASS**，20 项
+- 日期：2026-11-15
+- 版本：0.10.0（release 已发布，11 个产物，发布于 2026-11-15T01:12:51Z）
+- `cargo test --workspace`：**未在本轮重跑**——工作区有并行开发（fluid 相关），
+  `crates/openflex-core/tests/fluid.rs` 当前有 3 个断言失败；已发布的 v0.10.0 检出
+  （`7ccb5ed`）测试是绿的，覆盖率基线就是在该干净检出上测的。全量测试由 CI 的
+  `test` / `golden` / `test-arm64` job 覆盖。
+- `cargo llvm-cov` 行覆盖率基线（干净 v0.10.0 检出）：**77.91%**（函数 75.75% / 区域 76.33%）
+- `bash scripts/verify-packaging.sh`：**RESULT: PASS**（89 项通过 / 0 失败 / 2 跳过：本机无 pwsh、docker；
+  含 12 个 shell 脚本的 bash -n 与 shellcheck、workflow/dependabot/winget YAML、
+  deny.toml 与 fuzz/Cargo.toml 的 TOML 解析、wasm32 检查、新工具的 `--help` 与 dry-run，
+  以及 winget/scoop/homebrew 清单版本与 sha256 的一致性检查）
+- `scripts/verify-install.sh --version 0.10.0`（真实 GitHub Release）：**PASS**，20 项
 - `cargo check` + `cargo build -p openflex-core --target wasm32-unknown-unknown`：**通过**
-  （release rlib 5,056,990 bytes）
-- `scripts/compare-flexsim.sh --report-a/--report-b`（双报告模式）：**已实现并实测**
-- 性能：release 构建下 M/M/1 约 20 万事件 / 0.95 s
-- 说明：本轮未重跑 `cargo test --workspace` / `acceptance.sh`（工作区有其他并行改动），
-  全量测试由 CI 的 `test` 与 `golden` job 覆盖；本轮只验收发布/质量链路。
+- GHCR 镜像：`ghcr.io/fanxingchunshui/openflex:0.10.0` / `latest` 已发布（amd64 + arm64，
+  OCI manifest list；本机无 docker，未本地 `docker run`）
+- 性能：release 构建下 M/M/1 约 20 万事件 / 0.95 s（v0.1.0 基线，未重测）
 
-### 2026-11-14 wasm / 安装收尾（v0.4.0 基线）
+### 2026-11-15 CI 门槛与发布渠道（v0.10.0 基线）
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| 覆盖率门槛 60%（行覆盖） | **已实跑**（本地 `--fail-under-lines 60` exit 0；`95` exit 1）+ CI 已配置 | ci.yml `coverage` job；基线 77.91% |
+| fuzz 时长 60s → 180s / target | CI 已配置 | ci.yml `fuzz` job（两个 target 各 180s，仍 optional） |
+| `test-arm64` 必跑 | CI 已配置（`ubuntu-24.04-arm`） | ci.yml `test-arm64`（已去掉 `continue-on-error`） |
+| v0.10.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS，见 [install-matrix](verification/install-matrix.md) |
+| Homebrew 公式（v0.10.0 真实 sha256） | **已完成**（`ruby -c` 通过）；tap 待创建 | `packaging/homebrew/openflex.rb` |
+| Homebrew `brew audit` / `brew install --build-from-source` | **待环境** | 本机 Homebrew 非 Tier 1 配置，audit 被 SIGTERM；命令见 `packaging/homebrew/README.md` |
+| winget / scoop 清单（v0.10.0 URL/SHA256） | **已完成，待提交** | `packaging/winget/`、`packaging/scoop/openflex.json`；MSI 哈希已下载复核 |
+| GHCR 镜像发布与验证 | **已发布**（registry 侧核实）；docker 本地运行**待环境** | container.yml；manifest 0.10.0/latest 均 200，多架构 |
+| Windows / Linux / deb / rpm / MSI 真机安装 | **待环境** | 脚本与命令清单就绪，见安装矩阵第 5 节 |
+| 签名/公证（macOS/Windows/GPG） | **CI 已配置，待证书** | release.yml 三处签名步骤 `if: env.X != ''`；本机 dry-run 通过 |
+| 真实 FlexSim 对照 | **待外部数据** | 工具与模板就绪；未运行 FlexSim |
+
+### 2026-11-14 wasm / 安装收尾（历史记录，v0.4.0 基线）
 
 | 项 | 状态 | 证据 |
 |---|---|---|

@@ -96,8 +96,16 @@
 //!   layer (D2): model scripts are precompiled once per source, action outcomes
 //!   merge labels / item type / messages / release and `log` lines become
 //!   `script_log` trace events. Script conditions are truthy when they set the
-//!   numeric label `result` to a positive value; errors map to
-//!   `SimError::Script` with the object/trigger location.
+//!   numeric label `result` to a positive value, but a direct boolean return is
+//!   preferred; errors map to `SimError::Script` with the object/trigger
+//!   location. Scripts also query objects (`object_content`, `object_state`,
+//!   `object_utilization`) and can `set_state`, `create_item` and `move_item`
+//!   through their outcome.
+//! * Fluid nodes enforce backpressure through per-step acceptance: a closed
+//!   valve (latching below its `pressure_threshold`) accepts nothing, so tanks
+//!   keep receiving and count overflow instead of dropping the volume; pipes
+//!   buffer what their downstream cannot take. The report exposes a
+//!   `pressure` proxy (average incoming flow rate per object).
 //! * The fluid family (B5) is incompressible: there is no pressure, temperature,
 //!   density or pipe delay. Integration uses a fixed step (`Model.fluid_step`,
 //!   default 0.1) that only exists while fluid objects are present; only steps
@@ -134,7 +142,7 @@ use serde::{Deserialize, Serialize};
 use crate::checkpoint::{CHECKPOINT_FORMAT_VERSION, Checkpoint};
 use crate::conveyor::Belt;
 use crate::error::SimError;
-use crate::script::{CompiledScript, ScriptContext, ScriptEngine, ScriptError};
+use crate::script::{CompiledScript, ScriptContext, ScriptEngine, ScriptError, ScriptObjectInfo};
 use crate::shifts;
 use crate::stats::{
     ObjectStats, ReplicationFlow, ReplicationFlowBlock, ReplicationFluid, ReplicationFluidObject,
@@ -354,6 +362,13 @@ pub(crate) struct FluidObjectRt {
     /// Pipe transport delay buffer: (release time, volume) entries.
     #[serde(default)]
     pub buffer: Vec<(f64, f64)>,
+    /// Valve state (B5 backpressure): closed valves do not accept inflow.
+    #[serde(default = "default_true_valve")]
+    pub valve_open: bool,
+}
+
+fn default_true_valve() -> bool {
+    true
 }
 
 impl FluidObjectRt {
@@ -366,6 +381,7 @@ impl FluidObjectRt {
             overflow: 0.0,
             inflow: 0.0,
             buffer: Vec::new(),
+            valve_open: true,
         }
     }
 }
@@ -773,8 +789,13 @@ impl ObjectRt {
         };
         match &object.params {
             ObjectParams::Conveyor(params) => {
+                // B3 curve: the straight length plus the arc length of an
+                // optional curved section (same speed).
+                let curve = params
+                    .curve
+                    .map_or(0.0, |curve| curve.radius * curve.angle.to_radians());
                 runtime.belt = Some(Belt::new(
-                    params.length,
+                    params.length + curve.max(0.0),
                     params.speed,
                     params.item_spacing,
                     params.accumulating,
@@ -4039,6 +4060,31 @@ impl<'m> Simulation<'m> {
             .map(|&index| self.model.objects[index].kind)
             .collect();
         let mut influx = vec![0.0f64; count];
+        // B5 backpressure: how much volume each node can accept this step.
+        let mut acceptance: Vec<f64> = (0..count)
+            .map(|position| match kinds[position] {
+                ObjectKind::FluidSink => f64::INFINITY,
+                // A tank always accepts volume; what does not fit becomes
+                // overflow. Its release is limited by downstream acceptance.
+                ObjectKind::FluidTank => f64::INFINITY,
+                ObjectKind::FluidValve => {
+                    if fluid.state[position].valve_open {
+                        f64::INFINITY
+                    } else {
+                        0.0
+                    }
+                }
+                ObjectKind::FluidPipe => {
+                    match &self.model.objects[model_indices[position]].params {
+                        ObjectParams::FluidPipe(params) => {
+                            params.flow_rate.map_or(f64::INFINITY, |rate| rate * dt)
+                        }
+                        _ => f64::INFINITY,
+                    }
+                }
+                _ => 0.0,
+            })
+            .collect();
 
         // Time-weighted level uses the level at the start of the step.
         if let Some(fluid) = self.fluid.as_mut() {
@@ -4059,8 +4105,14 @@ impl<'m> Simulation<'m> {
                     if let Some(fluid) = self.fluid.as_mut() {
                         fluid.total_inflow += produced;
                     }
-                    let sent =
-                        distribute_fluid(&links, &outgoing[position], produced, dt, &mut influx);
+                    let sent = distribute_fluid(
+                        &links,
+                        &outgoing[position],
+                        produced,
+                        dt,
+                        &mut influx,
+                        &mut acceptance,
+                    );
                     if let Some(fluid) = self.fluid.as_mut() {
                         fluid.state[position].throughput += sent;
                     }
@@ -4075,21 +4127,27 @@ impl<'m> Simulation<'m> {
                         .as_ref()
                         .map_or(0.0, |fluid| fluid.state[position].level);
                     let entering = influx[position];
-                    let available = level + entering;
-                    let overflow = (available - params.capacity).max(0.0);
-                    let level_after = available.min(params.capacity);
+                    let accepted = entering;
+                    let overflow = (level + entering - params.capacity).max(0.0);
+                    let level_after = (level + entering).min(params.capacity);
                     let offered = match params.max_outflow {
                         Some(rate) => level_after.min(rate * dt),
                         None => level_after,
                     };
-                    let sent =
-                        distribute_fluid(&links, &outgoing[position], offered, dt, &mut influx);
+                    let sent = distribute_fluid(
+                        &links,
+                        &outgoing[position],
+                        offered,
+                        dt,
+                        &mut influx,
+                        &mut acceptance,
+                    );
                     if let Some(fluid) = self.fluid.as_mut() {
                         let state = &mut fluid.state[position];
                         state.level = (level_after - sent).max(0.0);
                         // The peak of the step is the level before releasing.
                         state.level_max = state.level_max.max(level_after);
-                        state.inflow += entering;
+                        state.inflow += accepted;
                         state.overflow += overflow;
                         state.throughput += sent;
                         fluid.total_overflow += overflow;
@@ -4102,21 +4160,36 @@ impl<'m> Simulation<'m> {
                     };
                     let entering = influx[position];
                     let incoming_rate = if dt > EPS { entering / dt } else { 0.0 };
-                    let open = params.open
-                        && params
-                            .pressure_threshold
-                            .is_none_or(|threshold| incoming_rate >= threshold);
-                    let offered = if open {
+                    let was_open = self
+                        .fluid
+                        .as_ref()
+                        .is_some_and(|fluid| fluid.state[position].valve_open);
+                    let offered = if was_open {
                         entering * params.ratio.clamp(0.0, 1.0)
                     } else {
                         0.0
                     };
-                    let sent =
-                        distribute_fluid(&links, &outgoing[position], offered, dt, &mut influx);
+                    let sent = distribute_fluid(
+                        &links,
+                        &outgoing[position],
+                        offered,
+                        dt,
+                        &mut influx,
+                        &mut acceptance,
+                    );
                     if let Some(fluid) = self.fluid.as_mut() {
                         let state = &mut fluid.state[position];
                         state.inflow += entering;
                         state.throughput += sent;
+                        // The valve latches closed when the pressure (incoming
+                        // flow rate) drops below the threshold; upstream then
+                        // backs up instead of the valve discarding volume.
+                        if was_open && entering > EPS {
+                            state.valve_open = params.open
+                                && params
+                                    .pressure_threshold
+                                    .is_none_or(|threshold| incoming_rate >= threshold - EPS);
+                        }
                     }
                 }
                 ObjectKind::FluidPipe => {
@@ -4128,35 +4201,41 @@ impl<'m> Simulation<'m> {
                         .delay
                         .unwrap_or_else(|| params.length / params.speed.max(EPS))
                         .max(0.0);
-                    // Release the volume whose travel time has elapsed.
+                    // Release the volume whose travel time has elapsed; the
+                    // downstream acceptance limits how much can leave, the rest
+                    // stays buffered (backpressure through the pipe).
                     let mut released = 0.0;
-                    let mut remaining: Vec<(f64, f64)> = Vec::new();
                     if let Some(fluid) = self.fluid.as_mut() {
-                        for (arrival, volume) in fluid.state[position].buffer.drain(..) {
+                        let state = &mut fluid.state[position];
+                        let mut remaining: Vec<(f64, f64)> = Vec::new();
+                        for (arrival, volume) in state.buffer.drain(..) {
                             if arrival <= now + EPS {
                                 released += volume;
                             } else {
                                 remaining.push((arrival, volume));
                             }
                         }
-                        fluid.state[position].buffer = remaining;
+                        state.buffer = remaining;
                     }
-                    let sent =
-                        distribute_fluid(&links, &outgoing[position], released, dt, &mut influx);
-                    // Accept new volume into the pipe, capped by flow_rate.
-                    let entering = influx[position];
-                    let capacity = params
-                        .flow_rate
-                        .map(|rate| rate * dt)
-                        .unwrap_or(f64::INFINITY);
-                    let accepted = entering.min(capacity);
+                    let sent = distribute_fluid(
+                        &links,
+                        &outgoing[position],
+                        released,
+                        dt,
+                        &mut influx,
+                        &mut acceptance,
+                    );
                     if let Some(fluid) = self.fluid.as_mut() {
                         let state = &mut fluid.state[position];
-                        state.inflow += accepted;
-                        state.throughput += sent;
+                        if released - sent > EPS {
+                            state.buffer.push((now, released - sent));
+                        }
+                        let accepted = influx[position];
                         if accepted > 0.0 {
                             state.buffer.push((now + delay, accepted));
                         }
+                        state.inflow += accepted;
+                        state.throughput += sent;
                         state.level = state.buffer.iter().map(|(_, volume)| volume).sum();
                         state.level_max = state.level_max.max(state.level);
                     }
@@ -4210,6 +4289,7 @@ impl<'m> Simulation<'m> {
                     level_max: state.level_max,
                     throughput: state.throughput / denom,
                     overflow: state.overflow,
+                    pressure: state.inflow / denom,
                 }
             })
             .collect();
@@ -5942,6 +6022,7 @@ impl<'m> Simulation<'m> {
                             })?;
                     let mut context = ScriptContext::new(self.now, item.item_type, item.id);
                     context.labels = item.labels.clone();
+                    context.objects = self.script_objects();
                     let outcome = script.run(&mut context).map_err(|error| SimError::Script {
                         location: location.clone(),
                         source: error,
@@ -5966,6 +6047,15 @@ impl<'m> Simulation<'m> {
                             self.objects[index].release_bypass = true;
                         }
                         self.schedule(self.now, EventKind::Flow(index));
+                    }
+                    if let Some(state_name) = &outcome.state {
+                        self.apply_script_state(index, state_name);
+                    }
+                    for (target, count) in &outcome.create_items {
+                        self.apply_script_create(target, *count)?;
+                    }
+                    for (from, to) in &outcome.move_items {
+                        self.apply_script_move(from, to)?;
                     }
                     for log in &outcome.logs {
                         if self.trace.is_some() {
@@ -6030,11 +6120,88 @@ impl<'m> Simulation<'m> {
         if let Some(item) = item {
             context.labels = item.labels.clone();
         }
+        context.objects = self.script_objects();
         let outcome = script.run(&mut context).map_err(|error| SimError::Script {
             location: location.to_string(),
             source: error,
         })?;
-        Ok(outcome.labels.get("result").copied().unwrap_or(0.0) > 0.0)
+        Ok(outcome
+            .condition
+            .unwrap_or_else(|| outcome.labels.get("result").copied().unwrap_or(0.0) > 0.0))
+    }
+
+    /// Read-only object snapshot for script queries.
+    fn script_objects(&self) -> BTreeMap<String, ScriptObjectInfo> {
+        let elapsed = self.now.max(EPS);
+        self.objects
+            .iter()
+            .map(|object| {
+                let stats = object.stats(elapsed);
+                (
+                    object.name.clone(),
+                    ScriptObjectInfo {
+                        content: (object.content.len() + object.out_pending.len()) as f64,
+                        state: object.state.name().to_string(),
+                        utilization: stats.utilization,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn apply_script_state(&mut self, index: usize, name: &str) {
+        let state = match name {
+            "idle" => State::Idle,
+            "busy" => State::Busy,
+            "blocked" => State::Blocked,
+            "down" => State::Down,
+            "off_shift" => State::OffShift,
+            _ => return,
+        };
+        self.set_state(index, state);
+    }
+
+    fn apply_script_create(&mut self, name: &str, count: u32) -> Result<(), SimError> {
+        let Some(&target) = self.by_name.get(name) else {
+            return Ok(());
+        };
+        for _ in 0..count {
+            if !self.can_accept(target, 0) {
+                break;
+            }
+            self.items_created += 1;
+            self.stats_created += 1;
+            let item = FlowItem {
+                id: self.items_created,
+                item_type: 0,
+                labels: BTreeMap::new(),
+                created: self.now,
+                entry_time: self.now,
+            };
+            self.receive_item(target, 0, item)?;
+        }
+        Ok(())
+    }
+
+    fn apply_script_move(&mut self, from: &str, to: &str) -> Result<(), SimError> {
+        let (Some(&from), Some(&to)) = (self.by_name.get(from), self.by_name.get(to)) else {
+            return Ok(());
+        };
+        if !self.can_accept(to, 0) {
+            return Ok(());
+        }
+        let Some(item) = self.objects[from].take_content(self.now, 0) else {
+            return Ok(());
+        };
+        let stay = self.now - item.entry_time;
+        {
+            let state = &mut self.objects[from];
+            state.acc.output += 1;
+            state.acc.stay_sum += stay;
+            state.acc.stay_count += 1;
+        }
+        self.receive_item(to, 0, item)?;
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -6401,6 +6568,7 @@ fn distribute_fluid(
     volume: f64,
     dt: f64,
     influx: &mut [f64],
+    acceptance: &mut [f64],
 ) -> f64 {
     if outgoing.is_empty() || volume <= 0.0 {
         return 0.0;
@@ -6413,9 +6581,19 @@ fn distribute_fluid(
             .flow_rate
             .map(|rate| rate * dt)
             .unwrap_or(f64::INFINITY);
-        let amount = share.min(capacity);
+        let available = acceptance
+            .get(target)
+            .copied()
+            .unwrap_or(f64::INFINITY)
+            .max(0.0);
+        let amount = share.min(capacity).min(available);
         if let Some(slot) = influx.get_mut(target) {
             *slot += amount;
+        }
+        if let Some(slot) = acceptance.get_mut(target)
+            && slot.is_finite()
+        {
+            *slot = (*slot - amount).max(0.0);
         }
         sent += amount;
     }
@@ -6498,8 +6676,7 @@ fn collect_model_scripts(model: &Model) -> Vec<(String, String)> {
     sources
 }
 
-/// Precompile every script source of the model once (D2); run errors reference
-/// these cached ASTs.
+/// Precompile every script source of the model once (D2).
 fn compile_model_scripts(model: &Model) -> Result<HashMap<String, CompiledScript>, SimError> {
     let engine = ScriptEngine::new();
     let mut scripts = HashMap::new();
@@ -6641,7 +6818,11 @@ fn build_fluid_runtime(model: &Model) -> Option<FluidRuntime> {
             ObjectParams::FluidTank(params) => params.initial_level.max(0.0),
             _ => 0.0,
         };
-        state.push(FluidObjectRt::new(initial));
+        let mut runtime = FluidObjectRt::new(initial);
+        if let ObjectParams::FluidValve(params) = &model.objects[index].params {
+            runtime.valve_open = params.open;
+        }
+        state.push(runtime);
     }
     let mut links = Vec::new();
     let mut outgoing: Vec<Vec<usize>> = vec![Vec::new(); count];

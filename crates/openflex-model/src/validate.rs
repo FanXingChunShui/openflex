@@ -554,6 +554,20 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
             if params.speed <= 0.0 {
                 issues.push(ValidationIssue::new(location("speed"), "must be positive"));
             }
+            if let Some(curve) = params.curve {
+                if !curve.radius.is_finite() || curve.radius <= 0.0 {
+                    issues.push(ValidationIssue::new(
+                        location("curve.radius"),
+                        "must be positive",
+                    ));
+                }
+                if !curve.angle.is_finite() || curve.angle <= 0.0 || curve.angle > 360.0 {
+                    issues.push(ValidationIssue::new(
+                        location("curve.angle"),
+                        "must be between 0 and 360 degrees",
+                    ));
+                }
+            }
             if params.length <= 0.0 {
                 issues.push(ValidationIssue::new(location("length"), "must be positive"));
             }
