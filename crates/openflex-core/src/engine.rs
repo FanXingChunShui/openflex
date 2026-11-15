@@ -135,7 +135,7 @@ use openflex_model::{
     Action, ArrivalStyle, CombinerMode, ConditionalPort, ConnectionKind, Distribution,
     DowntimeWindow, EvalContext, FlowBlockKind, Grid, Model, NetworkEdge, Object, ObjectKind,
     ObjectParams, PortStrategy, ProcessFlow, PullParams, QueueOrder, RackPickPolicy, RackType,
-    SeparateMode, SimTrigger, TableCell, TaskStep, TransferMode, Value,
+    SeparateMode, SimTrigger, TableCell, TaskStepKind, TransferMode, Value,
 };
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
@@ -1231,7 +1231,15 @@ pub fn run_model(model: &Model) -> Result<SimReport, SimError> {
 /// order, which keeps the report deterministic.
 pub fn run_model_parallel(model: &Model, workers: usize) -> Result<SimReport, SimError> {
     let replications = model.run.replications.max(1);
-    let worker_count = workers.max(1).min(replications as usize);
+    // task-62: `workers == 0` means "use the available parallelism".
+    let requested = if workers == 0 {
+        std::thread::available_parallelism()
+            .map(|value| value.get())
+            .unwrap_or(1)
+    } else {
+        workers
+    };
+    let worker_count = requested.max(1).min(replications as usize);
     if worker_count <= 1 {
         return run_model(model);
     }
@@ -1440,9 +1448,20 @@ pub struct CheckpointManifest {
     pub stop_time: f64,
     pub replications: u32,
     pub base_seed: u64,
-    /// Unix timestamp (seconds) of the run.
+    /// Unix timestamp (seconds) of the latest run.
     pub created_at: u64,
     pub entries: Vec<CheckpointManifestEntry>,
+    /// task-62: one record per run that wrote this manifest (oldest first).
+    #[serde(default)]
+    pub history: Vec<CheckpointManifestRun>,
+}
+
+/// One historical run recorded in a checkpoint manifest (task-62).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckpointManifestRun {
+    pub created_at: u64,
+    pub stop_time: f64,
+    pub replications: u32,
 }
 
 /// Result of a checkpointed multi-replication run (task-59).
@@ -1523,17 +1542,48 @@ pub fn run_model_with_checkpoints_retained(
             }
         }
     }
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    // task-62: merge with a previous manifest in the same directory: entries
+    // are keyed by replication index, and every run keeps a history record.
+    let previous = load_manifest(dir);
+    let mut merged: Vec<CheckpointManifestEntry> = previous
+        .as_ref()
+        .map(|manifest| manifest.entries.clone())
+        .unwrap_or_default();
+    for entry in entries {
+        match merged
+            .iter_mut()
+            .find(|existing| existing.index == entry.index)
+        {
+            Some(existing) => *existing = entry,
+            None => merged.push(entry),
+        }
+    }
+    merged.sort_by_key(|entry| entry.index);
+    // Entries whose file is no longer on disk are not retained.
+    for entry in &mut merged {
+        entry.retained = dir.join(&entry.file).is_file();
+    }
+    let mut history = previous
+        .map(|manifest| manifest.history)
+        .unwrap_or_default();
+    history.push(CheckpointManifestRun {
+        created_at,
+        stop_time,
+        replications,
+    });
     let manifest = CheckpointManifest {
         format_version: 1,
         model: model.name.clone(),
         stop_time,
         replications,
         base_seed: model.run.seed,
-        created_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_secs())
-            .unwrap_or(0),
-        entries,
+        created_at,
+        entries: merged,
+        history,
     };
     let json = serde_json::to_string_pretty(&manifest)
         .map_err(|error| SimError::Config(format!("could not serialise manifest: {error}")))?;
@@ -1547,6 +1597,13 @@ pub fn run_model_with_checkpoints_retained(
         entries: written,
         manifest,
     })
+}
+
+/// Read an existing manifest; a missing or incompatible file is ignored.
+fn load_manifest(dir: &Path) -> Option<CheckpointManifest> {
+    let text = std::fs::read_to_string(dir.join("manifest.json")).ok()?;
+    let manifest: CheckpointManifest = serde_json::from_str(&text).ok()?;
+    (manifest.format_version == 1).then_some(manifest)
 }
 
 /// Delete the oldest `checkpoint-*.json` files until at most `keep` remain.
@@ -6461,12 +6518,16 @@ impl<'m> Simulation<'m> {
         self.settle_task(transporter)
     }
 
-    /// task-44: extra time the dispatcher's `task_sequence` adds to one task.
+    /// task-44/62: extra time the dispatcher's `task_sequence` adds to one task.
     ///
     /// The engine always performs the standard sequence (travel to the pickup
-    /// point, travel to the requester, load, unload, travel home). Every
-    /// additional `travel` leg costs one more pickup+leg trip, every extra
-    /// `load`/`unload` costs the executer's load/unload time again.
+    /// point, travel to the requester, load, unload, travel home). The model
+    /// sequence is evaluated step by step:
+    ///
+    /// * a step whose `condition` is false is skipped,
+    /// * a step with an explicit `duration` costs that sampled time instead of
+    ///   the default for its kind,
+    /// * the extra time is `sum(steps) - baseline`.
     fn task_sequence_extra(&mut self, transporter: usize) -> f64 {
         let Some(dispatcher) = self.objects[transporter].assigned_dispatcher else {
             return 0.0;
@@ -6478,13 +6539,6 @@ impl<'m> Simulation<'m> {
         if sequence.is_empty() {
             return 0.0;
         }
-        let count = |step: TaskStep| sequence.iter().filter(|entry| **entry == step).count();
-        let extra_travels = count(TaskStep::Travel).saturating_sub(2);
-        let extra_loads = count(TaskStep::Load).saturating_sub(1);
-        let extra_unloads = count(TaskStep::Unload).saturating_sub(1);
-        if extra_travels + extra_loads + extra_unloads == 0 {
-            return 0.0;
-        }
         let trip = match self.objects[transporter].serving_requester {
             Some(requester) => {
                 self.transport_leg_travel(transporter, requester)
@@ -6494,7 +6548,30 @@ impl<'m> Simulation<'m> {
         };
         let load = self.transport_load_time(transporter);
         let unload = self.transport_unload_time(transporter);
-        extra_travels as f64 * trip + extra_loads as f64 * load + extra_unloads as f64 * unload
+        let baseline = 2.0 * trip + load + unload;
+        let mut total = 0.0;
+        for step in &sequence {
+            if let Some(condition) = step.condition() {
+                let context = ExprContext::new(self, None);
+                let matched = condition
+                    .eval(&context)
+                    .map(|value| value.as_bool())
+                    .unwrap_or(false);
+                if !matched {
+                    continue;
+                }
+            }
+            let default = match step.kind() {
+                TaskStepKind::Travel => trip,
+                TaskStepKind::Load => load,
+                TaskStepKind::Unload => unload,
+            };
+            total += match step.duration() {
+                Some(distribution) => self.sample(distribution).max(0.0),
+                None => default,
+            };
+        }
+        (total - baseline).max(0.0)
     }
 
     /// task-44: settle the task sequence before the task counts as finished.

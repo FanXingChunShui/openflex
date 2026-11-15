@@ -7,7 +7,33 @@
 
 ## 1. 发布前检查
 
-在准备发布的 commit 上：
+**标准流程用 [`scripts/release.sh`](../scripts/release.sh)**——它把顺序固定下来，避免
+"版本已 bump、清单还停在上一个版本"这类发版事故（历史上出现过，见
+[VERIFICATION.md](VERIFICATION.md) 的「已修复问题」）：
+
+```sh
+# 阶段 A：bump 版本 + 更新 lock（在干净的工作区上）
+scripts/release.sh --version 0.22.0 --dry-run   # 先看它要做什么
+scripts/release.sh --version 0.22.0             # [1/5] 预检 → [2/5] bump + cargo check → 打印 tag 命令
+
+# 按提示提交、打 tag、推送；等 release workflow 产出 11 个产物后：
+
+# 阶段 B：清单同步 + 打包链路校验
+scripts/release.sh --version 0.22.0 --phase publish   # [3/5] sync 清单 → [4/5] verify-packaging → [5/5] 后续检查
+```
+
+| 步骤 | 内容 | 何时 |
+|---|---|---|
+| 1/5 预检 | 分支 = main、工作区干净、新版本 > 当前版本 | 任何 phase |
+| 2/5 bump | 改 `Cargo.toml` 的 `[workspace.package].version`，`cargo check` 更新 `Cargo.lock` | `prepare` / `all` |
+| 3/5 sync | `scripts/sync-package-manifests.sh`（homebrew/winget/scoop 的版本与 sha256） | `publish` / `all`（需要 release 的 `SHA256SUMS.txt`） |
+| 4/5 verify | `CARGO_INCREMENTAL=0 scripts/verify-packaging.sh --skip-build` | `publish` / `all` |
+| 5/5 提示 | 打印 commit/tag/push 与发布后检查（GHCR、真机）命令，不代替执行 | 所有 phase |
+
+`--dry-run` 只打印、不改文件；`--phase publish` 忽略预检中的"工作区干净"要求（清单同步会改
+`packaging/`）。脚本**从不**替你 commit / tag / push。
+
+手工等价命令（脚本内部就是这些）：
 
 ```sh
 cargo test --workspace

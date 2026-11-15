@@ -169,3 +169,82 @@ fn keep_prunes_old_checkpoints() {
     assert!(dir.join("checkpoint-1.json").is_file());
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// task-62: manifest merging across runs
+// ---------------------------------------------------------------------------
+
+/// A second run merges into the existing manifest: entries are keyed by index
+/// and every run appends a history record.
+#[test]
+fn manifest_merges_across_runs() {
+    let dir = temp_dir("merge");
+    let first = run_model_with_checkpoints_retained(&model(3), &dir, 100.0, None).expect("first");
+    assert_eq!(first.manifest.entries.len(), 3);
+    assert_eq!(first.manifest.history.len(), 1);
+    let first_created = first.manifest.history[0].created_at;
+
+    // A shorter run: indices 0 and 1 are rewritten, index 2 keeps its old entry.
+    let second = run_model_with_checkpoints_retained(&model(2), &dir, 200.0, None).expect("second");
+    assert_eq!(second.manifest.entries.len(), 3, "old indices are kept");
+    assert_eq!(
+        second
+            .manifest
+            .entries
+            .iter()
+            .map(|e| e.index)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+    assert_eq!(second.manifest.history.len(), 2);
+    assert_eq!(second.manifest.history[0].created_at, first_created);
+    assert_eq!(second.manifest.history[1].stop_time, 200.0);
+    assert_eq!(
+        second.manifest.stop_time, 200.0,
+        "the manifest tracks the latest run"
+    );
+    // The rewritten entries reflect the longer run.
+    let zero_first = first
+        .manifest
+        .entries
+        .iter()
+        .find(|entry| entry.index == 0)
+        .unwrap()
+        .items_created;
+    let zero_second = second
+        .manifest
+        .entries
+        .iter()
+        .find(|entry| entry.index == 0)
+        .unwrap()
+        .items_created;
+    assert!(
+        zero_second > zero_first,
+        "the longer run creates more items"
+    );
+
+    // The on-disk manifest matches the returned one.
+    let text = fs::read_to_string(dir.join("manifest.json")).expect("read");
+    let stored: CheckpointManifest = serde_json::from_str(&text).expect("parse");
+    assert_eq!(stored, second.manifest);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// An entry whose checkpoint file disappeared is reported as not retained.
+#[test]
+fn manifest_marks_missing_files() {
+    let dir = temp_dir("missing");
+    run_model_with_checkpoints_retained(&model(2), &dir, 100.0, None).expect("first");
+    // Index 1 is not rewritten by the shorter run, so its missing file stays
+    // visible in the merged manifest.
+    fs::remove_file(dir.join("checkpoint-1.json")).expect("remove");
+    let second = run_model_with_checkpoints_retained(&model(1), &dir, 100.0, None).expect("second");
+    let entry = second
+        .manifest
+        .entries
+        .iter()
+        .find(|entry| entry.index == 1)
+        .expect("entry 1");
+    assert!(!entry.retained, "a deleted checkpoint is not retained");
+    let _ = fs::remove_dir_all(&dir);
+}

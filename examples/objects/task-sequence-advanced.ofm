@@ -1,0 +1,30 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "task-sequence-advanced",
+  "time_unit": "seconds",
+  "description": "Dispatcher task sequence with a per-step duration and a condition: the extra 25 s step only runs during the first 100 seconds",
+  "run": {"stop_time": 400.0, "warmup": 0.0, "seed": 1, "replications": 1},
+  "objects": [
+    {"name": "Source1", "kind": "source", "pos": [10, 0], "params": {
+      "interarrival": {"distribution": "constant", "value": 10.0}, "first_arrival": 0.0}},
+    {"name": "Processor1", "kind": "processor", "pos": [10, 0], "params": {
+      "process_time": {"distribution": "constant", "value": 4.0},
+      "process_operator": "Dispatcher1"}},
+    {"name": "Sink1", "kind": "sink", "params": {}},
+    {"name": "Dispatcher1", "kind": "dispatcher", "pos": [0, 0], "params": {
+      "task_sequence": [
+        "travel", "travel", "load", "unload",
+        {"kind": "travel",
+         "duration": {"distribution": "constant", "value": 25.0},
+         "condition": "time < 100"}
+      ]}},
+    {"name": "Executer1", "kind": "transporter", "pos": [0, 0], "params": {
+      "capacity": 1, "speed": 1.0, "home": "Dispatcher1"}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Processor1"},
+    {"from": "Processor1", "to": "Sink1"},
+    {"from": "Dispatcher1", "to": "Executer1"}
+  ]
+}

@@ -127,6 +127,7 @@ SHELL_SCRIPTS=(
   "$ROOT_DIR/scripts/sync-package-manifests.sh"
   "$ROOT_DIR/scripts/verify-ghcr.sh"
   "$ROOT_DIR/scripts/profile-large-model.sh"
+  "$ROOT_DIR/scripts/release.sh"
 )
 for script in "${SHELL_SCRIPTS[@]}"; do
   if [ -f "$script" ]; then
@@ -630,7 +631,8 @@ for tool in \
   "$ROOT_DIR/scripts/bench-large-model.sh" \
   "$ROOT_DIR/scripts/sync-package-manifests.sh" \
   "$ROOT_DIR/scripts/verify-ghcr.sh" \
-  "$ROOT_DIR/scripts/profile-large-model.sh"; do
+  "$ROOT_DIR/scripts/profile-large-model.sh" \
+  "$ROOT_DIR/scripts/release.sh"; do
   run_ok "$(basename "$tool") --help exits 0" bash "$tool" --help
 done
 

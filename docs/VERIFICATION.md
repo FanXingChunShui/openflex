@@ -305,7 +305,9 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 - `scripts/sync-package-manifests.sh --version 0.21.0`：**5 个文件更新成功**（`--check` 通过）
   （homebrew version + 3 sha256、winget 三件套、scoop version/url/hash/extract_dir），
   `--check` 复核通过
-- `bash scripts/verify-packaging.sh`：**102 通过 / 0 失败 / 3 跳过**（本机无 pwsh、docker，registry 默认关闭；检查包括：
+- `scripts/release.sh --dry-run`：**5 步顺序正确**（预检 → bump → sync → verify → 提示），
+  `Cargo.toml` 未被修改；错误路径（同版本 exit 1、非法版本/缺参数 exit 2）已测
+- `bash scripts/verify-packaging.sh`：**105 通过 / 0 失败 / 3 跳过**（本机无 pwsh、docker，registry 默认关闭；检查包括：
   含 12 个 shell 脚本的 bash -n 与 shellcheck、workflow/dependabot/winget YAML、
   deny.toml 与 fuzz/Cargo.toml 的 TOML 解析、wasm32 检查、新工具的 `--help` 与 dry-run，
   以及 winget/scoop/homebrew 清单版本与 sha256 的一致性检查、bench/sync/verify-ghcr 脚本与文档站配置检查）
@@ -350,6 +352,7 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 | 10 万对象性能基准（v0.11.0） | **已实跑** | validate 85.12 s / run 271.56 s / 552 events/s / 峰值 397 MB，见 [performance.md](verification/performance.md) |
 | 文档站（mdBook） | **已构建验证**（mdBook 0.5.4） | 11+4 页面，`index.html`=「OpenFlex 文档」；配置见第 10 节 |
 | 包管理器清单同步到 v0.21.0 | **已完成** | `sync-package-manifests.sh --version 0.21.0`；`--check` 通过 |
+| 发布 checklist 脚本（`scripts/release.sh`） | **已完成并实测** | dry-run 输出 1→5 顺序；`prepare`/`publish`/`all` 三阶段；错误路径 exit 1/2；已接入 verify-packaging（含 bash -n 与 `--help` 检查） |
 | CI 性能门槛（`bench` job，10k 对象） | **已实跑**（本机等价命令 + 负向测试） | validate < 2 s、run < 5 s；本机 0.14 s / 0.40 s；见 [performance.md](verification/performance.md) §4.1 |
 | FlexSim 导出 CSV 步骤 + 示例数据 | **已完成** | [flexsim-comparison.md](verification/flexsim-comparison.md) §4.5 + [flexsim-export-example.csv](verification/flexsim-export-example.csv)（净室声明保留） |
 | 10 万对象 profiling（macOS `sample` + `atos`） | **已实跑** | validate：serde/serde_ignored 70.8%；run：flow/notify ≈72%、参数 clone ≈6%；见 [performance.md](verification/performance.md) §5 |

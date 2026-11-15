@@ -1748,9 +1748,53 @@ impl Default for ElevatorParams {
 /// model can add extra legs: every additional `travel` costs one more trip
 /// between the pickup point and the requester, every `load`/`unload` costs the
 /// task executer's load/unload time again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TaskStep {
+    /// Short form: `"travel"`, `"load"` or `"unload"`.
+    Simple(TaskStepKind),
+    /// Full form (task-62): `{"kind": "travel", "duration": {...},
+    /// "condition": "time < 100"}`. A step whose condition evaluates to false
+    /// is skipped; `duration` replaces the default time of that step.
+    Detailed {
+        kind: TaskStepKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration: Option<Distribution>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        condition: Option<Expr>,
+    },
+}
+
+impl TaskStep {
+    /// The kind of the step.
+    pub fn kind(&self) -> TaskStepKind {
+        match self {
+            TaskStep::Simple(kind) => *kind,
+            TaskStep::Detailed { kind, .. } => *kind,
+        }
+    }
+
+    /// Optional duration override.
+    pub fn duration(&self) -> Option<&Distribution> {
+        match self {
+            TaskStep::Simple(_) => None,
+            TaskStep::Detailed { duration, .. } => duration.as_ref(),
+        }
+    }
+
+    /// Optional condition; the step runs only when it evaluates to true.
+    pub fn condition(&self) -> Option<&Expr> {
+        match self {
+            TaskStep::Simple(_) => None,
+            TaskStep::Detailed { condition, .. } => condition.as_ref(),
+        }
+    }
+}
+
+/// Kind of one dispatcher task step (task-62).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum TaskStep {
+pub enum TaskStepKind {
     /// One trip between the pickup point and the requester.
     #[default]
     Travel,

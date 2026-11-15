@@ -887,3 +887,84 @@ fn robot_detours_around_grid_obstacles() {
         out(&open, "P"),
     );
 }
+
+// ---------------------------------------------------------------------------
+// task-62: full task sequences (conditions + per-step durations)
+// ---------------------------------------------------------------------------
+
+fn sequence_model(sequence: &str) -> String {
+    format!(
+        r#"{{
+      "format": "openflex-model", "version": 1, "name": "task-sequence-advanced",
+      "run": {{ "stop_time": 400.0, "warmup": 0.0, "seed": 1, "replications": 1 }},
+      "objects": [
+        {{ "name": "S", "kind": "source", "pos": [10, 0], "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 10.0 }}, "first_arrival": 0.0 }} }},
+        {{ "name": "P", "kind": "processor", "pos": [10, 0], "params": {{
+            "process_time": {{ "distribution": "constant", "value": 4.0 }},
+            "process_operator": "Dispatcher1" }} }},
+        {{ "name": "K", "kind": "sink", "params": {{}} }},
+        {{ "name": "Dispatcher1", "kind": "dispatcher", "pos": [0, 0], "params": {{ {sequence} }} }},
+        {{ "name": "Executer1", "kind": "transporter", "pos": [0, 0], "params": {{
+            "capacity": 1, "speed": 1.0, "home": "Dispatcher1" }} }}
+      ],
+      "connections": [
+        {{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }},
+        {{ "from": "Dispatcher1", "to": "Executer1" }}
+      ]
+    }}"#
+    )
+}
+
+/// A step with an explicit duration costs that time on every task.
+#[test]
+fn task_sequence_supports_per_step_durations() {
+    let standard = run(&sequence_model(
+        r#""task_sequence": ["travel", "travel", "load", "unload"]"#,
+    ));
+    let long = run(&sequence_model(
+        r#""task_sequence": ["travel", "travel", "load", "unload",
+            { "kind": "travel", "duration": { "distribution": "constant", "value": 25.0 } }]"#,
+    ));
+    assert!(
+        out(&long, "P") < out(&standard, "P"),
+        "the extra 25 s step must cost time: {} vs {}",
+        out(&long, "P"),
+        out(&standard, "P"),
+    );
+}
+
+/// A conditional step only runs while its condition holds, so the model speeds
+/// up after the condition turns false.
+#[test]
+fn task_sequence_supports_conditional_steps() {
+    let always = run(&sequence_model(
+        r#""task_sequence": ["travel", "travel", "load", "unload",
+            { "kind": "travel", "duration": { "distribution": "constant", "value": 25.0 } }]"#,
+    ));
+    let early_only = run(&sequence_model(
+        r#""task_sequence": ["travel", "travel", "load", "unload",
+            { "kind": "travel", "duration": { "distribution": "constant", "value": 25.0 },
+              "condition": "time < 100" }]"#,
+    ));
+    assert!(
+        out(&early_only, "P") > out(&always, "P"),
+        "skipping the step after t = 100 must speed the model up: {} vs {}",
+        out(&early_only, "P"),
+        out(&always, "P"),
+    );
+}
+
+/// A step whose condition is false from the start is skipped entirely.
+#[test]
+fn task_sequence_false_condition_skips_the_step() {
+    let skipped = run(&sequence_model(
+        r#""task_sequence": ["travel", "travel", "load", "unload",
+            { "kind": "travel", "duration": { "distribution": "constant", "value": 25.0 },
+              "condition": "time < 0" }]"#,
+    ));
+    let standard = run(&sequence_model(
+        r#""task_sequence": ["travel", "travel", "load", "unload"]"#,
+    ));
+    assert_eq!(out(&skipped, "P"), out(&standard, "P"));
+}

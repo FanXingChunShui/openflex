@@ -75,6 +75,10 @@
   .event-row { display: grid; grid-template-columns: 64px 90px 1fr 1fr; gap: 6px; padding: 2px 4px;
                border-radius: 4px; color: #334155; }
   .event-row.current { background: #fef3c7; font-weight: 600; }
+  .on-draw-warning { margin: 6px 0; padding: 6px 8px; border-radius: 5px; background: #fef3c7;
+                     border: 1px solid #f59e0b; color: #92400e; font-size: 11px; }
+  .on-draw-badge { background: #fef3c7; color: #92400e; border-radius: 8px; padding: 0 5px;
+                   font-size: 9px; text-transform: uppercase; letter-spacing: .02em; }
   .checkpoint-row { display: grid; grid-template-columns: 46px 72px 1fr auto; gap: 6px; align-items: center;
                     padding: 3px 4px; border-bottom: 1px solid #e2e8f0; font-size: 11px; }
   .checkpoint-row button { padding: 2px 6px; font-size: 11px; }
@@ -87,6 +91,7 @@
   .context-menu button { border: none; text-align: left; padding: 5px 10px; border-radius: 4px;
                          background: transparent; }
   .context-menu button:hover { background: #e2e8f0; }
+  .context-menu[hidden] { display: none; }
   .scenario-card { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px;
                    display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
   .scenario-card textarea { min-height: 56px; }
@@ -174,7 +179,7 @@
 
   <section class="view">
     <canvas id="scene" aria-label="3D model view"></canvas>
-    <div class="hint">drag to rotate · wheel to zoom</div>
+    <div class="hint" data-projection="perspective" data-depth-sort="1" data-focus-object="1">drag to rotate · wheel to zoom · double-click an object to focus</div>
   </section>
 
   <section class="report">
@@ -253,6 +258,8 @@ const state = {
   yaw: 45,
   pitch: 30,
   zoom: 1,
+  focusName: null,
+  hitboxes: [],
   dragging: false,
   lastX: 0,
   lastY: 0,
@@ -643,7 +650,8 @@ function renderObjectList() {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "object-button" + (index === state.selected ? " active" : "");
-      button.innerHTML = `<span>${escapeText(object.name)}</span><span class="kind">${escapeText(object.kind)}</span>`;
+      const onDrawBadge = hasOnDraw(object) ? ' <span class="on-draw-badge" data-on-draw-badge="1">on_draw</span>' : "";
+      button.innerHTML = `<span>${escapeText(object.name)}</span><span>${onDrawBadge}<span class="kind">${escapeText(object.kind)}</span></span>`;
       button.addEventListener("click", () => {
         commitEdit();
         state.selected = index;
@@ -765,6 +773,10 @@ function renderFields(container, data, schema, onMutate) {
   });
 }
 
+function hasOnDraw(object) {
+  return Boolean(object && object.triggers && object.triggers.on_draw);
+}
+
 function renderEditor() {
   const object = state.model && state.model.objects[state.selected];
   const editor = $("editor");
@@ -781,7 +793,10 @@ function renderEditor() {
   const options = state.kinds.map(kind =>
     `<option value="${escapeText(kind.kind)}"${kind.kind === object.kind ? " selected" : ""}>${escapeText(kind.kind)}</option>`
   ).join("");
-  editor.innerHTML = `
+  const onDrawWarning = hasOnDraw(object)
+    ? '<p id="on-draw-warning" data-on-draw-warning="1" class="on-draw-warning">on_draw 未执行（仅 schema）——引擎当前不执行 on_draw，此处仅展示触发器配置。</p>'
+    : "";
+  editor.innerHTML = `${onDrawWarning}
     <label>Name <input id="edit-name" value="${escapeText(object.name)}"></label>
     <label>Kind <select id="edit-kind">${options}</select></label>
     <div class="row">
@@ -1990,16 +2005,23 @@ function modelCenters(model) {
   return centers;
 }
 
-function project(x, y, z, centerX, centerY, scale) {
+// Perspective projection: near objects are larger, far objects smaller.
+// `depth` is the camera-space distance used for painter's-algorithm sorting.
+function project(x, y, z, centerX, centerY, scale, span) {
   const yaw = state.yaw * Math.PI / 180;
   const pitch = state.pitch * Math.PI / 180;
   const rx = x - centerX;
   const ry = y - centerY;
   const xr = rx * Math.cos(yaw) - ry * Math.sin(yaw);
   const yr = rx * Math.sin(yaw) + ry * Math.cos(yaw);
+  const depth = yr * Math.cos(pitch) + z * Math.sin(pitch);
+  const cameraDistance = Math.max(span * 2.2, 1);
+  const factor = Math.max(0.25, cameraDistance / (cameraDistance + depth));
   return {
-    x: scene.clientWidth / 2 + xr * scale,
-    y: scene.clientHeight / 2 + (yr * Math.sin(pitch) - z * Math.cos(pitch)) * scale,
+    x: scene.clientWidth / 2 + xr * scale * factor,
+    y: scene.clientHeight / 2 + (yr * Math.sin(pitch) - z * Math.cos(pitch)) * scale * factor,
+    depth,
+    factor,
   };
 }
 
@@ -2023,8 +2045,9 @@ function drawScene(now) {
   const maxX = Math.max(...positions.map(position => position[0]));
   const minY = Math.min(...positions.map(position => position[1]));
   const maxY = Math.max(...positions.map(position => position[1]));
-  const centerX = (minX + maxX) / 2;
-  const centerY = (minY + maxY) / 2;
+  const focus = state.focusName ? centers.get(state.focusName) : null;
+  const centerX = focus ? focus[0] : (minX + maxX) / 2;
+  const centerY = focus ? focus[1] : (minY + maxY) / 2;
   const span = Math.max(maxX - minX, maxY - minY, 100);
   const unit = span * 0.055;
   const scale = Math.min(width, height) * 0.32 / span * state.zoom;
@@ -2044,8 +2067,8 @@ function drawScene(now) {
     const from = boxes.find(box => box.object.name === connection.from);
     const to = boxes.find(box => box.object.name === connection.to);
     if (!from || !to) continue;
-    const start = project(from.center[0], from.center[1], from.height * 0.5, centerX, centerY, scale);
-    const end = project(to.center[0], to.center[1], to.height * 0.5, centerX, centerY, scale);
+    const start = project(from.center[0], from.center[1], from.height * 0.5, centerX, centerY, scale, span);
+    const end = project(to.center[0], to.center[1], to.height * 0.5, centerX, centerY, scale, span);
     ctx.beginPath();
     ctx.moveTo(start.x, start.y);
     ctx.lineTo(end.x, end.y);
@@ -2068,7 +2091,7 @@ function drawScene(now) {
     const t = (progress + index * 0.17) % 1;
     const x = from.center[0] + (to.center[0] - from.center[0]) * t;
     const y = from.center[1] + (to.center[1] - from.center[1]) * t;
-    const point = project(x, y, unit * 0.45, centerX, centerY, scale);
+    const point = project(x, y, unit * 0.45, centerX, centerY, scale, span);
     ctx.beginPath();
     ctx.arc(point.x, point.y, 3.2, 0, Math.PI * 2);
     ctx.fillStyle = "#f59e0b";
@@ -2083,12 +2106,23 @@ function drawScene(now) {
         corners.push(project(
           box.center[0] + dx * box.size / 2,
           box.center[1] + dy * box.depth / 2,
-          z, centerX, centerY, scale));
+          z, centerX, centerY, scale, span));
       }
     }
-    const centerPoint = project(box.center[0], box.center[1], 0, centerX, centerY, scale);
+    const centerPoint = project(box.center[0], box.center[1], 0, centerX, centerY, scale, span);
     return { ...box, corners, centerPoint };
-  }).sort((left, right) => left.centerPoint.y - right.centerPoint.y);
+  }).sort((left, right) => right.centerPoint.depth - left.centerPoint.depth);
+
+  // Hit boxes for double-click focusing (screen-space bounding boxes).
+  state.hitboxes = projected.map(box => {
+    const xs = box.corners.map(corner => corner.x);
+    const ys = box.corners.map(corner => corner.y);
+    const left = Math.min(...xs);
+    const right = Math.max(...xs);
+    const top = Math.min(...ys);
+    const bottom = Math.max(...ys);
+    return { name: box.object.name, index: box.index, left, right, top, bottom };
+  });
 
   const selectedName = state.model.objects[state.selected] && state.model.objects[state.selected].name;
   for (const box of projected) {
@@ -2113,7 +2147,7 @@ function drawScene(now) {
     face([b0, b1, t1, t0], "#94a3b8");
     face([b1, b2, t2, t1], "#cbd5e1");
     face([t0, t1, t2, t3], topShade);
-    const label = project(box.center[0], box.center[1], box.height * 1.15, centerX, centerY, scale);
+    const label = project(box.center[0], box.center[1], box.height * 1.15, centerX, centerY, scale, span);
     ctx.textAlign = "center";
     ctx.fillStyle = "#0f172a";
     ctx.font = "600 11px system-ui, sans-serif";
@@ -2156,6 +2190,34 @@ scene.addEventListener("wheel", event => {
   event.preventDefault();
   state.zoom = Math.max(0.3, Math.min(4, state.zoom * Math.exp(-event.deltaY * 0.001)));
 }, { passive: false });
+scene.addEventListener("dblclick", event => {
+  const rect = scene.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  let hit = (state.hitboxes || []).find(box =>
+    x >= box.left && x <= box.right && y >= box.top && y <= box.bottom);
+  if (!hit) {
+    // The label sits above the box, so also accept a click near its centre.
+    hit = (state.hitboxes || [])
+      .map(box => ({
+        box,
+        distance: Math.hypot(x - (box.left + box.right) / 2, y - (box.top + box.bottom) / 2),
+      }))
+      .filter(candidate => candidate.distance <= 60)
+      .sort((left, right) => left.distance - right.distance)[0]?.box;
+  }
+  if (hit) {
+    state.focusName = hit.name;
+    state.selected = hit.index;
+    commitEdit();
+    renderObjectList();
+    renderEditor();
+    setStatus(`focused ${hit.name}`);
+  } else {
+    state.focusName = null;
+    setStatus("camera reset to the model centre");
+  }
+});
 
 flowCanvas.addEventListener("pointerdown", event => {
   if (!state.model || !state.model.process_flow) return;

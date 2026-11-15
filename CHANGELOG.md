@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.22.0 — 2026-11-15
+
+### 任务与并行
+
+- **完整任务序列**：`TaskStep` 支持短格式与 `{"kind","duration","condition"}`，条件分支与每段自定义时长；
+  优先级队列与抢占恢复沿用 A10；示例 `task-sequence-advanced.ofm`。
+- **worker 自适应**：`run_model_parallel(model, 0)` 按 `available_parallelism`，结果与串行逐位一致。
+- **manifest 合并**：多次运行按 index 合并 entries 并记录 `history`（时间戳/stop_time/复现数）。
+
+### Studio
+
+- 透视 3D（近大远小 + 深度排序 + 双击聚焦/复位）、OnDraw 徽标与“未执行（仅 schema）”提示、右键菜单隐藏修复。
+
+### 发布
+
+- 新增 `scripts/release.sh`：5 步固定流程（预检→bump→sync→verify→提示 tag/push），支持 `--dry-run`/`--phase`；
+  `docs/releasing.md` 以其为标准发版流程。GHCR 0.21.0 与 latest 已确认（`826f4abbdba1`）。
+
+### 验证
+
+- 455 个测试全绿（core 219、CLI 83、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.22.0 三平台产物发布并 SHA256 校验。
+
 ## v0.21.0 — 2026-11-15
 
 ### 运行与对象
