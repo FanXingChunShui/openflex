@@ -241,6 +241,9 @@
       <button type="button" data-view-preset="front">Front</button>
       <button type="button" data-view-preset="side">Side</button>
       <button id="grid-toggle" type="button" data-grid-toggle="1">Grid on</button>
+      <button id="export-layout" type="button" data-export-layout="1">Export layout</button>
+      <button id="import-layout" type="button" data-import-layout="1">Import layout</button>
+      <input id="import-layout-file" type="file" accept="application/json,.json" hidden>
       <label class="muted">Snap
         <select id="snap-grid" data-snap-grid="1">
           <option value="0">off</option>
@@ -3347,6 +3350,46 @@ function downloadText(filename, text, type) {
   URL.revokeObjectURL(link.href);
 }
 
+function exportLayoutJson() {
+  if (!state.model) return;
+  const layout = {
+    model: state.model.name,
+    objects: state.model.objects.map(object => ({
+      name: object.name,
+      kind: object.kind,
+      pos: [Number((object.pos || [0, 0])[0]) || 0, Number((object.pos || [0, 0])[1]) || 0],
+    })),
+  };
+  downloadText("openflex-layout.json", JSON.stringify(layout, null, 2), "application/json;charset=utf-8");
+  setStatus(`exported layout for ${layout.objects.length} object(s)`);
+}
+
+async function importLayoutFile(file) {
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    const entries = Array.isArray(parsed) ? parsed : parsed.objects;
+    if (!Array.isArray(entries)) throw new Error("layout JSON must contain an objects array");
+    rememberNow();
+    const byName = new Map(state.model.objects.map(object => [object.name, object]));
+    let applied = 0;
+    for (const entry of entries) {
+      if (!entry || typeof entry.name !== "string" || !Array.isArray(entry.pos)) continue;
+      const x = Number(entry.pos[0]);
+      const y = Number(entry.pos[1]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const object = byName.get(entry.name);
+      if (!object) continue;
+      object.pos = [x, y];
+      applied += 1;
+    }
+    renderAll();
+    setStatus(`applied layout to ${applied} object(s) (unsaved)`);
+  } catch (error) {
+    setStatus(`could not import layout: ${error.message}`, true);
+  }
+}
+
 function exportEventsCsv() {
   if (!state.events || state.events.length === 0) {
     setStatus("no events have been stepped yet", true);
@@ -3856,6 +3899,13 @@ $("object-menu").addEventListener("click", event => {
 });
 document.addEventListener("click", event => {
   if (!event.target.closest("#object-menu")) hideObjectMenu();
+});
+$("export-layout").addEventListener("click", exportLayoutJson);
+$("import-layout").addEventListener("click", () => $("import-layout-file").click());
+$("import-layout-file").addEventListener("change", async event => {
+  const file = event.target.files && event.target.files[0];
+  if (file) await importLayoutFile(file);
+  event.target.value = "";
 });
 $("export-events").addEventListener("click", exportEventsCsv);
 $("export-checkpoints").addEventListener("click", exportCheckpointsJson);

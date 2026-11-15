@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.34.0 — 2026-11-16
+
+### Studio
+
+- **布局 JSON 导入/导出**：`Export layout`（name/kind/pos 快照）与 `Import layout`（按 name 仅应用 pos、入 undo 栈）。
+- **事件 detail 透传**：确认 core `EventPreview.detail` 经 `/api/step-event` 返回并显示在事件列表/CSV（测试断言非空 detail）。
+
+### Fluid
+
+- 诊断确认：pressure-mode 下 pipe 有实际流量（tank 释放主导），`fluid-darcy` 场景 throughput 比 ≈2 而非 √2——
+  Darcy capacity 在示例中未成为瓶颈；已在 UNIMPLEMENTED 记录，构造 pipe 为瓶颈的模型后再补 √2 测试。
+
+### 验证
+
+- 474 个测试全绿（core 242、CLI 83、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.34.0 三平台产物发布并 SHA256 校验。
+
 ## v0.33.0 — 2026-11-16
 
 ### Studio

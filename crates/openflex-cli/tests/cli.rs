@@ -2848,6 +2848,10 @@ fn studio_can_add_and_delete_objects_through_the_api() {
         "data-timeline=\"1\"",
         "data-export-events=\"1\"",
         "data-export-checkpoints=\"1\"",
+        "data-export-layout=\"1\"",
+        "data-import-layout=\"1\"",
+        "function exportLayoutJson",
+        "function importLayoutFile",
         "data-view-preset=\"iso\"",
         "function exportEventsCsv",
         "function exportCheckpointsJson",
@@ -3764,6 +3768,10 @@ fn studio_global_table_editor_updates_the_model() {
         "data-timeline=\"1\"",
         "data-export-events=\"1\"",
         "data-export-checkpoints=\"1\"",
+        "data-export-layout=\"1\"",
+        "data-import-layout=\"1\"",
+        "function exportLayoutJson",
+        "function importLayoutFile",
         "data-view-preset=\"iso\"",
         "function exportEventsCsv",
         "function exportCheckpointsJson",
@@ -3945,6 +3953,7 @@ fn studio_step_event_uses_the_native_handle() {
     assert!(preview["event"]["time"].is_f64());
 
     let mut events = 0;
+    let mut detail_seen = false;
     for _ in 0..500 {
         let response = http_request(&address, "POST", "/api/step-event", Some("{}"));
         assert!(
@@ -3962,9 +3971,16 @@ fn studio_step_event_uses_the_native_handle() {
             response["event"]["object"].is_string(),
             "object missing: {response}"
         );
+        if response["event"]["detail"].is_string() {
+            detail_seen = true;
+        }
         events += 1;
     }
     assert!(events > 0, "no events were stepped");
+    assert!(
+        detail_seen,
+        "EventPreview.detail was not exposed by /api/step-event"
+    );
 
     // Native step_event stops at the last event; advance the remaining time
     // to the model stop_time before comparing with a one-shot run.
