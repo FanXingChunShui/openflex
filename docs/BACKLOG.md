@@ -4,14 +4,16 @@
 > 每项给出**现状、缺口、验收标准、工作量**（S ≤ 1 天，M ≤ 3 天，L > 3 天）。
 > 证据编号（E01…）见 [research/evidence.md](research/evidence.md)，规格见 [spec/](spec/)。
 
-## 状态总览（v0.2.0 基线）
+## 状态总览（v0.10.0 基线）
 
 | 组 | 状态 |
 |---|---|
-| P0 A1–A13 | ✅ 全部完成（A10 抢占已实现；A4 用 `PortStrategy::Hold` 表达 −1） |
-| P1 | B1 MultiProcessor、B10 分布扩展、B11 Time Table、B12 trace/检查点、B2 Rack 全部类型（floor/gravity/push_back/drive_in）、B3 Conveyor（PhotoEye/Station/Join）、B4 路网+两段任务 ✅；B7 Process Flow 最小 token 运行时（模型级 create/delay/assign/decision/sink + trace + report + checkpoint）✅，对象级绑定与 transfer 留 TODO；B9 字符串表达式与 .fsm 概念导出 ✅；B5 Fluid 最小族 ✅（Generator/Tank/Valve/Sink + 液位/溢出/吞吐 + 检查点；pipe/压力 TODO）；B6 最小族 ✅（elevator/person/agv：垂直运输、network 行走、transporter alias；AGV 电池与电梯门控 TODO）；B8 完整交互 GUI（等距 SVG + HTML 预览已做）未完成 |
-| P2 | C4 CLI 完整性、C5 并行复现与基准、C6 JSON Schema、C7 质量工程（含 wasm job）、C8 i18n 基础 ✅；C1/C2/C3 的脚本与 CI 配置完成（Windows/Linux 真机安装与签名证书待环境） |
-| P3 | D1 对照工具（含双报告模式）✅；D3 core 的 wasm32 编译与 CI job ✅（CLI 可编译但不可运行，文档已声明）；D2 `.fsm`、D4 优化未做 |
+| P0 A1–A13 | ✅ 全部完成（A10 抢占、A4 Hold、A11 语义声明） |
+| P1 | ✅ 全部可落地项：MultiProcessor、20 种分布、Time Table、trace/检查点、Rack 四类型、Conveyor PhotoEye/Station/Join、路网+两段任务、Process Flow（模型级+对象级，transfer to/from）、FlexScript（rhai，模型层+引擎执行）、Fluid（Generator/Tank/Valve/Pipe/Sink + 压力阈值）、Person（network/grid A* + 拥堵）、AGV（电池）、Elevator（召唤/方向） |
+| P2 | ✅ C1–C8 的脚本/配置完成；Windows/Linux 真机安装与签名证书待环境 |
+| P3 | D1 对照工具（双报告模式）✅、D3 core wasm32 + CI ✅、D4 optimize ✅；D2 `.fsm` 仅概念导出（净室不逆向） |
+
+详细未实现项见 [UNIMPLEMENTED.md](UNIMPLEMENTED.md)。
 
 ## 摘要
 

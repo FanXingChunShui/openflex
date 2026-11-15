@@ -22,8 +22,8 @@
 | Conveyor | `conveyor` | ✅ | 速度、长度、间距、累积/非累积、容量；`photo_eyes` 光电门、`stations` 停留加工、`join_inputs` 两带汇入（入口轮转简化）；无曲线 |
 | Merge | `merge` | ✅ | 多输入合流；可选等待全部输入 |
 | Split | `split` | ✅ | 轮询或按 item type 分流 |
-| Transporter / TaskExecuter | `transporter` | 🟡 | 速度、装载/卸载时间、按坐标距离行驶、`home` 回程；`capacity` 解释为可并发操作员任务数（不搬运 flow item）；无任务序列/抢占/路网 |
-| Dispatcher | `dispatcher` | 🟡 | 把 Processor 的操作员请求派给最近的空闲 transporter；FIFO 队列，无优先级/抢占 |
+| Transporter / TaskExecuter | `transporter` | 🟡 | 速度、装载/卸载时间、`network` 最短路、`home` 取货、两段任务；`capacity`=并发任务数（不搬运 flow item）；无多段自定义任务序列 |
+| Dispatcher | `dispatcher` | 🟡 | 派发操作员/运输任务，支持优先级与抢占、电梯召唤（优先级→同层→同向→最近） |
 | Operator / Resource | `resource` | ✅ | 资源池容量与停机窗口 |
 | Rack | `rack` | 🟡 | `rack_type`：floor(FIFO)/gravity(LIFO)/push_back(LIFO，levels×channels)/drive_in(FIFO，channels×depth)；无货位精细放置 |
 | 班次 / 计划停机 | `params.shifts` | ✅ | `[{start, duration, repeat_every}]`，停机进入 off_shift、暂停处理、恢复后继续 |
@@ -31,9 +31,9 @@
 | BasicFR / BasicTE | `basic_fr` / `basic_te` | ✅ | 通用固定资源与执行器 |
 | MultiProcessor | `multiprocessor` | ✅ | 多槽并行加工，每槽 setup/process，操作员按忙碌期申请 |
 | Fluid（流体） | `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_pipe` / `fluid_sink` | 🟡 | 固定步长、液位/溢出/吞吐、pipe 延迟、valve 压力阈值（入口流量近似）；无压力/温度/密度 |
-| People / A* 行走 | — | ⛔ | 未实现 |
-| AGV / 交通控制 | — | ⛔ | 未实现 |
-| Elevator / 电梯 | — | ⛔ | 未实现 |
+| People / A* 行走 | `person` | 🟡 | `grid` 4 邻接 A* + 拥堵速度折减；无对角移动/个体避让 |
+| AGV / 交通控制 | `agv` | 🟡 | transporter alias + 电池（容量/耗电/充电）；无交通控制/途中耗尽 |
+| Elevator / 电梯 | `elevator` | 🟡 | 垂直运输、停靠、召唤/方向优先；无门控/超载/井道冲突 |
 | Emptier | — | 🟡 | 可用 Sink 代替 |
 
 ## 逻辑与路由
@@ -52,9 +52,9 @@
 | Send To Port：Condition | `by_condition` | ✅ | 表达式求值，按顺序匹配 |
 | Send To Port：By Item Type | `by_item_type` | ✅ | |
 | Send To Port：By Label | `by_label` | ✅ | |
-| FlexScript / C++ 逻辑 | 表达式语言 + 动作 | 🟡 | 无任意脚本；支持变量、算术、比较、条件与少量函数；Processor 抢占见操作员参数 |
+| FlexScript / C++ 逻辑 | 表达式 + rhai 脚本 | ✅ | `action: script` / `script_condition`（条件用 `result` 标签约定）；沙箱无文件/网络/随机 |
 | 全局表（Global Table） | — | ⛔ | 可用标签/参数覆盖模拟 |
-| Process Flow（流程图块） | `model.process_flow` / `params.process_flow` | 🟡 | 模型级+对象级 create/delay/assign/decision/sink/transfer(to_object)；from_object、块容量未实现 |
+| Process Flow（流程图块） | `model.process_flow` / `params.process_flow` | 🟡 | 模型级+对象级 create/delay/assign/decision/sink/transfer(to_object/from_object)；块无容量/触发器 |
 | FlexScript 脚本 | `action: script` / `script_condition` | ✅ | rhai 沙箱，触发器/路由/流程决策执行；条件用 `result` 标签约定 |
 
 ## 运行与统计
@@ -65,16 +65,16 @@
 | 停止时间 | `run.stop_time` | ✅ | |
 | 预热（warm-up） | `run.warmup` | ✅ | 统计窗从 warm-up 起 |
 | 随机种子 / 复现 | `run.seed` / `run.replications` | ✅ | SplitMix64 派生，可复现 |
-| 运行/暂停/步进 | — | 🟡 | CLI 批量运行；无交互式时钟控制 |
+| 运行/暂停/步进 | studio Run | 🟡 | CLI 批量运行 + Studio 运行/动画播放；无逐事件步进/断点 |
 | 对象统计（状态占比、吞吐、WIP） | 报告 | ✅ | idle/busy/blocked/down/off_shift；时间加权 content；停留时间 |
 | 班次 / 计划可用性 | `shifts` | ✅ | 见上表“班次” |
 | 停留时间 | 报告 | ✅ | 平均停留时间 |
 | Experimenter（场景 × 复现） | `experiments` + `openflex experiment` | ✅ | 95% 置信区间 |
 | 置信区间 | 报告 | ✅ | 正态近似 `1.96·se` |
 | OptQuest 优化 | — | ⛔ | 未实现 |
-| Dashboard / 图表 | 报告（Markdown/CSV） | 🟡 | 无交互图表；可由报告生成 |
-| 3D 视图 / 模型树 / GUI | — | ⛔ | CLI 优先；`pos` 仅用于运输距离与布局导出 |
-| 导出 Excel / 数据库 | CSV / JSON | 🟡 | 可被 Excel 打开；无原生 xlsx 写入 |
+| Dashboard / 图表 | 报告 + Studio 柱状图 | 🟡 | Studio 有吞吐柱状图；无完整 Dashboard/模板 |
+| 3D 视图 / 模型树 / GUI | `openflex studio` | 🟡 | 本地 Web Studio：Canvas 3D 近似投影、增删对象/参数编辑/运行/动画；无 GPU 渲染/完整模型树 |
+| 导出 Excel / 数据库 | CSV / JSON / xlsx | ✅ | `run --xlsx` 输出 Summary/Objects/Replications 三个 sheet |
 
 ## 文件与集成
 
@@ -82,8 +82,8 @@
 |---|---|---|---|
 | .fsm 模型文件 | `.ofm` JSON | ✅ | 纯文本、可 diff、可版本控制 |
 | 命令行参数 | `openflex` CLI | ✅ | validate/run/experiment/report/compare |
-| 脚本接口 | CLI + JSON 报告 | 🟡 | 无嵌入式脚本引擎（表达式语言除外） |
-| 与 Excel/数据库交换 | CSV/JSON | 🟡 | |
+| 脚本接口 | CLI + JSON 报告 + rhai | ✅ | 模型内嵌 rhai 脚本（触发器/条件） |
+| 与 Excel/数据库交换 | CSV/JSON/xlsx | ✅ | xlsx 导出；数据库无原生驱动（可用 CSV 中转） |
 | 跨平台 | macOS/Windows/Linux | ✅ | 安装包与脚本 |
 
 ## 已知语义差异（有意为之）

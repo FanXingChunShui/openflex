@@ -2327,8 +2327,8 @@ pub enum FlowBlockKind {
     Decision(FlowDecisionParams),
     /// Destroys the token.
     Sink,
-    /// Converts the token into a flow item and injects it into an object
-    /// (not implemented yet, see docs/BACKLOG.md B7).
+    /// Converts the token into a flow item and injects it into an object, or
+    /// pulls a buffered item out of an object and continues as a token.
     Transfer(FlowTransferParams),
 }
 
@@ -2411,8 +2411,7 @@ pub enum TransferMode {
     /// Convert the token into a flow item and inject it into `object`.
     #[default]
     ToObject,
-    /// Take a flow item from `object` and continue as a token (not implemented
-    /// yet, rejected by validation).
+    /// Take a flow item from `object` (queue/rack) and continue as a token.
     FromObject,
 }
 

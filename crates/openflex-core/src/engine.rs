@@ -78,9 +78,8 @@
 //! * Process Flow (B7) runs as a token graph next to the object model:
 //!   `create` blocks produce tokens, `delay` holds them for a sampled time,
 //!   `assign` applies label/type actions, `decision` branches on expressions
-//!   and `sink` destroys them. The graph must be acyclic (validated), blocks
-//!   have no capacity limit, and `transfer` blocks are not implemented yet
-//!   (validation rejects them). Per-block statistics are reported in
+//!   and `sink` destroys them. The graph must be acyclic (validated) and
+//!   blocks have no capacity limit. Per-block statistics are reported in
 //!   `SimReport.process_flow` and token events are written to the trace log
 //!   (`token_create`/`token_delay`/`token_assign`/`token_decision`/`token_sink`).
 //!   Every discrete object can own a `params.process_flow`: its `create` blocks
