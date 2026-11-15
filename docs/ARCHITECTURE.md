@@ -219,6 +219,9 @@ token 是带 id/标签/创建时间的轻量实体，沿块流转；引擎新增
 最短路或欧氏距离。速度折减叠加：全局每多一个忙碌 person −10%（下限 50%）、同格 −50%、8 邻格每人 −15%（下限 40%）。
 简化：避让仅体现为速度折减，无等待队列/个体重规划。
 
+AGV 的 `network` 边可设 `directed: true`（默认无向）；电量按取货/送达/回程每段实际距离实时扣减，
+任一段耗尽即就地充电（`charge_time`）后从该段续跑。
+
 ## Fluid 子系统
 
 模型含 fluid 对象（`fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_sink`）时，引擎启用固定步长事件
@@ -241,7 +244,8 @@ valve 用 `pressure_open/pressure_close` 滞回自动启闭（trace `fluid_valve
 
 `openflex studio` 提供：字段级动态表单与实时重投影、增删对象、Process Flow 块/连接编辑、撤销/重做、
 **时间步进与对象断点**（`POST /api/step` 复用检查点增量推进，结果与一次性运行一致）、
-**Experimenter**（`POST /api/experiment` 场景×复现对比）、**Dashboard**（吞吐/利用率/WIP 三联 Canvas，可导出 PNG）。
+**Experimenter**（`POST /api/experiment` 场景×复现对比）、**Dashboard**（吞吐/利用率/WIP 三联 Canvas，可导出 PNG）、
+**Process Flow 拖拽画布**（块位置存 `metadata.flow_layout`，拖端口连线，点击块编辑参数）。
 
 ## 性能基线
 

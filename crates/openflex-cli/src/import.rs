@@ -493,6 +493,355 @@ fn coordinate(value: Option<&str>, line: usize, label: &str) -> Result<f64, Stri
     }
 }
 
+// ---------------------------------------------------------------------------
+// Excel (.xlsx) import
+// ---------------------------------------------------------------------------
+//
+// An xlsx file is a zip of XML parts. We read the container with the `zip`
+// crate and parse the few parts we need by hand: workbook.xml (sheet names),
+// workbook.xml.rels (sheet paths), sharedStrings.xml and the three sheets.
+// No Excel/Office dependency is involved.
+
+use std::collections::BTreeMap;
+use std::io::{Cursor, Read};
+
+/// Tables extracted from a workbook.
+#[derive(Debug, Default)]
+pub struct XlsxImport {
+    pub arrivals: Vec<Arrival>,
+    pub objects: Vec<ImportedObject>,
+    pub connections: Vec<ImportedConnection>,
+}
+
+/// Parse an `.xlsx` workbook with `arrivals`, `objects` and/or `connections`
+/// sheets. Column layouts are identical to the CSV importers.
+pub fn parse_xlsx(bytes: &[u8]) -> Result<XlsxImport, String> {
+    let cursor = Cursor::new(bytes);
+    let mut archive =
+        zip::ZipArchive::new(cursor).map_err(|error| format!("invalid xlsx archive: {error}"))?;
+    let shared = match zip_text(&mut archive, "xl/sharedStrings.xml") {
+        Ok(xml) => parse_shared_strings(&xml),
+        Err(_) => Vec::new(),
+    };
+    let workbook = zip_text(&mut archive, "xl/workbook.xml")
+        .map_err(|error| format!("not an xlsx workbook: {error}"))?;
+    let relationships = zip_text(&mut archive, "xl/_rels/workbook.xml.rels").unwrap_or_default();
+    let sheets = workbook_sheets(&workbook, &relationships);
+    if sheets.is_empty() {
+        return Err("workbook has no worksheets".into());
+    }
+
+    let mut imported = XlsxImport::default();
+    let mut found_sheet = false;
+    for (name, path) in sheets {
+        let normalized = name.trim().to_ascii_lowercase();
+        if !matches!(normalized.as_str(), "arrivals" | "objects" | "connections") {
+            continue;
+        }
+        let xml = zip_text(&mut archive, &path)
+            .map_err(|error| format!("could not read sheet '{name}': {error}"))?;
+        let rows =
+            parse_sheet(&xml, &shared).map_err(|error| format!("sheet '{name}': {error}"))?;
+        let csv = rows_to_csv(&rows);
+        if csv.trim().is_empty() {
+            return Err(format!("sheet '{name}' is empty"));
+        }
+        found_sheet = true;
+        match normalized.as_str() {
+            "arrivals" => {
+                imported.arrivals =
+                    parse_csv(&csv).map_err(|error| format!("sheet '{name}' {error}"))?;
+            }
+            "objects" => {
+                imported.objects =
+                    parse_objects_csv(&csv).map_err(|error| format!("sheet '{name}' {error}"))?;
+            }
+            "connections" => {
+                imported.connections = parse_connections_csv(&csv)
+                    .map_err(|error| format!("sheet '{name}' {error}"))?;
+            }
+            _ => {}
+        }
+    }
+    if !found_sheet {
+        return Err(
+            "workbook needs at least one of the 'arrivals', 'objects' or 'connections' sheets"
+                .into(),
+        );
+    }
+    Ok(imported)
+}
+
+fn zip_text<R: Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    name: &str,
+) -> Result<String, String> {
+    let mut entry = archive
+        .by_name(name)
+        .map_err(|error| format!("missing part '{name}': {error}"))?;
+    let mut text = String::new();
+    entry
+        .read_to_string(&mut text)
+        .map_err(|error| format!("could not read part '{name}': {error}"))?;
+    Ok(text)
+}
+
+/// Find opening tags of `tag` (self-closing supported) and return their text.
+fn element_tags<'a>(xml: &'a str, tag: &str) -> Vec<&'a str> {
+    let open = format!("<{tag}");
+    let mut tags = Vec::new();
+    let mut position = 0;
+    while let Some(relative) = xml[position..].find(&open) {
+        let start = position + relative;
+        let Some(end_relative) = xml[start..].find('>') else {
+            break;
+        };
+        let end = start + end_relative;
+        let tag_text = &xml[start..=end];
+        // Exclude a longer tag such as `<sheets>` when looking for `<sheet`.
+        let next = tag_text.as_bytes().get(open.len()).copied();
+        if matches!(next, Some(byte) if !byte.is_ascii_whitespace() && byte != b'>' && byte != b'/')
+        {
+            position = end + 1;
+            continue;
+        }
+        tags.push(tag_text);
+        position = end + 1;
+    }
+    tags
+}
+
+/// Find `<tag ...>inner</tag>` blocks and return `(opening tag, inner text)`.
+fn element_blocks<'a>(xml: &'a str, tag: &str) -> Vec<(&'a str, &'a str)> {
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let mut blocks = Vec::new();
+    let mut position = 0;
+    while let Some(relative) = xml[position..].find(&open) {
+        let start = position + relative;
+        let Some(end_relative) = xml[start..].find('>') else {
+            break;
+        };
+        let end = start + end_relative;
+        let opening = &xml[start..end];
+        let next = opening.as_bytes().get(open.len()).copied();
+        if matches!(next, Some(byte) if !byte.is_ascii_whitespace() && byte != b'>' && byte != b'/')
+        {
+            position = end + 1;
+            continue;
+        }
+        if opening.ends_with('/') {
+            position = end + 1;
+            continue;
+        }
+        let Some(close_relative) = xml[end..].find(&close) else {
+            break;
+        };
+        let close_start = end + close_relative;
+        blocks.push((opening, &xml[end + 1..close_start]));
+        position = close_start + close.len();
+    }
+    blocks
+}
+
+fn attribute(tag: &str, name: &str) -> Option<String> {
+    for quote in ['"', '\''] {
+        let needle = format!("{name}={quote}");
+        if let Some(start) = tag.find(&needle) {
+            let value_start = start + needle.len();
+            if let Some(end) = tag[value_start..].find(quote) {
+                return Some(decode_entities(&tag[value_start..value_start + end]));
+            }
+        }
+    }
+    None
+}
+
+fn inner_text(xml: &str, tag: &str) -> String {
+    let mut text = String::new();
+    for (_, inner) in element_blocks(xml, tag) {
+        text.push_str(inner.trim());
+    }
+    decode_entities(&text)
+}
+
+/// Concatenate the `<t>` runs inside one `<si>` shared-string item.
+fn shared_string_text(xml: &str) -> String {
+    let mut text = String::new();
+    for (opening, inner) in element_blocks(xml, "t") {
+        // Self-closing `<t/>` is empty.
+        let _ = opening;
+        text.push_str(inner);
+    }
+    decode_entities(&text)
+}
+
+fn parse_shared_strings(xml: &str) -> Vec<String> {
+    element_blocks(xml, "si")
+        .into_iter()
+        .map(|(_, inner)| shared_string_text(inner))
+        .collect()
+}
+
+/// Map sheet names to zip paths using workbook.xml and its rels.
+fn workbook_sheets(workbook: &str, relationships: &str) -> Vec<(String, String)> {
+    let mut rels = BTreeMap::new();
+    for tag in element_tags(relationships, "Relationship") {
+        if let (Some(id), Some(target)) = (attribute(tag, "Id"), attribute(tag, "Target")) {
+            rels.insert(id, target);
+        }
+    }
+    let mut sheets = Vec::new();
+    for (index, tag) in element_tags(workbook, "sheet").into_iter().enumerate() {
+        let Some(name) = attribute(tag, "name") else {
+            continue;
+        };
+        let relationship = attribute(tag, "r:id").or_else(|| attribute(tag, "id"));
+        let target = relationship
+            .as_deref()
+            .and_then(|id| rels.get(id).cloned())
+            .unwrap_or_else(|| format!("worksheets/sheet{}.xml", index + 1));
+        let path = if target.starts_with('/') {
+            target.trim_start_matches('/').to_string()
+        } else if target.starts_with("xl/") {
+            target
+        } else {
+            format!("xl/{target}")
+        };
+        sheets.push((name, path));
+    }
+    sheets
+}
+
+/// Convert one worksheet XML into a rectangular grid of strings.
+fn parse_sheet(xml: &str, shared: &[String]) -> Result<Vec<Vec<String>>, String> {
+    let mut rows: BTreeMap<usize, BTreeMap<usize, String>> = BTreeMap::new();
+    for (position, (row_tag, row_inner)) in element_blocks(xml, "row").into_iter().enumerate() {
+        let row_number = attribute(row_tag, "r")
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(position + 1);
+        if row_number > 10_000 {
+            return Err(format!("row {row_number} exceeds the 10,000 row limit"));
+        }
+        for (cell_tag, cell_inner) in element_blocks(row_inner, "c") {
+            let reference = attribute(cell_tag, "r")
+                .ok_or_else(|| format!("cell without a reference on row {row_number}"))?;
+            let column = column_index(&reference).ok_or_else(|| {
+                format!("invalid cell reference '{reference}' on row {row_number}")
+            })?;
+            if column > 64 {
+                return Err(format!(
+                    "column in '{reference}' exceeds the 64 column limit"
+                ));
+            }
+            let cell_type = attribute(cell_tag, "t").unwrap_or_default();
+            let value = match cell_type.as_str() {
+                "s" => {
+                    let index = inner_text(cell_inner, "v")
+                        .parse::<usize>()
+                        .map_err(|_| format!("invalid shared-string index in '{reference}'"))?;
+                    shared
+                        .get(index)
+                        .cloned()
+                        .ok_or_else(|| format!("shared-string index {index} is missing"))?
+                }
+                "inlineStr" => inner_text(cell_inner, "t"),
+                _ => inner_text(cell_inner, "v"),
+            };
+            if !value.is_empty() {
+                rows.entry(row_number).or_default().insert(column, value);
+            }
+        }
+    }
+    let max_row = rows.keys().next_back().copied().unwrap_or(0);
+    let mut grid = Vec::with_capacity(max_row);
+    for row_number in 1..=max_row {
+        let values = rows.remove(&row_number).unwrap_or_default();
+        let max_column = values.keys().next_back().copied().unwrap_or(0);
+        let mut row = Vec::with_capacity(max_column + 1);
+        for column in 0..=max_column {
+            row.push(values.get(&column).cloned().unwrap_or_default());
+        }
+        grid.push(row);
+    }
+    Ok(grid)
+}
+
+fn column_index(reference: &str) -> Option<usize> {
+    let mut column = 0usize;
+    let mut found = false;
+    for character in reference.chars() {
+        if character.is_ascii_alphabetic() {
+            found = true;
+            column = column
+                .checked_mul(26)?
+                .checked_add((character.to_ascii_uppercase() as u8 - b'A') as usize + 1)?;
+        } else {
+            break;
+        }
+    }
+    if found { Some(column - 1) } else { None }
+}
+
+fn rows_to_csv(rows: &[Vec<String>]) -> String {
+    rows.iter()
+        .map(|row| {
+            row.iter()
+                .map(|value| {
+                    if value.contains([',', '"', '\n', '\r']) {
+                        format!("\"{}\"", value.replace('"', "\"\""))
+                    } else {
+                        value.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn decode_entities(text: &str) -> String {
+    let mut decoded = text
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&");
+    // Numeric entities are rare in model imports but cheap to support.
+    let mut result = String::with_capacity(decoded.len());
+    let mut chars = decoded.char_indices().peekable();
+    while let Some((index, character)) = chars.next() {
+        if character == '&'
+            && let Some(end) = decoded[index..].find(';')
+        {
+            {
+                let entity = &decoded[index + 1..index + end];
+                let numeric = entity
+                    .strip_prefix("#x")
+                    .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                    .or_else(|| {
+                        entity
+                            .strip_prefix('#')
+                            .and_then(|decimal| decimal.parse::<u32>().ok())
+                    });
+                if let Some(code) = numeric {
+                    if let Some(character) = char::from_u32(code) {
+                        result.push(character);
+                    }
+                    for _ in 0..end {
+                        chars.next();
+                    }
+                    continue;
+                }
+            }
+        }
+        result.push(character);
+    }
+    decoded.clear();
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

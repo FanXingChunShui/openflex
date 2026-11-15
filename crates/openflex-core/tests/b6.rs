@@ -405,3 +405,23 @@ fn agv_node_occupancy_makes_the_second_wait() {
     assert_eq!(a2.len(), 1);
     assert!(a2[0] > a1[0] + 0.4, "second AGV should wait: {a1:?} {a2:?}");
 }
+
+#[test]
+fn agv_directed_network_and_full_leg_drain() {
+    let model = model(include_str!("../../../examples/objects/agv-network.ofm"));
+    let (_, trace) = simulate_traced(
+        &model,
+        &SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        },
+        0,
+    )
+    .expect("run");
+    let loaded = event_times(&trace, "A", "operator_loaded");
+    let home = event_times(&trace, "A", "transport_home");
+    // Outbound directed edge 10 / speed 5 = 2; return directed edge 30 / 5 = 6.
+    assert_near(loaded[0], 2.0, 1e-9, "directed outbound");
+    assert_near(home[0], 9.0, 1e-9, "directed return");
+}

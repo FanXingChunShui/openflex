@@ -1,0 +1,22 @@
+{
+  "format": "openflex-model", "version": 1, "name": "agv-network",
+  "description": "AGV directed network (B6): one-way 10 to the station, 30 back; full-leg battery",
+  "time_unit": "seconds",
+  "run": { "stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "S", "kind": "source", "pos": [10, 0], "params": {
+        "interarrival": { "distribution": "constant", "value": 1000.0 }, "max_arrivals": 1, "first_arrival": 0.0 } },
+    { "name": "P", "kind": "processor", "pos": [10, 0], "params": {
+        "process_time": { "distribution": "constant", "value": 1.0 }, "process_operator": "D" } },
+    { "name": "K", "kind": "sink", "params": {} },
+    { "name": "D", "kind": "dispatcher", "pos": [0, 0], "params": {} },
+    { "name": "A", "kind": "agv", "pos": [0, 0], "params": {
+        "speed": 5.0, "home": "D", "network": [
+          { "from": "D", "to": "P", "distance": 10.0, "directed": true },
+          { "from": "P", "to": "D", "distance": 30.0, "directed": true } ] } }
+  ],
+  "connections": [
+    { "from": "S", "to": "P" }, { "from": "P", "to": "K" },
+    { "from": "D", "to": "A" }
+  ]
+}

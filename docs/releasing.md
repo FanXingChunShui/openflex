@@ -341,14 +341,25 @@ ghcr.io/fanxingchunshui/openflex:v<version>
 ghcr.io/fanxingchunshui/openflex:latest
 ```
 
-**v0.10.0 已发布**（2026-11-15 验证）：
+**当前 registry 状态**（2026-11-15 核对）：
+
+| 标签 | 状态 |
+|---|---|
+| `0.10.0` | ✅ 可用（digest `sha256:ee76d8ea…`） |
+| `0.11.0` | ✅ 可用（digest `sha256:4d7aeff3…`，也是当前 `latest`） |
+| `latest` | ✅ 指向 0.11.0 |
+| `0.12.0` | ❌ **未推送**（registry 404） |
 
 | 项 | 值 |
 |---|---|
-| 标签 | `0.10.0`、`v0.10.0`、`latest` |
 | 架构 | `linux/amd64` + `linux/arm64`（同一 OCI manifest list） |
 | 匿名拉取 | 可用（public package） |
 | 验证 | 推送前 `docker run --version` + mm1 冒烟；推送后 `docker pull` 再跑一遍 |
+
+> **v0.12.0 缺口**：tag 已发布但镜像没有出现在 registry。先在 GitHub Actions 里查看
+> `container` workflow 对 `v0.12.0` 的运行记录（失败原因、runner 额度、GHCR 权限），
+> 修好后用 **Actions → container → Run workflow**（`tag` 填 `v0.12.0`）重跑；
+> 重跑会补上 `0.12.0` 并把 `latest` 前移。
 
 流程：`docker build`（linux/amd64）→ `docker run --version` 冒烟 → 校验版本号 →
 buildx 多架构（amd64 + arm64）推送 → `docker pull` 后再次 `--version` 与一次
@@ -358,9 +369,9 @@ buildx 多架构（amd64 + arm64）推送 → `docker pull` 后再次 `--version
 发布后验证（有 Docker 的机器）：
 
 ```sh
-docker run --rm ghcr.io/fanxingchunshui/openflex:0.10.0 --version   # openflex 0.10.0
+docker run --rm ghcr.io/fanxingchunshui/openflex:0.11.0 --version   # openflex 0.11.0
 docker run --rm -v "$PWD/examples:/models:ro" \
-  ghcr.io/fanxingchunshui/openflex:0.10.0 run /models/golden/mm1.ofm --format json | head -c 200
+  ghcr.io/fanxingchunshui/openflex:0.11.0 run /models/golden/mm1.ofm --format json | head -c 200
 ```
 
 没有 Docker 时的替代检查（本仓库用的方法）：查询 registry 的 manifest 是否存在、是否为
@@ -371,7 +382,7 @@ TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=repository:fanxingchunshui/openf
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
 curl -fsSL -H "Authorization: Bearer $TOKEN" \
   -H 'Accept: application/vnd.oci.image.index.v1+json' \
-  "https://ghcr.io/v2/fanxingchunshui/openflex/manifests/0.10.0" | head -c 300
+  "https://ghcr.io/v2/fanxingchunshui/openflex/manifests/0.11.0" | head -c 300
 ```
 
 镜像**没有签名**（cosign/notation 未接入）；生产环境请用 digest 固定：

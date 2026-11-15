@@ -235,29 +235,37 @@ msiexec /i openflex-0.10.0-windows-x64.msi
 按用户安装（`perUser`），装到 `%LOCALAPPDATA%\OpenFlex\bin` 并自动加入用户 PATH，不需要管理员权限。
 卸载：设置 → 应用 → OpenFlex → 卸载，或 `msiexec /x openflex-0.10.0-windows-x64.msi`。
 
-### Docker / GHCR — 镜像已发布
+### Docker / GHCR — 已发布到 0.11.0，0.12.0 待推送
 
-GHCR 镜像已随 v0.10.0 发布（`.github/workflows/container.yml` 在 tag 时构建并推送）：
+GHCR 镜像由 [`.github/workflows/container.yml`](../.github/workflows/container.yml) 在 tag 时
+构建并推送。**当前 registry 里的状态（2026-11-15 核对）**：
+
+| 标签 | 状态 |
+|---|---|
+| `0.10.0` | ✅ 可用 |
+| `0.11.0` | ✅ 可用（也是当前 `latest`） |
+| `latest` | ✅ 指向 0.11.0 |
+| `0.12.0` | ❌ **尚未推送**（registry 返回 404；需检查 container workflow 的 v0.12.0 运行记录） |
 
 ```sh
-docker run --rm ghcr.io/fanxingchunshui/openflex:0.10.0 --version   # openflex 0.10.0
+docker run --rm ghcr.io/fanxingchunshui/openflex:0.11.0 --version   # openflex 0.11.0
 docker run --rm ghcr.io/fanxingchunshui/openflex:latest --version
-docker run --rm -v "$PWD:/workspace" ghcr.io/fanxingchunshui/openflex:0.10.0 \
+docker run --rm -v "$PWD:/workspace" ghcr.io/fanxingchunshui/openflex:0.11.0 \
   run /workspace/model.ofm
 ```
 
 | 项 | 值 |
 |---|---|
 | 镜像 | `ghcr.io/fanxingchunshui/openflex` |
-| 标签 | `0.10.0`、`v0.10.0`、`latest` |
-| 架构 | `linux/amd64`、`linux/arm64`（同一 manifest list） |
+| 架构 | `linux/amd64`、`linux/arm64`（同一 OCI manifest list） |
 | 验证 | 推送前在 CI 里跑 `--version` 与 `run examples/golden/mm1.ofm`；推送后 `docker pull` 再跑一遍 |
+| 0.11.0 digest | `sha256:4d7aeff373cbd420863ec9bd462ae3da02c81eda6718d6587e5526812b3a583d` |
 
 本地自己构建（不依赖 registry）：
 
 ```sh
-docker build -f packaging/Dockerfile -t openflex:0.10.0 .
-docker run --rm openflex:0.10.0 --version
+docker build -f packaging/Dockerfile -t openflex:0.12.0 .
+docker run --rm openflex:0.12.0 --version
 ```
 
 镜像默认入口是 `openflex`，不带参数时执行 `openflex --help`。容器内以非 root 用户
@@ -265,16 +273,16 @@ docker run --rm openflex:0.10.0 --version
 生产环境请用 digest 固定版本：
 
 ```sh
-docker pull ghcr.io/fanxingchunshui/openflex@sha256:ee76d8ea10ebbc400c3de2b1f1175989f466f9a3d0591e3c008ab8b15097839a
+docker pull ghcr.io/fanxingchunshui/openflex@sha256:4d7aeff373cbd420863ec9bd462ae3da02c81eda6718d6587e5526812b3a583d
 ```
 
-（该 digest 是 v0.10.0 与 `latest` 共同指向的 OCI manifest list，2026-11-15 核对。）
+（该 digest 是 v0.11.0 与 `latest` 共同指向的 OCI manifest list，2026-11-15 核对。）
 
-### winget（Windows）— 清单已更新到 v0.10.0，尚未提交
+### winget（Windows）— 清单已更新到 v0.12.0，尚未提交
 
-`packaging/winget/` 下的三件套清单（version / installer / locale）**已填好 v0.10.0 的
-URL 与 MSI SHA256**，但**还没有提交到 microsoft/winget-pkgs**，所以
-`winget install OpenFlex` 现在不存在。
+`packaging/winget/` 下的三件套清单（version / installer / locale）**已同步到 v0.12.0 的
+URL 与 MSI SHA256**（`scripts/sync-package-manifests.sh --version 0.12.0`），但
+**还没有提交到 microsoft/winget-pkgs**，所以 `winget install OpenFlex` 现在不存在。
 
 提交步骤、占位符核对方法、以及为什么暂时没有 `ProductCode`，写在
 [packaging/winget/FanXingChunShui.OpenFlex.installer.yaml](../packaging/winget/FanXingChunShui.OpenFlex.installer.yaml)
@@ -288,9 +296,9 @@ winget upgrade FanXingChunShui.OpenFlex
 在提交之前，Windows 用户请用 [方式一](#方式一一键安装脚本推荐) 的 `install.ps1`，或
 直接下载 MSI（见上文「Windows MSI」）。
 
-### Scoop（Windows）— 清单已更新到 v0.10.0，尚未发布 bucket
+### Scoop（Windows）— 清单已更新到 v0.12.0，尚未发布 bucket
 
-`packaging/scoop/openflex.json` **已填好 v0.10.0 的 URL/hash/extract_dir**
+`packaging/scoop/openflex.json` **已同步到 v0.12.0 的 URL/hash/extract_dir**
 （含 `checkver` / `autoupdate`），但**没有发布到任何 bucket**，
 `scoop install openflex` 现在不可用。
 

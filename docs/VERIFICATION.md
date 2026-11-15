@@ -81,15 +81,15 @@ bash -n packaging/install.sh packaging/uninstall.sh scripts/*.sh
 
 - `--from-dir dist`：**22 项检查（PASS）**，产物由 `scripts/package-release.sh` 本地生成；
 - `--version`（`OPENFLEX_REPO=FanXingChunShui/openflex`）：真实从 GitHub Release 下载并安装，
-  **v0.1.0、v0.4.0、v0.10.0、v0.11.0 各 20 项检查（PASS）**（v0.10.0 / v0.11.0 于 2026-11-15 复跑）。
+  **v0.1.0、v0.4.0、v0.10.0、v0.11.0、v0.12.0 各 20 项检查（PASS）**（v0.10.0 起于 2026-11-15 复跑）。
 
 两种模式都覆盖：安装到临时 prefix、校验 SHA-256、`--version`、`new`/`validate`/`run`
 （JSON + CSV）、安装回执、卸载与重复卸载。Windows 与 Linux 的真实安装**尚未执行**，
 原因与补齐方式见安装矩阵。
 
 CI（`.github/workflows/release.yml`）在 macOS / Windows / Linux 矩阵上重复构建与打包步骤；
-`scripts/verify-packaging.sh` 的 98 项本机检查是发布前的门槛（当前 97 通过 / 1 失败——清单版本检查，
-见「已知问题」；2 跳过：本机无 pwsh、docker）。
+`scripts/verify-packaging.sh` 的 98 项本机检查是发布前的门槛（**98 通过 / 0 失败 / 2 跳过**：本机无
+pwsh、docker；清单已同步到 v0.12.0）。
 详见 [install.md](install.md) 与 [releasing.md](releasing.md)。
 
 ## 6. 性能基线
@@ -222,56 +222,66 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 
 - 配置：[`docs/book.toml`](book.toml)（TOML；`src = "."`，直接渲染 `docs/` 下已有 Markdown，不复制文件）
 - 导航：[`docs/SUMMARY.md`](SUMMARY.md)（安装、验证、性能、对照、wasm、发布、架构、规范、研究证据）
-- 本地预览（CI 不构建、不发布站点）：
+- 本地预览 / 构建：
 
   ```sh
-  cargo install mdbook --locked     # 或: brew install mdbook
+  brew install mdbook               # 或: cargo install mdbook --locked
   mdbook serve docs --open          # http://localhost:3000（实时重载）
   mdbook build docs                 # 静态站点输出到 docs/book/，临时产物，不要提交
   ```
 
-- 自动校验：`scripts/verify-packaging.sh` 会解析 `book.toml` 并检查 `SUMMARY.md` 里每个相对链接
-  是否存在（防止导航指向删掉的文件）。
+- **构建验证（2026-11-15，mdBook 0.5.4）**：`mdbook build docs` 成功，生成 **11 个顶层页面 +
+  4 个 verification 页面**（约 3.7 MB），`index.html` 标题为「OpenFlex 文档」。
+  - 构建过程中对 `docs/spec/flexsim-to-openflex.md` 报了 4 条 *unclosed HTML tag*（`<u32>`/`<f64>`/
+    `<string>` 在表格里未转义）——只是 mdBook 的 HTML 后端告警，不影响构建；该文件属于
+    `docs/spec/`，不在发布/文档收尾任务的修改范围内，留给规范维护者转义（`` `<u32>` ``）。
+  - 构建产物 `docs/book/` 已删除，未提交。
+- 自动校验（无需 mdBook）：`scripts/verify-packaging.sh` 会解析 `book.toml` 并检查 `SUMMARY.md`
+  里每个相对链接是否存在（防止导航指向删掉的文件）。
 
-## 已知问题（2026-11-15）
+## 已修复问题
 
-- **包管理器清单落后一个版本**：`packaging/homebrew/openflex.rb`、`packaging/winget/*`、
-  `packaging/scoop/openflex.json` 仍是 **v0.10.0**，而 workspace 与最新 release 是 **v0.11.0**。
-  因此 `scripts/verify-packaging.sh` 的「manifests match the workspace version」检查**有意失败**
-  （97 passed / 1 failed）。已发布的 v0.11.0 产物不受影响（release 流程不读这些清单），
-  但 `brew` / `winget` / `scoop` 用户安装会因版本/校验和不匹配失败。
-  修复只需一条命令（会写 `packaging/`，本轮任务 scope 不含该目录）：
+- **包管理器清单落后一个版本**（2026-11-15 发现，v0.12.0 修复）：`packaging/homebrew/openflex.rb`、
+  `packaging/winget/*`、`packaging/scoop/openflex.json` 一度停在 v0.10.0 / v0.11.0，而 workspace
+  已是更新的版本，导致 `verify-packaging.sh` 的「manifests match the workspace version」检查失败
+  （曾 97 passed / 1 failed）。
+  现在已执行：
 
   ```sh
-  scripts/sync-package-manifests.sh --version 0.11.0   # 下载 SHA256SUMS 并更新 5 个文件
-  scripts/verify-packaging.sh --skip-build              # 应恢复 98 项全 PASS
+  scripts/sync-package-manifests.sh --version 0.12.0   # 更新 5 个文件（version + 6 个 sha256 + URL）
+  scripts/verify-packaging.sh --skip-build             # 98 项全 PASS
   ```
 
-  顺带修复：`packaging/scoop/openflex.json` 的两个 URL 仍带 `v0.1.0/` 前缀
-  （上一轮人工替换只改了文件名），`sync-package-manifests.sh` 会把整个 URL 重写成 `v0.11.0/`。
-  用 `--check` 可以在 CI 里提前发现同类问题而不改文件。
+  同时修掉了 `packaging/scoop/openflex.json` 里两个 URL 的 `v0.1.0/` 前缀（此前人工替换只改了文件名，
+  会导致 404）。`sync-package-manifests.sh --check` 可以在 CI 里提前发现同类问题而不改文件。
 
 ## 最近一次验收记录
 
 - 日期：2026-11-15
-- 版本：0.10.0（release 已发布，11 个产物，发布于 2026-11-15T01:12:51Z）
-- `cargo test --workspace`：**未在本轮重跑**——工作区有并行开发（fluid 相关），
-  `crates/openflex-core/tests/fluid.rs` 当前有 3 个断言失败；已发布的 v0.10.0 检出
-  （`7ccb5ed`）测试是绿的，覆盖率基线就是在该干净检出上测的。全量测试由 CI 的
-  `test` / `golden` / `test-arm64` job 覆盖。
-- `cargo llvm-cov` 行覆盖率基线（干净 v0.10.0 检出）：**77.91%**（函数 75.75% / 区域 76.33%）
-- `bash scripts/verify-packaging.sh`：**97 通过 / 1 失败 / 2 跳过**（失败项是包管理器清单仍为 v0.10.0，
-  见「已知问题」；其余检查通过：
+- 版本：**0.12.0**（release 已发布，11 个产物，发布于 2026-11-15T06:00:57Z）
+- `cargo test --workspace`：**未在本轮重跑**——工作区有并行开发（Cargo.toml / fluid 等），
+  全量测试由 CI 的 `test` / `golden` / `test-arm64` job 覆盖；覆盖率基线在干净检出上测（见下）。
+- `cargo llvm-cov` 行覆盖率基线（干净 v0.10.0 检出）：**77.91%**（函数 75.75% / 区域 76.33%；
+  v0.12.0 未重测）
+- `scripts/sync-package-manifests.sh --version 0.12.0`：**5 个文件更新成功**
+  （homebrew version + 3 sha256、winget 三件套、scoop version/url/hash/extract_dir），
+  `--check` 复核通过
+- `bash scripts/verify-packaging.sh`：**98 通过 / 0 失败 / 2 跳过**（本机无 pwsh、docker；检查包括：
   含 12 个 shell 脚本的 bash -n 与 shellcheck、workflow/dependabot/winget YAML、
   deny.toml 与 fuzz/Cargo.toml 的 TOML 解析、wasm32 检查、新工具的 `--help` 与 dry-run，
   以及 winget/scoop/homebrew 清单版本与 sha256 的一致性检查、bench 脚本与文档站配置检查）
-- `scripts/verify-install.sh --version 0.10.0`（真实 GitHub Release）：**PASS**，20 项
+- `scripts/verify-install.sh --version 0.12.0`（真实 GitHub Release）：**PASS**，20 项
 - `cargo check` + `cargo build -p openflex-core --target wasm32-unknown-unknown`：**通过**
-- GHCR 镜像：`ghcr.io/fanxingchunshui/openflex:0.10.0` / `latest` 已发布（amd64 + arm64，
-  OCI manifest list；本机无 docker，未本地 `docker run`）
-- 性能：release 构建下 M/M/1 约 20 万事件 / 0.95 s（v0.1.0 基线，未重测）
+- `mdbook build docs`（mdBook 0.5.4）：**成功**，11 个顶层页面 + 4 个 verification 页面（约 3.7 MB），
+  `index.html` = 「OpenFlex 文档」；生成物已删除（见第 10 节）
+- 签名复核（2026-11-15）：`sign-macos.sh` 签名/公证/staple 三条命令与缺凭据报错、`sign-checksums.sh`
+  dry-run、`sign-windows.ps1` 静态括号检查全部通过；`release.yml` 的 5 处签名步骤都有
+  `if: env.X != ''`（无 secrets 时跳过）
+- GHCR 镜像：`0.10.0`、`0.11.0`、`latest`（= 0.11.0）可用；**`0.12.0` 尚未推送**（registry 404，
+  见「待办/已知限制」）
+- 性能：大模型基线见 [performance.md](verification/performance.md)（v0.11.0 测得，v0.12.0 未重测）
 
-### 2026-11-15 CI 门槛与发布渠道（v0.10.0 基线，2026-11-15 更新到 v0.11.0）
+### 2026-11-15 CI 门槛与发布渠道（基线 v0.12.0）
 
 | 项 | 状态 | 证据 |
 |---|---|---|
@@ -280,15 +290,16 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 | `test-arm64` 必跑 | CI 已配置（`ubuntu-24.04-arm`） | ci.yml `test-arm64`（已去掉 `continue-on-error`） |
 | v0.10.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS，见 [install-matrix](verification/install-matrix.md) |
 | v0.11.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS（2026-11-15），见 [install-matrix](verification/install-matrix.md) |
-| Homebrew 公式（v0.10.0 真实 sha256） | **已完成**（`ruby -c` 通过）；tap 待创建 | `packaging/homebrew/openflex.rb` |
+| v0.12.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS（2026-11-15），见 [install-matrix](verification/install-matrix.md) |
+| Homebrew 公式（v0.12.0 真实 sha256） | **已完成**（`ruby -c` 通过）；tap 待创建 | `packaging/homebrew/openflex.rb` |
 | Homebrew `brew audit` / `brew install --build-from-source` | **待环境** | 本机 Homebrew 非 Tier 1 配置，audit 被 SIGTERM；命令见 `packaging/homebrew/README.md` |
-| winget / scoop 清单（v0.10.0 URL/SHA256） | **已完成，待提交** | `packaging/winget/`、`packaging/scoop/openflex.json`；MSI 哈希已下载复核（v0.11.0 的同步见「已知问题」） |
-| GHCR 镜像发布与验证 | **已发布**（registry 侧核实）；docker 本地运行**待环境** | container.yml；manifest 0.10.0/latest 均 200，多架构 |
+| winget / scoop 清单（v0.12.0 URL/SHA256） | **已完成，待提交** | `packaging/winget/`、`packaging/scoop/openflex.json`；由 `sync-package-manifests.sh` 同步 |
+| GHCR 镜像发布与验证 | **部分**：0.10.0 / 0.11.0 / latest 可用；**0.12.0 未推送** | container.yml；registry 核对（0.12.0 返回 404），docker 本地运行**待环境** |
 | Windows / Linux / deb / rpm / MSI 真机安装 | **待环境** | 脚本与命令清单就绪，见安装矩阵第 5 节 |
-| 签名/公证（macOS/Windows/GPG） | **CI 已配置，待证书** | release.yml 三处签名步骤 `if: env.X != ''`；本机 dry-run 通过 |
+| 签名/公证（macOS/Windows/GPG） | **CI 已配置，待证书**（2026-11-15 复核） | release.yml 5 处签名步骤 `if: env.X != ''`；三套脚本 dry-run 通过 |
 | 10 万对象性能基准（v0.11.0） | **已实跑** | validate 85.12 s / run 271.56 s / 552 events/s / 峰值 397 MB，见 [performance.md](verification/performance.md) |
-| 文档站骨架（mdBook） | **已完成（配置可解析，未构建）** | `docs/book.toml` + `docs/SUMMARY.md`；本地预览命令见本文件第 10 节 |
-| 包管理器清单更新到 v0.11.0 | **未完成（本轮 scope 外）** | 仍是 v0.10.0；`scripts/sync-package-manifests.sh --version 0.11.0` 可一键修复（见「已知问题」） |
+| 文档站（mdBook） | **已构建验证**（mdBook 0.5.4） | 11+4 页面，`index.html`=「OpenFlex 文档」；配置见第 10 节 |
+| 包管理器清单同步到 v0.12.0 | **已完成** | `sync-package-manifests.sh --version 0.12.0`；`--check` 通过 |
 | 真实 FlexSim 对照 | **待外部数据** | 工具与模板就绪；未运行 FlexSim |
 
 ### 2026-11-14 wasm / 安装收尾（历史记录，v0.4.0 基线）

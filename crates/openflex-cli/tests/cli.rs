@@ -2795,6 +2795,9 @@ fn studio_can_add_and_delete_objects_through_the_api() {
         "id=\"run-experiment\"",
         "id=\"dashboard\"",
         "id=\"export-png\"",
+        "id=\"flow-canvas\"",
+        "flow-node",
+        "draggable",
     ] {
         assert!(html.contains(marker), "missing marker {marker}");
     }
@@ -3114,5 +3117,143 @@ fn studio_experiment_endpoint_runs_scenarios() {
     assert!(
         faster > baseline,
         "a faster processor must complete more items ({baseline} vs {faster})"
+    );
+}
+
+#[test]
+fn import_reads_an_xlsx_workbook() {
+    let dir = TempDir::new("import-xlsx");
+    let workbook_path = dir.join("model.xlsx");
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+
+    let objects = workbook.add_worksheet();
+    objects.set_name("objects").expect("sheet name");
+    for (column, header) in ["name", "kind", "pos_x", "pos_y"].iter().enumerate() {
+        objects
+            .write_string(0, column as u16, *header)
+            .expect("header");
+    }
+    let object_rows = [
+        ["Source", "source", "-100", "0"],
+        ["Queue1", "queue", "0", "0"],
+        ["Processor1", "processor", "100", "0"],
+        ["Sink1", "sink", "200", "0"],
+    ];
+    for (row, cells) in object_rows.iter().enumerate() {
+        for (column, value) in cells.iter().enumerate() {
+            if column >= 2 {
+                objects
+                    .write_number(
+                        row as u32 + 1,
+                        column as u16,
+                        value.parse::<f64>().expect("number"),
+                    )
+                    .expect("position");
+            } else {
+                objects
+                    .write_string(row as u32 + 1, column as u16, *value)
+                    .expect("cell");
+            }
+        }
+    }
+
+    let connections = workbook.add_worksheet();
+    connections.set_name("connections").expect("sheet name");
+    for (column, header) in ["from", "to"].iter().enumerate() {
+        connections
+            .write_string(0, column as u16, *header)
+            .expect("header");
+    }
+    for (row, pair) in [
+        ["Source", "Queue1"],
+        ["Queue1", "Processor1"],
+        ["Processor1", "Sink1"],
+    ]
+    .iter()
+    .enumerate()
+    {
+        for (column, value) in pair.iter().enumerate() {
+            connections
+                .write_string(row as u32 + 1, column as u16, *value)
+                .expect("cell");
+        }
+    }
+
+    let arrivals = workbook.add_worksheet();
+    arrivals.set_name("arrivals").expect("sheet name");
+    arrivals.write_string(0, 0, "time").expect("header");
+    arrivals.write_string(0, 1, "quantity").expect("header");
+    for (row, (time, quantity)) in [(0.0, 1.0), (2.0, 1.0), (4.0, 1.0)].iter().enumerate() {
+        arrivals
+            .write_number(row as u32 + 1, 0, *time)
+            .expect("time");
+        arrivals
+            .write_number(row as u32 + 1, 1, *quantity)
+            .expect("quantity");
+    }
+    workbook.save(&workbook_path).expect("save xlsx");
+
+    let model = dir.join("from-xlsx.ofm");
+    let output = openflex(&[
+        "import",
+        "--xlsx",
+        &path_str(&workbook_path),
+        "--out",
+        &path_str(&model),
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert!(model.is_file(), "the model was not written");
+    let text = fs::read_to_string(&model).expect("read model");
+    for expected in [
+        "Source",
+        "Queue1",
+        "Processor1",
+        "Sink1",
+        "arrival_schedule",
+    ] {
+        assert!(
+            text.contains(expected),
+            "missing {expected} in the imported model"
+        );
+    }
+
+    let validate = openflex(&["validate", &path_str(&model)]);
+    assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
+
+    let run = openflex(&[
+        "run",
+        &path_str(&model),
+        "--stop-time",
+        "50",
+        "--warmup",
+        "0",
+        "--replications",
+        "1",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code(&run), 0, "stderr: {}", stderr(&run));
+    let report = json(&stdout(&run));
+    assert!(
+        report["created"]["mean"].as_f64().unwrap_or_default() > 0.0,
+        "the imported model must create items: {}",
+        report["created"]
+    );
+
+    // A file that is not a zip archive is rejected with a usage exit code.
+    let broken = dir.write("broken.xlsx", "this is not a workbook");
+    let output = openflex(&[
+        "import",
+        "--xlsx",
+        &path_str(&broken),
+        "--out",
+        &path_str(&dir.join("broken.ofm")),
+    ]);
+    assert_eq!(code(&output), 2, "stderr: {}", stderr(&output));
+    assert!(
+        stderr(&output).contains("invalid workbook"),
+        "stderr: {}",
+        stderr(&output)
     );
 }

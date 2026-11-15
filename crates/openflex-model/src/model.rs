@@ -1442,6 +1442,10 @@ pub struct NetworkEdge {
     pub from: String,
     pub to: String,
     pub distance: f64,
+    /// One-way edge when true; omitted/false keeps the road usable in both
+    /// directions (B6 AGV routing).
+    #[serde(default)]
+    pub directed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

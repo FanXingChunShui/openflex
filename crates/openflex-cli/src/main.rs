@@ -307,6 +307,9 @@ enum Command {
         /// Connection table (`from,to,port,strategy`); when omitted the objects are chained in file order.
         #[arg(long, value_name = "CSV", requires = "objects")]
         connections: Option<PathBuf>,
+        /// Excel workbook (.xlsx) with `objects`, `connections` and/or `arrivals` sheets.
+        #[arg(long, value_name = "XLSX", conflicts_with_all = ["csv", "objects", "connections"])]
+        xlsx: Option<PathBuf>,
         /// Model file to write.
         #[arg(long, value_name = "FILE")]
         out: PathBuf,
@@ -866,18 +869,20 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             csv,
             objects,
             connections,
+            xlsx,
             out,
             name,
             time_unit,
-        } => import_csv(
-            csv.as_deref(),
-            objects.as_deref(),
-            connections.as_deref(),
-            &out,
-            name.as_deref(),
-            &time_unit,
+        } => import_data(&ImportOptions {
+            csv: csv.as_deref(),
+            objects: objects.as_deref(),
+            connections: connections.as_deref(),
+            xlsx: xlsx.as_deref(),
+            out: &out,
+            name: name.as_deref(),
+            time_unit: &time_unit,
             quiet,
-        ),
+        }),
         Command::Schema { out } => {
             let schema = schema::generate();
             let text = serde_json::to_string_pretty(&schema)
@@ -1795,74 +1800,141 @@ fn run_optimize(
     Ok(())
 }
 
-fn import_csv(
-    csv: Option<&Path>,
-    objects: Option<&Path>,
-    connections: Option<&Path>,
-    out: &Path,
-    name: Option<&str>,
-    time_unit: &str,
+/// Optional input tables for `openflex import`.
+struct ImportOptions<'a> {
+    csv: Option<&'a Path>,
+    objects: Option<&'a Path>,
+    connections: Option<&'a Path>,
+    xlsx: Option<&'a Path>,
+    out: &'a Path,
+    name: Option<&'a str>,
+    time_unit: &'a str,
     quiet: bool,
-) -> Result<(), Failure> {
-    let unit = parse_time_unit(time_unit)?;
-    if csv.is_none() && objects.is_none() {
+}
+
+fn import_data(options: &ImportOptions<'_>) -> Result<(), Failure> {
+    if options.xlsx.is_some() {
+        return import_xlsx(options);
+    }
+    let unit = parse_time_unit(options.time_unit)?;
+    if options.csv.is_none() && options.objects.is_none() {
         return Err(Failure::usage(anyhow!(
-            "import needs at least one input table: --csv (arrivals), --objects (and optionally --connections)"
+            "import needs at least one input table: --csv, --objects (with optional --connections) or --xlsx"
         )));
     }
 
-    let arrivals = match read_table(csv, "arrivals")? {
+    let arrivals = match read_table(options.csv, "arrivals")? {
         Some(text) => import::parse_csv(&text).map_err(|error| Failure::usage(anyhow!(error)))?,
         None => Vec::new(),
     };
-    let object_rows = match read_table(objects, "objects")? {
+    let object_rows = match read_table(options.objects, "objects")? {
         Some(text) => {
             import::parse_objects_csv(&text).map_err(|error| Failure::usage(anyhow!(error)))?
         }
         None => Vec::new(),
     };
-    let connection_rows = match read_table(connections, "connections")? {
+    let connection_rows = match read_table(options.connections, "connections")? {
         Some(text) => {
             import::parse_connections_csv(&text).map_err(|error| Failure::usage(anyhow!(error)))?
         }
         None => Vec::new(),
     };
 
-    let model_name = name.map(str::to_string).unwrap_or_else(|| {
-        out.file_stem()
-            .map(|stem| stem.to_string_lossy().into_owned())
-            .filter(|stem| !stem.is_empty())
-            .unwrap_or_else(|| "imported".into())
-    });
+    let model_name = import_model_name(options);
     let (model, stop_time) =
         import::build_model(&model_name, unit, &arrivals, &object_rows, &connection_rows)
             .map_err(|error| Failure::usage(anyhow!(error)))?;
-    if let Some(parent) = out.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent).map_err(|error| {
-            Failure::runtime(anyhow!("could not create {}: {error}", parent.display()))
-        })?;
-    }
-    fs::write(out, model)
-        .map_err(|error| Failure::runtime(anyhow!("could not write {}: {error}", out.display())))?;
-    println!("{} {}", i18n::t("created"), out.display());
+    write_imported_model(options, &model)?;
     note(
-        quiet,
+        options.quiet,
         &format!(
             "imported {} objects, {} connections, {} arrival rows; stop time {} {}",
             object_rows.len(),
             connection_rows.len(),
             arrivals.len(),
             stop_time,
-            i18n::unit(match unit {
-                "minutes" => TimeUnit::Minutes,
-                "hours" => TimeUnit::Hours,
-                "days" => TimeUnit::Days,
-                _ => TimeUnit::Seconds,
-            })
+            i18n::unit(unit_for(unit))
         ),
     );
+    Ok(())
+}
+
+/// Read an `.xlsx` workbook and convert its sheets exactly like the CSV path.
+fn import_xlsx(options: &ImportOptions<'_>) -> Result<(), Failure> {
+    let unit = parse_time_unit(options.time_unit)?;
+    let path = options
+        .xlsx
+        .ok_or_else(|| Failure::usage(anyhow!("--xlsx needs a file")))?;
+    let bytes = fs::read(path).map_err(|error| {
+        Failure::runtime(anyhow!(
+            "could not read workbook {}: {error}",
+            path.display()
+        ))
+        .with_path(path)
+    })?;
+    let imported = import::parse_xlsx(&bytes).map_err(|error| {
+        Failure::usage(anyhow!("invalid workbook {}: {error}", path.display())).with_path(path)
+    })?;
+    let model_name = import_model_name(options);
+    let (model, stop_time) = import::build_model(
+        &model_name,
+        unit,
+        &imported.arrivals,
+        &imported.objects,
+        &imported.connections,
+    )
+    .map_err(|error| Failure::usage(anyhow!(error)))?;
+    write_imported_model(options, &model)?;
+    note(
+        options.quiet,
+        &format!(
+            "imported {} objects, {} connections, {} arrival rows from {}; stop time {} {}",
+            imported.objects.len(),
+            imported.connections.len(),
+            imported.arrivals.len(),
+            path.display(),
+            stop_time,
+            i18n::unit(unit_for(unit))
+        ),
+    );
+    Ok(())
+}
+
+fn import_model_name(options: &ImportOptions<'_>) -> String {
+    options.name.map(str::to_string).unwrap_or_else(|| {
+        options
+            .out
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .filter(|stem| !stem.is_empty())
+            .unwrap_or_else(|| "imported".into())
+    })
+}
+
+fn unit_for(unit: &'static str) -> TimeUnit {
+    match unit {
+        "minutes" => TimeUnit::Minutes,
+        "hours" => TimeUnit::Hours,
+        "days" => TimeUnit::Days,
+        _ => TimeUnit::Seconds,
+    }
+}
+
+fn write_imported_model(options: &ImportOptions<'_>, model: &str) -> Result<(), Failure> {
+    if let Some(parent) = options.out.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            Failure::runtime(anyhow!("could not create {}: {error}", parent.display()))
+        })?;
+    }
+    fs::write(options.out, model).map_err(|error| {
+        Failure::runtime(anyhow!(
+            "could not write {}: {error}",
+            options.out.display()
+        ))
+    })?;
+    println!("{} {}", i18n::t("created"), options.out.display());
     Ok(())
 }
 

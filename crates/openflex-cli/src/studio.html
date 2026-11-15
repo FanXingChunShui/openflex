@@ -56,6 +56,8 @@
   .flow-connection { display: grid; grid-template-columns: 1fr 1fr 52px 30px;
                      gap: 4px; align-items: center; }
   #scene { display: block; width: 100%; height: 100%; cursor: grab; }
+  #flow-canvas { display: block; width: 100%; height: 220px; background: #ffffff;
+                 border: 1px solid #cbd5e1; border-radius: 6px; cursor: grab; touch-action: none; }
   #scene.dragging { cursor: grabbing; }
   .hint { position: absolute; left: 12px; bottom: 10px; font-size: 12px; color: #64748b;
           background: rgba(248,250,252,.85); padding: 2px 6px; border-radius: 5px; }
@@ -122,6 +124,8 @@
         </select>
         <button id="add-block" type="button">Add block</button>
       </div>
+      <canvas id="flow-canvas" data-node-class="flow-node" draggable="false"></canvas>
+      <p class="muted">Drag blocks to arrange them; drag from a block's right port to another block's left port to create a connection.</p>
       <div id="block-list"><p class="muted">This model has no process flow.</p></div>
       <div id="block-editor"></div>
       <h3>Connections</h3>
@@ -204,12 +208,19 @@ const state = {
   redoStack: [],
   pendingSnapshot: null,
   lastStep: 0,
+  flowDrag: null,
+  flowConnect: null,
   scenarios: [{ name: "baseline", overrides: "" }],
 };
 
 const $ = id => document.getElementById(id);
 const scene = $("scene");
 const dashboard = $("dashboard");
+const flowCanvas = $("flow-canvas");
+const FLOW_WIDTH = 640;
+const FLOW_HEIGHT = 240;
+const FLOW_NODE_WIDTH = 124;
+const FLOW_NODE_HEIGHT = 52;
 
 const DISTRIBUTIONS = {
   constant: ["value"], uniform: ["min", "max"], normal: ["mean", "stddev"],
@@ -732,6 +743,131 @@ function ensureFlow() {
   return state.model.process_flow;
 }
 
+function flowLayout() {
+  if (!state.model.metadata || typeof state.model.metadata !== "object") state.model.metadata = {};
+  if (!state.model.metadata.flow_layout || typeof state.model.metadata.flow_layout !== "object") {
+    state.model.metadata.flow_layout = {};
+  }
+  const layout = state.model.metadata.flow_layout;
+  const blocks = (state.model.process_flow && state.model.process_flow.blocks) || [];
+  blocks.forEach((block, index) => {
+    if (!Array.isArray(layout[block.id])) {
+      layout[block.id] = [30 + (index % 4) * 150, 24 + Math.floor(index / 4) * 92];
+    }
+  });
+  return layout;
+}
+
+function flowPoint(event) {
+  const rect = flowCanvas.getBoundingClientRect();
+  return {
+    x: (event.clientX - rect.left) * FLOW_WIDTH / Math.max(1, rect.width),
+    y: (event.clientY - rect.top) * FLOW_HEIGHT / Math.max(1, rect.height),
+  };
+}
+
+function flowNodeAt(point) {
+  const blocks = (state.model.process_flow && state.model.process_flow.blocks) || [];
+  const layout = flowLayout();
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index];
+    const position = layout[block.id];
+    if (!position) continue;
+    if (point.x >= position[0] && point.x <= position[0] + FLOW_NODE_WIDTH
+        && point.y >= position[1] && point.y <= position[1] + FLOW_NODE_HEIGHT) {
+      return { block, position };
+    }
+  }
+  return null;
+}
+
+function flowOutputPort(point, node) {
+  const portX = node.position[0] + FLOW_NODE_WIDTH;
+  const portY = node.position[1] + FLOW_NODE_HEIGHT / 2;
+  return Math.hypot(point.x - portX, point.y - portY) <= 12;
+}
+
+function renderFlowCanvas() {
+  const width = flowCanvas.clientWidth || 320;
+  const height = flowCanvas.clientHeight || 220;
+  const ratio = window.devicePixelRatio || 1;
+  flowCanvas.width = Math.max(1, Math.round(width * ratio));
+  flowCanvas.height = Math.max(1, Math.round(height * ratio));
+  const ctx = flowCanvas.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  if (!state.model || !state.model.process_flow || !state.model.process_flow.blocks) return;
+  const scaleX = width / FLOW_WIDTH;
+  const scaleY = height / FLOW_HEIGHT;
+  const blocks = state.model.process_flow.blocks;
+  const layout = flowLayout();
+  const centre = id => {
+    const position = layout[id];
+    return position
+      ? { x: (position[0] + FLOW_NODE_WIDTH) * scaleX, y: (position[1] + FLOW_NODE_HEIGHT / 2) * scaleY }
+      : null;
+  };
+  ctx.strokeStyle = "#475569";
+  ctx.fillStyle = "#475569";
+  ctx.lineWidth = 1.4;
+  for (const connection of state.model.process_flow.connections || []) {
+    const from = centre(connection.from);
+    const to = centre(connection.to);
+    if (!from || !to) continue;
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(to.x, to.y);
+    ctx.stroke();
+    const angle = Math.atan2(to.y - from.y, to.x - from.x);
+    ctx.beginPath();
+    ctx.moveTo(to.x, to.y);
+    ctx.lineTo(to.x - 8 * Math.cos(angle - 0.4), to.y - 8 * Math.sin(angle - 0.4));
+    ctx.lineTo(to.x - 8 * Math.cos(angle + 0.4), to.y - 8 * Math.sin(angle + 0.4));
+    ctx.fill();
+  }
+  blocks.forEach((block, index) => {
+    const position = layout[block.id];
+    if (!position) return;
+    const x = position[0] * scaleX;
+    const y = position[1] * scaleY;
+    const nodeWidth = FLOW_NODE_WIDTH * scaleX;
+    const nodeHeight = FLOW_NODE_HEIGHT * scaleY;
+    const selected = index === state.selectedBlock;
+    ctx.fillStyle = selected ? "#dbeafe" : "#f8fafc";
+    ctx.strokeStyle = selected ? "#1d4ed8" : "#64748b";
+    ctx.lineWidth = selected ? 2 : 1.2;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, y, nodeWidth, nodeHeight, 6);
+    else ctx.rect(x, y, nodeWidth, nodeHeight);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#0f172a";
+    ctx.font = "600 11px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(block.id, x + nodeWidth / 2, y + nodeHeight / 2 - 2);
+    ctx.fillStyle = "#64748b";
+    ctx.font = "10px system-ui, sans-serif";
+    ctx.fillText(block.kind, x + nodeWidth / 2, y + nodeHeight / 2 + 12);
+    // Input and output ports.
+    ctx.beginPath();
+    ctx.arc(x, y + nodeHeight / 2, 5, 0, Math.PI * 2);
+    ctx.fillStyle = "#94a3b8";
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x + nodeWidth, y + nodeHeight / 2, 5, 0, Math.PI * 2);
+    ctx.fillStyle = "#1d4ed8";
+    ctx.fill();
+  });
+  if (state.flowConnect) {
+    ctx.beginPath();
+    ctx.moveTo(state.flowConnect.start.x * scaleX, state.flowConnect.start.y * scaleY);
+    ctx.lineTo(state.flowConnect.current.x * scaleX, state.flowConnect.current.y * scaleY);
+    ctx.strokeStyle = "#f59e0b";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+}
+
 function renderFlow() {
   const flow = state.model.process_flow;
   const list = $("block-list");
@@ -740,6 +876,7 @@ function renderFlow() {
     $("block-editor").innerHTML = "";
     $("flow-connections").innerHTML = "";
     $("edit-process-flow").value = JSON.stringify(flow ?? null, null, 2);
+    renderFlowCanvas();
     return;
   }
   list.innerHTML = "";
@@ -758,6 +895,7 @@ function renderFlow() {
   renderBlockEditor(flow);
   renderFlowConnections(flow);
   $("edit-process-flow").value = JSON.stringify(flow, null, 2);
+  renderFlowCanvas();
 }
 
 function renderBlockEditor(flow) {
@@ -1346,6 +1484,88 @@ scene.addEventListener("wheel", event => {
   event.preventDefault();
   state.zoom = Math.max(0.3, Math.min(4, state.zoom * Math.exp(-event.deltaY * 0.001)));
 }, { passive: false });
+
+flowCanvas.addEventListener("pointerdown", event => {
+  if (!state.model || !state.model.process_flow) return;
+  const point = flowPoint(event);
+  const node = flowNodeAt(point);
+  if (!node) return;
+  event.preventDefault();
+  if (flowOutputPort(point, node)) {
+    state.flowConnect = {
+      from: node.block.id,
+      start: {
+        x: node.position[0] + FLOW_NODE_WIDTH,
+        y: node.position[1] + FLOW_NODE_HEIGHT / 2,
+      },
+      current: point,
+    };
+  } else {
+    rememberNow();
+    state.flowDrag = {
+      id: node.block.id,
+      dx: point.x - node.position[0],
+      dy: point.y - node.position[1],
+    };
+    state.selectedBlock = state.model.process_flow.blocks.findIndex(block => block.id === node.block.id);
+    renderFlow();
+  }
+  flowCanvas.setPointerCapture(event.pointerId);
+});
+
+flowCanvas.addEventListener("pointermove", event => {
+  if (!state.flowDrag && !state.flowConnect) return;
+  const point = flowPoint(event);
+  if (state.flowConnect) {
+    state.flowConnect.current = point;
+    renderFlowCanvas();
+    return;
+  }
+  const layout = flowLayout();
+  layout[state.flowDrag.id] = [
+    Math.max(0, Math.min(FLOW_WIDTH - FLOW_NODE_WIDTH, point.x - state.flowDrag.dx)),
+    Math.max(0, Math.min(FLOW_HEIGHT - FLOW_NODE_HEIGHT, point.y - state.flowDrag.dy)),
+  ];
+  renderFlowCanvas();
+});
+
+flowCanvas.addEventListener("pointerup", event => {
+  const point = flowPoint(event);
+  if (state.flowConnect) {
+    const target = flowNodeAt(point);
+    if (target && target.block.id !== state.flowConnect.from) {
+      rememberNow();
+      const flow = ensureFlow();
+      if (!flow.connections.some(connection =>
+        connection.from === state.flowConnect.from && connection.to === target.block.id)) {
+        flow.connections.push({ from: state.flowConnect.from, to: target.block.id, port: 0 });
+      }
+      state.flowConnect = null;
+      renderFlow();
+      setStatus("connection added (unsaved)");
+      return;
+    }
+    state.flowConnect = null;
+    renderFlowCanvas();
+    return;
+  }
+  if (state.flowDrag) {
+    state.flowDrag = null;
+    commitEdit();
+    setStatus("flow layout updated (unsaved)");
+  }
+});
+
+flowCanvas.addEventListener("pointercancel", () => {
+  state.flowDrag = null;
+  state.flowConnect = null;
+  renderFlowCanvas();
+});
+
+window.addEventListener("resize", () => {
+  drawDashboard(state.report || { objects: {} });
+  renderFlowCanvas();
+});
 
 $("reload").addEventListener("click", loadAll);
 $("run").addEventListener("click", runModel);

@@ -94,6 +94,7 @@ fn english(key: &str) -> &'static str {
              openflex run basic.ofm --resume checkpoint.json --until 2000 --format json\n  \
              openflex experiment basic.ofm --report-dir experiments --trace\n  \
              openflex import --objects objects.csv --connections connections.csv --out model.ofm\n  \
+             openflex import --xlsx workbook.xlsx --out model.ofm\n  \
              openflex optimize basic.ofm --param Proc1.process_time.mean=2..6 --objective throughput --steps 5\n  \
              openflex layout basic.ofm --dimension 3d --html preview.html --animate 10\n  \
              openflex run basic.ofm --flow --format markdown\n  \
@@ -194,6 +195,7 @@ fn chinese(key: &str) -> &'static str {
              openflex run basic.ofm --resume checkpoint.json --until 2000 --format json\n  \
              openflex experiment basic.ofm --report-dir experiments --trace\n  \
              openflex import --objects objects.csv --connections connections.csv --out model.ofm\n  \
+             openflex import --xlsx workbook.xlsx --out model.ofm\n  \
              openflex optimize basic.ofm --param Proc1.process_time.mean=2..6 --objective throughput --steps 5\n  \
              openflex layout basic.ofm --dimension 3d --html preview.html --animate 10\n  \
              openflex run basic.ofm --flow --format markdown\n  \

@@ -347,7 +347,8 @@ fn definitions() -> Value {
                     "properties": {
                         "from": { "type": "string" },
                         "to": { "type": "string" },
-                        "distance": { "type": "number", "exclusiveMinimum": 0 }
+                        "distance": { "type": "number", "exclusiveMinimum": 0 },
+                        "directed": { "type": "boolean", "default": false }
                     },
                     "required": ["from", "to", "distance"],
                     "additionalProperties": false
@@ -370,7 +371,8 @@ fn definitions() -> Value {
                     "properties": {
                         "from": { "type": "string" },
                         "to": { "type": "string" },
-                        "distance": { "type": "number", "exclusiveMinimum": 0 }
+                        "distance": { "type": "number", "exclusiveMinimum": 0 },
+                        "directed": { "type": "boolean", "default": false }
                     },
                     "required": ["from", "to", "distance"],
                     "additionalProperties": false

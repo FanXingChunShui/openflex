@@ -1,19 +1,14 @@
 # Summary
 
-> 本文件是 [mdBook](https://rust-lang.github.io/mdBook/) 的导航（`docs/book.toml` 配套）。
-> 本地预览：`mdbook serve docs --open`（先 `cargo install mdbook --locked` 或 `brew install mdbook`）。
-> 生成的 `docs/book/` 是临时产物，不要提交。
-
 [OpenFlex 文档](VERIFICATION.md)
 
 # 使用
 
 - [安装](install.md)
-- [验证与验收](VERIFICATION.md)
-  - [真机安装矩阵](verification/install-matrix.md)
-  - [性能基线](verification/performance.md)
-  - [与 FlexSim 的数值对照](verification/flexsim-comparison.md)
-  - [wasm32 目标](verification/wasm.md)
+- [真机安装矩阵](verification/install-matrix.md)
+- [性能基线](verification/performance.md)
+- [与 FlexSim 的数值对照](verification/flexsim-comparison.md)
+- [wasm32 目标](verification/wasm.md)
 - [发布流程](releasing.md)
 
 # 设计

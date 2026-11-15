@@ -73,7 +73,7 @@
 | 置信区间 | 报告 | ✅ | 正态近似 `1.96·se` |
 | OptQuest 优化 | — | ⛔ | 未实现 |
 | Dashboard / 图表 | 报告 + Studio 柱状图 | 🟡 | Studio 有吞吐柱状图；无完整 Dashboard/模板 |
-| 3D 视图 / 模型树 / GUI | `openflex studio` | 🟡 | 本地 Web Studio：Canvas 3D、字段级表单、增删对象、Process Flow 块编辑、撤销/重做、时间步进/对象断点、Experimenter、Dashboard（可导出 PNG）；无 GPU 渲染/模型树 |
+| 3D 视图 / 模型树 / GUI | `openflex studio` | 🟡 | 本地 Web Studio：Canvas 3D、字段级表单、增删对象、Process Flow 拖拽画布/块表单、撤销/重做、时间步进/对象断点、Experimenter、Dashboard（PNG）；无 GPU 渲染/模型树 |
 | 导出 Excel / 数据库 | CSV / JSON / xlsx | ✅ | `run --xlsx` 输出 Summary/Objects/Replications 三个 sheet |
 
 ## 文件与集成
@@ -83,7 +83,7 @@
 | .fsm 模型文件 | `.ofm` JSON | ✅ | 纯文本、可 diff、可版本控制 |
 | 命令行参数 | `openflex` CLI | ✅ | validate/run/experiment/report/compare |
 | 脚本接口 | CLI + JSON 报告 + rhai | ✅ | 模型内嵌 rhai 脚本（触发器/条件） |
-| 与 Excel/数据库交换 | CSV/JSON/xlsx | ✅ | xlsx 导出；数据库无原生驱动（可用 CSV 中转） |
+| 与 Excel/数据库交换 | CSV/JSON/xlsx | ✅ | xlsx 导出（run --xlsx）与导入（import --xlsx objects/connections/arrivals）；无数据库驱动 |
 | 跨平台 | macOS/Windows/Linux | ✅ | 安装包与脚本 |
 
 ## 已知语义差异（有意为之）

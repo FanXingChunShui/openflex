@@ -22,7 +22,10 @@ authors = ["OpenFlex contributors"]
 description = "净室离散事件仿真引擎与 CLI：模型格式、安装、验证与发布"
 language = "zh-CN"
 src = "."
-build-dir = "book"
+# build-dir is intentionally not set: the default is `book`, and mdBook 0.4 and
+# 0.5 disagree about where the option lives ([book] vs [build]). Leaving it out
+# keeps `mdbook build docs` working on both versions and still writes
+# docs/book/ — which is generated output and must not be committed.
 
 [output.html]
 default-theme = "light"

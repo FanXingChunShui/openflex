@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.13.0 — 2026-11-15
+
+### 对象与运行时
+
+- **AGV 有向路网**：`NetworkEdge.directed`（默认无向）；**全段途中扣电**（取货/送达/回程分别按实际距离实时扣电，
+  耗尽就地充电后从该段续跑）；示例 `agv-network.ofm`（去程 2s、回程 6s 精确断言）。
+
+### Studio
+
+- **Process Flow 拖拽画布**：块矩形/端口/连线绘制，拖动块调整布局（`metadata.flow_layout`），
+  从输出端口拖到目标块创建连接，点击块编辑参数；与块表单/JSON/撤销同步。
+- **`openflex import --xlsx`**：读取 xlsx（zip + 手写 XML）的 objects/connections/arrivals 工作表生成模型，
+  可 validate/run；错误带 sheet 与 Excel 行号。
+
+### 工程与发布
+
+- **mdBook 文档站真实构建通过**（mdbook v0.5.4，修复 build-dir/重复章节/外部链接问题）。
+- 包管理器清单同步到 v0.12.0（homebrew/winget/scoop，verify-packaging 98 项 PASS）。
+- 真机安装矩阵更新 v0.12.0（macOS verify-install 20 项 PASS）。
+- 已知：GHCR 0.12.0 镜像缺失（container workflow 未成功推送，需重跑）。
+
+### 验证
+
+- 334 个测试全绿（core 158、CLI 89、model 70、report 16）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.13.0 三平台产物发布并 SHA256 校验。
+
 ## v0.12.0 — 2026-11-15
 
 ### 对象与运行时

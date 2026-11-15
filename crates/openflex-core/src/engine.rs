@@ -278,8 +278,8 @@ pub(crate) enum EventKind {
     FluidStep,
     /// An AGV finished charging (B6 battery).
     ChargeDone(usize),
-    /// An AGV resumes a task after charging mid-route.
-    TransportResume(usize, usize),
+    /// An AGV resumes a task stage (0 pickup, 1 arrive, 2 home) after charging.
+    TransportResume(usize, usize, u8),
     /// Warm-up boundary: reset the statistics accumulators.
     ResetStats,
 }
@@ -1875,8 +1875,8 @@ impl<'m> Simulation<'m> {
             EventKind::FlowDelayDone(block, token) => self.handle_flow_delay_done(block, token),
             EventKind::FluidStep => self.handle_fluid_step(),
             EventKind::ChargeDone(executor) => self.handle_charge_done(executor),
-            EventKind::TransportResume(executor, requester) => {
-                self.handle_transport_resume(executor, requester)
+            EventKind::TransportResume(executor, requester, stage) => {
+                self.handle_transport_resume(executor, requester, stage)
             }
             EventKind::TransportPickup(transporter, requester) => {
                 self.handle_transport_pickup(transporter, requester)
@@ -4951,7 +4951,7 @@ impl<'m> Simulation<'m> {
         let travel = self.transport_leg_travel(transporter, requester);
         let pickup_distance =
             self.transport_pickup_travel(transporter) * self.transport_speed(transporter);
-        if self.agv_mid_task_charge(transporter, requester, pickup_distance)? {
+        if self.agv_mid_task_charge(transporter, requester, pickup_distance, 0)? {
             return Ok(());
         }
         self.schedule(
@@ -4968,6 +4968,7 @@ impl<'m> Simulation<'m> {
         transporter: usize,
         requester: usize,
         distance: f64,
+        stage: u8,
     ) -> Result<bool, SimError> {
         if self.objects[transporter].kind != ObjectKind::Agv {
             return Ok(false);
@@ -4993,7 +4994,7 @@ impl<'m> Simulation<'m> {
         let charge = self.sample(&distribution).max(0.0);
         self.schedule(
             self.now + charge,
-            EventKind::TransportResume(transporter, requester),
+            EventKind::TransportResume(transporter, requester, stage),
         );
         Ok(true)
     }
@@ -5002,11 +5003,16 @@ impl<'m> Simulation<'m> {
         &mut self,
         transporter: usize,
         requester: usize,
+        stage: u8,
     ) -> Result<(), SimError> {
         if let Some(capacity) = self.agv_battery_capacity(transporter) {
             self.objects[transporter].battery = Some(capacity);
         }
-        self.handle_transport_pickup(transporter, requester)
+        match stage {
+            1 => self.handle_transport_arrive(transporter, requester),
+            2 => self.handle_transport_home(transporter),
+            _ => self.handle_transport_pickup(transporter, requester),
+        }
     }
 
     fn handle_transport_arrive(
@@ -5033,6 +5039,11 @@ impl<'m> Simulation<'m> {
         }
         self.objects[transporter].position = self.objects[requester].position;
         self.objects[transporter].z = self.objects[requester].z;
+        let leg_distance =
+            self.transport_leg_travel(transporter, requester) * self.transport_speed(transporter);
+        if self.agv_mid_task_charge(transporter, requester, leg_distance, 1)? {
+            return Ok(());
+        }
         let dwell = self.transport_dwell(transporter);
         let unload = self.transport_unload_time(transporter);
         self.schedule(
@@ -5215,6 +5226,12 @@ impl<'m> Simulation<'m> {
         let home_travel = self.objects[transporter]
             .home
             .map(|home| self.transport_object_distance(transporter, requester, home) / speed);
+        if let Some(home) = self.objects[transporter].home {
+            let distance = self.transport_object_distance(transporter, requester, home);
+            if self.agv_mid_task_charge(transporter, requester, distance, 2)? {
+                return Ok(());
+            }
+        }
         if let Some(travel) = home_travel
             && travel > EPS
         {
@@ -6526,10 +6543,10 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
             "agv_charged",
             Some(("executor", *executor as f64)),
         ),
-        EventKind::TransportResume(executor, requester) => (
+        EventKind::TransportResume(executor, requester, stage) => (
             Some(*executor),
             "agv_resume",
-            Some(("requester", *requester as f64)),
+            Some(("requester", *requester as f64 + *stage as f64 * 0.0)),
         ),
         EventKind::ResetStats => (None, "reset_stats", None),
     }
@@ -6550,10 +6567,12 @@ fn shortest_network_distance(edges: &[NetworkEdge], from: &str, to: &str) -> Opt
             .entry(edge.from.as_str())
             .or_default()
             .push((edge.to.as_str(), edge.distance));
-        adjacency
-            .entry(edge.to.as_str())
-            .or_default()
-            .push((edge.from.as_str(), edge.distance));
+        if !edge.directed {
+            adjacency
+                .entry(edge.to.as_str())
+                .or_default()
+                .push((edge.from.as_str(), edge.distance));
+        }
     }
     let mut distances: std::collections::HashMap<&str, f64> = std::collections::HashMap::new();
     let mut visited: std::collections::HashMap<&str, bool> = std::collections::HashMap::new();
