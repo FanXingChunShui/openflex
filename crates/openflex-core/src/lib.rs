@@ -24,6 +24,7 @@ pub mod conveyor;
 pub mod engine;
 pub mod error;
 pub mod script;
+pub mod sha256;
 pub mod shifts;
 pub mod stats;
 pub mod trace;

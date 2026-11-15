@@ -36,6 +36,7 @@
   .object-button, .block-button { text-align: left; display: flex; justify-content: space-between;
                                   gap: 8px; }
   .object-button.active, .block-button.active { background: #dbeafe; border-color: #1d4ed8; }
+  .object-button.multi { box-shadow: inset 3px 0 0 #0284c7; border-color: #0284c7; }
   .object-button .kind, .block-button .kind { color: #64748b; font-size: 12px; }
   #editor, #param-form, #block-editor, #block-form { display: flex; flex-direction: column; gap: 8px; }
   #editor label, #block-editor label, .field-group label { display: flex; flex-direction: column;
@@ -62,6 +63,7 @@
   .layout-controls { position: absolute; top: 8px; left: 8px; display: flex; gap: 4px;
                      align-items: center; flex-wrap: wrap; max-width: calc(100% - 16px); }
   .layout-controls button { padding: 3px 8px; font-size: 11px; background: rgba(255,255,255,.9); }
+  .layout-controls button.primary { background: #1d4ed8; border-color: #1d4ed8; color: white; }
   .layout-controls.align-controls { top: 38px; }
   .layout-controls label { font-size: 11px; color: #475569; display: flex; gap: 3px;
                            align-items: center; background: rgba(255,255,255,.9);
@@ -135,7 +137,7 @@
       <button id="add-object" type="button">Add</button>
     </div>
     <input id="object-search" type="search" placeholder="Filter objects by name or kind…" aria-label="Filter objects">
-    <div id="object-list" data-object-tree="1"><p class="muted">loading…</p></div>
+    <div id="object-list" data-object-tree="1" data-multi-select="1"><p class="muted">loading…</p></div>
 
     <h2>Edit object</h2>
     <div id="editor"><p class="muted">Select an object to edit its name, kind and parameters.</p></div>
@@ -186,7 +188,7 @@
   </aside>
 
   <section class="view">
-    <canvas id="scene" aria-label="3D model view" data-drag-object="1" data-occlusion="1"></canvas>
+    <canvas id="scene" aria-label="3D model view" data-drag-object="1" data-occlusion="1" data-box-select="1"></canvas>
     <div class="layout-controls" data-layout-controls="1">
       <button type="button" data-layout-grid="1">Grid</button>
       <button type="button" data-layout-circle="1">Circle</button>
@@ -208,6 +210,9 @@
       <button type="button" data-align-bottom="1">Bottom</button>
       <button type="button" data-distribute-h="1">Distribute H</button>
       <button type="button" data-distribute-v="1">Distribute V</button>
+      <span id="selection-count" data-selection-count="1" class="muted">all objects</span>
+      <button type="button" data-batch-duplicate="1">Duplicate selected</button>
+      <button type="button" data-batch-delete="1">Delete selected</button>
     </div>
     <div class="hint" data-projection="perspective" data-depth-sort="1" data-focus-object="1" data-nudge="10">drag to rotate or move an object · wheel to zoom · double-click to focus · arrows nudge 10px (Shift 1px)</div>
   </section>
@@ -295,6 +300,8 @@ const state = {
   sceneInfo: null,
   sceneExport: null,
   dragObject: null,
+  multiSelection: new Set(),
+  boxSelect: null,
   view2d: false,
   snapGrid: 10,
   dragGuides: null,
@@ -327,6 +334,7 @@ const state = {
   events: [],
   scenarios: [{ name: "baseline", overrides: "" }],
 };
+window.__studio = state;
 
 const $ = id => document.getElementById(id);
 const scene = $("scene");
@@ -572,6 +580,7 @@ function renderAll() {
   renderObjectList();
   renderEditor();
   renderGlobalTables();
+  updateSelectionUi();
   loadCheckpoints();
   renderFlow();
   $("edit-process-flow").value = JSON.stringify(state.model.process_flow ?? null, null, 2);
@@ -687,12 +696,26 @@ function renderObjectList() {
     entries.forEach(({ object, index }) => {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "object-button" + (index === state.selected ? " active" : "");
+      button.className = "object-button"
+        + (index === state.selected ? " active" : "")
+        + (state.multiSelection.has(index) ? " multi" : "");
       const onDrawBadge = hasOnDraw(object) ? ' <span class="on-draw-badge" data-on-draw-badge="1">on_draw</span>' : "";
       button.innerHTML = `<span>${escapeText(object.name)}</span><span>${onDrawBadge}<span class="kind">${escapeText(object.kind)}</span></span>`;
-      button.addEventListener("click", () => {
+      button.addEventListener("click", event => {
         commitEdit();
+        if (event.ctrlKey || event.metaKey) {
+          if (state.multiSelection.has(index)) state.multiSelection.delete(index);
+          else state.multiSelection.add(index);
+        } else if (event.shiftKey) {
+          const anchor = state.selected;
+          const first = Math.min(anchor, index);
+          const last = Math.max(anchor, index);
+          for (let cursor = first; cursor <= last; cursor += 1) state.multiSelection.add(cursor);
+        } else {
+          state.multiSelection.clear();
+        }
         state.selected = index;
+        updateSelectionUi();
         renderObjectList();
         renderEditor();
       });
@@ -906,6 +929,56 @@ async function deleteObject() {
     clearHistory();
     renderAll();
     setStatus(`removed ${response.removed}; cleaned ${response.connections_removed} connections, ${response.references_cleaned} references`);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+async function batchDelete() {
+  const indices = batchIndices();
+  if (indices.length === 0) return;
+  const names = indices.map(index => state.model.objects[index].name);
+  if (!window.confirm(`Delete ${names.length} object(s): ${names.join(", ")}?`)) return;
+  setStatus(`deleting ${names.length} object(s)…`);
+  try {
+    let last = null;
+    for (const name of names) {
+      last = await api(`/api/model/objects/${encodeURIComponent(name)}`, { method: "DELETE" });
+    }
+    if (last) state.model = last.model;
+    state.multiSelection.clear();
+    state.selected = Math.max(0, Math.min(state.selected, state.model.objects.length - 1));
+    clearHistory();
+    renderAll();
+    setStatus(`deleted ${names.length} object(s)`);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+async function batchDuplicate() {
+  const indices = batchIndices();
+  if (indices.length === 0) return;
+  const names = indices.map(index => state.model.objects[index].name);
+  setStatus(`duplicating ${names.length} object(s)…`);
+  try {
+    const added = [];
+    let last = null;
+    for (const name of names) {
+      last = await api(`/api/model/objects/${encodeURIComponent(name)}/duplicate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      added.push(last.duplicated);
+    }
+    if (last) state.model = last.model;
+    state.multiSelection = new Set(added.map(name =>
+      state.model.objects.findIndex(object => object.name === name)).filter(index => index >= 0));
+    if (state.multiSelection.size > 0) state.selected = [...state.multiSelection][state.multiSelection.size - 1];
+    clearHistory();
+    renderAll();
+    setStatus(`duplicated ${added.length} object(s)`);
   } catch (error) {
     setStatus(error.message, true);
   }
@@ -2077,7 +2150,8 @@ function hitboxAt(x, y) {
 function applyLayout(kind) {
   if (!state.model || !state.model.objects || state.model.objects.length === 0) return;
   rememberNow();
-  const objects = state.model.objects;
+  const indices = targetIndices();
+  const objects = indices.map(index => state.model.objects[index]);
   const count = objects.length;
   if (kind === "grid") {
     const columns = Math.max(1, Math.ceil(Math.sqrt(count)));
@@ -2143,13 +2217,43 @@ function applyLayout(kind) {
     });
   }
   renderAll();
-  setStatus(`applied ${kind} layout (unsaved; use Save to persist)`);
+  setStatus(`applied ${kind} layout to ${objects.length} object(s) (unsaved; use Save to persist)`);
+}
+
+function targetIndices() {
+  const objects = (state.model && state.model.objects) || [];
+  const selected = [...state.multiSelection].filter(index => index >= 0 && index < objects.length);
+  if (selected.length > 0) return selected;
+  return objects.map((_, index) => index);
+}
+
+function batchIndices() {
+  const objects = (state.model && state.model.objects) || [];
+  const selected = [...state.multiSelection].filter(index => index >= 0 && index < objects.length);
+  if (selected.length > 0) return selected;
+  return state.model && state.model.objects[state.selected] ? [state.selected] : [];
+}
+
+function updateSelectionUi() {
+  const limit = (state.model && state.model.objects && state.model.objects.length) || 0;
+  for (const index of [...state.multiSelection]) {
+    if (index < 0 || index >= limit) state.multiSelection.delete(index);
+  }
+  const count = state.multiSelection.size;
+  const label = $("selection-count");
+  if (label) label.textContent = count > 0 ? `${count} selected` : "all objects";
+}
+
+function clearMultiSelection() {
+  state.multiSelection.clear();
+  updateSelectionUi();
 }
 
 function alignObjects(kind) {
   if (!state.model || !state.model.objects || state.model.objects.length < 2) return;
   rememberNow();
-  const objects = state.model.objects;
+  const indices = targetIndices();
+  const objects = indices.map(index => state.model.objects[index]);
   const xs = objects.map(object => Number((object.pos || [0, 0])[0]) || 0);
   const ys = objects.map(object => Number((object.pos || [0, 0])[1]) || 0);
   const target = kind === "left" ? Math.min(...xs)
@@ -2162,13 +2266,14 @@ function alignObjects(kind) {
       : [pos[0], target];
   });
   renderAll();
-  setStatus(`aligned ${kind} (unsaved)`);
+  setStatus(`aligned ${kind} on ${objects.length} object(s) (unsaved)`);
 }
 
 function distributeObjects(axis) {
   if (!state.model || !state.model.objects || state.model.objects.length < 3) return;
   rememberNow();
-  const objects = state.model.objects;
+  const indices = targetIndices();
+  const objects = indices.map(index => state.model.objects[index]);
   const key = axis === "h" ? 0 : 1;
   const ordered = objects.map((object, index) => ({
     object,
@@ -2187,7 +2292,7 @@ function distributeObjects(axis) {
     entry.object.pos = axis === "h" ? [value, pos[1]] : [pos[0], value];
   });
   renderAll();
-  setStatus(`distributed ${axis === "h" ? "horizontally" : "vertically"} (unsaved)`);
+  setStatus(`distributed ${axis === "h" ? "horizontally" : "vertically"} on ${objects.length} object(s) (unsaved)`);
 }
 
 function toggleView2d() {
@@ -2296,19 +2401,21 @@ function drawScene2d(now, width, height) {
     ctx.stroke();
   }
   const selectedName = model.objects[state.selected] && model.objects[state.selected].name;
+  const multiSelected = new Set(state.multiSelection);
   state.hitboxes = [];
   state.sceneExport = { mode: "2d", width, height, objects: [], lines: [] };
   for (const item of objects) {
     const selected = item.object.name === selectedName;
+    const multi = multiSelected.has(item.index);
     const topShade = item.object.kind.startsWith("fluid") ? "#bae6fd"
       : item.object.kind === "source" ? "#dcfce7"
       : item.object.kind === "sink" ? "#fee2e2"
       : item.object.kind === "processor" ? "#dbeafe" : "#e2e8f0";
     const left = item.point.x - item.width / 2;
     const top = item.point.y - item.height / 2;
-    ctx.fillStyle = selected ? "#fef3c7" : topShade;
-    ctx.strokeStyle = selected ? "#f59e0b" : "#334155";
-    ctx.lineWidth = selected ? 2.2 : 1;
+    ctx.fillStyle = selected ? "#fef3c7" : multi ? "#e0f2fe" : topShade;
+    ctx.strokeStyle = selected ? "#f59e0b" : multi ? "#0284c7" : "#334155";
+    ctx.lineWidth = selected ? 2.2 : multi ? 1.6 : 1;
     ctx.fillRect(left, top, item.width, item.height);
     ctx.strokeRect(left, top, item.width, item.height);
     ctx.textAlign = "center";
@@ -2321,7 +2428,7 @@ function drawScene2d(now, width, height) {
     state.hitboxes.push({ name: item.object.name, index: item.index, left, right: left + item.width, top, bottom: top + item.height });
     state.sceneExport.objects.push({
       name: item.object.name, kind: item.object.kind, x: left, y: top,
-      width: item.width, height: item.height, selected,
+      width: item.width, height: item.height, selected, multi,
     });
   }
   if (state.dragGuides) {
@@ -2330,6 +2437,19 @@ function drawScene2d(now, width, height) {
     ctx.strokeStyle = "#f59e0b";
     ctx.beginPath(); ctx.moveTo(guide.x, 0); ctx.lineTo(guide.x, height); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(0, guide.y); ctx.lineTo(width, guide.y); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  if (state.boxSelect) {
+    const left = Math.min(state.boxSelect.startX, state.boxSelect.x);
+    const top = Math.min(state.boxSelect.startY, state.boxSelect.y);
+    const boxWidth = Math.abs(state.boxSelect.x - state.boxSelect.startX);
+    const boxHeight = Math.abs(state.boxSelect.y - state.boxSelect.startY);
+    ctx.fillStyle = "rgba(2,132,199,.12)";
+    ctx.strokeStyle = "#0284c7";
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([5, 4]);
+    ctx.fillRect(left, top, boxWidth, boxHeight);
+    ctx.strokeRect(left, top, boxWidth, boxHeight);
     ctx.setLineDash([]);
   }
 }
@@ -2451,9 +2571,11 @@ function drawScene(now) {
   };
 
   const selectedName = state.model.objects[state.selected] && state.model.objects[state.selected].name;
+  const multiSelected = new Set(state.multiSelection);
   for (const box of projected) {
     const [b0, b1, b2, b3, t0, t1, t2, t3] = box.corners;
     const highlighted = box.object.name === selectedName;
+    const multi = multiSelected.has(box.index);
     const face = (points, fill) => {
       ctx.beginPath();
       ctx.moveTo(points[0].x, points[0].y);
@@ -2461,8 +2583,8 @@ function drawScene(now) {
       ctx.closePath();
       ctx.fillStyle = fill;
       ctx.fill();
-      ctx.strokeStyle = highlighted ? "#f59e0b" : "#334155";
-      ctx.lineWidth = highlighted ? 2.2 : 0.8;
+      ctx.strokeStyle = highlighted ? "#f59e0b" : multi ? "#0284c7" : "#334155";
+      ctx.lineWidth = highlighted ? 2.2 : multi ? 1.6 : 0.8;
       ctx.stroke();
     };
     let topShade = box.object.kind.startsWith("fluid") ? "#bae6fd"
@@ -2470,6 +2592,7 @@ function drawScene(now) {
       : box.object.kind === "sink" ? "#fee2e2"
       : box.object.kind === "processor" ? "#dbeafe" : "#e2e8f0";
     if (highlighted) topShade = "#fef3c7";
+    else if (multi) topShade = "#e0f2fe";
     face([b0, b1, t1, t0], "#94a3b8");
     face([b1, b2, t2, t1], "#cbd5e1");
     face([t0, t1, t2, t3], topShade);
@@ -2536,7 +2659,10 @@ function exportSvg() {
   if (data.mode === "2d") {
     svg += `<rect width="100%" height="100%" fill="#f8fafc"/>`;
     for (const object of data.objects) {
-      svg += `<rect x="${object.x.toFixed(2)}" y="${object.y.toFixed(2)}" width="${object.width.toFixed(2)}" height="${object.height.toFixed(2)}" fill="${object.selected ? "#fef3c7" : "#e2e8f0"}" stroke="${object.selected ? "#f59e0b" : "#334155"}" stroke-width="${object.selected ? 2.2 : 1}"/>`;
+      const fill = object.selected ? "#fef3c7" : object.multi ? "#e0f2fe" : "#e2e8f0";
+      const stroke = object.selected ? "#f59e0b" : object.multi ? "#0284c7" : "#334155";
+      const width = object.selected ? 2.2 : object.multi ? 1.6 : 1;
+      svg += `<rect x="${object.x.toFixed(2)}" y="${object.y.toFixed(2)}" width="${object.width.toFixed(2)}" height="${object.height.toFixed(2)}" fill="${fill}" stroke="${stroke}" stroke-width="${width}"/>`;
       svg += `<text x="${(object.x + object.width / 2).toFixed(2)}" y="${(object.y - 6).toFixed(2)}" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#0f172a">${escape(object.name)}</text>`;
     }
     svg += "</svg>";
@@ -2551,16 +2677,18 @@ function exportSvg() {
   for (const box of data.boxes) {
     const [b0, b1, b2, b3, t0, t1, t2, t3] = box.corners;
     const highlighted = box.object.name === selectedName;
-    const stroke = highlighted ? "#f59e0b" : "#334155";
-    const width = highlighted ? 2.2 : 0.8;
+    const multi = state.multiSelection.has(box.index);
+    const stroke = highlighted ? "#f59e0b" : multi ? "#0284c7" : "#334155";
+    const width = highlighted ? 2.2 : multi ? 1.6 : 0.8;
     const points = points => points.map(point => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ");
     const topShade = box.object.kind.startsWith("fluid") ? "#bae6fd"
       : box.object.kind === "source" ? "#dcfce7"
       : box.object.kind === "sink" ? "#fee2e2"
       : box.object.kind === "processor" ? "#dbeafe" : "#e2e8f0";
+    const fill = highlighted ? "#fef3c7" : multi ? "#e0f2fe" : topShade;
     svg += `<polygon points="${points([b0, b1, t1, t0])}" fill="#94a3b8" stroke="${stroke}" stroke-width="${width}"/>`;
     svg += `<polygon points="${points([b1, b2, t2, t1])}" fill="#cbd5e1" stroke="${stroke}" stroke-width="${width}"/>`;
-    svg += `<polygon points="${points([t0, t1, t2, t3])}" fill="${highlighted ? "#fef3c7" : topShade}" stroke="${stroke}" stroke-width="${width}"/>`;
+    svg += `<polygon points="${points([t0, t1, t2, t3])}" fill="${fill}" stroke="${stroke}" stroke-width="${width}"/>`;
   }
   for (const label of data.labels) {
     svg += `<text x="${label.x.toFixed(2)}" y="${label.y.toFixed(2)}" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#0f172a">${escape(label.name)}</text>`;
@@ -2619,6 +2747,19 @@ scene.addEventListener("pointerdown", event => {
     event.preventDefault();
     return;
   }
+  if (state.view2d) {
+    const additive = event.ctrlKey || event.metaKey || event.shiftKey;
+    state.boxSelect = {
+      startX: x, startY: y, x, y, additive,
+    };
+    if (!additive) {
+      state.multiSelection.clear();
+      updateSelectionUi();
+    }
+    scene.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    return;
+  }
   state.dragging = true;
   state.lastX = event.clientX;
   state.lastY = event.clientY;
@@ -2629,6 +2770,11 @@ scene.addEventListener("pointermove", event => {
   const rect = scene.getBoundingClientRect();
   const x = event.clientX - rect.left;
   const y = event.clientY - rect.top;
+  if (state.boxSelect) {
+    state.boxSelect.x = x;
+    state.boxSelect.y = y;
+    return;
+  }
   if (state.dragObject && state.sceneInfo) {
     const drag = state.dragObject;
     let xWorld;
@@ -2664,6 +2810,24 @@ scene.addEventListener("pointermove", event => {
   state.pitch = Math.max(5, Math.min(80, state.pitch - dy * 0.3));
 });
 const stopDrag = () => {
+  if (state.boxSelect) {
+    const box = state.boxSelect;
+    state.boxSelect = null;
+    const left = Math.min(box.startX, box.x);
+    const right = Math.max(box.startX, box.x);
+    const top = Math.min(box.startY, box.y);
+    const bottom = Math.max(box.startY, box.y);
+    const found = (state.hitboxes || []).filter(hit =>
+      hit.left <= right && hit.right >= left && hit.top <= bottom && hit.bottom >= top);
+    if (!box.additive) state.multiSelection.clear();
+    found.forEach(hit => state.multiSelection.add(hit.index));
+    if (found.length > 0) state.selected = found[found.length - 1].index;
+    updateSelectionUi();
+    renderObjectList();
+    renderEditor();
+    setStatus(found.length > 0 ? `selected ${state.multiSelection.size} object(s)` : "selection cleared");
+    return;
+  }
   if (state.dragObject) {
     const drag = state.dragObject;
     state.dragObject = null;
@@ -2749,6 +2913,8 @@ document.querySelectorAll("[data-align-left],[data-align-right],[data-align-top]
 document.querySelectorAll("[data-distribute-h],[data-distribute-v]").forEach(button => {
   button.addEventListener("click", () => distributeObjects(button.dataset.distributeH ? "h" : "v"));
 });
+document.querySelector("[data-batch-delete]").addEventListener("click", batchDelete);
+document.querySelector("[data-batch-duplicate]").addEventListener("click", batchDuplicate);
 
 flowCanvas.addEventListener("pointerdown", event => {
   if (!state.model || !state.model.process_flow) return;

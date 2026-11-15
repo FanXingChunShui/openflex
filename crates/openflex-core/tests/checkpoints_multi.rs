@@ -341,3 +341,18 @@ fn manifest_history_is_bounded() {
     );
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// task-74: every manifest entry records the SHA-256 of its checkpoint file.
+#[test]
+fn manifest_records_sha256() {
+    let dir = temp_dir("sha256");
+    let run = run_model_with_checkpoints_retained(&model(2), &dir, 100.0, None).expect("run");
+    for entry in &run.manifest.entries {
+        let hash = entry.sha256.as_deref().expect("checksum");
+        assert_eq!(hash.len(), 64, "hex digest length");
+        let content = fs::read(dir.join(&entry.file)).expect("read checkpoint");
+        assert_eq!(hash, openflex_core::sha256::hex(&content));
+        assert_ne!(hash, openflex_core::sha256::hex(b"other"));
+    }
+    let _ = fs::remove_dir_all(&dir);
+}

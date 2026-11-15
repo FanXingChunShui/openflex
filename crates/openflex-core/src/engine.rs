@@ -1455,6 +1455,9 @@ pub struct CheckpointManifestEntry {
     pub items_in_system: u64,
     /// False when `keep` pruned the file after the run.
     pub retained: bool,
+    /// task-74: SHA-256 of the checkpoint file (hex), when it was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 /// `manifest.json` written next to the checkpoints (task-59).
@@ -1532,7 +1535,7 @@ pub fn run_model_with_checkpoints_retained(
         let file = format!("checkpoint-{index}.json");
         let path = dir.join(&file);
         let json = checkpoint.to_json()?;
-        std::fs::write(&path, json).map_err(|error| {
+        std::fs::write(&path, &json).map_err(|error| {
             SimError::Config(format!("could not write {}: {error}", path.display()))
         })?;
         entries.push(CheckpointManifestEntry {
@@ -1543,6 +1546,7 @@ pub fn run_model_with_checkpoints_retained(
             items_completed: result.items_completed,
             items_in_system: result.items_in_system,
             retained: true,
+            sha256: Some(crate::sha256::hex(json.as_bytes())),
         });
         written.push(ReplicationCheckpoint {
             index,
@@ -1786,6 +1790,7 @@ pub fn run_model_with_checkpoints_parallel(
             )));
         };
         let seed = derive_seed(model.run.seed, index as u32);
+        let content = std::fs::read(dir.join(&file)).ok();
         entries.push(CheckpointManifestEntry {
             index: index as u32,
             seed,
@@ -1794,6 +1799,7 @@ pub fn run_model_with_checkpoints_parallel(
             items_completed: result.items_completed,
             items_in_system: result.items_in_system,
             retained: true,
+            sha256: content.map(|bytes| crate::sha256::hex(&bytes)),
         });
         written.push(ReplicationCheckpoint {
             index: index as u32,

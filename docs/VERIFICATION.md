@@ -94,17 +94,17 @@ pwsh、docker，registry 检查默认关闭；清单已同步到 v0.13.0）。
 
 ## 6. 性能基线
 
-在 2026-11 的 macOS 15.8.1 x86_64 机器上，release 构建（**v0.24.0**）：
+在 2026-11 的 macOS 15.8.1 x86_64 机器上，release 构建（**v0.25.0**）：
 
 | 场景 | 规模 | 用时 / 吞吐 |
 |---|---|---|
 | M/M/1 长仿真（`bench_mm1`） | 120,318 事件 | 0.079 s → **1.52M events/s**、252,802 items/s（v0.16 基线） |
 | 多复现 | 5 × 48000 时间单位 | < 0.2 s |
-| 大模型 10k 对象 | 15,000 事件 | validate 0.09 s / run 0.21 s → 72,998 events/s |
-| 大模型 100k 对象 | 150,000 事件 | validate **0.78 s** / run **2.36 s** → 63,634 events/s，峰值 387 MB |
+| 大模型 10k 对象 | 15,000 事件 | validate 0.09 s / run 0.21 s → 71,688 events/s |
+| 大模型 100k 对象 | 150,000 事件 | validate **0.79 s** / run **2.31 s** → 64,805 events/s，峰值 393 MB |
 
-**规模结论**：10× 对象带来约 9–11× 时间，**接近线性**；v0.24.0 相比 v0.11.0 的
-85.12 s / 271.56 s 快约 **115×**（一次 run 从 4.5 分钟降到 2.4 秒）。
+**规模结论**：10× 对象带来约 9–11× 时间，**接近线性**；v0.25.0 相比 v0.11.0 的
+85.12 s / 271.56 s 快约 **115×**（一次 run 从 4.5 分钟降到 2.3 秒）。
 
 **CI 性能门槛（`bench` job）**：每个 PR 跑 10k 对象基准，
 **validate < 2 s、run < 5 s** 为硬门槛（v0.24.0 本机基线 0.09 s / 0.21 s，留 **22×** 余量），
@@ -297,12 +297,12 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 ## 最近一次验收记录
 
 - 日期：2026-11-15
-- 版本：**0.24.0**（release 已发布，11 个产物；上一轮复核了 v0.23.0）
+- 版本：**0.25.0**（release 已发布，11 个产物；上一轮复核了 v0.24.0）
 - `cargo test --workspace`：**未在本轮重跑**——工作区有并行开发（Cargo.toml / fluid 等），
   全量测试由 CI 的 `test` / `golden` / `test-arm64` job 覆盖；覆盖率基线在干净检出上测（见下）。
 - `cargo llvm-cov` 行覆盖率基线（干净 v0.10.0 检出）：**77.91%**（函数 75.75% / 区域 76.33%；
   v0.12.0 未重测）
-- `scripts/sync-package-manifests.sh --version 0.24.0`：**5 个文件更新成功**（`--check` 通过）
+- `scripts/sync-package-manifests.sh --version 0.25.0 --check`：**清单已一致**（lead 已同步）
   （homebrew version + 3 sha256、winget 三件套、scoop version/url/hash/extract_dir），
   `--check` 复核通过
 - `scripts/release.sh --dry-run`：**5 步顺序正确**（预检 → bump → sync → verify → 提示），
@@ -311,7 +311,7 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
   含 12 个 shell 脚本的 bash -n 与 shellcheck、workflow/dependabot/winget YAML、
   deny.toml 与 fuzz/Cargo.toml 的 TOML 解析、wasm32 检查、新工具的 `--help` 与 dry-run，
   以及 winget/scoop/homebrew 清单版本与 sha256 的一致性检查、bench/sync/verify-ghcr 脚本与文档站配置检查）
-- `scripts/verify-install.sh --version 0.24.0`（真实 GitHub Release）：**PASS**，20 项
+- `scripts/verify-install.sh --version 0.25.0`（真实 GitHub Release）：**PASS**，20 项
 - `cargo check` + `cargo build -p openflex-core --target wasm32-unknown-unknown`：**通过**
 - `mdbook build docs`（mdBook 0.5.4）：**成功**，11 个顶层页面 + 4 个 verification 页面（约 3.7 MB），
   `index.html` = 「OpenFlex 文档」；生成物已删除（见第 10 节）
@@ -344,17 +344,18 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 | v0.22.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS（2026-11-15），见 [install-matrix](verification/install-matrix.md) |
 | v0.23.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS（2026-11-15），见 [install-matrix](verification/install-matrix.md) |
 | v0.24.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS（2026-11-15），见 [install-matrix](verification/install-matrix.md) |
-| Homebrew 公式（v0.24.0 真实 sha256） | **已完成**（`ruby -c` 通过）；tap 待创建 | `packaging/homebrew/openflex.rb` |
+| v0.25.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS（2026-11-15），见 [install-matrix](verification/install-matrix.md) |
+| Homebrew 公式（v0.25.0 真实 sha256） | **已完成**（`ruby -c` 通过）；tap 待创建 | `packaging/homebrew/openflex.rb` |
 | Homebrew `brew audit` / `brew install --build-from-source` | **待环境** | 本机 Homebrew 非 Tier 1 配置，audit 被 SIGTERM；命令见 `packaging/homebrew/README.md` |
-| winget / scoop 清单（v0.24.0 URL/SHA256） | **已完成，待提交** | `packaging/winget/`、`packaging/scoop/openflex.json`；由 `sync-package-manifests.sh` 同步 |
-| GHCR 镜像发布与验证 | **0.10.0–0.24.0 + latest（=0.24.0）全部 200**（0.24.0 在发布约 29 分钟后出现） | `scripts/verify-ghcr.sh` 核对；docker 本地运行**待环境** |
+| winget / scoop 清单（v0.25.0 URL/SHA256） | **已完成，待提交** | `packaging/winget/`、`packaging/scoop/openflex.json`；由 `sync-package-manifests.sh` 同步 |
+| GHCR 镜像发布与验证 | **0.10.0–0.25.0 + latest（=0.25.0）全部 200**（0.25.0 在发布约 13 分钟后出现） | `scripts/verify-ghcr.sh` 核对；docker 本地运行**待环境** |
 | container workflow 加固 | **已完成** | `timeout-minutes: 45`、`provenance: false`、推送后 registry API 复核、失败时打印 buildx/docker 诊断 |
 | GHCR registry 检查工具 | **已完成** | `scripts/verify-ghcr.sh`（无需 docker/token；支持 `--retry`/`--expect-latest`/`--json`） |
 | Windows / Linux / deb / rpm / MSI 真机安装 | **待环境** | 脚本与命令清单就绪，见安装矩阵第 5 节 |
 | 签名/公证（macOS/Windows/GPG） | **CI 已配置，待证书**（2026-11-15 复核） | release.yml 5 处签名步骤 `if: env.X != ''`；三套脚本 dry-run 通过 |
 | 10 万对象性能基准（v0.11.0） | **已实跑** | validate 85.12 s / run 271.56 s / 552 events/s / 峰值 397 MB，见 [performance.md](verification/performance.md) |
 | 文档站（mdBook） | **已构建验证**（mdBook 0.5.4） | 11+4 页面，`index.html`=「OpenFlex 文档」；配置见第 10 节 |
-| 包管理器清单同步到 v0.24.0 | **已完成** | `sync-package-manifests.sh --version 0.24.0`；`--check` 通过 |
+| 包管理器清单同步到 v0.25.0 | **已完成** | `sync-package-manifests.sh --version 0.25.0 --check` 通过（lead 已同步） |
 | 发布 checklist 脚本（`scripts/release.sh`） | **已完成并实测** | dry-run 输出 1→5 顺序；`prepare`/`publish`/`all` 三阶段；错误路径 exit 1/2；已接入 verify-packaging（含 bash -n 与 `--help` 检查） |
 | CI 性能门槛（`bench` job，10k 对象） | **已实跑**（本机等价命令 + 负向测试） | validate < 2 s、run < 5 s；本机 0.14 s / 0.40 s；见 [performance.md](verification/performance.md) §4.1 |
 | FlexSim 导出 CSV 步骤 + 示例数据 | **已完成** | [flexsim-comparison.md](verification/flexsim-comparison.md) §4.5 + [flexsim-export-example.csv](verification/flexsim-export-example.csv)（净室声明保留） |
