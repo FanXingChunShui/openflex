@@ -2118,6 +2118,10 @@ struct Simulation<'m> {
     scripts: HashMap<String, CompiledScript>,
     /// Trigger location of the actions currently being applied (script errors).
     action_location: String,
+    /// task-106: AGVs currently occupying each charger.
+    charger_in_use: HashMap<usize, u32>,
+    /// task-106: AGVs waiting for a charger slot (FIFO per charger).
+    charger_queue: HashMap<usize, VecDeque<usize>>,
     /// task-56: cached shortest distances for transport legs, keyed by
     /// `(task executer, from object, to object)`. Object positions are fixed
     /// for the whole run, so a hit is always correct; restoring a checkpoint
@@ -2282,6 +2286,8 @@ impl<'m> Simulation<'m> {
             scripts,
             action_location: String::new(),
             distance_cache: RefCell::new(HashMap::new()),
+            charger_in_use: HashMap::new(),
+            charger_queue: HashMap::new(),
             pause_at: None,
             shaft_owner: HashMap::new(),
             trigger_depth: 0,
@@ -6223,9 +6229,45 @@ impl<'m> Simulation<'m> {
         }
     }
 
+    /// task-106: the charger object an AGV is assigned to, if any.
+    fn charger_slot(&self, transporter: usize) -> Option<usize> {
+        match &self.model.objects[transporter].params {
+            ObjectParams::Agv(params) => params
+                .charger
+                .as_ref()
+                .and_then(|name| self.by_name.get(name).copied()),
+            _ => None,
+        }
+    }
+
+    fn charger_capacity(&self, charger: usize) -> u32 {
+        match &self.model.objects[charger].params {
+            ObjectParams::Resource(params) => params.capacity.max(1),
+            _ => self.objects[charger].capacity.max(1),
+        }
+    }
+
     fn start_charging(&mut self, transporter: usize) -> Result<(), SimError> {
         if self.objects[transporter].charging {
             return Ok(());
+        }
+        // task-106: with a charger object the AGV takes a slot; without one it
+        // charges in place (the historical behaviour).
+        if let Some(charger) = self.charger_slot(transporter) {
+            let capacity = self.charger_capacity(charger);
+            let in_use = self.charger_in_use.get(&charger).copied().unwrap_or(0);
+            if in_use >= capacity {
+                self.charger_queue
+                    .entry(charger)
+                    .or_default()
+                    .push_back(transporter);
+                self.objects[transporter].charging = true;
+                self.objects[transporter].charge_until = f64::INFINITY;
+                self.record_object_trace("agv_charge_wait", transporter);
+                return Ok(());
+            }
+            *self.charger_in_use.entry(charger).or_insert(0) += 1;
+            self.record_object_trace("agv_charge_start", transporter);
         }
         let Some(capacity) = self.agv_battery_capacity(transporter) else {
             return Ok(());
@@ -6253,6 +6295,21 @@ impl<'m> Simulation<'m> {
         }
         self.objects[transporter].charging = false;
         self.objects[transporter].charge_until = 0.0;
+        // task-106: free the charger slot and wake the next waiting AGV.
+        if let Some(charger) = self.charger_slot(transporter) {
+            if let Some(slot) = self.charger_in_use.get_mut(&charger) {
+                *slot = slot.saturating_sub(1);
+            }
+            let next = self
+                .charger_queue
+                .get_mut(&charger)
+                .and_then(|queue| queue.pop_front());
+            if let Some(next) = next {
+                self.objects[next].charging = false;
+                self.objects[next].charge_until = 0.0;
+                self.start_charging(next)?;
+            }
+        }
         if let Some(dispatcher) = self.objects[transporter].assigned_dispatcher {
             self.dispatch(dispatcher)?;
         }
@@ -9284,5 +9341,71 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(pipe_capacity(&plain, Some(1000.0), linear), linear);
+    }
+
+    /// task-106: a charger with capacity 1 serves one AGV and queues the next;
+    /// finishing a charge wakes the waiting AGV.
+    #[test]
+    fn agv_charger_slots_queue() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "charger",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "A1", "kind": "agv", "params": {
+                "battery_capacity": 10.0, "consumption_per_distance": 1.0,
+                "charge_time": { "distribution": "constant", "value": 10.0 },
+                "charger": "C1" } },
+            { "name": "A2", "kind": "agv", "params": {
+                "battery_capacity": 10.0, "consumption_per_distance": 1.0,
+                "charge_time": { "distribution": "constant", "value": 10.0 },
+                "charger": "C1" } },
+            { "name": "C1", "kind": "resource", "params": { "capacity": 1 } },
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let first = sim.by_name["A1"];
+        let second = sim.by_name["A2"];
+        let charger = sim.by_name["C1"];
+        sim.objects[first].battery = Some(0.0);
+        sim.objects[second].battery = Some(0.0);
+
+        sim.start_charging(first).expect("first charge");
+        assert_eq!(sim.charger_in_use.get(&charger).copied(), Some(1));
+        assert!(sim.objects[first].charging);
+        assert!(sim.objects[first].charge_until.is_finite());
+
+        sim.start_charging(second).expect("queued");
+        assert_eq!(
+            sim.charger_in_use.get(&charger).copied(),
+            Some(1),
+            "one slot"
+        );
+        assert_eq!(
+            sim.charger_queue.get(&charger).map(VecDeque::len),
+            Some(1),
+            "the second AGV waits"
+        );
+        assert!(sim.objects[second].charging, "a waiting AGV takes no tasks");
+        assert!(
+            sim.objects[second].charge_until.is_infinite(),
+            "still waiting"
+        );
+
+        // Finishing the first charge hands the slot to the queued AGV.
+        sim.handle_charge_done(first).expect("done");
+        assert_eq!(sim.charger_in_use.get(&charger).copied(), Some(1));
+        assert_eq!(sim.charger_queue.get(&charger).map(VecDeque::len), Some(0));
+        assert!(sim.objects[second].charge_until.is_finite(), "now charging");
     }
 }

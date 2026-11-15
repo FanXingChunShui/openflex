@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.37.0 — 2026-11-16
+
+### AGV
+
+- **充电桩容量排队**：`charger` 指向 resource（读 `capacity`，默认 1）；有空位则占用并充电，否则 FIFO 排队
+  （`charging=true`、不接任务、`charge_until=INFINITY`），`ChargeDone` 释放槽位并唤醒队首；
+  未配 `charger` 时原“原地充电”路径逐位不变；trace `agv_charge_start`/`agv_charge_wait`。
+- 单元测试 `agv_charger_slots_queue` 精确验证两阶段（入队/接替）。
+
+### Studio
+
+- **报告导出**：`Export report JSON` / `Export report CSV`（当前 `/api/run` 报告）；对象状态面板增加 AGV 充电状态（无数据显示 n/a）。
+
+### 验证
+
+- 475 个测试全绿（core 244、CLI 83、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.37.0 三平台产物发布并 SHA256 校验。
+
 ## v0.36.0 — 2026-11-16
 
 ### 对象

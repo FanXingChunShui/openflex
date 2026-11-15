@@ -351,6 +351,8 @@
         <button id="export-svg" type="button">Export SVG</button>
         <button id="export-model-json" type="button">Export model JSON</button>
         <button id="export-csv" type="button">Export CSV</button>
+        <button id="export-report-json" type="button" data-export-report-json="1">Export report JSON</button>
+        <button id="export-report-csv" type="button" data-export-report-csv="1">Export report CSV</button>
       </div>
       <canvas id="replication-chart" aria-label="Per-replication scatter"></canvas>
       <div class="row">
@@ -981,7 +983,17 @@ function renderObjectState() {
   const door = `<div class="state-grid"><span><b>door_open</b><span>${(doorOpen / count).toFixed(2)} s</span></span>
     <span><b>door_opening</b><span>${(doorOpening / count).toFixed(2)} s</span></span>
     <span><b>door_closing</b><span>${(doorClosing / count).toFixed(2)} s</span></span></div>`;
-  panel.innerHTML = `<h4>State breakdown — ${escapeText(object.name)}</h4><div class="state-grid">${grid}</div>${door}`;
+  const isAgv = object.kind === "agv" || object.kind === "transporter"
+    || (object.params && object.params.battery_capacity != null);
+  const battery = stats.battery_remaining ?? stats.battery ?? stats.battery_mean ?? null;
+  const charging = stats.charging_fraction ?? stats.charging_time ?? stats.charge_time ?? null;
+  const agv = isAgv
+    ? `<div class="state-grid" data-agv-battery="1">
+        <span><b>battery</b><span>${battery == null ? "n/a" : Number(battery).toFixed(3)}</span></span>
+        <span><b>charging</b><span>${charging == null ? "n/a" : Number(charging).toFixed(3)}</span></span>
+      </div><p class="muted" data-agv-battery-note="1">battery/charging: n/a — core report does not expose these fields yet.</p>`
+    : "";
+  panel.innerHTML = `<h4>State breakdown — ${escapeText(object.name)}</h4><div class="state-grid">${grid}</div>${door}${agv}`;
 }
 
 function renderEditor() {
@@ -3494,6 +3506,75 @@ function downloadText(filename, text, type) {
   URL.revokeObjectURL(link.href);
 }
 
+function reportDoorTimes(report, name) {
+  let opening = 0;
+  let open = 0;
+  let closing = 0;
+  let count = 0;
+  for (const replication of report.replications || []) {
+    const times = replication.objects && replication.objects[name] && replication.objects[name].state_times;
+    if (!times) continue;
+    opening += Number(times.door_opening || 0);
+    open += Number(times.door_open || 0);
+    closing += Number(times.door_closing || 0);
+    count += 1;
+  }
+  const divisor = count || 1;
+  return [opening / divisor, open / divisor, closing / divisor];
+}
+
+function exportReportJson() {
+  if (!state.report) {
+    setStatus("run or step the model before exporting the report", true);
+    return;
+  }
+  downloadText("openflex-report.json", JSON.stringify(state.report, null, 2), "application/json;charset=utf-8");
+  setStatus("exported openflex-report.json");
+}
+
+function exportReportCsv() {
+  if (!state.report) {
+    setStatus("run or step the model before exporting the report", true);
+    return;
+  }
+  const escapeCell = value => {
+    const text = String(value == null ? "" : value);
+    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const lines = ["object,kind,input,output,avg_wip,max_wip,avg_stay,utilization,throughput,idle,busy,blocked,down,off_shift,door_opening,door_open,door_closing"];
+  for (const [name, stats] of Object.entries(state.report.objects || {})) {
+    const [doorOpening, doorOpen, doorClosing] = reportDoorTimes(state.report, name);
+    const offShift = (state.report.replications || []).reduce((sum, replication) => {
+      const times = replication.objects && replication.objects[name] && replication.objects[name].state_times;
+      if (!times) return sum;
+      const total = Number(times.idle || 0) + Number(times.busy || 0) + Number(times.blocked || 0)
+        + Number(times.down || 0) + Number(times.off_shift || 0);
+      return sum + (total > 0 ? Number(times.off_shift || 0) / total : 0);
+    }, 0) / Math.max(1, (state.report.replications || []).length);
+    lines.push([
+      name,
+      stats.kind,
+      stats.input_count.mean,
+      stats.output_count.mean,
+      stats.avg_content.mean,
+      stats.max_content.mean,
+      stats.avg_stay_time.mean,
+      stats.utilization.mean,
+      stats.throughput.mean,
+      stats.idle_fraction.mean,
+      stats.busy_fraction.mean,
+      stats.blocked_fraction.mean,
+      stats.down_fraction.mean,
+      offShift,
+      doorOpening,
+      doorOpen,
+      doorClosing,
+    ].map(escapeCell).join(","));
+  }
+  downloadText("openflex-report.csv", lines.join("\n"), "text/csv;charset=utf-8");
+  setStatus("exported openflex-report.csv");
+}
+
 function exportLayoutJson() {
   if (!state.model) return;
   const layout = {
@@ -4051,6 +4132,8 @@ $("object-menu").addEventListener("click", event => {
 document.addEventListener("click", event => {
   if (!event.target.closest("#object-menu")) hideObjectMenu();
 });
+$("export-report-json").addEventListener("click", exportReportJson);
+$("export-report-csv").addEventListener("click", exportReportCsv);
 $("export-layout").addEventListener("click", exportLayoutJson);
 $("import-layout").addEventListener("click", () => $("import-layout-file").click());
 $("import-layout-file").addEventListener("change", async event => {
