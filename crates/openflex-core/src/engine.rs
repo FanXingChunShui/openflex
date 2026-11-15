@@ -126,8 +126,10 @@
 //!   the queue at the batch release instant, even though a downstream object
 //!   may accept them one at a time afterwards.
 
+use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
+use std::path::{Path, PathBuf};
 
 use openflex_model::{
     Action, ArrivalStyle, CombinerMode, ConditionalPort, ConnectionKind, Distribution,
@@ -852,35 +854,46 @@ impl ObjectRt {
                 // time is the sum of `length / speed` over the segments, which
                 // the single-speed belt model represents with the equivalent
                 // speed `total_length / total_time`.
-                let (belt_length, belt_speed) = if params.segments.is_empty() {
-                    (params.length + curve.max(0.0), params.speed)
-                } else {
-                    let mut total_length = 0.0;
-                    let mut total_time = 0.0;
-                    for segment in &params.segments {
-                        let arc = match params.curve.as_ref() {
-                            Some(curve) if segment.angle.abs() > 0.0 => {
-                                curve.radius * segment.angle.to_radians().abs()
-                            }
-                            _ => 0.0,
-                        };
-                        let length = segment.length.max(0.0) + arc;
-                        total_length += length;
-                        total_time += length / segment.speed.max(EPS);
-                    }
-                    let speed = if total_time > 0.0 {
-                        total_length / total_time
+                // task-56: a segmented belt keeps its speed profile; the item
+                // position integrates each band's speed instead of using a
+                // single equivalent speed.
+                let (belt_length, belt_speed, segment_bounds, segment_speeds) =
+                    if params.segments.is_empty() {
+                        (
+                            params.length + curve.max(0.0),
+                            params.speed,
+                            Vec::new(),
+                            Vec::new(),
+                        )
                     } else {
-                        params.speed
+                        let mut bounds = Vec::new();
+                        let mut speeds = Vec::new();
+                        let mut position = 0.0;
+                        for segment in &params.segments {
+                            let arc = match params.curve.as_ref() {
+                                Some(curve) if segment.angle.abs() > 0.0 => {
+                                    curve.radius * segment.angle.to_radians().abs()
+                                }
+                                _ => 0.0,
+                            };
+                            position += segment.length.max(0.0) + arc;
+                            bounds.push(position);
+                            speeds.push(segment.speed.max(EPS));
+                        }
+                        let total = bounds.pop().unwrap_or(0.0);
+                        let first = speeds.first().copied().unwrap_or(params.speed);
+                        (total, first, bounds, speeds)
                     };
-                    (total_length, speed)
-                };
-                runtime.belt = Some(Belt::new(
+                let mut belt = Belt::new(
                     belt_length,
                     belt_speed,
                     params.item_spacing,
                     params.accumulating,
-                ));
+                );
+                if !segment_speeds.is_empty() {
+                    belt.set_segments(segment_bounds, segment_speeds);
+                }
+                runtime.belt = Some(belt);
                 let mut stops: Vec<BeltStop> = Vec::new();
                 for photo_eye in &params.photo_eyes {
                     stops.push(BeltStop {
@@ -1341,6 +1354,58 @@ pub struct EventPreview {
     pub detail: Option<String>,
 }
 
+/// One replication of a multi-checkpoint run (task-56).
+#[derive(Debug, Clone)]
+pub struct ReplicationCheckpoint {
+    /// Replication index (0-based).
+    pub index: u32,
+    /// Result of this replication at `stop_time`.
+    pub result: ReplicationResult,
+    /// File the checkpoint was written to (`checkpoint-<index>.json`).
+    pub path: PathBuf,
+}
+
+/// task-56: run every replication of the model to `stop_time` and write one
+/// checkpoint per replication into `dir`.
+///
+/// The files are named `checkpoint-<index>.json` and use the regular
+/// [`Checkpoint`] format, so [`simulate_with_checkpoint`] can resume any of
+/// them later. The directory is created when it does not exist.
+pub fn run_model_with_checkpoints(
+    model: &Model,
+    dir: &Path,
+    stop_time: f64,
+) -> Result<Vec<ReplicationCheckpoint>, SimError> {
+    if stop_time <= 0.0 {
+        return Err(SimError::Config("stop_time must be positive".into()));
+    }
+    std::fs::create_dir_all(dir).map_err(|error| {
+        SimError::Config(format!(
+            "could not create the checkpoint directory {}: {error}",
+            dir.display()
+        ))
+    })?;
+    let replications = model.run.replications.max(1);
+    let mut written = Vec::with_capacity(replications as usize);
+    for index in 0..replications {
+        let seed = derive_seed(model.run.seed, index);
+        let mut config = SimConfig::from_run_settings(&model.run, seed);
+        config.stop_time = stop_time;
+        let (result, checkpoint) = simulate_with_checkpoint(model, &config, index, None)?;
+        let path = dir.join(format!("checkpoint-{index}.json"));
+        let json = checkpoint.to_json()?;
+        std::fs::write(&path, json).map_err(|error| {
+            SimError::Config(format!("could not write {}: {error}", path.display()))
+        })?;
+        written.push(ReplicationCheckpoint {
+            index,
+            result,
+            path,
+        });
+    }
+    Ok(written)
+}
+
 /// A live simulation that can be advanced incrementally (task-47).
 ///
 /// The one-shot helpers ([`simulate_until`], [`resume_from_checkpoint`]) build a
@@ -1601,6 +1666,11 @@ struct Simulation<'m> {
     scripts: HashMap<String, CompiledScript>,
     /// Trigger location of the actions currently being applied (script errors).
     action_location: String,
+    /// task-56: cached shortest distances for transport legs, keyed by
+    /// `(task executer, from object, to object)`. Object positions are fixed
+    /// for the whole run, so a hit is always correct; restoring a checkpoint
+    /// clears the cache.
+    distance_cache: RefCell<HashMap<(usize, usize, usize), f64>>,
     /// task-44: stop the event loop when the clock reaches this time (the
     /// `on_stop` / `on_resume` controlled run); `None` = run to `stop_time`.
     pause_at: Option<f64>,
@@ -1759,6 +1829,7 @@ impl<'m> Simulation<'m> {
             process_flow,
             scripts,
             action_location: String::new(),
+            distance_cache: RefCell::new(HashMap::new()),
             pause_at: None,
             shaft_owner: HashMap::new(),
             trigger_depth: 0,
@@ -2306,6 +2377,7 @@ impl<'m> Simulation<'m> {
     /// the seed/warm-up must match the saved run; the stop time may be later
     /// than the checkpoint time (that is the point of resuming).
     fn restore(&mut self, checkpoint: &Checkpoint) -> Result<(), SimError> {
+        self.distance_cache.borrow_mut().clear();
         if checkpoint.format_version != CHECKPOINT_FORMAT_VERSION {
             return Err(SimError::Config(format!(
                 "unsupported checkpoint format version {} (this build supports {})",
@@ -5974,6 +6046,18 @@ impl<'m> Simulation<'m> {
     /// without one it falls back to the straight-line distance. The elevator
     /// family travels vertically between object heights (`z`) only.
     fn transport_object_distance(&self, transporter: usize, from: usize, to: usize) -> f64 {
+        // task-56: shortest-path planning is the expensive part of a task; the
+        // same (executer, from, to) triple always answers the same distance.
+        let key = (transporter, from, to);
+        if let Some(cached) = self.distance_cache.borrow().get(&key) {
+            return *cached;
+        }
+        let distance = self.compute_object_distance(transporter, from, to);
+        self.distance_cache.borrow_mut().insert(key, distance);
+        distance
+    }
+
+    fn compute_object_distance(&self, transporter: usize, from: usize, to: usize) -> f64 {
         if self.transport_is_elevator(transporter) {
             return (self.objects[from].z - self.objects[to].z).abs();
         }
@@ -8454,5 +8538,91 @@ mod tests {
             assert_eq!(stored.labels.get("aisle"), Some(aisle), "slot {slot} aisle");
             assert_eq!(stored.labels.get("bay"), Some(bay), "slot {slot} bay");
         }
+    }
+
+    /// task-56: the shortest-path result is cached per (executer, from, to).
+    #[test]
+    fn distance_cache_reuses_shortest_path_results() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "cache",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "pos": [5, 0], "params": {} },
+            { "name": "K", "kind": "sink", "params": {} },
+            { "name": "D", "kind": "dispatcher", "pos": [0, 0], "params": {} },
+            { "name": "E", "kind": "robot", "pos": [0, 0], "params": {
+                "capacity": 1, "speed": 1.0, "home": "D" } }
+          ],
+          "connections": [ { "from": "S", "to": "K" }, { "from": "D", "to": "E" } ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let robot = sim.by_name["E"];
+        let from = sim.by_name["D"];
+        let to = sim.by_name["S"];
+        assert!(sim.distance_cache.borrow().is_empty());
+
+        let first = sim.transport_object_distance(robot, from, to);
+        assert_eq!(sim.distance_cache.borrow().len(), 1);
+        let second = sim.transport_object_distance(robot, from, to);
+        assert_eq!(first, second, "a cache hit must return the same distance");
+        assert_eq!(
+            sim.distance_cache.borrow().len(),
+            1,
+            "a cache hit must not add an entry"
+        );
+
+        // Restoring a checkpoint invalidates the cache.
+        let checkpoint = sim.snapshot();
+        sim.restore(&checkpoint).expect("restore");
+        assert!(sim.distance_cache.borrow().is_empty());
+    }
+
+    /// task-56: caching does not change the planned distance of a detour.
+    #[test]
+    fn distance_cache_preserves_grid_detours() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "cache-grid",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "grid": { "width": 6, "height": 6, "cell_size": 1.0,
+                    "obstacles": [[2, 0], [2, 1], [2, 2], [2, 3]] },
+          "objects": [
+            { "name": "S", "kind": "source", "pos": [4, 0], "params": {} },
+            { "name": "K", "kind": "sink", "params": {} },
+            { "name": "D", "kind": "dispatcher", "pos": [0, 0], "params": {} },
+            { "name": "E", "kind": "robot", "pos": [0, 0], "params": {
+                "capacity": 1, "speed": 1.0, "home": "D" } }
+          ],
+          "connections": [ { "from": "S", "to": "K" }, { "from": "D", "to": "E" } ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let sim = Simulation::new(&model, config, false).expect("simulation");
+        let robot = sim.by_name["E"];
+        let from = sim.by_name["D"];
+        let to = sim.by_name["S"];
+        let plain = sim.compute_object_distance(robot, from, to);
+        let cached_first = sim.transport_object_distance(robot, from, to);
+        let cached_second = sim.transport_object_distance(robot, from, to);
+        assert_eq!(plain, cached_first);
+        assert_eq!(cached_first, cached_second);
+        // The detour around the wall is longer than the straight line (4).
+        assert!(
+            cached_first > 4.0,
+            "the wall forces a detour: {cached_first}"
+        );
     }
 }

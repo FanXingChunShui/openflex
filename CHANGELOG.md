@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.20.0 — 2026-11-15
+
+### 运行与对象
+
+- **多复现检查点**：core `run_model_with_checkpoints`（每复现一个 checkpoint）+ CLI `run --save-checkpoints <dir>`；
+  每个 checkpoint 可 resume 且与直接运行逐位一致。
+- **逐段变速 conveyor**：`segments` 按段积分（跨段携带剩余时间），photo eye/station/出口时间按段速度；
+  测试证明非等效单速（10@1+10@2 到中点 10s、全程 15s）。
+- **A* 路径缓存**：`(执行器, from, to)` 距离缓存，restore 时清空；结果不变。
+
+### 统计
+
+- `run --batch-means-objects`：每对象 input/output/avg_wip/utilization 的批均值与 t 区间（与系统级并列）。
+
+### 工程
+
+- CI 全局 `CARGO_INCREMENTAL=0` + coverage 磁盘日志（避免 runner 磁盘满）；GHCR 0.19.0 已发布（latest=0.19.0）。
+
+### 验证
+
+- 439 个测试全绿（core 211、CLI 81、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.20.0 三平台产物发布并 SHA256 校验。
+
 ## v0.19.0 — 2026-11-15
 
 ### 对象与路径

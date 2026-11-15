@@ -99,7 +99,8 @@ fn english(key: &str) -> &'static str {
              openflex optimize basic.ofm --param Proc1.process_time.mean=2..6 --algorithm genetic --objective throughput,wip --weight throughput=0.7,wip=0.3 --pareto\n  \
              openflex migrate basic.ofm --out migrated.ofm\n  \
              openflex run basic.ofm --timeseries series.csv --interval 10\n  \
-             openflex run basic.ofm --replications 10 --batch-means 5\n  \
+             openflex run basic.ofm --replications 10 --batch-means 5 --batch-means-objects\n  \
+             openflex run basic.ofm --replications 3 --save-checkpoints checkpoints/\n  \
              openflex report report.json --batch-means 5\n  \
              openflex layout basic.ofm --dimension 3d --html preview.html --animate 10\n  \
              openflex run basic.ofm --flow --format markdown\n  \
@@ -175,6 +176,7 @@ fn english(key: &str) -> &'static str {
         "overflow" => "Overflow",
         "batch_means" => "Batch means",
         "batch_variance" => "Batch variance",
+        "batch_means_objects" => "Batch means by object",
         _ => "",
     }
 }
@@ -207,7 +209,8 @@ fn chinese(key: &str) -> &'static str {
              openflex optimize basic.ofm --param Proc1.process_time.mean=2..6 --algorithm genetic --objective throughput,wip --weight throughput=0.7,wip=0.3 --pareto\n  \
              openflex migrate basic.ofm --out migrated.ofm\n  \
              openflex run basic.ofm --timeseries series.csv --interval 10\n  \
-             openflex run basic.ofm --replications 10 --batch-means 5\n  \
+             openflex run basic.ofm --replications 10 --batch-means 5 --batch-means-objects\n  \
+             openflex run basic.ofm --replications 3 --save-checkpoints checkpoints/\n  \
              openflex report report.json --batch-means 5\n  \
              openflex layout basic.ofm --dimension 3d --html preview.html --animate 10\n  \
              openflex run basic.ofm --flow --format markdown\n  \
@@ -283,6 +286,7 @@ fn chinese(key: &str) -> &'static str {
         "overflow" => "溢出",
         "batch_means" => "批均值",
         "batch_variance" => "批间方差",
+        "batch_means_objects" => "每对象批均值",
         _ => "",
     }
 }
@@ -409,6 +413,7 @@ mod tests {
             "overflow",
             "batch_means",
             "batch_variance",
+            "batch_means_objects",
         ];
         for key in keys {
             assert!(!english(key).is_empty(), "missing English key {key}");

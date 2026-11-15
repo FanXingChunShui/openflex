@@ -36,6 +36,14 @@ pub struct Belt {
     /// `positions`); `0` means the item is moving. B3 stations stop an item at
     /// a fixed position for a while without blocking the whole belt.
     pub holds: Vec<f64>,
+    /// task-56: end positions of the multi-speed bands (ascending, the last
+    /// band ends at `length`). Empty when the belt runs at a single `speed`.
+    #[serde(default)]
+    pub segment_bounds: Vec<f64>,
+    /// Speed of each band; `segment_bounds.len() + 1 == segment_speeds.len()`
+    /// when the belt is segmented.
+    #[serde(default)]
+    pub segment_speeds: Vec<f64>,
 }
 
 impl Belt {
@@ -47,7 +55,99 @@ impl Belt {
             accumulating,
             positions: Vec::new(),
             holds: Vec::new(),
+            segment_bounds: Vec::new(),
+            segment_speeds: Vec::new(),
         }
+    }
+
+    /// task-56: install a multi-speed profile. `bounds` are the end positions
+    /// of the bands (ascending, below `length`); `speeds` has one entry per
+    /// band (`bounds.len() + 1`).
+    pub fn set_segments(&mut self, bounds: Vec<f64>, speeds: Vec<f64>) {
+        if speeds.len() == bounds.len() + 1 && !speeds.is_empty() {
+            self.segment_bounds = bounds;
+            self.segment_speeds = speeds.into_iter().map(|speed| speed.max(EPS)).collect();
+        }
+    }
+
+    fn segmented(&self) -> bool {
+        self.segment_speeds.len() == self.segment_bounds.len() + 1
+            && !self.segment_speeds.is_empty()
+    }
+
+    /// Belt speed at `position` (task-56).
+    pub fn speed_at(&self, position: f64) -> f64 {
+        if !self.segmented() {
+            return self.speed;
+        }
+        let index = self
+            .segment_bounds
+            .iter()
+            .filter(|bound| position >= **bound - EPS)
+            .count();
+        self.segment_speeds[index.min(self.segment_speeds.len() - 1)]
+    }
+
+    /// Position after moving `dt` from `from`, integrating each band's speed
+    /// (task-56).
+    pub fn advance_position(&self, from: f64, dt: f64) -> f64 {
+        if !self.segmented() {
+            return from + self.speed * dt;
+        }
+        let mut position = from;
+        let mut remaining = dt;
+        let mut guard = 0;
+        while remaining > EPS && guard < 10_000 {
+            guard += 1;
+            let speed = self.speed_at(position);
+            let next_bound = self
+                .segment_bounds
+                .iter()
+                .copied()
+                .find(|bound| *bound > position + EPS);
+            let distance = speed * remaining;
+            match next_bound {
+                Some(bound) if position + distance > bound => {
+                    remaining -= (bound - position) / speed;
+                    position = bound;
+                }
+                _ => {
+                    position += distance;
+                    remaining = 0.0;
+                }
+            }
+        }
+        position
+    }
+
+    /// Time to travel from `from` to `to`, integrating each band's speed
+    /// (task-56).
+    pub fn time_to_reach(&self, from: f64, to: f64) -> f64 {
+        if to <= from + EPS {
+            return 0.0;
+        }
+        if !self.segmented() {
+            return (to - from) / self.speed;
+        }
+        let mut position = from;
+        let mut total = 0.0;
+        let mut guard = 0;
+        while position < to - EPS && guard < 10_000 {
+            guard += 1;
+            let speed = self.speed_at(position);
+            let next_bound = self
+                .segment_bounds
+                .iter()
+                .copied()
+                .find(|bound| *bound > position + EPS);
+            let stop_at = match next_bound {
+                Some(bound) if bound < to => bound,
+                _ => to,
+            };
+            total += (stop_at - position) / speed;
+            position = stop_at;
+        }
+        total
     }
 
     pub fn len(&self) -> usize {
@@ -173,7 +273,8 @@ impl Belt {
             }
             let gap = target - self.positions[index];
             if gap > EPS {
-                consider(gap / self.speed);
+                // task-56: integrate the speed profile.
+                consider(self.time_to_reach(self.positions[index], target));
             }
         }
         next.map(|time| time.max(0.0))
@@ -185,7 +286,6 @@ impl Belt {
         if dt <= 0.0 || self.frozen() {
             return;
         }
-        let step = self.speed * dt;
         for index in 0..self.positions.len() {
             let hold = self.hold_remaining(index);
             if hold > 0.0 {
@@ -197,7 +297,8 @@ impl Belt {
                 continue;
             }
             let limit = self.limit(index);
-            let target = (self.positions[index] + step).min(limit);
+            // task-56: integrate the speed profile instead of a single speed.
+            let target = self.advance_position(self.positions[index], dt).min(limit);
             self.positions[index] = target.max(self.positions[index]);
         }
     }
@@ -338,5 +439,39 @@ mod stop_tests {
             .time_to_next_event_with_stops(&[])
             .expect("dwell expiry");
         assert!((next - 99.0).abs() < 1e-9);
+    }
+
+    /// task-56: a segmented belt integrates each band's speed, so the item
+    /// reaches the band boundary exactly when that band's travel time says.
+    #[test]
+    fn segmented_belt_integrates_speed_per_band() {
+        let mut belt = Belt::new(20.0, 1.0, 1.0, true);
+        belt.set_segments(vec![10.0], vec![1.0, 2.0]);
+        // First band: 10 units at speed 1.
+        assert!((belt.time_to_reach(0.0, 10.0) - 10.0).abs() < 1e-9);
+        // Second band: 5 more units at speed 2.
+        assert!((belt.time_to_reach(0.0, 15.0) - 12.5).abs() < 1e-9);
+        // The whole belt: 10 + 5.
+        assert!((belt.time_to_reach(0.0, 20.0) - 15.0).abs() < 1e-9);
+        // Moving 4 seconds from position 8: 2 s to the boundary, then 2 s at
+        // speed 2.
+        assert!((belt.advance_position(8.0, 4.0) - 14.0).abs() < 1e-9);
+        // A single-speed belt would have moved 8 + 4 = 12.
+        assert!((belt.advance_position(8.0, 4.0) - 12.0).abs() > 1e-9);
+    }
+
+    /// A fast-first belt reaches the boundary earlier than a slow-first one.
+    #[test]
+    fn segmented_belt_order_matters_for_intermediate_positions() {
+        let mut fast_first = Belt::new(20.0, 1.0, 1.0, true);
+        fast_first.set_segments(vec![10.0], vec![2.0, 1.0]);
+        let mut slow_first = Belt::new(20.0, 1.0, 1.0, true);
+        slow_first.set_segments(vec![10.0], vec![1.0, 2.0]);
+        // Both take 15 time units for the whole belt ...
+        assert!((fast_first.time_to_reach(0.0, 20.0) - 15.0).abs() < 1e-9);
+        assert!((slow_first.time_to_reach(0.0, 20.0) - 15.0).abs() < 1e-9);
+        // ... but the first half is reached after 5 s, not after 10 s.
+        assert!((fast_first.time_to_reach(0.0, 10.0) - 5.0).abs() < 1e-9);
+        assert!((slow_first.time_to_reach(0.0, 10.0) - 10.0).abs() < 1e-9);
     }
 }

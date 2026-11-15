@@ -62,6 +62,14 @@ fn batch_json(batch: &BatchMeansSummary) -> serde_json::Value {
         "items_created": metric(&batch.items_created),
         "items_completed": metric(&batch.items_completed),
         "items_in_system": metric(&batch.items_in_system),
+        "objects": batch.objects.iter().map(|(name, values)| {
+            (name.clone(), serde_json::json!({
+                "input": metric(&values.input),
+                "output": metric(&values.output),
+                "avg_wip": metric(&values.avg_wip),
+                "utilization": metric(&values.utilization),
+            }))
+        }).collect::<serde_json::Map<_, _>>(),
     })
 }
 
@@ -667,6 +675,39 @@ fn batch_table(batch: &BatchMeansSummary) -> String {
             label, value.mean, value.variance, value.ci95
         );
     }
+    if !batch.objects.is_empty() {
+        let _ = writeln!(
+            out,
+            "\n{} ({} batches over {} replications)",
+            i18n::t("batch_means_objects"),
+            batch.batches,
+            batch.samples
+        );
+        let _ = writeln!(
+            out,
+            "{:<20} {:<14} {:>12} {:>14} {:>12}",
+            i18n::t("object"),
+            i18n::t("metric"),
+            i18n::t("mean"),
+            i18n::t("batch_variance"),
+            "95% CI"
+        );
+        let _ = writeln!(out, "{}", "-".repeat(WIDTH));
+        for (name, values) in &batch.objects {
+            for (metric, value) in [
+                ("input", &values.input),
+                ("output", &values.output),
+                ("avg_wip", &values.avg_wip),
+                ("utilization", &values.utilization),
+            ] {
+                let _ = writeln!(
+                    out,
+                    "{:<20} {:<14} {:>12.3} {:>14.3} {:>12.3}",
+                    name, metric, value.mean, value.variance, value.ci95
+                );
+            }
+        }
+    }
     out
 }
 
@@ -698,6 +739,32 @@ fn batch_markdown(batch: &BatchMeansSummary) -> String {
             "| {} | {:.3} | {:.3} | {:.3} |",
             label, value.mean, value.variance, value.ci95
         );
+    }
+    if !batch.objects.is_empty() {
+        let _ = writeln!(
+            out,
+            "\n### {}\n\n| {} | {} | {} | {} | 95% CI |",
+            i18n::t("batch_means_objects"),
+            i18n::t("object"),
+            i18n::t("metric"),
+            i18n::t("mean"),
+            i18n::t("batch_variance")
+        );
+        let _ = writeln!(out, "|---|---|---|---:|---:|---:|");
+        for (name, values) in &batch.objects {
+            for (metric, value) in [
+                ("input", &values.input),
+                ("output", &values.output),
+                ("avg_wip", &values.avg_wip),
+                ("utilization", &values.utilization),
+            ] {
+                let _ = writeln!(
+                    out,
+                    "| {} | {} | {:.3} | {:.3} | {:.3} |",
+                    name, metric, value.mean, value.variance, value.ci95
+                );
+            }
+        }
     }
     out
 }

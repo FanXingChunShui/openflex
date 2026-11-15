@@ -136,9 +136,15 @@ enum Command {
         /// Compute batch-means confidence intervals with N batches (default 10).
         #[arg(long, value_name = "BATCHES", num_args = 0..=1, default_missing_value = "10")]
         batch_means: Option<u32>,
-        /// Save the final simulation snapshot as JSON (single replication; cannot be combined with --parallel > 1; may be combined with --trace; bulk per-replication checkpoints are not implemented yet).
-        #[arg(long, value_name = "FILE")]
+        /// Include per-object input/output/avg_wip/utilization batch means (implies --batch-means 10).
+        #[arg(long)]
+        batch_means_objects: bool,
+        /// Save the final simulation snapshot as JSON (single replication; cannot be combined with --parallel > 1; may be combined with --trace).
+        #[arg(long, value_name = "FILE", conflicts_with = "save_checkpoints")]
         save_checkpoint: Option<PathBuf>,
+        /// Save one checkpoint per replication into DIR as checkpoint.rep0.json, checkpoint.rep1.json, …
+        #[arg(long, value_name = "DIR", conflicts_with_all = ["save_checkpoint", "resume"])]
+        save_checkpoints: Option<PathBuf>,
         /// Resume from a checkpoint written by --save-checkpoint (single replication; cannot be combined with --parallel > 1, several --seed values, --trace or --set).
         #[arg(long, value_name = "FILE")]
         resume: Option<PathBuf>,
@@ -198,6 +204,9 @@ enum Command {
         /// Add batch-means confidence intervals with N batches (default 10).
         #[arg(long, value_name = "BATCHES", num_args = 0..=1, default_missing_value = "10")]
         batch_means: Option<u32>,
+        /// Include per-object input/output/avg_wip/utilization batch means (implies --batch-means 10).
+        #[arg(long)]
+        batch_means_objects: bool,
     },
     /// Compare two saved reports object by object (A/B scenario analysis).
     Compare {
@@ -671,7 +680,9 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             timeseries,
             interval,
             batch_means,
+            batch_means_objects,
             save_checkpoint,
+            save_checkpoints,
             resume,
             flow,
             fluid,
@@ -731,6 +742,28 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                 print_run_plan(&model, &seed, parallel);
                 return Ok(());
             }
+            if let Some(directory) = save_checkpoints.as_deref() {
+                if trace.is_some() || timeseries.is_some() {
+                    return Err(Failure::usage(anyhow!(
+                        "--save-checkpoints cannot be combined with --trace or --timeseries"
+                    )));
+                }
+                return run_batch_checkpoints(
+                    &model,
+                    &seed,
+                    directory,
+                    &RunOutput {
+                        format,
+                        report_dir: report_dir.as_deref(),
+                        xlsx: xlsx.as_deref(),
+                        sections: Sections { flow, fluid },
+                        batch_means,
+                        batch_means_objects,
+                        quiet,
+                    },
+                    progress,
+                );
+            }
             if save_checkpoint.is_some() || resume.is_some() {
                 return run_checkpoint(
                     &model,
@@ -743,6 +776,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                         xlsx: xlsx.as_deref(),
                         sections: Sections { flow, fluid },
                         batch_means,
+                        batch_means_objects,
                         quiet,
                     },
                     progress,
@@ -763,6 +797,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                     xlsx: xlsx.as_deref(),
                     sections: Sections { flow, fluid },
                     batch_means,
+                    batch_means_objects,
                     quiet,
                 },
             )
@@ -795,17 +830,26 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             flow,
             fluid,
             batch_means,
+            batch_means_objects,
         } => {
+            let batch_batches = batch_means.or(if batch_means_objects { Some(10) } else { None });
             let text = match (path, experiment) {
                 (Some(path), None) => {
                     let sim = report::read_report(&path)
                         .map_err(|error| Failure::from(error).with_path(&path))?;
-                    report::render_sim_with_options(&sim, format.into(), flow, fluid, batch_means)?
+                    report::render_sim_with_options(
+                        &sim,
+                        format.into(),
+                        flow,
+                        fluid,
+                        batch_batches,
+                        batch_means_objects,
+                    )?
                 }
                 (None, Some(directory)) => {
-                    if batch_means.is_some() {
+                    if batch_batches.is_some() {
                         return Err(Failure::usage(anyhow!(
-                            "--batch-means is only supported for a single saved report, not an experiment directory"
+                            "--batch-means/--batch-means-objects are only supported for a single saved report, not an experiment directory"
                         )));
                     }
                     let experiment = report::read_experiment(&directory)
@@ -1200,6 +1244,53 @@ fn validate_checkpoint_options(
 /// [`openflex_core::ReplicationResult`] as a single run to the later stop
 /// time, so the report rendered here is byte-for-byte the one `openflex run`
 /// would print for the full horizon.
+/// Run every replication and write one checkpoint per replication.
+///
+/// The core exposes per-replication `simulate_with_checkpoint`; the CLI loops
+/// over `run_configs`, so a bulk core API is not required.
+fn run_batch_checkpoints(
+    model: &Model,
+    seeds: &[u64],
+    directory: &Path,
+    output: &RunOutput<'_>,
+    progress: bool,
+) -> Result<(), Failure> {
+    let configs = run_configs(model, seeds);
+    let reporter = Progress::new(progress, configs.len());
+    fs::create_dir_all(directory).map_err(|error| {
+        Failure::runtime(anyhow!(
+            "could not create checkpoint directory {}: {error}",
+            directory.display()
+        ))
+    })?;
+    let mut results = Vec::with_capacity(configs.len());
+    let mut paths = Vec::with_capacity(configs.len());
+    for (index, config) in &configs {
+        let (result, checkpoint) =
+            openflex_core::simulate_with_checkpoint(model, config, *index, None)
+                .map_err(checkpoint_failure)?;
+        let path = directory.join(format!("checkpoint.rep{index}.json"));
+        checkpoint::save(&path, &checkpoint)?;
+        paths.push(path);
+        results.push(result);
+        reporter.tick();
+    }
+    note(
+        output.quiet,
+        &format!(
+            "{} {} checkpoint(s): {}",
+            i18n::t("wrote"),
+            paths.len(),
+            join_paths(&paths)
+        ),
+    );
+    let mut report = SimReport::from_replications(model, results);
+    if seeds.len() > 1 {
+        report.base_seed = seeds[0];
+    }
+    finish_run(&report, output)
+}
+
 fn run_checkpoint(
     model: &Model,
     trace: Option<&Path>,
@@ -1318,6 +1409,7 @@ struct RunOutput<'a> {
     xlsx: Option<&'a Path>,
     sections: Sections,
     batch_means: Option<u32>,
+    batch_means_objects: bool,
     quiet: bool,
 }
 
@@ -1335,7 +1427,12 @@ fn finish_run(report: &SimReport, output: &RunOutput<'_>) -> Result<(), Failure>
             "note: the model has no fluid objects; nothing to add to the report",
         );
     }
-    let batch = match output.batch_means {
+    let requested_batches = output.batch_means.or(if output.batch_means_objects {
+        Some(10)
+    } else {
+        None
+    });
+    let batch = match requested_batches {
         Some(batches) => {
             if batches < 2 {
                 return Err(Failure::usage(anyhow!(
@@ -1349,7 +1446,7 @@ fn finish_run(report: &SimReport, output: &RunOutput<'_>) -> Result<(), Failure>
                 )));
             }
             Some(
-                report::batch_means(report, batches)
+                report::batch_means_with_objects(report, batches, output.batch_means_objects)
                     .map_err(|error| Failure::usage(anyhow!(error)))?,
             )
         }
@@ -1360,7 +1457,8 @@ fn finish_run(report: &SimReport, output: &RunOutput<'_>) -> Result<(), Failure>
         output.format.into(),
         output.sections.flow,
         output.sections.fluid,
-        output.batch_means,
+        requested_batches,
+        output.batch_means_objects,
     )?;
     emit(&text, None, output.quiet)?;
     if let Some(directory) = output.report_dir {

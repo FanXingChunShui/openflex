@@ -3950,3 +3950,101 @@ fn run_batch_means_appear_in_reports() {
     ]);
     assert_eq!(code(&too_few), 2, "stderr: {}", stderr(&too_few));
 }
+
+#[test]
+fn run_save_checkpoints_writes_one_file_per_replication() {
+    let dir = TempDir::new("save-checkpoints");
+    let model = dir.write("demo.ofm", MODEL);
+    let checkpoints = dir.join("checkpoints");
+
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "3",
+        "--save-checkpoints",
+        &path_str(&checkpoints),
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    for index in 0..3 {
+        assert!(
+            checkpoints
+                .join(format!("checkpoint.rep{index}.json"))
+                .is_file(),
+            "checkpoint {index} missing"
+        );
+    }
+    let files = fs::read_dir(&checkpoints).expect("checkpoints").count();
+    assert_eq!(files, 3);
+
+    let resumed = openflex(&[
+        "run",
+        &path_str(&model),
+        "--resume",
+        &path_str(&checkpoints.join("checkpoint.rep1.json")),
+        "--replications",
+        "1",
+        "--quiet",
+    ]);
+    assert_eq!(code(&resumed), 0, "stderr: {}", stderr(&resumed));
+}
+
+#[test]
+fn batch_means_can_include_per_object_metrics() {
+    let dir = TempDir::new("batch-means-objects");
+    let model = dir.write("demo.ofm", MODEL);
+
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "10",
+        "--batch-means",
+        "5",
+        "--batch-means-objects",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let result = json(&stdout(&output));
+    let objects = result["batch_means"]["objects"]
+        .as_object()
+        .expect("object batch means");
+    for name in ["Processor1", "Queue1"] {
+        let object = objects
+            .get(name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        assert_eq!(
+            object["input"]["per_batch"].as_array().map(Vec::len),
+            Some(5)
+        );
+        assert!(object["input"]["mean"].is_f64());
+        assert!(object["avg_wip"]["ci95"].is_f64());
+    }
+
+    let table = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "10",
+        "--batch-means-objects",
+        "--format",
+        "table",
+        "--quiet",
+    ]);
+    let table = stdout(&table);
+    assert!(table.contains("Batch means by object"), "{table}");
+    assert!(table.contains("Processor1") && table.contains("utilization"));
+
+    let too_few = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "3",
+        "--batch-means-objects",
+        "--quiet",
+    ]);
+    assert_eq!(code(&too_few), 2, "stderr: {}", stderr(&too_few));
+}

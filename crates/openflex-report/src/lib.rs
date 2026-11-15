@@ -29,7 +29,9 @@ pub mod i18n;
 mod sim;
 mod xlsx;
 
-pub use batch::{BatchMeans, BatchMeansSummary, batch_means};
+pub use batch::{
+    BatchMeans, BatchMeansSummary, ObjectBatchMeans, batch_means, batch_means_with_objects,
+};
 pub use compare::{Comparison, MetricComparison, ObjectComparison, ReportRef, compare_reports};
 pub use experiment::{
     ExperimentReport, ScenarioReport, sanitize, write_experiment_reports,
@@ -119,7 +121,7 @@ pub fn render_sim_with_sections(
     include_flow: bool,
     include_fluid: bool,
 ) -> Result<String, ReportError> {
-    render_sim_with_options(report, format, include_flow, include_fluid, None)
+    render_sim_with_options(report, format, include_flow, include_fluid, None, false)
 }
 
 /// Render one simulation report with all optional sections.
@@ -132,9 +134,14 @@ pub fn render_sim_with_options(
     include_flow: bool,
     include_fluid: bool,
     batch_batches: Option<u32>,
+    batch_objects: bool,
 ) -> Result<String, ReportError> {
     let batch = match batch_batches {
-        Some(batches) => Some(batch_means(report, batches)?),
+        Some(batches) => Some(crate::batch::batch_means_with_objects(
+            report,
+            batches,
+            batch_objects,
+        )?),
         None => None,
     };
     Ok(match format {

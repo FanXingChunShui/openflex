@@ -12,6 +12,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # GitHub-hosted runners have ~14 GB free on /. A multi-crate workspace with
+  # incremental artefacts (plus llvm-cov profiles) can fill that, which shows up
+  # as "No space left on device" mid-build. Incremental compilation is useless
+  # in CI anyway (a fresh checkout never reuses it), so disable it globally and
+  # let Swatinem/rust-cache keep only the dependency artefacts.
+  CARGO_INCREMENTAL: 0
 
 jobs:
   test:
@@ -175,11 +181,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p coverage
+          df -h / | tail -1
           cargo llvm-cov --workspace --locked --lcov --output-path coverage/lcov.info | tee coverage/run.log
           cargo llvm-cov report --summary-only | tee coverage/summary.txt
           # Enforce the floor separately so the summary above is still written
           # even when the check fails.
           cargo llvm-cov report --fail-under-lines 60
+          df -h / | tail -1
           {
             echo "### Coverage"
             echo ""

@@ -12,6 +12,8 @@
 //! replications; the variance is the sample variance of the batch means and
 //! the 95% interval uses the Student t quantile with `k - 1` degrees of freedom.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use openflex_core::{SimReport, t_critical_95};
 
 use crate::ReportError;
@@ -27,6 +29,15 @@ pub struct BatchMeans {
     pub batches: u32,
 }
 
+/// Batch means for one object's most-used metrics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectBatchMeans {
+    pub input: BatchMeans,
+    pub output: BatchMeans,
+    pub avg_wip: BatchMeans,
+    pub utilization: BatchMeans,
+}
+
 /// Batch means for the three system-level totals shown in the summary.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BatchMeansSummary {
@@ -35,10 +46,21 @@ pub struct BatchMeansSummary {
     pub items_created: BatchMeans,
     pub items_completed: BatchMeans,
     pub items_in_system: BatchMeans,
+    /// Per-object metrics; empty unless `batch_means_with_objects` is used.
+    pub objects: BTreeMap<String, ObjectBatchMeans>,
 }
 
 /// Compute batch means over the report's replications.
 pub fn batch_means(report: &SimReport, batches: u32) -> Result<BatchMeansSummary, ReportError> {
+    batch_means_with_objects(report, batches, false)
+}
+
+/// Compute batch means, optionally including every object's key metrics.
+pub fn batch_means_with_objects(
+    report: &SimReport,
+    batches: u32,
+    include_objects: bool,
+) -> Result<BatchMeansSummary, ReportError> {
     let samples = report.replications.len() as u32;
     if batches < 2 {
         return Err(ReportError::BatchMeans(
@@ -65,12 +87,78 @@ pub fn batch_means(report: &SimReport, batches: u32) -> Result<BatchMeansSummary
         .iter()
         .map(|replication| replication.items_in_system as f64)
         .collect();
+    let objects = if include_objects {
+        let mut names = BTreeSet::new();
+        for replication in &report.replications {
+            names.extend(replication.objects.keys().cloned());
+        }
+        let mut objects = BTreeMap::new();
+        for name in names {
+            let input: Vec<f64> = report
+                .replications
+                .iter()
+                .map(|replication| {
+                    replication
+                        .objects
+                        .get(&name)
+                        .map(|stats| stats.input_count as f64)
+                        .unwrap_or(0.0)
+                })
+                .collect();
+            let output: Vec<f64> = report
+                .replications
+                .iter()
+                .map(|replication| {
+                    replication
+                        .objects
+                        .get(&name)
+                        .map(|stats| stats.output_count as f64)
+                        .unwrap_or(0.0)
+                })
+                .collect();
+            let wip: Vec<f64> = report
+                .replications
+                .iter()
+                .map(|replication| {
+                    replication
+                        .objects
+                        .get(&name)
+                        .map(|stats| stats.avg_content)
+                        .unwrap_or(0.0)
+                })
+                .collect();
+            let utilization: Vec<f64> = report
+                .replications
+                .iter()
+                .map(|replication| {
+                    replication
+                        .objects
+                        .get(&name)
+                        .map(|stats| stats.utilization)
+                        .unwrap_or(0.0)
+                })
+                .collect();
+            objects.insert(
+                name,
+                ObjectBatchMeans {
+                    input: compute(&input, batches),
+                    output: compute(&output, batches),
+                    avg_wip: compute(&wip, batches),
+                    utilization: compute(&utilization, batches),
+                },
+            );
+        }
+        objects
+    } else {
+        BTreeMap::new()
+    };
     Ok(BatchMeansSummary {
         batches,
         samples,
         items_created: compute(&created, batches),
         items_completed: compute(&completed, batches),
         items_in_system: compute(&in_system, batches),
+        objects,
     })
 }
 

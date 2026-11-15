@@ -166,8 +166,14 @@ FlexSim 的公开帮助没有定义下面几项行为，但任何离散事件引
 
 ## Conveyor 分段
 
-`ConveyorParams.segments: [{length, speed, angle?}]` 非空时按段累加行程时间 `Σ(length/speed)`，
-皮带用等效速度（总长/总时间）驱动单速模型；`angle` 仅在 `curve.radius` 存在时折算弧长。空数组保持旧行为。
+`ConveyorParams.segments: [{length, speed, angle?}]` 非空时皮带安装段边界/段速度，`advance_position()` 与
+`time_to_reach()` **按段积分**（跨段携带剩余时间），photo eye/station/出口到达时间都按段速度；单速路径不变。
+`angle` 仅在 `curve.radius` 存在时折算弧长。
+
+## 路径缓存
+
+`Simulation.distance_cache: (transporter, from, to) -> f64`：AGV/robot/asrs 对象间距离缓存，`restore()` 清空。
+假定运行中对象位置不变（当前模型格式满足）。
 
 ## Emptier（basic_fr）
 
