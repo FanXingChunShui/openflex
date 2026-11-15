@@ -125,6 +125,7 @@ SHELL_SCRIPTS=(
   "$ROOT_DIR/scripts/fuzz-smoke.sh"
   "$ROOT_DIR/scripts/bench-large-model.sh"
   "$ROOT_DIR/scripts/sync-package-manifests.sh"
+  "$ROOT_DIR/scripts/verify-ghcr.sh"
 )
 for script in "${SHELL_SCRIPTS[@]}"; do
   if [ -f "$script" ]; then
@@ -625,7 +626,8 @@ for tool in \
   "$ROOT_DIR/scripts/compare-flexsim.sh" \
   "$ROOT_DIR/scripts/fuzz-smoke.sh" \
   "$ROOT_DIR/scripts/bench-large-model.sh" \
-  "$ROOT_DIR/scripts/sync-package-manifests.sh"; do
+  "$ROOT_DIR/scripts/sync-package-manifests.sh" \
+  "$ROOT_DIR/scripts/verify-ghcr.sh"; do
   run_ok "$(basename "$tool") --help exits 0" bash "$tool" --help
 done
 
@@ -714,6 +716,14 @@ print("winget, scoop and homebrew manifests match %s" % version)
 PY
 }
 run_ok "winget / scoop / homebrew manifests match $VERSION" check_packager_manifests
+
+section "Container registry (optional, network)"
+if [ "${OPENFLEX_VERIFY_GHCR:-0}" = "1" ]; then
+  run_ok "GHCR tags exist and latest matches" \
+    bash "$ROOT_DIR/scripts/verify-ghcr.sh" --retry 3 --wait 20
+else
+  skip "registry check disabled (set OPENFLEX_VERIFY_GHCR=1 to query GHCR)"
+fi
 
 # ---------------------------------------------------------------- docs site
 section "Documentation site (mdBook)"

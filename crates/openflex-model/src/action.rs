@@ -176,6 +176,16 @@ pub enum SimTrigger {
     OnRepair,
     /// A conveyor photo eye was crossed (B3).
     OnPhotoEye,
+    /// The content (number of items) of the object changed.
+    OnContentChange,
+    /// The object changed its state (idle/busy/blocked/…).
+    OnStateChange,
+    /// The model was reset.
+    OnReset,
+    /// The object was stopped (breakdown, shift, manual stop).
+    OnStop,
+    /// The object resumed after a stop.
+    OnResume,
 }
 
 impl SimTrigger {
@@ -189,6 +199,11 @@ impl SimTrigger {
             SimTrigger::OnBreakdown => "on_breakdown",
             SimTrigger::OnRepair => "on_repair",
             SimTrigger::OnPhotoEye => "on_photo_eye",
+            SimTrigger::OnContentChange => "on_content_change",
+            SimTrigger::OnStateChange => "on_state_change",
+            SimTrigger::OnReset => "on_reset",
+            SimTrigger::OnStop => "on_stop",
+            SimTrigger::OnResume => "on_resume",
         }
     }
 }
@@ -213,6 +228,21 @@ pub struct Triggers {
     pub on_repair: Vec<Action>,
     #[serde(default)]
     pub on_photo_eye: Vec<Action>,
+    /// Object content changed (see [`SimTrigger::OnContentChange`]).
+    #[serde(default)]
+    pub on_content_change: Vec<Action>,
+    /// Object state changed (see [`SimTrigger::OnStateChange`]).
+    #[serde(default)]
+    pub on_state_change: Vec<Action>,
+    /// Model reset (see [`SimTrigger::OnReset`]).
+    #[serde(default)]
+    pub on_reset: Vec<Action>,
+    /// Object stopped (see [`SimTrigger::OnStop`]).
+    #[serde(default)]
+    pub on_stop: Vec<Action>,
+    /// Object resumed (see [`SimTrigger::OnResume`]).
+    #[serde(default)]
+    pub on_resume: Vec<Action>,
 }
 
 impl Triggers {
@@ -226,6 +256,11 @@ impl Triggers {
             SimTrigger::OnBreakdown => self.on_breakdown.clone(),
             SimTrigger::OnRepair => self.on_repair.clone(),
             SimTrigger::OnPhotoEye => self.on_photo_eye.clone(),
+            SimTrigger::OnContentChange => self.on_content_change.clone(),
+            SimTrigger::OnStateChange => self.on_state_change.clone(),
+            SimTrigger::OnReset => self.on_reset.clone(),
+            SimTrigger::OnStop => self.on_stop.clone(),
+            SimTrigger::OnResume => self.on_resume.clone(),
         }
     }
 
@@ -238,5 +273,10 @@ impl Triggers {
             && self.on_breakdown.is_empty()
             && self.on_repair.is_empty()
             && self.on_photo_eye.is_empty()
+            && self.on_content_change.is_empty()
+            && self.on_state_change.is_empty()
+            && self.on_reset.is_empty()
+            && self.on_stop.is_empty()
+            && self.on_resume.is_empty()
     }
 }

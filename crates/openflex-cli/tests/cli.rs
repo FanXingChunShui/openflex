@@ -2795,6 +2795,8 @@ fn studio_can_add_and_delete_objects_through_the_api() {
         "id=\"run-experiment\"",
         "id=\"dashboard\"",
         "id=\"export-png\"",
+        "id=\"replication-chart\"",
+        "id=\"replication-metric\"",
         "id=\"flow-canvas\"",
         "flow-node",
         "draggable",
@@ -3256,4 +3258,217 @@ fn import_reads_an_xlsx_workbook() {
         "stderr: {}",
         stderr(&output)
     );
+}
+
+#[test]
+fn optimize_genetic_is_deterministic_and_beats_a_single_sample_grid() {
+    let dir = TempDir::new("optimize-genetic");
+    let model = dir.write("demo.ofm", MODEL);
+    let model_path = path_str(&model);
+
+    let grid = openflex(&[
+        "optimize",
+        &model_path,
+        "--param",
+        "Processor1.process_time.mean=2..6",
+        "--steps",
+        "5",
+        "--samples",
+        "1",
+        "--seed",
+        "3",
+        "--objective",
+        "throughput",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&grid), 0, "stderr: {}", stderr(&grid));
+    let grid = json(&stdout(&grid));
+
+    let genetic_args = [
+        "optimize",
+        &model_path,
+        "--param",
+        "Processor1.process_time.mean=2..6",
+        "--algorithm",
+        "genetic",
+        "--population",
+        "20",
+        "--generations",
+        "8",
+        "--seed",
+        "3",
+        "--objective",
+        "throughput",
+        "--format",
+        "json",
+        "--quiet",
+    ];
+    let first = openflex(&genetic_args);
+    let second = openflex(&genetic_args);
+    assert_eq!(code(&first), 0, "stderr: {}", stderr(&first));
+    assert_eq!(code(&second), 0, "stderr: {}", stderr(&second));
+    assert_eq!(
+        json(&stdout(&first)),
+        json(&stdout(&second)),
+        "the genetic search must be deterministic for a fixed seed"
+    );
+    let genetic = json(&stdout(&first));
+    let genetic_score = genetic["best"]["score"].as_f64().expect("score");
+    let grid_score = grid["best"]["score"].as_f64().expect("score");
+    assert!(
+        genetic_score > grid_score,
+        "genetic search should improve on a one-sample grid ({grid_score} -> {genetic_score})"
+    );
+
+    // Random search is deterministic for a fixed seed too.
+    let random_args = [
+        "optimize",
+        &model_path,
+        "--param",
+        "Processor1.process_time.mean=2..6",
+        "--algorithm",
+        "random",
+        "--samples",
+        "6",
+        "--seed",
+        "9",
+        "--objective",
+        "throughput",
+        "--format",
+        "json",
+        "--quiet",
+    ];
+    let random_a = openflex(&random_args);
+    let random_b = openflex(&random_args);
+    assert_eq!(code(&random_a), 0, "stderr: {}", stderr(&random_a));
+    assert_eq!(json(&stdout(&random_a)), json(&stdout(&random_b)));
+}
+
+#[test]
+fn optimize_supports_weighted_multi_objective_and_pareto() {
+    let dir = TempDir::new("optimize-pareto");
+    let model = dir.write("demo.ofm", MODEL);
+
+    let output = openflex(&[
+        "optimize",
+        &path_str(&model),
+        "--param",
+        "Processor1.process_time.mean=2..6",
+        "--steps",
+        "4",
+        "--objective",
+        "throughput,wip",
+        "--pareto",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let result = json(&stdout(&output));
+    assert_eq!(result["objective"], "throughput,wip");
+    assert_eq!(result["pareto_enabled"], true);
+    assert!(
+        result["pareto_front"]
+            .as_array()
+            .is_some_and(|front| !front.is_empty()),
+        "pareto front missing: {result}"
+    );
+    let objectives = result["objectives"].as_array().expect("objectives");
+    assert_eq!(objectives.len(), 2);
+    assert_eq!(objectives[0]["direction"], "maximize");
+    assert_eq!(objectives[1]["direction"], "minimize");
+    let best = &result["best"];
+    assert!(best["score"].is_f64());
+    assert!(best["objective_values"]["throughput"].is_f64());
+    assert!(best["objective_values"]["wip"].is_f64());
+}
+
+#[test]
+fn migrate_writes_a_valid_model_and_rejects_unknown_versions() {
+    let dir = TempDir::new("migrate");
+    let model = dir.write("demo.ofm", MODEL);
+    let output_path = dir.join("migrated.ofm");
+
+    let output = openflex(&[
+        "migrate",
+        &path_str(&model),
+        "--out",
+        &path_str(&output_path),
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert!(output_path.is_file());
+    let validate = openflex(&["validate", &path_str(&output_path)]);
+    assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
+
+    let mut value: serde_json::Value = serde_json::from_str(MODEL).expect("fixture");
+    value["version"] = serde_json::json!(99);
+    let future = dir.write(
+        "future.ofm",
+        &serde_json::to_string(&value).expect("serialise"),
+    );
+    let output = openflex(&["migrate", &path_str(&future), "--in-place"]);
+    assert_eq!(code(&output), 2, "stderr: {}", stderr(&output));
+    assert!(
+        stderr(&output).contains("version 99"),
+        "stderr: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn run_timeseries_writes_interval_samples() {
+    let dir = TempDir::new("timeseries");
+    let model = dir.write("demo.ofm", MODEL);
+    let series = dir.join("series.csv");
+
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "1",
+        "--timeseries",
+        &path_str(&series),
+        "--interval",
+        "50",
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let text = fs::read_to_string(&series).expect("timeseries was not written");
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines.len() > 1, "timeseries has no samples");
+    assert_eq!(
+        lines[0],
+        "replication,time,object,kind,content_avg,utilization,throughput"
+    );
+    let queue_rows: Vec<&str> = lines[1..]
+        .iter()
+        .copied()
+        .filter(|line| line.split(',').nth(2) == Some("Queue1"))
+        .collect();
+    assert_eq!(queue_rows.len(), 4, "expected one sample per interval");
+    for row in &queue_rows {
+        let time: f64 = row.split(',').nth(1).expect("time").parse().expect("time");
+        assert!((50.0..=200.0).contains(&time), "time {time}");
+        let content: f64 = row
+            .split(',')
+            .nth(4)
+            .expect("content")
+            .parse()
+            .expect("content");
+        assert!(content >= 0.0);
+    }
+
+    let invalid = openflex(&[
+        "run",
+        &path_str(&model),
+        "--timeseries",
+        &path_str(&dir.join("bad.csv")),
+        "--interval",
+        "0",
+        "--quiet",
+    ]);
+    assert_eq!(code(&invalid), 2, "stderr: {}", stderr(&invalid));
 }

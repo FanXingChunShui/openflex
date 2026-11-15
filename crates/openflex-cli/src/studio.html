@@ -66,6 +66,8 @@
   #report th:first-child, #report td:first-child { text-align: left; }
   #dashboard { width: 100%; height: 280px; background: white; border: 1px solid #cbd5e1;
                border-radius: 6px; }
+  #replication-chart { width: 100%; height: 150px; background: white; border: 1px solid #cbd5e1;
+                       border-radius: 6px; }
   .scenario-card { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px;
                    display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
   .scenario-card textarea { min-height: 56px; }
@@ -179,7 +181,17 @@
     <div id="report"><p class="muted">Press Run to simulate the model.</p></div>
     <div class="row">
       <canvas id="dashboard" aria-label="Object metric dashboard"></canvas>
-      <button id="export-png" type="button">Export PNG</button>
+      <div class="row">
+        <label class="muted">Per-replication metric
+          <select id="replication-metric">
+            <option value="throughput">Throughput</option>
+            <option value="utilization">Utilization</option>
+            <option value="avg_content">Avg WIP</option>
+          </select>
+        </label>
+        <button id="export-png" type="button">Export PNG</button>
+      </div>
+      <canvas id="replication-chart" aria-label="Per-replication scatter"></canvas>
     </div>
   </section>
 </main>
@@ -208,6 +220,7 @@ const state = {
   redoStack: [],
   pendingSnapshot: null,
   lastStep: 0,
+  replicationMetric: "throughput",
   flowDrag: null,
   flowConnect: null,
   scenarios: [{ name: "baseline", overrides: "" }],
@@ -216,6 +229,7 @@ const state = {
 const $ = id => document.getElementById(id);
 const scene = $("scene");
 const dashboard = $("dashboard");
+const replicationChart = $("replication-chart");
 const flowCanvas = $("flow-canvas");
 const FLOW_WIDTH = 640;
 const FLOW_HEIGHT = 240;
@@ -1254,6 +1268,59 @@ function renderReport(report) {
       <tbody>${rows || '<tr><td colspan="5" class="muted">no object statistics</td></tr>'}</tbody>
     </table>`;
   drawDashboard(report);
+  drawReplicationChart(report);
+}
+
+function drawReplicationChart(report) {
+  const replications = report.replications || [];
+  const objects = Object.keys(report.objects || {});
+  const metric = state.replicationMetric;
+  const width = replicationChart.clientWidth || 320;
+  const height = replicationChart.clientHeight || 150;
+  const ratio = window.devicePixelRatio || 1;
+  replicationChart.width = Math.max(1, Math.round(width * ratio));
+  replicationChart.height = Math.max(1, Math.round(height * ratio));
+  const ctx = replicationChart.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#0f172a";
+  ctx.font = "600 11px system-ui, sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText(`Per replication: ${metric}`, 8, 14);
+  if (objects.length === 0 || replications.length === 0) return;
+  const values = [];
+  replications.forEach(replication => {
+    objects.forEach((name, index) => {
+      const stats = replication.objects && replication.objects[name];
+      if (stats) values.push({ index, value: Number(stats[metric] || 0) });
+    });
+  });
+  if (values.length === 0) return;
+  const max = Math.max(...values.map(point => point.value), 1e-9);
+  const left = 24;
+  const right = 8;
+  const top = 24;
+  const bottom = 24;
+  const columnWidth = (width - left - right) / objects.length;
+  ctx.strokeStyle = "#cbd5e1";
+  ctx.beginPath();
+  ctx.moveTo(left, height - bottom + 0.5);
+  ctx.lineTo(width - right, height - bottom + 0.5);
+  ctx.stroke();
+  values.forEach(point => {
+    const x = left + columnWidth * (point.index + 0.5);
+    const y = height - bottom - (height - top - bottom) * (point.value / max);
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = "#1d4ed8";
+    ctx.fill();
+  });
+  ctx.fillStyle = "#475569";
+  ctx.font = "9px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  objects.forEach((name, index) => {
+    ctx.fillText(name.slice(0, 8), left + columnWidth * (index + 0.5), height - 8);
+  });
 }
 
 function drawDashboard(report) {
@@ -1611,6 +1678,10 @@ $("export-png").addEventListener("click", () => {
   link.download = "openflex-dashboard.png";
   link.href = dashboard.toDataURL("image/png");
   link.click();
+});
+$("replication-metric").addEventListener("change", event => {
+  state.replicationMetric = event.target.value;
+  drawReplicationChart(state.report || { objects: {} });
 });
 $("speed").addEventListener("input", event => { state.speed = Number(event.target.value); });
 $("pause-animation").addEventListener("click", event => {

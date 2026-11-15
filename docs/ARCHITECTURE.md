@@ -247,11 +247,19 @@ valve 用 `pressure_open/pressure_close` 滞回自动启闭（trace `fluid_valve
 **Experimenter**（`POST /api/experiment` 场景×复现对比）、**Dashboard**（吞吐/利用率/WIP 三联 Canvas，可导出 PNG）、
 **Process Flow 拖拽画布**（块位置存 `metadata.flow_layout`，拖端口连线，点击块编辑参数）。
 
+## 全局表、A/S 连接与迁移
+
+- `Model.global_tables`：`GlobalTable{columns, rows}`，单元格支持 number/bool/string；模型层已提供校验与 `Model::table()` 访问器，引擎/表达式访问待接线。
+- `Connection.kind: "a" | "s"`：S（中心端口/资源链接）不参与输出端口编号与路由；模型层已校验，引擎待按 kind 跳过 A 路由。
+- 触发器枚举已扩展到 13 个点（含 OnContentChange/OnStateChange/OnReset/OnStop/OnResume），执行接线待后续。
+- 模型迁移：`migrate_json` 校验版本并提供 v1→v2 钩子；CLI `openflex migrate` 可规范化输出（字段级迁移待 v2）。
+
 ## 性能基线
 
 `scripts/bench-large-model.sh` 可生成 1k/10k/100k 对象模型并记录耗时与峰值 RSS（见
 [verification/performance.md](verification/performance.md)）。当前基线：M/M/1 约 1.7M events/s；
-10k 对象约 0.86 s；100k 对象 validate 85 s / run 272 s（超线性，瓶颈在对象线性查找/校验，已记录优化方向）。
+10k 对象约 0.37–0.96 s；100k 对象 validate 约 81 s / run 约 259 s（超线性，连接/聚合索引化后约 −5%；
+瓶颈仍在反序列化/逐对象校验/重复 validate，后续继续 profiling）。
 
 ## 统计口径
 

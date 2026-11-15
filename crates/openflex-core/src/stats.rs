@@ -4,7 +4,7 @@
 //! a [`SimReport`] that aggregates them. All times are model-time seconds; the
 //! CLI converts them to the model's time unit for display.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use openflex_model::{ObjectKind, RunSettings, TimeUnit};
 use serde::{Deserialize, Serialize};
@@ -627,16 +627,16 @@ fn aggregate_fluid(replications: &[ReplicationResult]) -> Option<FluidReport> {
 }
 
 fn aggregate_objects(replications: &[ReplicationResult]) -> BTreeMap<String, ObjectAggregate> {
-    let mut names: Vec<&String> = replications
-        .iter()
-        .flat_map(|replication| replication.objects.keys())
-        .collect();
-    names.sort();
-    names.dedup();
-
+    // Group the per-replication statistics once instead of scanning every
+    // replication for every object name (O(objects x reps) -> O(objects+reps)).
+    let mut grouped: HashMap<&str, Vec<&ObjectStats>> = HashMap::new();
+    for replication in replications {
+        for (name, stats) in &replication.objects {
+            grouped.entry(name.as_str()).or_default().push(stats);
+        }
+    }
     let mut aggregates = BTreeMap::new();
-    for name in names {
-        let mut kind = ObjectKind::BasicFr;
+    for (name, samples) in grouped {
         let mut input = Vec::new();
         let mut output = Vec::new();
         let mut content = Vec::new();
@@ -648,10 +648,8 @@ fn aggregate_objects(replications: &[ReplicationResult]) -> BTreeMap<String, Obj
         let mut busy = Vec::new();
         let mut blocked = Vec::new();
         let mut down = Vec::new();
-        for replication in replications {
-            let Some(stats) = replication.objects.get(name) else {
-                continue;
-            };
+        let mut kind = ObjectKind::BasicFr;
+        for stats in samples {
             kind = stats.kind;
             input.push(stats.input_count as f64);
             output.push(stats.output_count as f64);
@@ -666,7 +664,7 @@ fn aggregate_objects(replications: &[ReplicationResult]) -> BTreeMap<String, Obj
             down.push(stats.state_times.fraction("down"));
         }
         aggregates.insert(
-            name.clone(),
+            name.to_string(),
             ObjectAggregate {
                 kind,
                 input_count: Aggregate::from_samples(&input),

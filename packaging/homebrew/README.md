@@ -1,6 +1,6 @@
 # Homebrew tap 发布说明
 
-`packaging/homebrew/openflex.rb` 是**可发布的公式**（不是占位模板了）：v0.12.0 的
+`packaging/homebrew/openflex.rb` 是**可发布的公式**（不是占位模板了）：v0.13.0 的
 `version` 与三个 `sha256` 已经填成真实值，直接复制进 tap 仓库即可用。
 Homebrew 只认 tap 仓库（或 homebrew-core）里的公式，所以要让
 `brew install fanxingchunshui/openflex/openflex` 可用，还需要一个 `homebrew-openflex` 仓库。
@@ -11,20 +11,20 @@ Homebrew 只认 tap 仓库（或 homebrew-core）里的公式，所以要让
 
 | 项 | 状态 |
 |---|---|
-| 公式（version/sha256/url） | ✅ 已更新到 v0.12.0，URL 指向真实仓库 `FanXingChunShui/openflex` |
+| 公式（version/sha256/url） | ✅ 已更新到 v0.13.0，URL 指向真实仓库 `FanXingChunShui/openflex` |
 | `ruby -c` 语法 | ✅ 通过 |
 | tap 仓库 `FanXingChunShui/homebrew-openflex` | ❌ **未创建**（需要账号操作，见第 2 节） |
 | `brew audit --strict` 本地执行 | ⚠️ 本机 Homebrew 处于非 Tier 1 配置（macOS 15 + `/usr/local`），`brew audit` 在 gem 安装阶段被 SIGTERM；需在 tap 仓库的 CI 或受支持环境执行 |
 | `brew install --build-from-source` 本地执行 | ❌ 未执行（会写入 `$(brew --prefix)/bin`，且依赖 audit 先通过）；命令与预期结果见第 4 节 |
 
-v0.12.0 的三个校验和（来自
-[release 的 SHA256SUMS.txt](https://github.com/FanXingChunShui/openflex/releases/download/v0.12.0/SHA256SUMS.txt)）：
+v0.13.0 的三个校验和（来自
+[release 的 SHA256SUMS.txt](https://github.com/FanXingChunShui/openflex/releases/download/v0.13.0/SHA256SUMS.txt)）：
 
 | 平台 | 产物 | sha256 |
 |---|---|---|
-| macOS（通用） | `openflex-0.12.0-universal-apple-darwin.tar.gz` | `3113fb31cc9be8c4fd7659a9b656b1336f8a2a5b71c0ad5004222c2d366afbb0` |
-| Linux x86_64 | `openflex-0.12.0-x86_64-unknown-linux-gnu.tar.gz` | `6695d6d4a0b0d8ddb05c8ac9b1295f720b158e01bd4da4f734bcbc39c6d8402f` |
-| Linux aarch64 | `openflex-0.12.0-aarch64-unknown-linux-gnu.tar.gz` | `c9af56a353b1d02610ce4548553ab97e61fdebb0393ba1448cc31a90890fe652` |
+| macOS（通用） | `openflex-0.13.0-universal-apple-darwin.tar.gz` | `cc8e76be98b037e102389b8c98ba2dc3864823f94077fd3f09919bc49e450e49` |
+| Linux x86_64 | `openflex-0.13.0-x86_64-unknown-linux-gnu.tar.gz` | `3d0cfba22b88af4bf7a4836d659394682262d29934320287b2d1d97ebb6ca84b` |
+| Linux aarch64 | `openflex-0.13.0-aarch64-unknown-linux-gnu.tar.gz` | `871cdf2b70d68512c9fd23b9d5488a0b3fc13c4e9a62ca7f577d12a9916fd141` |
 
 ## 2. 第一次发布 tap（需要仓库所有者操作）
 
@@ -41,7 +41,7 @@ v0.12.0 的三个校验和（来自
 3. 校验和已经填好，核对一遍（可选，但建议每次发版都做）：
 
    ```sh
-   VERSION=0.12.0
+   VERSION=0.13.0
    curl -fsSLO "https://github.com/FanXingChunShui/openflex/releases/download/v$VERSION/SHA256SUMS.txt"
    grep -E 'universal-apple-darwin|x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu' SHA256SUMS.txt
    grep sha256 Formula/openflex.rb
@@ -55,7 +55,7 @@ v0.12.0 的三个校验和（来自
    brew audit --strict --new Formula/openflex.rb
    brew install --build-from-source Formula/openflex.rb
    brew test openflex
-   openflex --version          # openflex 0.12.0
+   openflex --version          # openflex 0.13.0
    brew uninstall openflex
    ```
 
@@ -67,7 +67,7 @@ v0.12.0 的三个校验和（来自
 
    ```sh
    git add Formula/openflex.rb
-   git commit -m "openflex 0.12.0"
+   git commit -m "openflex 0.13.0"
    git push origin main
    ```
 
@@ -112,7 +112,7 @@ brew uninstall openflex
 ```
 
 预期：`brew test openflex` 通过（公式的 `test` 块会跑 `new`/`validate`/`run`），
-`openflex --version` 输出 `openflex 0.12.0`。
+`openflex --version` 输出 `openflex 0.13.0`。
 
 ## 5. 常见问题
 

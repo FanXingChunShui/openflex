@@ -43,6 +43,9 @@ jobs:
   build-and-push:
     name: Build and push to GHCR
     runs-on: ubuntu-22.04
+    # A multi-arch build is slow under QEMU; without a timeout a stuck build
+    # holds the run for the default 6 hours and looks "pending" from outside.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -114,6 +117,10 @@ jobs:
           file: packaging/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          # Provenance attestations add "unknown/unknown" manifest entries that
+          # confuse tag checks and add registry round-trips; the release image
+          # does not need them. Signing would be a separate, explicit step.
+          provenance: false
           tags: ${{ steps.version.outputs.tags }}
           labels: |
             org.opencontainers.image.title=OpenFlex
@@ -126,7 +133,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Verify the published image
+      - name: Verify the published image (docker pull + run)
         run: |
           set -euo pipefail
           docker pull "${IMAGE}:${{ steps.version.outputs.version }}"
@@ -136,6 +143,34 @@ jobs:
           docker run --rm -v "$PWD/examples:/models:ro" "${IMAGE}:${{ steps.version.outputs.version }}" \
             run /models/golden/mm1.ofm --format json > /tmp/report.json
           grep -q '"objects"' /tmp/report.json
+
+      # Independent check of what the registry actually serves (no Docker):
+      # tag exists, manifest is multi-arch, and `latest` points at this version.
+      # Older tags do not contain this script, so it is optional there.
+      - name: Verify the registry tags via the GHCR API
+        run: |
+          set -euo pipefail
+          if [ -f scripts/verify-ghcr.sh ]; then
+            bash scripts/verify-ghcr.sh \
+              --tags "${{ steps.version.outputs.version }},latest" \
+              --expect-latest "${{ steps.version.outputs.version }}"
+          else
+            echo "::warning::scripts/verify-ghcr.sh is not present in this checkout; skipping the registry API check"
+          fi
+
+      - name: Diagnose a failed build (log-only)
+        if: failure()
+        run: |
+          set +e
+          echo "== docker info =="
+          docker info 2>&1 | tail -20
+          echo "== buildx =="
+          docker buildx ls 2>&1
+          echo "== disk =="
+          df -h / /var/lib/docker 2>/dev/null
+          echo "== registry tags (may not exist yet) =="
+          curl -fsSL "https://ghcr.io/token?scope=repository:fanxingchunshui/openflex:pull&service=ghcr.io" \
+            | head -c 120 2>/dev/null || true
 
       - name: Image summary
         run: |

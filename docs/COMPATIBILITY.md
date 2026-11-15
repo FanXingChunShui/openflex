@@ -44,6 +44,7 @@
 | OnMessage | `params.triggers.on_message` | ✅ | `send_message` 支持延迟 |
 | OnBreakdown / OnRepair | `params.triggers.*` | ✅ | 故障/修复时触发 |
 | OnPhotoEye | `params.triggers.on_photo_eye` | ✅ | 传送带光电门在精确位置触发 |
+| OnContentChange / OnStateChange / OnReset / OnStop / OnResume | `params.triggers.*` | 🟡 | schema/校验已就绪，引擎执行待接线 |
 | OnCreate | `params.triggers.on_create` | ✅ | Source 创建项时触发 |
 | Send To Port：First Available | `strategy: first_available` | ✅ | 默认 |
 | Send To Port：Round Robin | `round_robin` | ✅ | |
@@ -53,7 +54,7 @@
 | Send To Port：By Item Type | `by_item_type` | ✅ | |
 | Send To Port：By Label | `by_label` | ✅ | |
 | FlexScript / C++ 逻辑 | 表达式 + rhai 脚本 | ✅ | `action: script` / `script_condition`（条件用 `result` 标签约定）；沙箱无文件/网络/随机 |
-| 全局表（Global Table） | — | ⛔ | 可用标签/参数覆盖模拟 |
+| 全局表（Global Table） | `model.global_tables` | 🟡 | schema/校验/访问器已就绪；引擎/表达式访问待接线 |
 | Process Flow（流程图块） | `model.process_flow` / `params.process_flow` | 🟡 | 模型级+对象级 create/delay/assign/decision/sink/transfer(to/from)；块无容量/触发器；Studio 可编辑块与连接 |
 | FlexScript 脚本 | `action: script` / `script_condition` | ✅ | rhai 沙箱，触发器/路由/流程决策；条件可直接返回布尔（兼容 `result` 标签）；查询 `object_content/state/utilization`；动作 `set_state/create_item/move_item` |
 
@@ -71,7 +72,7 @@
 | 停留时间 | 报告 | ✅ | 平均停留时间 |
 | Experimenter（场景 × 复现） | `experiments` + `openflex experiment` | ✅ | 95% 置信区间 |
 | 置信区间 | 报告 | ✅ | 正态近似 `1.96·se` |
-| OptQuest 优化 | — | ⛔ | 未实现 |
+| OptQuest 优化 | `openflex optimize` | 🟡 | grid/random/genetic、多目标加权、Pareto 前沿；无 OptQuest 全套策略 |
 | Dashboard / 图表 | 报告 + Studio 柱状图 | 🟡 | Studio 有吞吐柱状图；无完整 Dashboard/模板 |
 | 3D 视图 / 模型树 / GUI | `openflex studio` | 🟡 | 本地 Web Studio：Canvas 3D、字段级表单、增删对象、Process Flow 拖拽画布/块表单、撤销/重做、时间步进/对象断点、Experimenter、Dashboard（PNG）；无 GPU 渲染/模型树 |
 | 导出 Excel / 数据库 | CSV / JSON / xlsx | ✅ | `run --xlsx` 输出 Summary/Objects/Replications 三个 sheet |

@@ -34,6 +34,7 @@ mod serve;
 mod studio;
 mod templates;
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{BufWriter, Write};
@@ -41,7 +42,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, anyhow, bail};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
-use openflex_core::{SimConfig, SimReport, derive_seed, simulate, simulate_traced};
+use openflex_core::{
+    SimConfig, SimReport, derive_seed, simulate, simulate_traced, simulate_with_checkpoint,
+};
 use openflex_model::{Model, ObjectKind, Scenario, TimeUnit};
 use openflex_report::{self as report, i18n};
 use report::i18n::Language;
@@ -124,6 +127,12 @@ enum Command {
         /// Write a JSONL event trace; with several replications the files are `FILE.rep0.jsonl`, `FILE.rep1.jsonl`, … (cannot be combined with --parallel > 1 or --resume).
         #[arg(long, value_name = "FILE")]
         trace: Option<PathBuf>,
+        /// Write an interval-average object-content time series CSV.
+        #[arg(long, value_name = "FILE")]
+        timeseries: Option<PathBuf>,
+        /// Sampling interval for --timeseries (model time units).
+        #[arg(long, default_value_t = 1.0)]
+        interval: f64,
         /// Save the final simulation snapshot as JSON (single replication; cannot be combined with --parallel > 1; may be combined with --trace).
         #[arg(long, value_name = "FILE")]
         save_checkpoint: Option<PathBuf>,
@@ -244,6 +253,17 @@ enum Command {
         #[arg(long, value_name = "N")]
         animate: Option<u32>,
     },
+    /// Migrate a model file to the current format version.
+    Migrate {
+        /// Path to the model file.
+        model: PathBuf,
+        /// Write the migrated model here instead of standard output.
+        #[arg(long, value_name = "FILE", conflicts_with = "in_place")]
+        out: Option<PathBuf>,
+        /// Overwrite the input file (validated before writing).
+        #[arg(long, conflicts_with = "out")]
+        in_place: bool,
+    },
     /// Search parameter combinations for the best system objective (D4).
     Optimize {
         /// Path to the model file.
@@ -251,9 +271,30 @@ enum Command {
         /// Parameter range, e.g. `Proc1.process_time.mean=2..6` or `=1,3,5`; repeat for a grid.
         #[arg(long = "param", value_name = "OBJECT.PARAM=VALUE", action = clap::ArgAction::Append)]
         params: Vec<String>,
-        /// Objective to optimise.
-        #[arg(long, value_enum, default_value_t = optimize::Objective::Throughput)]
-        objective: optimize::Objective,
+        /// Objective(s) to optimise; comma-separate several for an equally weighted score (e.g. throughput,wip).
+        #[arg(
+            long = "objective",
+            value_enum,
+            value_delimiter = ',',
+            default_value = "throughput",
+            value_name = "OBJECTIVES"
+        )]
+        objectives: Vec<optimize::Objective>,
+        /// Search strategy: grid (default), random or genetic.
+        #[arg(long, value_enum, default_value = "grid")]
+        algorithm: optimize::Algorithm,
+        /// Genetic population size.
+        #[arg(long, default_value_t = 40)]
+        population: usize,
+        /// Genetic generations (each generation evaluates the population).
+        #[arg(long, default_value_t = 12)]
+        generations: usize,
+        /// Genetic mutation probability per gene.
+        #[arg(long, default_value_t = 0.15)]
+        mutation_rate: f64,
+        /// Output the Pareto front for multi-objective searches.
+        #[arg(long)]
+        pareto: bool,
         /// Number of values for each `START..END` range.
         #[arg(long, default_value_t = 5)]
         steps: u32,
@@ -449,6 +490,12 @@ impl From<anyhow::Error> for Failure {
     }
 }
 
+impl From<String> for Failure {
+    fn from(error: String) -> Self {
+        Self::usage(anyhow!(error))
+    }
+}
+
 impl From<report::ReportError> for Failure {
     fn from(error: report::ReportError) -> Self {
         Self::runtime(anyhow::Error::new(error))
@@ -608,6 +655,8 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             parallel,
             xlsx,
             trace,
+            timeseries,
+            interval,
             save_checkpoint,
             resume,
             flow,
@@ -641,6 +690,21 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                     "--trace cannot be combined with --parallel > 1; traces are written one replication at a time"
                 )));
             }
+            if timeseries.is_some() {
+                if !interval.is_finite() || interval <= 0.0 {
+                    return Err(Failure::usage(anyhow!("--interval must be positive")));
+                }
+                if parallel.is_some_and(|workers| workers > 1) {
+                    return Err(Failure::usage(anyhow!(
+                        "--timeseries cannot be combined with --parallel > 1"
+                    )));
+                }
+                if trace.is_some() || save_checkpoint.is_some() || resume.is_some() {
+                    return Err(Failure::usage(anyhow!(
+                        "--timeseries cannot be combined with --trace, --save-checkpoint or --resume"
+                    )));
+                }
+            }
             validate_checkpoint_options(
                 &model,
                 &seed,
@@ -673,6 +737,9 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                 Some(trace_path) => execute_traced(&model, &seed, trace_path, progress, quiet)?,
                 None => execute(&model, &seed, parallel, progress)?,
             };
+            if let Some(path) = timeseries.as_deref() {
+                write_timeseries(&model, &seed, path, interval, quiet)?;
+            }
             finish_run(
                 &report,
                 &RunOutput {
@@ -827,10 +894,20 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             let text = render_layout(&model, width, height, dimension, None);
             emit(&text, svg.as_deref(), quiet)
         }
+        Command::Migrate {
+            model,
+            out,
+            in_place,
+        } => migrate_model(&model, out.as_deref(), in_place, quiet),
         Command::Optimize {
             model,
             params,
-            objective,
+            objectives,
+            algorithm,
+            population,
+            generations,
+            mutation_rate,
+            pareto,
             steps,
             replications,
             seed,
@@ -842,8 +919,13 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
         } => run_optimize(
             &model,
             &params,
-            objective,
+            &objectives,
+            algorithm,
             &OptimizeOptions {
+                population,
+                generations,
+                mutation_rate,
+                pareto,
                 steps,
                 replications,
                 seed,
@@ -1658,8 +1740,184 @@ fn parse_time_unit(value: &str) -> Result<&'static str, Failure> {
     }
 }
 
+/// Migrate a model file to the current format version.
+///
+/// The model crate does not expose a general migration API yet; the CLI
+/// validates the declared version, re-validates the document through
+/// `Model::from_json` and writes a canonical pretty representation. A future
+/// `openflex_model::migrate_json` can be plugged in here without changing the
+/// command contract.
+/// Write an interval-average object-content series with checkpoint stepping.
+///
+/// For every replication the engine is advanced at fixed intervals with
+/// `simulate_with_checkpoint`; `ReplicationResult` statistics are cumulative
+/// from the warm-up reset, so the average content of an interval is the
+/// difference of `avg_content * elapsed` divided by the interval length. This
+/// gives a genuine sampled series (not just the final report) without a new
+/// engine API.
+fn write_timeseries(
+    model: &Model,
+    seeds: &[u64],
+    path: &Path,
+    interval: f64,
+    quiet: bool,
+) -> Result<(), Failure> {
+    let configs = run_configs(model, seeds);
+    for (_, config) in &configs {
+        if config.stop_time <= config.warmup {
+            return Err(Failure::usage(anyhow!(
+                "model stop_time must be greater than warm-up for --timeseries"
+            )));
+        }
+        let steps = ((config.stop_time - config.warmup) / interval).ceil();
+        if steps > 10_000.0 {
+            return Err(Failure::usage(anyhow!(
+                "--timeseries would write more than 10,000 samples; increase --interval"
+            )));
+        }
+    }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            Failure::runtime(anyhow!("could not create {}: {error}", parent.display()))
+        })?;
+    }
+    let file = fs::File::create(path).map_err(|error| {
+        Failure::runtime(anyhow!(
+            "could not write timeseries {}: {error}",
+            path.display()
+        ))
+    })?;
+    let mut writer = BufWriter::new(file);
+    writer
+        .write_all(b"replication,time,object,kind,content_avg,utilization,throughput\n")
+        .map_err(|error| {
+            Failure::runtime(anyhow!("could not write {}: {error}", path.display()))
+        })?;
+
+    for (index, (_, base)) in configs.iter().enumerate() {
+        let warmup = base.warmup;
+        let stop = base.stop_time;
+        let mut previous = None;
+        let mut previous_time = warmup;
+        let mut previous_cumulative: BTreeMap<String, f64> = BTreeMap::new();
+        let mut target = warmup + interval;
+        loop {
+            let target_time = target.min(stop);
+            let config = SimConfig {
+                stop_time: target_time,
+                warmup,
+                seed: base.seed,
+            };
+            let (result, checkpoint) =
+                simulate_with_checkpoint(model, &config, index as u32, previous.as_ref())?;
+            previous = Some(checkpoint);
+            let elapsed = (target_time - warmup).max(0.0);
+            let duration = (target_time - previous_time).max(f64::EPSILON);
+            for (name, stats) in &result.objects {
+                let cumulative = stats.avg_content * elapsed;
+                let before = previous_cumulative.get(name).copied().unwrap_or(0.0);
+                let interval_average = ((cumulative - before) / duration).max(0.0);
+                let line = format!(
+                    "{index},{:.6},{},{},{:.6},{:.6},{:.6}\n",
+                    target_time,
+                    csv_field(name),
+                    csv_field(stats.kind.as_str()),
+                    interval_average,
+                    stats.utilization,
+                    stats.throughput
+                );
+                writer.write_all(line.as_bytes()).map_err(|error| {
+                    Failure::runtime(anyhow!("could not write {}: {error}", path.display()))
+                })?;
+                previous_cumulative.insert(name.clone(), cumulative);
+            }
+            previous_time = target_time;
+            if target_time >= stop {
+                break;
+            }
+            target += interval;
+        }
+    }
+    writer.flush().map_err(|error| {
+        Failure::runtime(anyhow!("could not write {}: {error}", path.display()))
+    })?;
+    note(quiet, &format!("{} {}", i18n::t("wrote"), path.display()));
+    Ok(())
+}
+
+fn csv_field(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+fn migrate_model(
+    path: &Path,
+    out: Option<&Path>,
+    in_place: bool,
+    quiet: bool,
+) -> Result<(), Failure> {
+    let text = fs::read_to_string(path).map_err(|error| {
+        Failure::runtime(anyhow!("could not read model {}: {error}", path.display()))
+            .with_path(path)
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+        Failure::usage(anyhow!("invalid model {}: {error}", path.display())).with_path(path)
+    })?;
+    let version = value.get("version").and_then(serde_json::Value::as_u64);
+    match version {
+        Some(1) => {}
+        Some(version) => {
+            return Err(Failure::usage(anyhow!(
+                "model {} uses format version {version}, but this build supports version 1; update OpenFlex or migrate with a newer release",
+                path.display()
+            )));
+        }
+        None => {
+            return Err(Failure::usage(anyhow!(
+                "model {} has no numeric `version` field; cannot migrate it",
+                path.display()
+            )));
+        }
+    }
+    let model = Model::from_json(&text)
+        .map_err(|error| Failure::usage(anyhow!("invalid model {}: {error}", path.display())))?;
+    let migrated = match model.to_json() {
+        Ok(mut json) => {
+            if !json.ends_with('\n') {
+                json.push('\n');
+            }
+            json
+        }
+        Err(error) => return Err(Failure::runtime(anyhow!(error))),
+    };
+    match (out, in_place) {
+        (Some(out), false) => emit(&migrated, Some(out), quiet),
+        (None, true) => emit(&migrated, Some(path), quiet),
+        (None, false) => {
+            emit(&migrated, None, quiet)?;
+            note(
+                quiet,
+                "note: model version 1 is current; the canonical JSON was printed to stdout",
+            );
+            Ok(())
+        }
+        (Some(_), true) => Err(Failure::usage(anyhow!(
+            "pass either --out or --in-place, not both"
+        ))),
+    }
+}
+
 /// Options for one `openflex optimize` invocation.
 struct OptimizeOptions<'a> {
+    population: usize,
+    generations: usize,
+    mutation_rate: f64,
+    pareto: bool,
     steps: u32,
     replications: Option<u32>,
     seed: Option<u64>,
@@ -1681,7 +1939,8 @@ fn optimize_usage(error: String) -> Failure {
 fn run_optimize(
     model_path: &Path,
     params: &[String],
-    objective: optimize::Objective,
+    objectives: &[optimize::Objective],
+    algorithm: optimize::Algorithm,
     options: &OptimizeOptions<'_>,
 ) -> Result<(), Failure> {
     if params.is_empty() {
@@ -1689,10 +1948,35 @@ fn run_optimize(
             "optimize needs at least one --param, e.g. --param Proc1.process_time.mean=2..6"
         )));
     }
+    if objectives.is_empty() {
+        return Err(Failure::usage(anyhow!(
+            "optimize needs at least one --objective"
+        )));
+    }
+    if objectives.len() > 3 {
+        return Err(Failure::usage(anyhow!(
+            "at most three objectives can be combined"
+        )));
+    }
     if let Some(workers) = options.parallel
         && workers == 0
     {
         return Err(Failure::usage(anyhow!("--parallel must be at least 1")));
+    }
+    if options.population < 2 || options.population > 500 {
+        return Err(Failure::usage(anyhow!(
+            "--population must be between 2 and 500"
+        )));
+    }
+    if options.generations == 0 || options.generations > 200 {
+        return Err(Failure::usage(anyhow!(
+            "--generations must be between 1 and 200"
+        )));
+    }
+    if !options.mutation_rate.is_finite() || !(0.0..=1.0).contains(&options.mutation_rate) {
+        return Err(Failure::usage(anyhow!(
+            "--mutation-rate must be between 0 and 1"
+        )));
     }
     let mut base = load_model(model_path)?;
     if let Some(replications) = options.replications {
@@ -1716,20 +2000,35 @@ fn run_optimize(
         .iter()
         .map(|spec| optimize::parse_param(spec, options.steps).map_err(optimize_usage))
         .collect::<Result<Vec<_>, _>>()?;
-    let combinations =
-        optimize::combinations(&ranges, options.samples, base.run.seed).map_err(optimize_usage)?;
-    let models = combinations
-        .iter()
-        .map(|values| optimize::apply(&base, &ranges, values).map_err(optimize_usage))
-        .collect::<Result<Vec<_>, _>>()?;
 
+    let estimate = match algorithm {
+        optimize::Algorithm::Grid => {
+            optimize::combinations(&ranges, options.samples, base.run.seed)
+                .map(|combinations| combinations.len())
+                .map_err(optimize_usage)?
+        }
+        optimize::Algorithm::Random => options.samples.unwrap_or(50),
+        optimize::Algorithm::Genetic => options.population.saturating_mul(options.generations),
+    };
     note(
         options.quiet,
-        &format!("evaluating {} candidate(s)…", models.len()),
+        &format!(
+            "evaluating · {} · up to {estimate} candidate(s)…",
+            match algorithm {
+                optimize::Algorithm::Grid => "grid",
+                optimize::Algorithm::Random => "random",
+                optimize::Algorithm::Genetic => "genetic",
+            }
+        ),
     );
-    let reporter = Progress::new(options.progress, models.len());
-    let reports = match options.parallel {
-        Some(workers) if workers > 1 && models.len() > 1 => {
+    let reporter = Progress::new(options.progress, estimate.max(1));
+    let mut next_index = 0usize;
+    let mut evaluate = |batch: &[Vec<f64>]| -> Result<Vec<optimize::Candidate>, Failure> {
+        let models = batch
+            .iter()
+            .map(|values| optimize::apply(&base, &ranges, values).map_err(optimize_usage))
+            .collect::<Result<Vec<_>, _>>()?;
+        let reports = if let Some(workers) = options.parallel.filter(|workers| *workers > 1) {
             use rayon::prelude::*;
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(workers)
@@ -1748,34 +2047,63 @@ fn run_optimize(
                     })
                     .collect::<Result<Vec<_>, _>>()
             })?
-        }
-        _ => {
+        } else {
             let mut reports = Vec::with_capacity(models.len());
             for model in &models {
                 reports.push(execute(model, &[], None, false)?);
                 reporter.tick();
             }
             reports
-        }
+        };
+        reports
+            .iter()
+            .zip(batch.iter())
+            .map(|(report, values)| {
+                let index = next_index;
+                next_index += 1;
+                optimize::candidate(index, &ranges, values, report, objectives, options.object)
+                    .map_err(optimize_usage)
+            })
+            .collect()
     };
 
-    let candidates = reports
-        .iter()
-        .zip(combinations.iter())
-        .enumerate()
-        .map(|(index, (report, values))| {
-            optimize::candidate(index, &ranges, values, report, objective, options.object)
-                .map_err(optimize_usage)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let best = optimize::best_index(&candidates, objective);
+    let candidates = match algorithm {
+        optimize::Algorithm::Grid => {
+            let combinations = optimize::combinations(&ranges, options.samples, base.run.seed)
+                .map_err(optimize_usage)?;
+            evaluate(&combinations)?
+        }
+        optimize::Algorithm::Random => {
+            let count = options.samples.unwrap_or(50).min(10_000);
+            let combinations = optimize::random_combinations(&ranges, count, base.run.seed)
+                .map_err(optimize_usage)?;
+            evaluate(&combinations)?
+        }
+        optimize::Algorithm::Genetic => optimize::genetic_search(
+            &ranges,
+            &optimize::GeneticConfig {
+                population: options.population,
+                generations: options.generations,
+                mutation_rate: options.mutation_rate,
+            },
+            base.run.seed,
+            evaluate,
+        )?,
+    };
+    if candidates.is_empty() {
+        return Err(Failure::runtime(anyhow!(
+            "the optimizer did not evaluate any candidate"
+        )));
+    }
+    let best = optimize::best_index(&candidates);
     let text = optimize::render(
         &base.name,
-        objective,
+        objectives,
         options.object,
         &ranges,
         &candidates,
         best,
+        options.pareto,
         options.format.into(),
     )
     .map_err(|error| Failure::runtime(anyhow!(error)))?;
@@ -1788,12 +2116,16 @@ fn run_optimize(
             .map(|(key, value)| format!("{key}={value}"))
             .collect::<Vec<_>>()
             .join(", ");
+        let label = objectives
+            .iter()
+            .map(|objective| objective.label())
+            .collect::<Vec<_>>()
+            .join("+");
         note(
             options.quiet,
             &format!(
-                "best: {parameters} -> {} {:.4}",
-                objective.label(),
-                best_candidate.metric
+                "best: {parameters} -> {label} {:.4} (weighted score {:.4})",
+                best_candidate.metric, best_candidate.score
             ),
         );
     }

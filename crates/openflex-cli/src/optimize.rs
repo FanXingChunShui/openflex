@@ -48,6 +48,17 @@ impl Objective {
     }
 }
 
+/// Search strategy for `openflex optimize`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Algorithm {
+    /// Full grid (or deterministic subset with `--samples`).
+    Grid,
+    /// Uniform random sample within each parameter range.
+    Random,
+    /// Deterministic genetic search (population, crossover, mutation, elites).
+    Genetic,
+}
+
 /// One `--param OBJECT.PARAM=...` specification.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamRange {
@@ -234,11 +245,31 @@ pub fn apply(base: &Model, ranges: &[ParamRange], values: &[f64]) -> Result<Mode
 pub struct Candidate {
     pub index: usize,
     pub assignments: Vec<(String, f64)>,
+    /// Raw value of the primary objective, or the weighted score for several.
     pub metric: f64,
+    /// Weighted score (higher is always better).
+    pub score: f64,
+    /// Every objective value, in the order given on the command line.
+    pub objective_values: Vec<(Objective, f64)>,
     pub created: f64,
     pub completed: f64,
     pub wip: f64,
     pub utilization: f64,
+}
+
+/// Weighted score of one candidate: maximise objectives, minimise `wip`.
+pub fn weighted_score(objectives: &[Objective], values: &[(Objective, f64)]) -> f64 {
+    let mut score = 0.0;
+    for objective in objectives {
+        if let Some((_, value)) = values.iter().find(|(kind, _)| kind == objective) {
+            score += if objective.maximize() {
+                *value
+            } else {
+                -*value
+            };
+        }
+    }
+    score
 }
 
 /// Extract the objective value from one run report.
@@ -290,7 +321,7 @@ pub fn candidate(
     ranges: &[ParamRange],
     values: &[f64],
     report: &SimReport,
-    objective: Objective,
+    objectives: &[Objective],
     object: Option<&str>,
 ) -> Result<Candidate, String> {
     let assignments = ranges
@@ -298,10 +329,25 @@ pub fn candidate(
         .zip(values)
         .map(|(range, value)| (range.key(), *value))
         .collect();
+    let objective_values: Vec<(Objective, f64)> = objectives
+        .iter()
+        .map(|objective| Ok((*objective, metric(report, *objective, object)?)))
+        .collect::<Result<_, String>>()?;
+    let score = weighted_score(objectives, &objective_values);
+    let primary = objective_values
+        .first()
+        .map(|(_, value)| *value)
+        .unwrap_or(score);
     Ok(Candidate {
         index,
         assignments,
-        metric: metric(report, objective, object)?,
+        metric: if objectives.len() == 1 {
+            primary
+        } else {
+            score
+        },
+        score,
+        objective_values,
         created: report.created.mean,
         completed: report.completed.mean,
         wip: report
@@ -325,70 +371,151 @@ pub fn candidate(
 }
 
 /// Index of the best candidate (ties keep the earliest grid position).
-pub fn best_index(candidates: &[Candidate], objective: Objective) -> usize {
+pub fn best_index(candidates: &[Candidate]) -> usize {
     let mut best = 0;
     for (index, candidate) in candidates.iter().enumerate().skip(1) {
-        let better = if objective.maximize() {
-            candidate.metric > candidates[best].metric
-        } else {
-            candidate.metric < candidates[best].metric
-        };
-        if better {
+        if candidate.score > candidates[best].score {
             best = index;
         }
     }
     best
 }
 
+/// Indices of candidates that are not dominated by any other candidate.
+pub fn pareto_indices(candidates: &[Candidate], objectives: &[Objective]) -> Vec<usize> {
+    let mut front = Vec::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        let dominated = candidates.iter().enumerate().any(|(other_index, other)| {
+            if other_index == index {
+                return false;
+            }
+            let mut better_in_one = false;
+            for objective in objectives {
+                let value = candidate
+                    .objective_values
+                    .iter()
+                    .find(|(kind, _)| kind == objective)
+                    .map(|(_, value)| *value)
+                    .unwrap_or(0.0);
+                let other_value = other
+                    .objective_values
+                    .iter()
+                    .find(|(kind, _)| kind == objective)
+                    .map(|(_, value)| *value)
+                    .unwrap_or(0.0);
+                let (left, right) = if objective.maximize() {
+                    (other_value, value)
+                } else {
+                    (-other_value, -value)
+                };
+                if left < right - 1e-12 {
+                    return false;
+                }
+                if left > right + 1e-12 {
+                    better_in_one = true;
+                }
+            }
+            better_in_one
+        });
+        if !dominated {
+            front.push(index);
+        }
+    }
+    front
+}
+
 /// Render the search result.
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     model: &str,
-    objective: Objective,
+    objectives: &[Objective],
     object: Option<&str>,
     ranges: &[ParamRange],
     candidates: &[Candidate],
     best: usize,
+    pareto: bool,
     format: Format,
 ) -> Result<String, String> {
     Ok(match format {
-        Format::Json => to_json(model, objective, object, candidates, best)?,
-        Format::Csv => to_csv(objective, ranges, candidates, best),
-        Format::Table => to_table(model, objective, object, ranges, candidates, best),
-        Format::Markdown => to_markdown(model, objective, object, ranges, candidates, best),
+        Format::Json => to_json(model, objectives, object, candidates, best, pareto)?,
+        Format::Csv => to_csv(objectives, ranges, candidates, best, pareto),
+        Format::Table => to_table(model, objectives, object, candidates, best, pareto),
+        Format::Markdown => to_markdown(model, objectives, object, candidates, best, pareto),
+    })
+}
+
+fn candidate_json(candidate: &Candidate, pareto: bool) -> serde_json::Value {
+    let parameters: serde_json::Map<String, serde_json::Value> = candidate
+        .assignments
+        .iter()
+        .map(|(key, value)| (key.clone(), json!(value)))
+        .collect();
+    let objective_values: serde_json::Map<String, serde_json::Value> = candidate
+        .objective_values
+        .iter()
+        .map(|(objective, value)| (objective.label().to_string(), json!(value)))
+        .collect();
+    json!({
+        "index": candidate.index,
+        "parameters": parameters,
+        "metric": candidate.metric,
+        "score": candidate.score,
+        "objective_values": objective_values,
+        "pareto": pareto,
+        "created": candidate.created,
+        "completed": candidate.completed,
+        "avg_wip": candidate.wip,
+        "utilization": candidate.utilization,
     })
 }
 
 fn to_json(
     model: &str,
-    objective: Objective,
+    objectives: &[Objective],
     object: Option<&str>,
     candidates: &[Candidate],
     best: usize,
+    pareto: bool,
 ) -> Result<String, String> {
+    let front: Vec<serde_json::Value> = if pareto {
+        pareto_indices(candidates, objectives)
+            .into_iter()
+            .filter_map(|index| candidates.get(index))
+            .map(|candidate| candidate_json(candidate, true))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let values: Vec<serde_json::Value> = candidates
         .iter()
         .map(|candidate| {
-            let parameters: serde_json::Map<String, serde_json::Value> = candidate
-                .assignments
-                .iter()
-                .map(|(key, value)| (key.clone(), json!(value)))
-                .collect();
-            json!({
-                "index": candidate.index,
-                "parameters": parameters,
-                "metric": candidate.metric,
-                "created": candidate.created,
-                "completed": candidate.completed,
-                "avg_wip": candidate.wip,
-                "utilization": candidate.utilization,
-            })
+            candidate_json(
+                candidate,
+                front.iter().any(|value| value["index"] == candidate.index),
+            )
         })
         .collect();
+    let objective_label = objectives
+        .iter()
+        .map(|objective| objective.label())
+        .collect::<Vec<_>>()
+        .join(",");
+    let direction = if objectives.len() == 1 && !objectives[0].maximize() {
+        "minimize"
+    } else {
+        "maximize"
+    };
     let document = json!({
         "model": model,
-        "objective": objective.label(),
-        "direction": if objective.maximize() { "maximize" } else { "minimize" },
+        "objective": objective_label,
+        "objectives": objectives.iter().map(|objective| json!({
+            "name": objective.label(),
+            "direction": if objective.maximize() { "maximize" } else { "minimize" },
+        })).collect::<Vec<_>>(),
+        "direction": direction,
         "object": object,
+        "pareto_enabled": pareto,
+        "pareto_front": front,
         "best": &values[best],
         "candidates": values,
     });
@@ -396,10 +523,11 @@ fn to_json(
 }
 
 fn to_csv(
-    objective: Objective,
+    objectives: &[Objective],
     ranges: &[ParamRange],
     candidates: &[Candidate],
     best: usize,
+    pareto: bool,
 ) -> String {
     let mut out = String::new();
     out.push_str("rank");
@@ -407,25 +535,49 @@ fn to_csv(
         out.push(',');
         out.push_str(&range.key());
     }
-    out.push_str(&format!(
-        ",{},best,created,completed,avg_wip,utilization\n",
-        objective.label()
-    ));
+    if objectives.len() == 1 {
+        out.push_str(&format!(",{}", objectives[0].label()));
+    } else {
+        for objective in objectives {
+            out.push(',');
+            out.push_str(objective.label());
+        }
+        out.push_str(",score");
+    }
+    out.push_str(",best");
+    if pareto {
+        out.push_str(",pareto");
+    }
+    out.push_str(",created,completed,avg_wip,utilization\n");
+    let front = pareto_indices(candidates, objectives);
     let mut ranked: Vec<&Candidate> = candidates.iter().collect();
-    sort_candidates(&mut ranked, objective);
+    sort_candidates(&mut ranked);
     for (rank, candidate) in ranked.iter().enumerate() {
         out.push_str(&format!("{}", rank + 1));
         for (_, value) in &candidate.assignments {
             out.push_str(&format!(",{value}"));
         }
+        if objectives.len() == 1 {
+            out.push_str(&format!(",{}", candidate.metric));
+        } else {
+            for objective in objectives {
+                let value = candidate
+                    .objective_values
+                    .iter()
+                    .find(|(kind, _)| kind == objective)
+                    .map(|(_, value)| *value)
+                    .unwrap_or_default();
+                out.push_str(&format!(",{value}"));
+            }
+            out.push_str(&format!(",{}", candidate.score));
+        }
+        out.push_str(&format!(",{}", candidate.index == best));
+        if pareto {
+            out.push_str(&format!(",{}", front.contains(&candidate.index)));
+        }
         out.push_str(&format!(
-            ",{},{},{:.3},{:.3},{:.3},{:.4}\n",
-            candidate.metric,
-            candidate.index == best,
-            candidate.created,
-            candidate.completed,
-            candidate.wip,
-            candidate.utilization
+            ",{:.3},{:.3},{:.3},{:.4}\n",
+            candidate.created, candidate.completed, candidate.wip, candidate.utilization
         ));
     }
     out
@@ -433,33 +585,39 @@ fn to_csv(
 
 fn to_table(
     model: &str,
-    objective: Objective,
+    objectives: &[Objective],
     object: Option<&str>,
-    _ranges: &[ParamRange],
     candidates: &[Candidate],
     best: usize,
+    pareto: bool,
 ) -> String {
     let mut out = String::new();
-    let direction = if objective.maximize() {
-        "maximize"
-    } else {
+    let objective_label = objectives
+        .iter()
+        .map(|objective| objective.label())
+        .collect::<Vec<_>>()
+        .join("+");
+    let direction = if objectives.len() == 1 && !objectives[0].maximize() {
         "minimize"
+    } else {
+        "maximize weighted score"
     };
     out.push_str(&format!(
         "OpenFlex optimize: {model} (objective {} {}{}, {} candidates)\n",
-        objective.label(),
+        objective_label,
         direction,
         object.map(|name| format!(" on {name}")).unwrap_or_default(),
         candidates.len()
     ));
     out.push_str(&format!(
         "{:<28} {:>10} {:>10} {:>10} {:>10} {:>10}\n",
-        "parameters", "metric", "created", "completed", "avg_wip", "util"
+        "parameters", "metric", "score", "created", "completed", "avg_wip"
     ));
-    out.push_str(&"-".repeat(82));
+    out.push_str(&"-".repeat(92));
     out.push('\n');
+    let front = pareto_indices(candidates, objectives);
     let mut ranked: Vec<&Candidate> = candidates.iter().collect();
-    sort_candidates(&mut ranked, objective);
+    sort_candidates(&mut ranked);
     for (rank, candidate) in ranked.iter().enumerate() {
         let parameters = candidate
             .assignments
@@ -468,14 +626,19 @@ fn to_table(
             .collect::<Vec<_>>()
             .join(" ");
         let marker = if candidate.index == best { "*" } else { " " };
+        let front_marker = if pareto && front.contains(&candidate.index) {
+            "P"
+        } else {
+            " "
+        };
         out.push_str(&format!(
-            "{marker}{rank:<2} {:<24} {:>10.4} {:>10.2} {:>10.2} {:>10.2} {:>9.1}%\n",
+            "{marker}{front_marker}{rank:<2} {:<22} {:>10.4} {:>10.4} {:>10.2} {:>10.2} {:>10.2}\n",
             parameters,
             candidate.metric,
+            candidate.score,
             candidate.created,
             candidate.completed,
-            candidate.wip,
-            candidate.utilization * 100.0
+            candidate.wip
         ));
     }
     if let Some(best) = candidates.get(best) {
@@ -486,41 +649,41 @@ fn to_table(
             .collect::<Vec<_>>()
             .join(", ");
         out.push_str(&format!(
-            "\nbest: {parameters} -> {} {:.4}\n",
-            objective.label(),
-            best.metric
+            "\nbest: {parameters} -> {} {:.4} (score {:.4})\n",
+            objective_label, best.metric, best.score
         ));
+    }
+    if pareto {
+        out.push_str(&format!("pareto front: {}\n", front.len()));
     }
     out
 }
 
 fn to_markdown(
     model: &str,
-    objective: Objective,
+    objectives: &[Objective],
     object: Option<&str>,
-    _ranges: &[ParamRange],
     candidates: &[Candidate],
     best: usize,
+    pareto: bool,
 ) -> String {
     let mut out = String::new();
+    let objective_label = objectives
+        .iter()
+        .map(|objective| objective.label())
+        .collect::<Vec<_>>()
+        .join("+");
     out.push_str(&format!(
-        "# OpenFlex optimize: {model}\n\nObjective: {} ({})",
-        objective.label(),
-        if objective.maximize() {
-            "maximize"
-        } else {
-            "minimize"
-        }
+        "# OpenFlex optimize: {model}\n\nObjective: {objective_label}"
     ));
     if let Some(name) = object {
         out.push_str(&format!(" on `{name}`"));
     }
-    out.push_str(
-        "\n\n| Rank | Parameters | Metric | Created | Completed | Avg WIP | Utilisation |\n",
-    );
-    out.push_str("|---|---|---:|---:|---:|---:|---:|\n");
+    out.push_str("\n\n| Rank | Parameters | Metric | Score | Created | Completed | Avg WIP | Utilisation | Pareto |\n");
+    out.push_str("|---|---|---:|---:|---:|---:|---:|---:|:---:|\n");
+    let front = pareto_indices(candidates, objectives);
     let mut ranked: Vec<&Candidate> = candidates.iter().collect();
-    sort_candidates(&mut ranked, objective);
+    sort_candidates(&mut ranked);
     for (rank, candidate) in ranked.iter().enumerate() {
         let parameters = candidate
             .assignments
@@ -534,29 +697,188 @@ fn to_markdown(
             ""
         };
         out.push_str(&format!(
-            "| {} | {parameters} | {:.4} | {:.2} | {:.2} | {:.2} | {:.1}%{} |\n",
+            "| {} | {parameters} | {:.4} | {:.4} | {:.2} | {:.2} | {:.2} | {:.1}% | {}{} |\n",
             rank + 1,
             candidate.metric,
+            candidate.score,
             candidate.created,
             candidate.completed,
             candidate.wip,
             candidate.utilization * 100.0,
+            if pareto && front.contains(&candidate.index) {
+                "P"
+            } else {
+                ""
+            },
             marker
         ));
     }
     out
 }
 
-fn sort_candidates(candidates: &mut Vec<&Candidate>, objective: Objective) {
+fn sort_candidates(candidates: &mut Vec<&Candidate>) {
     candidates.sort_by(|left, right| {
-        let order = left.metric.total_cmp(&right.metric);
-        let order = if objective.maximize() {
-            order.reverse()
-        } else {
-            order
-        };
-        order.then(left.index.cmp(&right.index))
+        right
+            .score
+            .total_cmp(&left.score)
+            .then(left.index.cmp(&right.index))
     });
+}
+
+/// Lower/upper bounds of one parameter range (explicit lists included).
+fn range_bounds(range: &ParamRange) -> (f64, f64) {
+    let min = range.values.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = range
+        .values
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    (min, max)
+}
+
+fn integral_range(range: &ParamRange) -> bool {
+    range.values.iter().all(|value| value.fract() == 0.0)
+}
+
+fn clamp_value(range: &ParamRange, value: f64) -> f64 {
+    let (min, max) = range_bounds(range);
+    let value = value.max(min).min(max);
+    if integral_range(range) {
+        value.round()
+    } else {
+        value
+    }
+}
+
+/// Uniform random combinations within each parameter range.
+pub fn random_combinations(
+    ranges: &[ParamRange],
+    count: usize,
+    seed: u64,
+) -> Result<Vec<Vec<f64>>, String> {
+    if count == 0 {
+        return Err("--samples must be at least 1".into());
+    }
+    let mut state = seed;
+    let mut combinations = Vec::with_capacity(count);
+    for _ in 0..count {
+        let mut values = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            let (min, max) = range_bounds(range);
+            state = splitmix64(state);
+            let fraction = (state >> 11) as f64 / (1u64 << 53) as f64;
+            values.push(clamp_value(range, min + (max - min) * fraction));
+        }
+        combinations.push(values);
+    }
+    Ok(combinations)
+}
+
+/// Genetic search parameters.
+#[derive(Debug, Clone, Copy)]
+pub struct GeneticConfig {
+    pub population: usize,
+    pub generations: usize,
+    pub mutation_rate: f64,
+}
+
+/// Deterministic genetic search using a caller-supplied evaluator.
+///
+/// The evaluator receives a batch of parameter vectors and must return one
+/// [`Candidate`] per vector in the same order. Selection uses the weighted
+/// score; elites survive unchanged, children use blend crossover and Gaussian
+/// mutation. The RNG is a local SplitMix64 seeded by `seed`, so repeated runs
+/// with the same seed explore exactly the same population.
+pub fn genetic_search<F, E>(
+    ranges: &[ParamRange],
+    config: &GeneticConfig,
+    seed: u64,
+    mut evaluate: F,
+) -> Result<Vec<Candidate>, E>
+where
+    F: FnMut(&[Vec<f64>]) -> Result<Vec<Candidate>, E>,
+    E: From<String>,
+{
+    if config.population < 2 {
+        return Err(E::from("--population must be at least 2".to_string()));
+    }
+    if config.generations == 0 {
+        return Err(E::from("--generations must be at least 1".to_string()));
+    }
+    if !config.mutation_rate.is_finite() || !(0.0..=1.0).contains(&config.mutation_rate) {
+        return Err(E::from(
+            "--mutation-rate must be between 0 and 1".to_string(),
+        ));
+    }
+    let mut state = seed ^ 0xA5A5_5A5A_1234_5678;
+    let mut population: Vec<Vec<f64>> = Vec::with_capacity(config.population);
+    for _ in 0..config.population {
+        let mut values = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            let (min, max) = range_bounds(range);
+            state = splitmix64(state);
+            let fraction = (state >> 11) as f64 / (1u64 << 53) as f64;
+            values.push(clamp_value(range, min + (max - min) * fraction));
+        }
+        population.push(values);
+    }
+    let mut all = evaluate(&population)?;
+    for _ in 1..config.generations {
+        let mut ranked: Vec<usize> = (0..population.len()).collect();
+        ranked.sort_by(|left, right| {
+            all[*right]
+                .score
+                .total_cmp(&all[*left].score)
+                .then(left.cmp(right))
+        });
+        let elite_count = (config.population / 5).max(1).min(population.len());
+        let mut next: Vec<Vec<f64>> = ranked[..elite_count]
+            .iter()
+            .map(|index| population[*index].clone())
+            .collect();
+        while next.len() < config.population {
+            let parent_a = tournament(&ranked, &all, &mut state, config.population);
+            let parent_b = tournament(&ranked, &all, &mut state, config.population);
+            let mut child = Vec::with_capacity(ranges.len());
+            for (index, range) in ranges.iter().enumerate() {
+                state = splitmix64(state);
+                let fraction = (state >> 11) as f64 / (1u64 << 53) as f64;
+                let mut value = population[parent_a][index]
+                    + fraction * (population[parent_b][index] - population[parent_a][index]);
+                state = splitmix64(state);
+                let roll = (state >> 11) as f64 / (1u64 << 53) as f64;
+                if roll < config.mutation_rate {
+                    state = splitmix64(state);
+                    let noise = (state >> 11) as f64 / (1u64 << 53) as f64;
+                    let (min, max) = range_bounds(range);
+                    value += (noise - 0.5) * (max - min) * 0.5;
+                }
+                child.push(clamp_value(range, value));
+            }
+            next.push(child);
+        }
+        population = next;
+        all.extend(evaluate(&population)?);
+    }
+    Ok(all)
+}
+
+fn tournament(
+    ranked: &[usize],
+    candidates: &[Candidate],
+    state: &mut u64,
+    population: usize,
+) -> usize {
+    let mut best: Option<usize> = None;
+    for _ in 0..3 {
+        *state = splitmix64(*state);
+        let pick = (*state as usize) % population;
+        let index = ranked[pick];
+        if best.is_none_or(|best| candidates[index].score > candidates[best].score) {
+            best = Some(index);
+        }
+    }
+    best.unwrap_or(ranked[0])
 }
 
 #[cfg(test)]
@@ -610,29 +932,73 @@ mod tests {
         );
     }
 
+    fn candidate(index: usize, score: f64, objective: Objective, value: f64) -> Candidate {
+        Candidate {
+            index,
+            assignments: Vec::new(),
+            metric: value,
+            score,
+            objective_values: vec![(objective, value)],
+            created: 0.0,
+            completed: 0.0,
+            wip: 0.0,
+            utilization: 0.0,
+        }
+    }
+
     #[test]
-    fn selects_the_better_end_of_the_objective() {
+    fn selects_the_highest_weighted_score() {
+        let candidates = vec![
+            candidate(0, 2.0, Objective::Throughput, 2.0),
+            candidate(1, 6.0, Objective::Throughput, 6.0),
+        ];
+        assert_eq!(best_index(&candidates), 1);
+
+        let minimized = vec![
+            candidate(0, -2.0, Objective::Wip, 2.0),
+            candidate(1, -6.0, Objective::Wip, 6.0),
+        ];
+        assert_eq!(best_index(&minimized), 0);
+    }
+
+    #[test]
+    fn pareto_front_keeps_the_trade_off_candidates() {
         let candidates = vec![
             Candidate {
                 index: 0,
                 assignments: Vec::new(),
-                metric: 2.0,
+                metric: 1.0,
+                score: 0.0,
+                objective_values: vec![(Objective::Throughput, 10.0), (Objective::Wip, 5.0)],
                 created: 0.0,
                 completed: 0.0,
-                wip: 0.0,
+                wip: 5.0,
                 utilization: 0.0,
             },
             Candidate {
                 index: 1,
                 assignments: Vec::new(),
-                metric: 6.0,
+                metric: 1.0,
+                score: 0.0,
+                objective_values: vec![(Objective::Throughput, 5.0), (Objective::Wip, 1.0)],
                 created: 0.0,
                 completed: 0.0,
-                wip: 0.0,
+                wip: 1.0,
+                utilization: 0.0,
+            },
+            Candidate {
+                index: 2,
+                assignments: Vec::new(),
+                metric: 1.0,
+                score: 0.0,
+                objective_values: vec![(Objective::Throughput, 1.0), (Objective::Wip, 9.0)],
+                created: 0.0,
+                completed: 0.0,
+                wip: 9.0,
                 utilization: 0.0,
             },
         ];
-        assert_eq!(best_index(&candidates, Objective::Throughput), 1);
-        assert_eq!(best_index(&candidates, Objective::Wip), 0);
+        let front = pareto_indices(&candidates, &[Objective::Throughput, Objective::Wip]);
+        assert_eq!(front, vec![0, 1]);
     }
 }

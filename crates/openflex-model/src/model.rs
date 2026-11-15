@@ -5,7 +5,7 @@
 //! settings and optional experiments. The format is deliberately explicit and
 //! validated before a run starts; the engine never guesses what a model meant.
 
-use serde::de::{self, Deserializer};
+use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -2040,6 +2040,30 @@ fn default_true() -> bool {
     true
 }
 
+/// Kind of a connection (FlexSim A/S connectors).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionKind {
+    /// A connection: flow items travel along it and output ports route to it
+    /// (the default, and the only kind older models know).
+    #[default]
+    A,
+    /// S connection: a center-port/resource link between objects (for example
+    /// a processor linked to a dispatcher). S connections do not take part in
+    /// output-port routing.
+    S,
+}
+
+impl ConnectionKind {
+    /// The short JSON name (`"a"`/`"s"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ConnectionKind::A => "a",
+            ConnectionKind::S => "s",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Connection {
@@ -2055,6 +2079,10 @@ pub struct Connection {
     /// `None` means "no additional limit".
     #[serde(default)]
     pub flow_rate: Option<f64>,
+    /// Connection kind: A (flow/port routing) when omitted, or S (center
+    /// port / resource link).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ConnectionKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -2508,6 +2536,121 @@ impl Default for Grid {
     }
 }
 
+/// One cell of a global table.
+///
+/// Cells are JSON scalars: a number, a boolean or a string. Serialisation is
+/// untagged, so the JSON stays `1`, `true` or `"text"`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TableCell {
+    /// Numeric cell (integers are stored as `f64`).
+    Number(f64),
+    /// Boolean cell.
+    Bool(bool),
+    /// String cell.
+    Str(String),
+}
+
+impl TableCell {
+    /// The cell as a number, when it is numeric (booleans convert to 0/1).
+    pub fn as_number(&self) -> Option<f64> {
+        match self {
+            TableCell::Number(value) => Some(*value),
+            TableCell::Bool(value) => Some(if *value { 1.0 } else { 0.0 }),
+            TableCell::Str(_) => None,
+        }
+    }
+
+    /// The cell as text, using the same formatting as expressions.
+    pub fn as_text(&self) -> String {
+        match self {
+            TableCell::Number(value) => {
+                if value.fract() == 0.0 && value.is_finite() && value.abs() < 1e15 {
+                    format!("{value:.0}")
+                } else {
+                    format!("{value}")
+                }
+            }
+            TableCell::Bool(value) => value.to_string(),
+            TableCell::Str(value) => value.clone(),
+        }
+    }
+}
+
+/// A named table of values (FlexSim Global Table, B7).
+///
+/// Global tables are read-only model data; expressions can later read a cell
+/// with `table.<name>[<row>][<column>]` (engine integration is a follow-up).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct GlobalTable {
+    /// Column names, in display order. Every row must have one cell per
+    /// column.
+    #[serde(default)]
+    pub columns: Vec<String>,
+    /// Table rows.
+    #[serde(default)]
+    pub rows: Vec<Vec<TableCell>>,
+}
+
+impl GlobalTable {
+    /// Number of columns (0 for a table without a header).
+    pub fn width(&self) -> usize {
+        self.columns.len()
+    }
+
+    /// Number of rows.
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// True when the table has no rows.
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Cell lookup by row index and column name.
+    pub fn cell(&self, row: usize, column: &str) -> Option<&TableCell> {
+        let column = self.columns.iter().position(|name| name == column)?;
+        self.rows.get(row)?.get(column)
+    }
+}
+
+/// Deserialise the global table map while rejecting duplicate table names.
+///
+/// `serde_json` normally keeps the last duplicate key silently; a duplicated
+/// global table is a modelling error, so the map is built by hand.
+fn deserialize_global_tables<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, GlobalTable>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct TableMapVisitor;
+
+    impl<'de> Visitor<'de> for TableMapVisitor {
+        type Value = BTreeMap<String, GlobalTable>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a map of global table names to tables")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+            let mut tables = BTreeMap::new();
+            while let Some((name, table)) = access.next_entry::<String, GlobalTable>()? {
+                if tables.insert(name.clone(), table).is_some() {
+                    return Err(de::Error::custom(format!(
+                        "duplicate global table '{name}'"
+                    )));
+                }
+            }
+            Ok(tables)
+        }
+    }
+
+    deserializer.deserialize_map(TableMapVisitor)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Model {
@@ -2536,6 +2679,14 @@ pub struct Model {
     /// Optional walking grid for `person` A* routing (B6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grid: Option<Grid>,
+    /// Named global tables (B7); empty by default and omitted from the JSON
+    /// when empty, so existing models are unchanged.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "deserialize_global_tables"
+    )]
+    pub global_tables: BTreeMap<String, GlobalTable>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
 }
@@ -2595,6 +2746,11 @@ impl Model {
 
     pub fn object(&self, name: &str) -> Option<&Object> {
         self.objects.iter().find(|object| object.name == name)
+    }
+
+    /// A named global table, if the model defines it.
+    pub fn table(&self, name: &str) -> Option<&GlobalTable> {
+        self.global_tables.get(name)
     }
 
     /// Connections leaving `name`, in port order.

@@ -341,25 +341,35 @@ ghcr.io/fanxingchunshui/openflex:v<version>
 ghcr.io/fanxingchunshui/openflex:latest
 ```
 
-**当前 registry 状态**（2026-11-15 核对）：
+**当前 registry 状态**（2026-11-15 用 `scripts/verify-ghcr.sh` 核对，全部 200）：
 
-| 标签 | 状态 |
-|---|---|
-| `0.10.0` | ✅ 可用（digest `sha256:ee76d8ea…`） |
-| `0.11.0` | ✅ 可用（digest `sha256:4d7aeff3…`，也是当前 `latest`） |
-| `latest` | ✅ 指向 0.11.0 |
-| `0.12.0` | ❌ **未推送**（registry 404） |
+| 标签 | 状态 | digest 前 12 位 |
+|---|---|---|
+| `0.10.0` | ✅ 可用 | `ee76d8ea10eb` |
+| `0.11.0` | ✅ 可用 | `4d7aeff373cb` |
+| `0.12.0` | ✅ 可用 | `a9f7eb3e83ba` |
+| `0.13.0` | ✅ 可用 | `8359f1649db9` |
+| `latest` | ✅ 指向 0.13.0 | `8359f1649db9` |
 
 | 项 | 值 |
 |---|---|
 | 架构 | `linux/amd64` + `linux/arm64`（同一 OCI manifest list） |
 | 匿名拉取 | 可用（public package） |
-| 验证 | 推送前 `docker run --version` + mm1 冒烟；推送后 `docker pull` 再跑一遍 |
+| 验证 | 推送前 `docker run --version` + mm1 冒烟；推送后 `docker pull` + registry API 双重校验 |
 
-> **v0.12.0 缺口**：tag 已发布但镜像没有出现在 registry。先在 GitHub Actions 里查看
-> `container` workflow 对 `v0.12.0` 的运行记录（失败原因、runner 额度、GHCR 权限），
-> 修好后用 **Actions → container → Run workflow**（`tag` 填 `v0.12.0`）重跑；
-> 重跑会补上 `0.12.0` 并把 `latest` 前移。
+> **历史：v0.12.0 一度缺失**。tag 推送后镜像在 registry 里消失了一段时间（400/404），
+> 之后该 tag 的 run 完成才出现，`latest` 也随之从 0.11.0 前移到 0.12.0。多架构构建在
+> QEMU 下可能要 10–20 分钟，期间从外部看起来像"没推送"。
+> 为此 `container.yml` 已加固（`timeout-minutes: 45`、`provenance: false`、推送后用
+> `scripts/verify-ghcr.sh` 调 registry API 复核、失败时打印 buildx/docker 诊断）。
+
+检查 registry（不需要 Docker 或 token）：
+
+```sh
+scripts/verify-ghcr.sh                                  # 0.10.0…0.13.0 + latest
+scripts/verify-ghcr.sh --tags 0.13.0,latest --expect-latest 0.13.0
+scripts/verify-ghcr.sh --retry 6 --wait 30              # 发布后轮询
+```
 
 流程：`docker build`（linux/amd64）→ `docker run --version` 冒烟 → 校验版本号 →
 buildx 多架构（amd64 + arm64）推送 → `docker pull` 后再次 `--version` 与一次

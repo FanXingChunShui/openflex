@@ -6,8 +6,8 @@
 //! because of a typo.
 
 use crate::model::{
-    ArrivalStyle, CombinerMode, Connection, Model, ModelError, Object, ObjectKind, PortStrategy,
-    SeparateMode, ValidationIssue,
+    ArrivalStyle, CombinerMode, Connection, ConnectionKind, Model, ModelError, Object, ObjectKind,
+    PortStrategy, SeparateMode, ValidationIssue,
 };
 use crate::model::{FORMAT_NAME, FORMAT_VERSION};
 
@@ -125,10 +125,23 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
         }
     }
 
+    issues.extend(validate_global_tables(model));
+
     let mut output_ports: std::collections::BTreeMap<String, std::collections::BTreeSet<u32>> =
         std::collections::BTreeMap::new();
+    let object_index: std::collections::HashMap<&str, usize> = model
+        .objects
+        .iter()
+        .enumerate()
+        .map(|(index, object)| (object.name.as_str(), index))
+        .collect();
     for connection in &model.connections {
-        issues.extend(validate_connection(model, connection, &mut output_ports));
+        issues.extend(validate_connection(
+            model,
+            &object_index,
+            connection,
+            &mut output_ports,
+        ));
     }
 
     for experiment in &model.experiments {
@@ -218,25 +231,28 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
 
 fn validate_connection(
     model: &Model,
+    object_index: &std::collections::HashMap<&str, usize>,
     connection: &Connection,
     output_ports: &mut std::collections::BTreeMap<String, std::collections::BTreeSet<u32>>,
 ) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
     let location = format!("connections {} -> {}", connection.from, connection.to);
-    let Some(from) = model.object(&connection.from) else {
+    let Some(&from_index) = object_index.get(connection.from.as_str()) else {
         issues.push(ValidationIssue::new(
             &location,
             "connection starts at an unknown object",
         ));
         return issues;
     };
-    let Some(to) = model.object(&connection.to) else {
+    let Some(&to_index) = object_index.get(connection.to.as_str()) else {
         issues.push(ValidationIssue::new(
             &location,
             "connection ends at an unknown object",
         ));
         return issues;
     };
+    let from = &model.objects[from_index];
+    let to = &model.objects[to_index];
     if connection.from == connection.to {
         issues.push(ValidationIssue::new(
             &location,
@@ -254,6 +270,32 @@ fn validate_connection(
             &location,
             "a source has no input connections",
         ));
+    }
+
+    // S connections are center-port/resource links: they do not route flow
+    // items, so they carry no port number or port strategy, and they never
+    // connect a source or a sink (those have no center-port semantics).
+    if connection.kind == Some(ConnectionKind::S) {
+        if connection.port.is_some() {
+            issues.push(ValidationIssue::new(
+                &location,
+                "an S connection cannot specify an output port",
+            ));
+        }
+        if connection.strategy.is_some() {
+            issues.push(ValidationIssue::new(
+                &location,
+                "an S connection cannot use a port strategy",
+            ));
+        }
+        if !is_center_port_object(from.kind) || !is_center_port_object(to.kind) {
+            issues.push(ValidationIssue::new(
+                &location,
+                "an S connection links fixed resources or task executers; sources and sinks cannot be endpoints",
+            ));
+        }
+        // S connections must not consume an A output port number.
+        return issues;
     }
 
     // Port numbers must be unique per source object, and explicit ports must
@@ -918,6 +960,60 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
     issues
 }
 
+/// Objects that may take part in an S (center-port) connection.
+fn is_center_port_object(kind: ObjectKind) -> bool {
+    !matches!(kind, ObjectKind::Source | ObjectKind::Sink)
+}
+
+/// Validate every global table: legal names, non-empty unique columns and
+/// rectangular rows.
+fn validate_global_tables(model: &Model) -> Vec<ValidationIssue> {
+    let mut issues = Vec::new();
+    for (name, table) in &model.global_tables {
+        let location = format!("global_tables.{name}");
+        if !is_identifier(name) {
+            issues.push(ValidationIssue::new(
+                &location,
+                "table names must start with a letter or underscore and contain only letters, digits and underscores",
+            ));
+        }
+        if table.columns.is_empty() && !table.rows.is_empty() {
+            issues.push(ValidationIssue::new(
+                &location,
+                "a table with rows needs column names",
+            ));
+        }
+        let mut seen_columns = std::collections::BTreeMap::new();
+        for (position, column) in table.columns.iter().enumerate() {
+            if column.trim().is_empty() {
+                issues.push(ValidationIssue::new(
+                    format!("{location}.columns[{position}]"),
+                    "column names cannot be empty",
+                ));
+            }
+            if seen_columns.insert(column, ()).is_some() {
+                issues.push(ValidationIssue::new(
+                    format!("{location}.columns[{position}]"),
+                    format!("duplicate column name '{column}'"),
+                ));
+            }
+        }
+        for (position, row) in table.rows.iter().enumerate() {
+            if row.len() != table.columns.len() {
+                issues.push(ValidationIssue::new(
+                    format!("{location}.rows[{position}]"),
+                    format!(
+                        "row has {} cells but the table has {} columns",
+                        row.len(),
+                        table.columns.len()
+                    ),
+                ));
+            }
+        }
+    }
+    issues
+}
+
 /// Runtime states a `failure.count_time_in_states` entry may name (A8).
 fn is_runtime_state(name: &str) -> bool {
     matches!(
@@ -995,6 +1091,11 @@ fn validate_trigger_scripts(object: &Object) -> Vec<ValidationIssue> {
         ("on_breakdown", &triggers.on_breakdown),
         ("on_repair", &triggers.on_repair),
         ("on_photo_eye", &triggers.on_photo_eye),
+        ("on_content_change", &triggers.on_content_change),
+        ("on_state_change", &triggers.on_state_change),
+        ("on_reset", &triggers.on_reset),
+        ("on_stop", &triggers.on_stop),
+        ("on_resume", &triggers.on_resume),
     ];
     for (trigger, actions) in lists {
         for (position, action) in actions.iter().enumerate() {
@@ -1025,6 +1126,12 @@ fn validate_process_flow(
     let Some(flow) = flow else {
         return Vec::new();
     };
+    let object_index: std::collections::HashMap<&str, usize> = model
+        .objects
+        .iter()
+        .enumerate()
+        .map(|(index, object)| (object.name.as_str(), index))
+        .collect();
     let mut issues = Vec::new();
     if flow.blocks.is_empty() {
         issues.push(ValidationIssue::new(
@@ -1176,7 +1283,10 @@ fn validate_process_flow(
                     ));
                 }
             }
-            FlowBlockKind::Transfer(params) => match model.object(&params.object) {
+            FlowBlockKind::Transfer(params) => match object_index
+                .get(params.object.as_str())
+                .map(|&index| &model.objects[index])
+            {
                 None => issues.push(ValidationIssue::new(
                     &location,
                     format!("transfer target '{}' is unknown", params.object),
@@ -1324,6 +1434,12 @@ fn validate_fluid(model: &Model) -> Vec<ValidationIssue> {
     if fluid_objects.is_empty() {
         return issues;
     }
+    let object_index: std::collections::HashMap<&str, usize> = model
+        .objects
+        .iter()
+        .enumerate()
+        .map(|(index, object)| (object.name.as_str(), index))
+        .collect();
 
     let fluid_names: std::collections::BTreeSet<&str> = fluid_objects
         .iter()
@@ -1345,12 +1461,14 @@ fn validate_fluid(model: &Model) -> Vec<ValidationIssue> {
         if !from_fluid {
             continue;
         }
-        let Some(from) = model.object(&connection.from) else {
+        let Some(&from_index) = object_index.get(connection.from.as_str()) else {
             continue;
         };
-        let Some(to) = model.object(&connection.to) else {
+        let Some(&to_index) = object_index.get(connection.to.as_str()) else {
             continue;
         };
+        let from = &model.objects[from_index];
+        let to = &model.objects[to_index];
         if let Some(rate) = connection.flow_rate
             && (!rate.is_finite() || rate <= 0.0)
         {
@@ -1459,11 +1577,13 @@ mod tests {
                 port: None,
                 flow_rate: None,
                 strategy: None,
+                kind: None,
             }],
             experiments: Vec::new(),
             process_flow: None,
             fluid_step: None,
             grid: None,
+            global_tables: Default::default(),
             metadata: Default::default(),
         }
     }
@@ -1498,6 +1618,7 @@ mod tests {
             port: None,
             flow_rate: None,
             strategy: None,
+            kind: None,
         });
         let issues = validate_collect(&model);
         assert!(
@@ -1523,6 +1644,7 @@ mod tests {
             strategy: Some(PortStrategy::ByPercentage {
                 percentages: vec![50.0, 40.0],
             }),
+            kind: None,
         });
         model.connections.push(Connection {
             from: "Source1".into(),
@@ -1530,6 +1652,7 @@ mod tests {
             port: None,
             flow_rate: None,
             strategy: None,
+            kind: None,
         });
         let issues = validate_collect(&model);
         assert!(

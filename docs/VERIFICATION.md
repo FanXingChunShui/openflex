@@ -88,8 +88,8 @@ bash -n packaging/install.sh packaging/uninstall.sh scripts/*.sh
 原因与补齐方式见安装矩阵。
 
 CI（`.github/workflows/release.yml`）在 macOS / Windows / Linux 矩阵上重复构建与打包步骤；
-`scripts/verify-packaging.sh` 的 98 项本机检查是发布前的门槛（**98 通过 / 0 失败 / 2 跳过**：本机无
-pwsh、docker；清单已同步到 v0.12.0）。
+`scripts/verify-packaging.sh` 的 100 项本机检查是发布前的门槛（**100 通过 / 0 失败 / 3 跳过**：本机无
+pwsh、docker，registry 检查默认关闭；清单已同步到 v0.13.0）。
 详见 [install.md](install.md) 与 [releasing.md](releasing.md)。
 
 ## 6. 性能基线
@@ -255,33 +255,40 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
   同时修掉了 `packaging/scoop/openflex.json` 里两个 URL 的 `v0.1.0/` 前缀（此前人工替换只改了文件名，
   会导致 404）。`sync-package-manifests.sh --check` 可以在 CI 里提前发现同类问题而不改文件。
 
+- **GHCR 镜像短暂缺失**（2026-11-15，v0.12.0）：tag 推送后一段时间 registry 返回 404，
+  `latest` 仍停在 0.11.0；之后该 tag 的 container run 完成，0.12.0 出现、`latest` 前移
+  （0.12.0 → 0.13.0 同样在发布约 10 分钟后才出现）。原因推断是多架构构建在 QEMU 下耗时较长，
+  而不是推送失败。为此已加固 `container.yml`（超时、`provenance: false`、registry API 复核、
+  失败诊断），并提供 `scripts/verify-ghcr.sh` 用于发布后确认（支持 `--retry` 轮询）。
+
 ## 最近一次验收记录
 
 - 日期：2026-11-15
-- 版本：**0.12.0**（release 已发布，11 个产物，发布于 2026-11-15T06:00:57Z）
+- 版本：**0.13.0**（release 已发布，11 个产物，发布于 2026-11-15T06:25:24Z）
 - `cargo test --workspace`：**未在本轮重跑**——工作区有并行开发（Cargo.toml / fluid 等），
   全量测试由 CI 的 `test` / `golden` / `test-arm64` job 覆盖；覆盖率基线在干净检出上测（见下）。
 - `cargo llvm-cov` 行覆盖率基线（干净 v0.10.0 检出）：**77.91%**（函数 75.75% / 区域 76.33%；
   v0.12.0 未重测）
-- `scripts/sync-package-manifests.sh --version 0.12.0`：**5 个文件更新成功**
+- `scripts/sync-package-manifests.sh --version 0.13.0`：**5 个文件更新成功**
   （homebrew version + 3 sha256、winget 三件套、scoop version/url/hash/extract_dir），
   `--check` 复核通过
-- `bash scripts/verify-packaging.sh`：**98 通过 / 0 失败 / 2 跳过**（本机无 pwsh、docker；检查包括：
+- `bash scripts/verify-packaging.sh`：**100 通过 / 0 失败 / 3 跳过**（本机无 pwsh、docker，registry 默认关闭；检查包括：
   含 12 个 shell 脚本的 bash -n 与 shellcheck、workflow/dependabot/winget YAML、
   deny.toml 与 fuzz/Cargo.toml 的 TOML 解析、wasm32 检查、新工具的 `--help` 与 dry-run，
-  以及 winget/scoop/homebrew 清单版本与 sha256 的一致性检查、bench 脚本与文档站配置检查）
-- `scripts/verify-install.sh --version 0.12.0`（真实 GitHub Release）：**PASS**，20 项
+  以及 winget/scoop/homebrew 清单版本与 sha256 的一致性检查、bench/sync/verify-ghcr 脚本与文档站配置检查）
+- `scripts/verify-install.sh --version 0.13.0`（真实 GitHub Release）：**PASS**，20 项
 - `cargo check` + `cargo build -p openflex-core --target wasm32-unknown-unknown`：**通过**
 - `mdbook build docs`（mdBook 0.5.4）：**成功**，11 个顶层页面 + 4 个 verification 页面（约 3.7 MB），
   `index.html` = 「OpenFlex 文档」；生成物已删除（见第 10 节）
 - 签名复核（2026-11-15）：`sign-macos.sh` 签名/公证/staple 三条命令与缺凭据报错、`sign-checksums.sh`
   dry-run、`sign-windows.ps1` 静态括号检查全部通过；`release.yml` 的 5 处签名步骤都有
   `if: env.X != ''`（无 secrets 时跳过）
-- GHCR 镜像：`0.10.0`、`0.11.0`、`latest`（= 0.11.0）可用；**`0.12.0` 尚未推送**（registry 404，
-  见「待办/已知限制」）
+- GHCR 镜像（`scripts/verify-ghcr.sh` 核对，全部 200）：`0.10.0`、`0.11.0`、`0.12.0`、`0.13.0`
+  均可用，`latest` = `0.13.0`（digest `sha256:8359f164…`）；均为 linux/amd64 + linux/arm64
+  manifest list
 - 性能：大模型基线见 [performance.md](verification/performance.md)（v0.11.0 测得，v0.12.0 未重测）
 
-### 2026-11-15 CI 门槛与发布渠道（基线 v0.12.0）
+### 2026-11-15 CI 门槛与发布渠道（基线 v0.13.0）
 
 | 项 | 状态 | 证据 |
 |---|---|---|
@@ -291,15 +298,18 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 | v0.10.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS，见 [install-matrix](verification/install-matrix.md) |
 | v0.11.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS（2026-11-15），见 [install-matrix](verification/install-matrix.md) |
 | v0.12.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS（2026-11-15），见 [install-matrix](verification/install-matrix.md) |
-| Homebrew 公式（v0.12.0 真实 sha256） | **已完成**（`ruby -c` 通过）；tap 待创建 | `packaging/homebrew/openflex.rb` |
+| v0.13.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS（2026-11-15），见 [install-matrix](verification/install-matrix.md) |
+| Homebrew 公式（v0.13.0 真实 sha256） | **已完成**（`ruby -c` 通过）；tap 待创建 | `packaging/homebrew/openflex.rb` |
 | Homebrew `brew audit` / `brew install --build-from-source` | **待环境** | 本机 Homebrew 非 Tier 1 配置，audit 被 SIGTERM；命令见 `packaging/homebrew/README.md` |
-| winget / scoop 清单（v0.12.0 URL/SHA256） | **已完成，待提交** | `packaging/winget/`、`packaging/scoop/openflex.json`；由 `sync-package-manifests.sh` 同步 |
-| GHCR 镜像发布与验证 | **部分**：0.10.0 / 0.11.0 / latest 可用；**0.12.0 未推送** | container.yml；registry 核对（0.12.0 返回 404），docker 本地运行**待环境** |
+| winget / scoop 清单（v0.13.0 URL/SHA256） | **已完成，待提交** | `packaging/winget/`、`packaging/scoop/openflex.json`；由 `sync-package-manifests.sh` 同步 |
+| GHCR 镜像发布与验证 | **已发布**：0.10.0–0.13.0 + latest（=0.13.0）全部 200 | `scripts/verify-ghcr.sh` 核对；docker 本地运行**待环境** |
+| container workflow 加固 | **已完成** | `timeout-minutes: 45`、`provenance: false`、推送后 registry API 复核、失败时打印 buildx/docker 诊断 |
+| GHCR registry 检查工具 | **已完成** | `scripts/verify-ghcr.sh`（无需 docker/token；支持 `--retry`/`--expect-latest`/`--json`） |
 | Windows / Linux / deb / rpm / MSI 真机安装 | **待环境** | 脚本与命令清单就绪，见安装矩阵第 5 节 |
 | 签名/公证（macOS/Windows/GPG） | **CI 已配置，待证书**（2026-11-15 复核） | release.yml 5 处签名步骤 `if: env.X != ''`；三套脚本 dry-run 通过 |
 | 10 万对象性能基准（v0.11.0） | **已实跑** | validate 85.12 s / run 271.56 s / 552 events/s / 峰值 397 MB，见 [performance.md](verification/performance.md) |
 | 文档站（mdBook） | **已构建验证**（mdBook 0.5.4） | 11+4 页面，`index.html`=「OpenFlex 文档」；配置见第 10 节 |
-| 包管理器清单同步到 v0.12.0 | **已完成** | `sync-package-manifests.sh --version 0.12.0`；`--check` 通过 |
+| 包管理器清单同步到 v0.13.0 | **已完成** | `sync-package-manifests.sh --version 0.13.0`；`--check` 通过 |
 | 真实 FlexSim 对照 | **待外部数据** | 工具与模板就绪；未运行 FlexSim |
 
 ### 2026-11-14 wasm / 安装收尾（历史记录，v0.4.0 基线）

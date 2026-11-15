@@ -171,12 +171,50 @@ fn definitions() -> Value {
                 "on_message": { "type": "array", "items": { "$ref": "#/$defs/action" } },
                 "on_breakdown": { "type": "array", "items": { "$ref": "#/$defs/action" } },
                 "on_repair": { "type": "array", "items": { "$ref": "#/$defs/action" } },
-                "on_photo_eye": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+                "on_photo_eye": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_content_change": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_state_change": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_reset": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_stop": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_resume": { "type": "array", "items": { "$ref": "#/$defs/action" } }
             },
             "additionalProperties": false
         }),
     );
     defs.insert("action".into(), action_schema());
+    defs.insert(
+        "table_cell".into(),
+        json!({
+            "description": "A global table cell: number, boolean or string.",
+            "oneOf": [
+                { "type": "number" },
+                { "type": "boolean" },
+                { "type": "string" }
+            ]
+        }),
+    );
+    defs.insert(
+        "global_table".into(),
+        json!({
+            "type": "object",
+            "description": "A named read-only table (FlexSim Global Table).",
+            "properties": {
+                "columns": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1 },
+                    "uniqueItems": true
+                },
+                "rows": {
+                    "type": "array",
+                    "items": {
+                        "type": "array",
+                        "items": { "$ref": "#/$defs/table_cell" }
+                    }
+                }
+            },
+            "additionalProperties": false
+        }),
+    );
     defs.insert("expression".into(), json!({
         "description": "An OpenFlex expression: a number, boolean, string, a dotted variable path (time, item.type, Queue1.content) or one of if/min/max/abs/round/floor/ceil/sqrt/len.",
         "examples": [1.0, "item.type", "time"]
@@ -631,6 +669,11 @@ fn model_schema() -> Value {
             "process_flow": { "$ref": "#/$defs/process_flow" },
             "fluid_step": { "type": ["number", "null"], "exclusiveMinimum": 0 },
             "grid": { "$ref": "#/$defs/grid" },
+            "global_tables": {
+                "type": "object",
+                "description": "Named read-only tables; each row must have one cell per column.",
+                "additionalProperties": { "$ref": "#/$defs/global_table" }
+            },
             "metadata": { "type": "object" }
         },
         "required": ["name"],
@@ -731,7 +774,8 @@ fn connection_schema() -> Value {
             "port": { "type": ["integer", "null"], "minimum": 0 },
             "strategy": { "$ref": "#/$defs/port_strategy" },
             "flow_rate": { "type": ["number", "null"], "exclusiveMinimum": 0 },
-            "temperature": { "type": ["number", "null"] }
+            "temperature": { "type": ["number", "null"] },
+            "kind": { "enum": ["a", "s"], "default": "a" }
         },
         "required": ["from", "to"],
         "additionalProperties": false
@@ -1126,6 +1170,22 @@ mod tests {
         for field in ["first_failure_time", "count_time_in_states"] {
             assert!(failure.get(field).is_some(), "failure.{field}");
         }
+        let triggers = &schema["$defs"]["triggers"]["properties"];
+        for field in [
+            "on_content_change",
+            "on_state_change",
+            "on_reset",
+            "on_stop",
+            "on_resume",
+        ] {
+            assert!(triggers.get(field).is_some(), "triggers.{field}");
+        }
+        assert!(schema["$defs"]["global_table"].get("properties").is_some());
+        assert!(schema["$defs"]["table_cell"].get("oneOf").is_some());
+        assert_eq!(
+            schema["$defs"]["connection"]["properties"]["kind"]["enum"],
+            json!(["a", "s"])
+        );
         let conditional = &schema["$defs"]["conditional_port"]["properties"];
         assert!(conditional.get("script_condition").is_some());
         assert!(conditional.get("condition").is_some());

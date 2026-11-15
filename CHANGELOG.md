@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.14.0 — 2026-11-15
+
+### 模型能力
+
+- **Global Table**：`model.global_tables`（columns/rows，number/bool/string 单元格）、校验与 `Model::table()`；
+  空表不写回、重复表名显式拒绝。引擎/表达式访问待接线。
+- **完整触发器枚举**：新增 OnContentChange/OnStateChange/OnReset/OnStop/OnResume（schema/校验就绪，执行待接线）。
+- **A/S 连接**：`Connection.kind`（`a`/`s`），S 连接不占输出端口、禁端口/策略、禁 source-sink；引擎 S 路由待接线。
+- **模型迁移**：`migrate_json` 版本校验 + v1→v2 钩子；CLI `openflex migrate` 规范化输出。
+
+### 优化与统计
+
+- **OptQuest 等价**：`optimize --algorithm grid|random|genetic`、多目标加权、`--pareto` 非支配前沿、确定性 seed。
+- **时间序列**：`run --timeseries out.csv --interval N`（区间平均 content 序列）；Studio Dashboard 每复现散点图。
+- **性能**：validate 连接/flow/fluid 索引化、report 聚合一次分组；100k 对象 validate 81s/run 259s（−5%），
+  瓶颈已定位到反序列化/逐对象校验/重复 validate，后续继续。
+
+### 发布
+
+- GHCR 复核：0.12.0/0.13.0 均存在（此前 404 是 QEMU 多架构构建中），latest=0.13.0；container 加固（超时/诊断/registry 复核）。
+- 清单同步 v0.13.0、真机矩阵 v0.13.0、mdBook 构建通过。
+
+### 验证
+
+- 363 个测试全绿（model 95、core 158、CLI 72、report 16）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.14.0 三平台产物发布并 SHA256 校验。
+
 ## v0.13.0 — 2026-11-15
 
 ### 对象与运行时
