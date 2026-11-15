@@ -243,7 +243,11 @@ fn agv_battery_charges_after_each_task() {
     assert_near(charges[0], 7.0, 1e-9, "first recharge start");
 
     // Without the battery the same AGV serves more items.
-    let json = include_str!("../../../examples/objects/agv-battery.ofm").replace(
+    // Git may check the file out with CRLF on Windows; normalise before the
+    // textual replacement, otherwise the match fails and both models keep the
+    // battery (making the comparison meaningless).
+    let source = include_str!("../../../examples/objects/agv-battery.ofm").replace("\r\n", "\n");
+    let json = source.replace(
         r#""capacity": 1, "speed": 5.0, "home": "Dispatcher1",
         "battery_capacity": 20.0, "consumption_per_distance": 1.0,
         "charge_time": { "distribution": "constant", "value": 30.0 },
