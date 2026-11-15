@@ -62,8 +62,14 @@
   #report table { border-collapse: collapse; width: 100%; font-size: 12px; }
   #report th, #report td { border-bottom: 1px solid #cbd5e1; padding: 3px 4px; text-align: right; }
   #report th:first-child, #report td:first-child { text-align: left; }
-  #chart { width: 100%; height: 150px; background: white; border: 1px solid #cbd5e1;
-           border-radius: 6px; }
+  #dashboard { width: 100%; height: 280px; background: white; border: 1px solid #cbd5e1;
+               border-radius: 6px; }
+  .scenario-card { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px;
+                   display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+  .scenario-card textarea { min-height: 56px; }
+  #experiment-results table { border-collapse: collapse; width: 100%; font-size: 12px; margin-top: 8px; }
+  #experiment-results th, #experiment-results td { border-bottom: 1px solid #cbd5e1; padding: 3px; text-align: right; }
+  #experiment-results th:first-child, #experiment-results td:first-child { text-align: left; }
   .error { color: #b91c1c; }
   .ok { color: #15803d; }
 </style>
@@ -136,13 +142,41 @@
   </section>
 
   <section class="report">
-    <h2>Report</h2>
+    <h2>Step / breakpoint</h2>
+    <div class="row" id="step-controls">
+      <label class="muted">Step to <input id="step-until" type="number" step="any" placeholder="time"></label>
+      <label class="muted">size <input id="step-size" type="number" step="any" value="10"></label>
+      <button id="step" type="button">Step</button>
+      <button id="step-forward" type="button">+ Step</button>
+      <button id="resume" type="button">Resume</button>
+      <button id="reset" type="button">Reset</button>
+    </div>
+    <div class="row" id="breakpoint-controls">
+      <label class="muted">Breakpoint object <input id="breakpoint-object" placeholder="e.g. Processor1"></label>
+      <span id="step-info" class="muted"></span>
+    </div>
     <div class="row" id="animation-controls">
       <label class="muted">Animation speed <input id="speed" type="range" min="0" max="3" step="0.1" value="1"></label>
       <button id="pause-animation" type="button">Pause</button>
     </div>
+
+    <h2>Experiment</h2>
+    <div id="experiment-panel">
+      <div class="row">
+        <label class="muted">Replications <input id="experiment-replications" type="number" min="1" max="100" value="2"></label>
+        <button id="add-scenario" type="button">Add scenario</button>
+        <button id="run-experiment" class="primary" type="button">Run experiment</button>
+      </div>
+      <div id="scenario-list"></div>
+      <div id="experiment-results"></div>
+    </div>
+
+    <h2>Report</h2>
     <div id="report"><p class="muted">Press Run to simulate the model.</p></div>
-    <canvas id="chart" aria-label="Throughput chart"></canvas>
+    <div class="row">
+      <canvas id="dashboard" aria-label="Object metric dashboard"></canvas>
+      <button id="export-png" type="button">Export PNG</button>
+    </div>
   </section>
 </main>
 <script>
@@ -169,11 +203,13 @@ const state = {
   undoStack: [],
   redoStack: [],
   pendingSnapshot: null,
+  lastStep: 0,
+  scenarios: [{ name: "baseline", overrides: "" }],
 };
 
 const $ = id => document.getElementById(id);
 const scene = $("scene");
-const chart = $("chart");
+const dashboard = $("dashboard");
 
 const DISTRIBUTIONS = {
   constant: ["value"], uniform: ["min", "max"], normal: ["mean", "stddev"],
@@ -901,11 +937,170 @@ async function runModel() {
       body: "{}",
     });
     state.report = report;
+    state.lastStep = Number(report.stop_time);
+    $("step-info").textContent = `run finished at t=${Number(report.stop_time).toFixed(2)}`;
     renderReport(report);
     setStatus(`run finished at t=${Number(report.stop_time).toFixed(2)}`);
   } catch (error) {
     setStatus(error.message, true);
   }
+}
+
+async function stepStudio(until, objectName) {
+  const body = { until: Number(until) };
+  if (objectName) body.object = objectName;
+  setStatus(`stepping to ${Number(until).toFixed(2)}…`);
+  try {
+    const response = await api("/api/step", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    state.lastStep = Number(response.stepped_to);
+    state.report = response.report;
+    renderReport(response.report);
+    const hit = response.breakpoint;
+    $("step-info").textContent = hit
+      ? `breakpoint: ${hit.event} on ${hit.object} at t=${Number(hit.time).toFixed(2)}`
+      : `stepped to t=${Number(response.stepped_to).toFixed(2)}`;
+    setStatus(hit ? `breakpoint hit: ${hit.object} ${hit.event}` : `stepped to ${Number(response.stepped_to).toFixed(2)}`);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+async function stepOnce() {
+  const value = Number($("step-until").value);
+  const until = Number.isFinite(value) && value > 0 ? value : (state.lastStep || 0) + (Number($("step-size").value) || 10);
+  await stepStudio(until, $("breakpoint-object").value.trim());
+}
+
+async function stepForward() {
+  const size = Number($("step-size").value) || 10;
+  await stepStudio((state.lastStep || 0) + size, $("breakpoint-object").value.trim());
+}
+
+async function resumeStudio() {
+  const until = state.model && state.model.run ? Number(state.model.run.stop_time) : Number($("step-until").value);
+  await stepStudio(until, $("breakpoint-object").value.trim());
+}
+
+async function resetStudio() {
+  try {
+    await api("/api/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    state.lastStep = 0;
+    $("step-info").textContent = "step state reset";
+    setStatus("step state reset");
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+function renderScenarioList() {
+  const container = $("scenario-list");
+  container.innerHTML = "";
+  state.scenarios.forEach((scenario, index) => {
+    const card = document.createElement("div");
+    card.className = "scenario-card";
+    card.innerHTML = `
+      <div class="row">
+        <label class="muted">Scenario <input data-scenario-name="${index}" value="${escapeText(scenario.name)}"></label>
+        <button data-scenario-remove="${index}" type="button" title="Remove scenario">×</button>
+      </div>
+      <label class="muted">Overrides (one per line: Object.param=value JSON)</label>
+      <textarea data-scenario-overrides="${index}" spellcheck="false">${escapeText(scenario.overrides)}</textarea>`;
+    card.querySelector(`[data-scenario-name="${index}"]`).addEventListener("input", event => {
+      state.scenarios[index].name = event.target.value;
+    });
+    card.querySelector(`[data-scenario-overrides="${index}"]`).addEventListener("input", event => {
+      state.scenarios[index].overrides = event.target.value;
+    });
+    card.querySelector(`[data-scenario-remove="${index}"]`).addEventListener("click", () => {
+      if (state.scenarios.length <= 1) {
+        setStatus("an experiment needs at least one scenario", true);
+        return;
+      }
+      state.scenarios.splice(index, 1);
+      renderScenarioList();
+    });
+    container.appendChild(card);
+  });
+}
+
+function parseOverrides(text) {
+  const overrides = [];
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    const equals = line.indexOf("=");
+    const dot = line.indexOf(".");
+    if (equals < 0 || dot < 0 || dot > equals) {
+      throw new Error(`override '${line}' must look like Object.param=value`);
+    }
+    const object = line.slice(0, dot).trim();
+    const param = line.slice(dot + 1, equals).trim();
+    const rawValue = line.slice(equals + 1).trim();
+    if (!object || !param || !rawValue) throw new Error(`override '${line}' is incomplete`);
+    let value;
+    try { value = JSON.parse(rawValue); } catch (_) { value = rawValue; }
+    overrides.push({ object, param, value });
+  }
+  return overrides;
+}
+
+async function runExperiment() {
+  let scenarios;
+  try {
+    scenarios = state.scenarios.map((scenario, index) => ({
+      name: scenario.name.trim() || `scenario${index + 1}`,
+      overrides: parseOverrides(scenario.overrides),
+    }));
+  } catch (error) {
+    setStatus(error.message, true);
+    return;
+  }
+  const replications = Number($("experiment-replications").value) || 1;
+  setStatus(`running experiment (${scenarios.length} scenarios × ${replications})…`);
+  try {
+    const experiment = await api("/api/experiment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ experiment: "studio", replications, scenarios }),
+    });
+    renderExperimentResults(experiment);
+    if (experiment.scenarios && experiment.scenarios.length > 0) {
+      state.report = experiment.scenarios[0].report;
+      renderReport(state.report);
+    }
+    setStatus(`experiment '${experiment.experiment}' finished`);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+function renderExperimentResults(experiment) {
+  const rows = (experiment.scenarios || []).map(scenario => {
+    const report = scenario.report || {};
+    const duration = Math.max(Number(report.stop_time || 0) - Number(report.warmup || 0), 1e-9);
+    const objects = Object.values(report.objects || {});
+    const wip = objects.reduce((sum, stats) => sum + Number(stats.avg_content.mean || 0), 0);
+    const utilization = objects.length === 0 ? 0
+      : objects.reduce((sum, stats) => sum + Number(stats.utilization.mean || 0), 0) / objects.length;
+    return `<tr><td>${escapeText(scenario.name)}</td>
+      <td>${Number(report.completed.mean || 0).toFixed(1)}</td>
+      <td>${(Number(report.completed.mean || 0) / duration).toFixed(4)}</td>
+      <td>${wip.toFixed(2)}</td>
+      <td>${(utilization * 100).toFixed(1)}%</td></tr>`;
+  }).join("");
+  $("experiment-results").innerHTML = `
+    <table>
+      <thead><tr><th>Scenario</th><th>Completed</th><th>Throughput</th><th>Avg WIP</th><th>Util</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5" class="muted">no scenarios</td></tr>'}</tbody>
+    </table>`;
 }
 
 function renderReport(report) {
@@ -920,34 +1115,54 @@ function renderReport(report) {
       <thead><tr><th>Object</th><th>Throughput</th><th>Avg stay</th><th>Avg WIP</th><th>Util</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="5" class="muted">no object statistics</td></tr>'}</tbody>
     </table>`;
-  drawChart(report);
+  drawDashboard(report);
 }
 
-function drawChart(report) {
-  const entries = Object.entries(report.objects || {}).map(([name, stats]) => ({
-    name, value: Number(stats.throughput.mean || 0),
+function drawDashboard(report) {
+  const objects = Object.entries(report.objects || {}).map(([name, stats]) => ({
+    name,
+    throughput: Number(stats.throughput.mean || 0),
+    utilization: Number(stats.utilization.mean || 0),
+    wip: Number(stats.avg_content.mean || 0),
   }));
-  const width = chart.clientWidth || 300;
-  const height = chart.clientHeight || 150;
+  const width = dashboard.clientWidth || 320;
+  const height = dashboard.clientHeight || 280;
   const ratio = window.devicePixelRatio || 1;
-  chart.width = Math.max(1, Math.round(width * ratio));
-  chart.height = Math.max(1, Math.round(height * ratio));
-  const ctx = chart.getContext("2d");
+  dashboard.width = Math.max(1, Math.round(width * ratio));
+  dashboard.height = Math.max(1, Math.round(height * ratio));
+  const ctx = dashboard.getContext("2d");
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.clearRect(0, 0, width, height);
-  if (entries.length === 0) return;
-  const max = Math.max(...entries.map(entry => entry.value), 1e-9);
-  const gap = 8;
-  const barWidth = Math.max(6, (width - gap * (entries.length + 1)) / entries.length);
-  ctx.font = "10px system-ui, sans-serif";
+  const panels = [
+    ["Throughput", "throughput", entry => entry.throughput.toFixed(3), "#1d4ed8"],
+    ["Utilization", "utilization", entry => `${(entry.utilization * 100).toFixed(1)}%`, "#15803d"],
+    ["Avg WIP", "wip", entry => entry.wip.toFixed(2), "#b45309"],
+  ];
+  const panelHeight = height / panels.length;
   ctx.textAlign = "center";
-  entries.forEach((entry, index) => {
-    const x = gap + index * (barWidth + gap);
-    const barHeight = (height - 34) * (entry.value / max);
-    ctx.fillStyle = "#1d4ed8";
-    ctx.fillRect(x, height - 18 - barHeight, barWidth, barHeight);
-    ctx.fillStyle = "#334155";
-    ctx.fillText(entry.name.slice(0, 10), x + barWidth / 2, height - 5);
+  panels.forEach((panel, panelIndex) => {
+    const [label, key, format, color] = panel;
+    const top = panelIndex * panelHeight;
+    ctx.fillStyle = "#0f172a";
+    ctx.font = "600 11px system-ui, sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText(label, 8, top + 16);
+    if (objects.length === 0) return;
+    const max = Math.max(...objects.map(object => object[key]), 1e-9);
+    const gap = 6;
+    const barWidth = Math.max(4, (width - gap * (objects.length + 1)) / objects.length);
+    objects.forEach((object, index) => {
+      const x = gap + index * (barWidth + gap);
+      const barHeight = (panelHeight - 36) * (object[key] / max);
+      ctx.fillStyle = color;
+      ctx.fillRect(x, top + panelHeight - 18 - barHeight, barWidth, barHeight);
+      ctx.fillStyle = "#334155";
+      ctx.font = "9px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(object.name.slice(0, 7), x + barWidth / 2, top + panelHeight - 6);
+      ctx.fillStyle = "#475569";
+      ctx.fillText(format(object), x + barWidth / 2, top + panelHeight - 24 - barHeight);
+    });
   });
 }
 
@@ -1158,6 +1373,25 @@ $("save-flow").addEventListener("click", saveFlow);
 $("save-flow-json").addEventListener("click", saveFlowJson);
 $("undo").addEventListener("click", undoEdit);
 $("redo").addEventListener("click", redoEdit);
+$("step").addEventListener("click", stepOnce);
+$("step-forward").addEventListener("click", stepForward);
+$("resume").addEventListener("click", resumeStudio);
+$("reset").addEventListener("click", resetStudio);
+$("add-scenario").addEventListener("click", () => {
+  state.scenarios.push({ name: `scenario${state.scenarios.length + 1}`, overrides: "" });
+  renderScenarioList();
+});
+$("run-experiment").addEventListener("click", runExperiment);
+$("export-png").addEventListener("click", () => {
+  if (!state.report) {
+    setStatus("run or step the model before exporting the dashboard", true);
+    return;
+  }
+  const link = document.createElement("a");
+  link.download = "openflex-dashboard.png";
+  link.href = dashboard.toDataURL("image/png");
+  link.click();
+});
 $("speed").addEventListener("input", event => { state.speed = Number(event.target.value); });
 $("pause-animation").addEventListener("click", event => {
   state.paused = !state.paused;
@@ -1171,6 +1405,7 @@ window.addEventListener("keydown", event => {
   if (event.key.toLowerCase() === "y") { event.preventDefault(); redoEdit(); }
 });
 
+renderScenarioList();
 loadAll();
 requestAnimationFrame(animationFrame);
 </script>

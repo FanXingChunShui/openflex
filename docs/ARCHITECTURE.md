@@ -215,8 +215,9 @@ token 是带 id/标签/创建时间的轻量实体，沿块流转；引擎新增
 ## Person 寻路与拥堵
 
 `Model.grid`（width/height/cell_size/obstacles）存在时，Person 用 4 邻接 A* 寻路（距离 = 格数 × cell_size），
-取货/送达/回程三段均使用网格距离；越界/障碍/不可达时回退 `network` 最短路或欧氏距离。多个正在执行任务的
-person 之间按人数折减速度（每多一人 -10%，最低 50%）。简化：无对角移动、无个体避让/排队。
+取货/送达/回程三段均使用网格距离（8 邻接 Dijkstra，对角 √2，禁止切障碍角）；越界/障碍/不可达时回退 `network`
+最短路或欧氏距离。速度折减叠加：全局每多一个忙碌 person −10%（下限 50%）、同格 −50%、8 邻格每人 −15%（下限 40%）。
+简化：避让仅体现为速度折减，无等待队列/个体重规划。
 
 ## Fluid 子系统
 
@@ -231,8 +232,22 @@ level_avg/level_max/throughput/overflow 与系统 total_inflow/total_throughput/
 fluid 对象永不接收 flow item，fluid 与离散对象之间的连接在校验阶段被拒绝；二者可在同一模型中并行。
 每步按 **acceptance（下游可接受体积）** 两阶段结算：tank 始终接收（超容量计入 overflow）但释放受下游限制；
 valve 关闭/低于阈值时 acceptance=0，上游液位上升直至溢流；pipe 保留下游收不下的体积（形成管内存量）。
-`pressure` 报告字段为平均入口流量（体积/时长）。
+启用 `pressure_mode`（配置 density/gravity、阀滞回或 pipe 温度）时维护压力场：tank 压力 p=ρgh，pipe 入口压力、
+valve/sink 视为 0 Pa；pipe 流量 `flow=k·Δp`（k 由 `flow_rate` 标定），受 `flow_rate` 与下游 acceptance 双重限制；
+valve 用 `pressure_open/pressure_close` 滞回自动启闭（trace `fluid_valve_open/close`），`pressure` 报告为时间平均压力（Pa）。
 简化：不可压缩、无温度/压力/管道延迟；固定步长积分；fluid 不触发对象触发器、不支持 shifts/timetable。
+
+## Studio 交互
+
+`openflex studio` 提供：字段级动态表单与实时重投影、增删对象、Process Flow 块/连接编辑、撤销/重做、
+**时间步进与对象断点**（`POST /api/step` 复用检查点增量推进，结果与一次性运行一致）、
+**Experimenter**（`POST /api/experiment` 场景×复现对比）、**Dashboard**（吞吐/利用率/WIP 三联 Canvas，可导出 PNG）。
+
+## 性能基线
+
+`scripts/bench-large-model.sh` 可生成 1k/10k/100k 对象模型并记录耗时与峰值 RSS（见
+[verification/performance.md](verification/performance.md)）。当前基线：M/M/1 约 1.7M events/s；
+10k 对象约 0.86 s；100k 对象 validate 85 s / run 272 s（超线性，瓶颈在对象线性查找/校验，已记录优化方向）。
 
 ## 统计口径
 

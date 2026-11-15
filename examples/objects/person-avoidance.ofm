@@ -1,0 +1,21 @@
+{
+  "format": "openflex-model", "version": 1, "name": "person-avoidance",
+  "description": "Person 8-neighbour A*/density (B6): walks the diagonal 4x4 = 5.657 at speed 1",
+  "time_unit": "seconds",
+  "run": { "stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "grid": { "width": 5, "height": 5, "cell_size": 1.0, "obstacles": [] },
+  "objects": [
+    { "name": "S", "kind": "source", "pos": [4, 4], "params": {
+        "interarrival": { "distribution": "constant", "value": 1000.0 }, "max_arrivals": 1, "first_arrival": 0.0 } },
+    { "name": "P", "kind": "processor", "pos": [4, 4], "params": {
+        "process_time": { "distribution": "constant", "value": 1.0 }, "process_operator": "D" } },
+    { "name": "K", "kind": "sink", "pos": [4, 4], "params": {} },
+    { "name": "D", "kind": "dispatcher", "pos": [0, 0], "params": {} },
+    { "name": "Walker", "kind": "person", "pos": [0, 0], "params": {
+        "speed": 1.0, "home": "D" } }
+  ],
+  "connections": [
+    { "from": "S", "to": "P" }, { "from": "P", "to": "K" },
+    { "from": "D", "to": "Walker" }
+  ]
+}

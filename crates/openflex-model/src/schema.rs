@@ -435,7 +435,9 @@ fn definitions() -> Value {
         params_schema(json!({
             "capacity": { "type": "number", "exclusiveMinimum": 0, "default": 100.0 },
             "initial_level": { "type": "number", "minimum": 0, "default": 0.0 },
-            "max_outflow": { "type": ["number", "null"], "minimum": 0 }
+            "max_outflow": { "type": ["number", "null"], "minimum": 0 },
+            "density": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+            "gravity": { "type": ["number", "null"], "exclusiveMinimum": 0 }
         })),
     );
     defs.insert(
@@ -443,7 +445,9 @@ fn definitions() -> Value {
         params_schema(json!({
             "open": { "type": "boolean", "default": true },
             "ratio": { "type": "number", "minimum": 0, "maximum": 1, "default": 1.0 },
-            "pressure_threshold": { "type": ["number", "null"], "minimum": 0 }
+            "pressure_threshold": { "type": ["number", "null"], "minimum": 0 },
+            "pressure_open": { "type": ["number", "null"], "minimum": 0 },
+            "pressure_close": { "type": ["number", "null"], "minimum": 0 }
         })),
     );
     defs.insert("fluid_sink_params".into(), params_schema(json!({})));
@@ -453,7 +457,8 @@ fn definitions() -> Value {
             "length": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
             "speed": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
             "delay": { "type": ["number", "null"], "minimum": 0 },
-            "flow_rate": { "type": ["number", "null"], "exclusiveMinimum": 0 }
+            "flow_rate": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+            "temperature": { "type": ["number", "null"] }
         })),
     );
     defs.insert(
@@ -723,7 +728,8 @@ fn connection_schema() -> Value {
             "to": { "type": "string" },
             "port": { "type": ["integer", "null"], "minimum": 0 },
             "strategy": { "$ref": "#/$defs/port_strategy" },
-            "flow_rate": { "type": ["number", "null"], "exclusiveMinimum": 0 }
+            "flow_rate": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+            "temperature": { "type": ["number", "null"] }
         },
         "required": ["from", "to"],
         "additionalProperties": false

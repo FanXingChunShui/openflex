@@ -81,25 +81,32 @@ bash -n packaging/install.sh packaging/uninstall.sh scripts/*.sh
 
 - `--from-dir dist`：**22 项检查（PASS）**，产物由 `scripts/package-release.sh` 本地生成；
 - `--version`（`OPENFLEX_REPO=FanXingChunShui/openflex`）：真实从 GitHub Release 下载并安装，
-  **v0.1.0、v0.4.0、v0.10.0 各 20 项检查（PASS）**（v0.10.0 于 2026-11-15 复跑）。
+  **v0.1.0、v0.4.0、v0.10.0、v0.11.0 各 20 项检查（PASS）**（v0.10.0 / v0.11.0 于 2026-11-15 复跑）。
 
 两种模式都覆盖：安装到临时 prefix、校验 SHA-256、`--version`、`new`/`validate`/`run`
 （JSON + CSV）、安装回执、卸载与重复卸载。Windows 与 Linux 的真实安装**尚未执行**，
 原因与补齐方式见安装矩阵。
 
 CI（`.github/workflows/release.yml`）在 macOS / Windows / Linux 矩阵上重复构建与打包步骤；
-`scripts/verify-packaging.sh` 的 89 项本机检查是发布前的门槛（0 失败，2 跳过：本机无 pwsh、docker）。
+`scripts/verify-packaging.sh` 的 98 项本机检查是发布前的门槛（当前 97 通过 / 1 失败——清单版本检查，
+见「已知问题」；2 跳过：本机无 pwsh、docker）。
 详见 [install.md](install.md) 与 [releasing.md](releasing.md)。
 
 ## 6. 性能基线
 
-在 2026-11 的 macOS x86_64 机器上，release 构建：
+在 2026-11 的 macOS 15.8.1 x86_64 机器上，release 构建（v0.11.0）：
 
-| 场景 | 规模 | 用时 |
+| 场景 | 规模 | 用时 / 吞吐 |
 |---|---|---|
-| M/M/1 长仿真 | 100 万时间单位，约 20 万事件 | ~0.9 s |
+| M/M/1 长仿真（`bench_mm1`） | 120,318 事件 | 0.070 s → **1.71M events/s**、284,841 items/s |
 | 多复现 | 5 × 48000 时间单位 | < 0.2 s |
-| 大型模型校验 | 1000 对象 | 待测 |
+| 大模型 1k 对象 | 1,500 事件 | validate 0.04 s / run 0.05 s → 29,560 events/s |
+| 大模型 10k 对象 | 15,000 事件 | validate 0.35 s / run 0.86 s → 17,390 events/s |
+| 大模型 100k 对象 | 150,000 事件 | validate **85.12 s** / run **271.56 s** → 552 events/s，峰值 397 MB |
+
+**规模结论**：对象数 ×10 时 validate 时间 ×242、run 时间 ×316，明显超线性；
+10 万对象规模当前不可用（一次 run 约 4.5 分钟）。方法、模型规格、复现命令与优化建议见
+[docs/verification/performance.md](verification/performance.md)（对应 BACKLOG C5）。
 
 ## 7. 工程质量门（CI）
 
@@ -211,6 +218,39 @@ cargo build -p openflex-core --release --target wasm32-unknown-unknown
 CI 的 `wasm` job 只把 `openflex-core` 当作支持目标并上传 rlib；浏览器可用的
 wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 
+## 10. 文档站（mdBook）
+
+- 配置：[`docs/book.toml`](book.toml)（TOML；`src = "."`，直接渲染 `docs/` 下已有 Markdown，不复制文件）
+- 导航：[`docs/SUMMARY.md`](SUMMARY.md)（安装、验证、性能、对照、wasm、发布、架构、规范、研究证据）
+- 本地预览（CI 不构建、不发布站点）：
+
+  ```sh
+  cargo install mdbook --locked     # 或: brew install mdbook
+  mdbook serve docs --open          # http://localhost:3000（实时重载）
+  mdbook build docs                 # 静态站点输出到 docs/book/，临时产物，不要提交
+  ```
+
+- 自动校验：`scripts/verify-packaging.sh` 会解析 `book.toml` 并检查 `SUMMARY.md` 里每个相对链接
+  是否存在（防止导航指向删掉的文件）。
+
+## 已知问题（2026-11-15）
+
+- **包管理器清单落后一个版本**：`packaging/homebrew/openflex.rb`、`packaging/winget/*`、
+  `packaging/scoop/openflex.json` 仍是 **v0.10.0**，而 workspace 与最新 release 是 **v0.11.0**。
+  因此 `scripts/verify-packaging.sh` 的「manifests match the workspace version」检查**有意失败**
+  （97 passed / 1 failed）。已发布的 v0.11.0 产物不受影响（release 流程不读这些清单），
+  但 `brew` / `winget` / `scoop` 用户安装会因版本/校验和不匹配失败。
+  修复只需一条命令（会写 `packaging/`，本轮任务 scope 不含该目录）：
+
+  ```sh
+  scripts/sync-package-manifests.sh --version 0.11.0   # 下载 SHA256SUMS 并更新 5 个文件
+  scripts/verify-packaging.sh --skip-build              # 应恢复 98 项全 PASS
+  ```
+
+  顺带修复：`packaging/scoop/openflex.json` 的两个 URL 仍带 `v0.1.0/` 前缀
+  （上一轮人工替换只改了文件名），`sync-package-manifests.sh` 会把整个 URL 重写成 `v0.11.0/`。
+  用 `--check` 可以在 CI 里提前发现同类问题而不改文件。
+
 ## 最近一次验收记录
 
 - 日期：2026-11-15
@@ -220,17 +260,18 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
   （`7ccb5ed`）测试是绿的，覆盖率基线就是在该干净检出上测的。全量测试由 CI 的
   `test` / `golden` / `test-arm64` job 覆盖。
 - `cargo llvm-cov` 行覆盖率基线（干净 v0.10.0 检出）：**77.91%**（函数 75.75% / 区域 76.33%）
-- `bash scripts/verify-packaging.sh`：**RESULT: PASS**（89 项通过 / 0 失败 / 2 跳过：本机无 pwsh、docker；
+- `bash scripts/verify-packaging.sh`：**97 通过 / 1 失败 / 2 跳过**（失败项是包管理器清单仍为 v0.10.0，
+  见「已知问题」；其余检查通过：
   含 12 个 shell 脚本的 bash -n 与 shellcheck、workflow/dependabot/winget YAML、
   deny.toml 与 fuzz/Cargo.toml 的 TOML 解析、wasm32 检查、新工具的 `--help` 与 dry-run，
-  以及 winget/scoop/homebrew 清单版本与 sha256 的一致性检查）
+  以及 winget/scoop/homebrew 清单版本与 sha256 的一致性检查、bench 脚本与文档站配置检查）
 - `scripts/verify-install.sh --version 0.10.0`（真实 GitHub Release）：**PASS**，20 项
 - `cargo check` + `cargo build -p openflex-core --target wasm32-unknown-unknown`：**通过**
 - GHCR 镜像：`ghcr.io/fanxingchunshui/openflex:0.10.0` / `latest` 已发布（amd64 + arm64，
   OCI manifest list；本机无 docker，未本地 `docker run`）
 - 性能：release 构建下 M/M/1 约 20 万事件 / 0.95 s（v0.1.0 基线，未重测）
 
-### 2026-11-15 CI 门槛与发布渠道（v0.10.0 基线）
+### 2026-11-15 CI 门槛与发布渠道（v0.10.0 基线，2026-11-15 更新到 v0.11.0）
 
 | 项 | 状态 | 证据 |
 |---|---|---|
@@ -238,12 +279,16 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 | fuzz 时长 60s → 180s / target | CI 已配置 | ci.yml `fuzz` job（两个 target 各 180s，仍 optional） |
 | `test-arm64` 必跑 | CI 已配置（`ubuntu-24.04-arm`） | ci.yml `test-arm64`（已去掉 `continue-on-error`） |
 | v0.10.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS，见 [install-matrix](verification/install-matrix.md) |
+| v0.11.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS（2026-11-15），见 [install-matrix](verification/install-matrix.md) |
 | Homebrew 公式（v0.10.0 真实 sha256） | **已完成**（`ruby -c` 通过）；tap 待创建 | `packaging/homebrew/openflex.rb` |
 | Homebrew `brew audit` / `brew install --build-from-source` | **待环境** | 本机 Homebrew 非 Tier 1 配置，audit 被 SIGTERM；命令见 `packaging/homebrew/README.md` |
-| winget / scoop 清单（v0.10.0 URL/SHA256） | **已完成，待提交** | `packaging/winget/`、`packaging/scoop/openflex.json`；MSI 哈希已下载复核 |
+| winget / scoop 清单（v0.10.0 URL/SHA256） | **已完成，待提交** | `packaging/winget/`、`packaging/scoop/openflex.json`；MSI 哈希已下载复核（v0.11.0 的同步见「已知问题」） |
 | GHCR 镜像发布与验证 | **已发布**（registry 侧核实）；docker 本地运行**待环境** | container.yml；manifest 0.10.0/latest 均 200，多架构 |
 | Windows / Linux / deb / rpm / MSI 真机安装 | **待环境** | 脚本与命令清单就绪，见安装矩阵第 5 节 |
 | 签名/公证（macOS/Windows/GPG） | **CI 已配置，待证书** | release.yml 三处签名步骤 `if: env.X != ''`；本机 dry-run 通过 |
+| 10 万对象性能基准（v0.11.0） | **已实跑** | validate 85.12 s / run 271.56 s / 552 events/s / 峰值 397 MB，见 [performance.md](verification/performance.md) |
+| 文档站骨架（mdBook） | **已完成（配置可解析，未构建）** | `docs/book.toml` + `docs/SUMMARY.md`；本地预览命令见本文件第 10 节 |
+| 包管理器清单更新到 v0.11.0 | **未完成（本轮 scope 外）** | 仍是 v0.10.0；`scripts/sync-package-manifests.sh --version 0.11.0` 可一键修复（见「已知问题」） |
 | 真实 FlexSim 对照 | **待外部数据** | 工具与模板就绪；未运行 FlexSim |
 
 ### 2026-11-14 wasm / 安装收尾（历史记录，v0.4.0 基线）

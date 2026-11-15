@@ -1,0 +1,27 @@
+{
+  "format": "openflex-model", "version": 1, "name": "agv-traffic",
+  "description": "AGV traffic (B6): two AGVs contend for the same station node; the second waits",
+  "time_unit": "seconds",
+  "run": { "stop_time": 60.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "S1", "kind": "source", "params": {
+        "interarrival": { "distribution": "constant", "value": 1000.0 }, "max_arrivals": 1, "first_arrival": 0.0 } },
+    { "name": "S2", "kind": "source", "params": {
+        "interarrival": { "distribution": "constant", "value": 1000.0 }, "max_arrivals": 1, "first_arrival": 0.0 } },
+    { "name": "P1", "kind": "processor", "pos": [10, 0], "params": {
+        "process_time": { "distribution": "constant", "value": 1.0 }, "process_operator": "D" } },
+    { "name": "P2", "kind": "processor", "pos": [10, 0], "params": {
+        "process_time": { "distribution": "constant", "value": 1.0 }, "process_operator": "D" } },
+    { "name": "K", "kind": "sink", "params": {} },
+    { "name": "D", "kind": "dispatcher", "pos": [0, 0], "params": {} },
+    { "name": "A1", "kind": "agv", "pos": [0, 0], "params": {
+        "speed": 5.0, "home": "D" } },
+    { "name": "A2", "kind": "agv", "pos": [0, 0], "params": {
+        "speed": 5.0, "home": "D" } }
+  ],
+  "connections": [
+    { "from": "S1", "to": "P1" }, { "from": "P1", "to": "K" },
+    { "from": "S2", "to": "P2" }, { "from": "P2", "to": "K" },
+    { "from": "D", "to": "A1" }, { "from": "D", "to": "A2" }
+  ]
+}

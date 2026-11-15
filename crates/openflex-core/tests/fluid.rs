@@ -1,6 +1,6 @@
 //! Fluid family tests (B5).
 
-use openflex_core::{SimConfig, run_model, simulate_with_checkpoint};
+use openflex_core::{SimConfig, run_model, simulate_traced, simulate_with_checkpoint};
 use openflex_model::Model;
 
 fn line_model() -> Model {
@@ -210,8 +210,15 @@ fn valve_pressure_threshold_closes_the_line() {
     // so at most one step of volume passes.
     assert!(block(fluid, "Sink1").throughput <= 0.02);
     assert!(block(fluid, "Valve1").throughput <= 0.02);
-    // Backpressure: the pipe buffers the arriving volume instead of dropping it.
-    assert!(block(fluid, "Pipe1").level_max > 100.0);
+    // Backpressure: the tank backs up and overflows; the pipe keeps only its
+    // initial in-transit volume because its downstream is closed.
+    assert!(block(fluid, "Tank1").overflow > 0.0);
+    assert_near(
+        block(fluid, "Pipe1").level_max,
+        50.0,
+        1.0,
+        "pipe in transit",
+    );
 }
 
 #[test]
@@ -262,4 +269,37 @@ fn closed_valve_backpressures_the_tank() {
     assert!(tank.throughput <= 0.02, "release {}", tank.throughput);
     assert!(block(fluid, "Valve1").pressure >= 0.0);
     assert!(block(fluid, "Sink1").throughput <= 0.02);
+}
+
+#[test]
+fn pressure_hysteresis_reopens_the_valve() {
+    let model = Model::from_json(include_str!("../../../examples/objects/fluid-pressure.ofm"))
+        .expect("model");
+    let config = SimConfig {
+        stop_time: 40.0,
+        warmup: 0.0,
+        seed: 1,
+    };
+    let (result, trace) = simulate_traced(&model, &config, 0).expect("run");
+    let closes = trace
+        .events
+        .iter()
+        .filter(|event| event.event == "fluid_valve_close")
+        .count();
+    let opens = trace
+        .events
+        .iter()
+        .filter(|event| event.event == "fluid_valve_open")
+        .count();
+    println!("valve closes={closes} opens={opens}");
+    assert!(closes > 0, "valve should close below pressure_close");
+    assert!(opens > 0, "valve should reopen above pressure_open");
+    let fluid = result.fluid.as_ref().expect("fluid result");
+    assert!(fluid.total_throughput > 0.0);
+    let tank = fluid
+        .objects
+        .iter()
+        .find(|object| object.name == "Tank1")
+        .expect("tank");
+    assert!(tank.pressure > 0.0);
 }

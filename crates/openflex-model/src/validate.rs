@@ -833,6 +833,16 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
                     "must be non-negative when present",
                 ));
             }
+            for (field, value) in [("density", params.density), ("gravity", params.gravity)] {
+                if let Some(value) = value
+                    && (!value.is_finite() || value <= 0.0)
+                {
+                    issues.push(ValidationIssue::new(
+                        location(field),
+                        "must be positive when present",
+                    ));
+                }
+            }
         }
         crate::model::ObjectParams::FluidValve(params) => {
             if !params.ratio.is_finite() || !(0.0..=1.0).contains(&params.ratio) {
@@ -841,12 +851,26 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
                     "must be between 0 and 1",
                 ));
             }
-            if let Some(threshold) = params.pressure_threshold
-                && (!threshold.is_finite() || threshold < 0.0)
+            for (field, value) in [
+                ("pressure_threshold", params.pressure_threshold),
+                ("pressure_open", params.pressure_open),
+                ("pressure_close", params.pressure_close),
+            ] {
+                if let Some(value) = value
+                    && (!value.is_finite() || value < 0.0)
+                {
+                    issues.push(ValidationIssue::new(
+                        location(field),
+                        "must be non-negative when present",
+                    ));
+                }
+            }
+            if let (Some(open), Some(close)) = (params.pressure_open, params.pressure_close)
+                && open < close
             {
                 issues.push(ValidationIssue::new(
-                    location("pressure_threshold"),
-                    "must be non-negative when present",
+                    location("pressure_open"),
+                    "must not be below pressure_close",
                 ));
             }
         }
@@ -871,6 +895,14 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
                 issues.push(ValidationIssue::new(
                     location("flow_rate"),
                     "must be positive when present",
+                ));
+            }
+            if let Some(temperature) = params.temperature
+                && !temperature.is_finite()
+            {
+                issues.push(ValidationIssue::new(
+                    location("temperature"),
+                    "must be finite when present",
                 ));
             }
         }

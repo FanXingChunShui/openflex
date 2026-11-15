@@ -158,20 +158,102 @@ scripts/compare-flexsim.sh --report-a a.json --report-b b.json --fail-on-mismatc
 
 ## 4. 真实 FlexSim 对照的采集步骤（由持证方执行）
 
+> 采集方需要：FlexSim 许可证，以及一台能运行 `openflex` 的机器（或直接用 CI 产物）。
+> 维护者**不接触** FlexSim 的安装、许可证或 `.fsm` 文件；只接收第 4.5 步产出的 CSV
+> 与元数据。下面 8 步都在外部完成。
+
+### 4.1 步骤
+
 1. **模型对齐**：在 FlexSim 里重建同一拓扑（Source → Queue → Processor → Sink），参数逐项
-   对照 `.ofm`：到达间隔分布、加工时间分布、容量、路由。记录 FlexSim 版本与建模时间。
-2. **实验设置对齐**：Stop Time = 48000、Warmup = 1000、复现次数 = 5、
-   随机数种子策略（FlexSim 用自身 RNG；对照时只比较均值与 CI，不比较逐事件序列）。
-3. **导出数值**：每个对象导出利用率、平均含量、平均停留时间、输入/输出计数；
-   整次运行导出完成数。列名遵循上面的三列 CSV 格式，**对象名与 `.ofm` 一致**。
-4. **交给 OpenFlex 侧**：把 CSV 与 FlexSim 版本、模型截图/描述一起提交到 issue 或 PR，
-   放进 `docs/verification/data/`（数值数据可提交；`.fsm` 文件不要提交）。
-5. **运行对照**：
+   对照 `.ofm`：到达间隔分布、加工时间分布、容量、路由。记录 FlexSim 版本、建模时间、
+   以及任何“FlexSim 做不到 / 只能近似”的项。
+2. **对象名映射**：先填 [4.3](#43-对象名映射表模板) 的表。CSV 的 `object` 列一律写
+   **OpenFlex 的名字**（大小写敏感），不要写 FlexSim 的内部 id。
+3. **实验设置对齐**：Stop Time、Warmup、复现次数（≥5）、随机数种子策略
+   （FlexSim 用自身 RNG；只比较均值与 CI，不比较逐事件序列）。
+4. **导出数值**：每个对象导出利用率、平均含量、平均停留时间、输入/输出计数；
+   整次运行导出完成数（`@model,completed`）。按 [4.2](#42-csv-模板) 的三列格式写。
+5. **自检 CSV**：过一遍 [4.4](#44-导出前自检清单) 的清单，避免格式问题被误判成模型差异。
+6. **提交**：把 CSV、FlexSim 版本与设置说明、对象映射表、模型截图/描述一起提交到 issue 或 PR。
+   数据放 `docs/verification/data/`（数值可提交；**不要**提交 `.fsm` 二进制）。
+   附上 `shasum -a 256 <csv>` 的结果，便于核对。
+7. **运行对照**：
+
    ```sh
+   # 1) 用同一模型生成 OpenFlex 报告
+   openflex run model.ofm --report-dir /tmp/of-report
+
+   # 2) 与外部 CSV 比较（默认 ±5%）
    scripts/compare-flexsim.sh --report /tmp/of-report/report.json \
-     --csv docs/verification/data/flexsim-mm1-<date>.csv --tolerance 0.05 --format markdown
+     --csv docs/verification/data/flexsim-mm1-<date>.csv \
+     --tolerance 0.05 --format markdown
+
+   # 3) 机器可读/严格失败
+   scripts/compare-flexsim.sh --report /tmp/of-report/report.json \
+     --csv docs/verification/data/flexsim-mm1-<date>.csv --format json
    ```
-6. **写记录**：把输出表贴进本页「对照记录」区，逐行解释超容差项。
+
+8. **写记录**：把输出表贴进本页「对照记录」区，逐行解释超容差项；如果差异指向某个已知
+   语义缺口（A 组），在记录里写上对应的 BACKLOG 编号。
+
+### 4.2 CSV 模板
+
+模板文件：[`flexsim-result-template.csv`](flexsim-result-template.csv)（可直接复制修改）。
+`csv` 模式的 `--csv` 接受任意路径，建议放到 `docs/verification/data/`。
+
+```csv
+object,metric,value
+Proc1,utilization,0.80
+Queue1,avg_content,3.2
+Queue1,avg_stay_time,16.0
+Proc1,avg_stay_time,4.0
+Proc1,throughput,0.20
+```
+
+| 列 | 必填 | 说明 |
+|---|---|---|
+| `object` | 是 | 对象名，与 `.ofm` 的 `name` 一致；整次运行计数器写 `@model` |
+| `metric` | 是 | 报告字段：`utilization`、`avg_content`、`avg_stay_time`、`input_count`、`output_count`、`throughput`、`max_content`、`down_fraction` 等；也接受点号路径（`input_count.mean`） |
+| `value` | 是 | 数值；百分比可写 `80%`（自动 ÷100）；不接受千分位逗号 |
+
+补充约定：
+
+- 以 `#` 开头的行会被忽略（模板顶部有注释），空行也忽略。
+- 表头可省略（按 `object,metric,value` 顺序解析）；建议保留。
+- 一个 CSV 只放一个模型、一组实验设置；不同 stop_time / 复现次数请分开文件。
+- 缺失指标：CSV 有而报告没有 → 工具报 missing 并返回 1；加 `--allow-missing` 可放宽。
+
+### 4.3 对象名映射表模板
+
+| FlexSim 对象 | FlexSim 类型 | OpenFlex 对象 | OpenFlex 类型 | 备注 |
+|---|---|---|---|---|
+| Source1 | Source | Source1 | source | 到达分布一致（exponential mean 5） |
+| Queue1 | Queue | Queue1 | queue | 容量一致 |
+| Processor1 | Processor | Proc1 | processor | **名字不同**，CSV 里写 `Proc1` |
+| Sink1 | Sink | Sink1 | sink | |
+
+> 名字不一致时，**改 CSV 的 object 列**（不要改 `.ofm`，否则报告里也对不上）。
+
+### 4.4 导出前自检清单
+
+- [ ] Stop Time / Warmup 与 `.ofm` 的 `run` 完全一致（含单位）
+- [ ] 复现次数 ≥ 5，CSV 里是**均值**，不是某一次复现
+- [ ] 对象名与 `.ofm` 的 `name` 完全一致（大小写敏感）
+- [ ] 数值用小数点（`3.2`），不用千分位逗号（`3,200`）
+- [ ] 百分比可以写 `80%`，也可以写 `0.8`（不要混用）
+- [ ] 指标单位与 `time_unit` 一致（秒/分钟/小时）
+- [ ] 文件是 UTF-8，表头是 `object,metric,value`
+- [ ] 附上 `shasum -a 256 <csv>` 与 FlexSim 版本、复现次数、种子策略
+
+### 4.5 常见导出错误
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `missing metric on one side` | 对象名不一致 / 指标名拼错 | 对照 4.3 的映射表改 CSV |
+| 相对差 100% 以上 | 单位不同（每小时 vs 每时间单位） | 统一单位后再比 |
+| 结果全为 0 | 导出的是“瞬时值”而非“均值” | 导出复现后的统计量 |
+| `non-numeric value` | 千分位逗号、`%` 前后带空格、空单元格 | 改成纯数字或 `xx%` |
+| 差异集中在 `avg_content` | FlexSim 可能含/不含在途量 | 明确统计口径，记录在差异解释里 |
 
 ### 常见差异来源（按可能性排序）
 
@@ -204,12 +286,15 @@ scripts/compare-flexsim.sh --report-a a.json --report-b b.json --fail-on-mismatc
 ### 记录 B：真实 FlexSim 对照（待填）
 
 ```text
-- 日期：
-- FlexSim 版本 / 运行环境：
-- 模型（.ofm 路径 + 对象映射表）：
-- 实验设置：stop_time / warmup / replications / seed 策略
-- 数据文件：docs/verification/data/flexsim-<model>-<date>.csv（SHA-256：）
-- 命令与输出：
-- 结论：在容差内 n/m；超容差项与解释：
+- 日期 / 执行人：
+- FlexSim 版本 / 运行环境（OS、CPU）：
+- OpenFlex 版本 / 运行环境：
+- 模型：.ofm 路径 + 对象映射表（4.3）
+- 实验设置：stop_time / warmup / replications / seed 策略 / time_unit
+- 数据文件：docs/verification/data/flexsim-<model>-<date>.csv
+  SHA-256：
+- 命令与输出（贴 diff 表）：
+- 结论：在容差内 n/m；超容差项逐条解释（噪声 / 语义 / 单位）：
 - 是否触发 BACKLOG 条目（例如 A5/A6/A7）：
+- 后续动作（需要谁做什么）：
 ```

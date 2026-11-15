@@ -1,0 +1,27 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "fluid-pressure",
+  "description": "Fluid pressure (B5): tank head drives pipe flow; valve hysteresis (close 40kPa, open 60kPa) reopens automatically",
+  "time_unit": "seconds",
+  "run": { "stop_time": 40.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "fluid_step": 0.1,
+  "objects": [
+    { "name": "Generator1", "kind": "fluid_generator", "params": { "flow_rate": 2.0 } },
+    { "name": "Tank1", "kind": "fluid_tank", "params": {
+        "capacity": 100.0, "initial_level": 20.0,
+        "density": 1000.0, "gravity": 9.81 } },
+    { "name": "Pipe1", "kind": "fluid_pipe", "params": {
+        "length": 1.0, "speed": 1.0, "delay": 0.1,
+        "flow_rate": 10.0, "temperature": 20.0 } },
+    { "name": "Valve1", "kind": "fluid_valve", "params": {
+        "ratio": 1.0, "pressure_open": 60000.0, "pressure_close": 40000.0 } },
+    { "name": "Sink1", "kind": "fluid_sink", "params": {} }
+  ],
+  "connections": [
+    { "from": "Generator1", "to": "Tank1" },
+    { "from": "Tank1", "to": "Pipe1" },
+    { "from": "Pipe1", "to": "Valve1" },
+    { "from": "Valve1", "to": "Sink1" }
+  ]
+}

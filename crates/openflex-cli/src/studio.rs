@@ -12,6 +12,9 @@
 //! - `POST /api/model` — validate and save an edited model (JSON)
 //! - `GET /api/objects` — object-kind catalog for the editor
 //! - `POST /api/run` — run the current model, returns a `SimReport` JSON
+//! - `POST /api/step` — incrementally advance to a time/object breakpoint
+//! - `POST /api/reset` — forget the incremental step state
+//! - `POST /api/experiment` — run scenario/override experiments
 //! - `GET /health` — liveness probe
 //!
 //! Safety guards: the socket is bound to loopback only, request bodies are
@@ -35,13 +38,30 @@ pub const MAX_BODY: usize = 2 * 1024 * 1024;
 pub const MAX_HEADER: usize = 64 * 1024;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// How many scenarios/replications the experiment endpoint accepts.
+const MAX_SCENARIOS: usize = 20;
+const MAX_REPLICATIONS: u32 = 100;
+
+#[derive(Debug, Clone)]
+struct StepState {
+    checkpoint: openflex_core::Checkpoint,
+    time: f64,
+    seed: u64,
+    warmup: f64,
+}
+
+struct StudioState {
+    model: Model,
+    step: Option<StepState>,
+}
 
 /// Serve the studio until the process is killed.
 pub fn serve(model_path: &Path, port: u16, open: bool, quiet: bool) -> Result<(), String> {
     let text = fs::read_to_string(model_path)
         .map_err(|error| format!("could not read model {}: {error}", model_path.display()))?;
-    let mut model = Model::from_json(&text)
+    let model = Model::from_json(&text)
         .map_err(|error| format!("invalid model {}: {error}", model_path.display()))?;
+    let mut state = StudioState { model, step: None };
     let listener = TcpListener::bind(("127.0.0.1", port))
         .map_err(|error| format!("could not bind 127.0.0.1:{port}: {error}"))?;
     let address = listener
@@ -62,7 +82,7 @@ pub fn serve(model_path: &Path, port: u16, open: bool, quiet: bool) -> Result<()
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
-                if let Err(error) = handle_connection(stream, &mut model, model_path) {
+                if let Err(error) = handle_connection(stream, &mut state, model_path) {
                     eprintln!("studio request failed: {error}");
                 }
             }
@@ -94,7 +114,7 @@ impl HttpError {
 
 fn handle_connection(
     mut stream: TcpStream,
-    model: &mut Model,
+    state: &mut StudioState,
     model_path: &Path,
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
@@ -116,10 +136,10 @@ fn handle_connection(
             &mut stream,
             "200 OK",
             "text/html; charset=utf-8",
-            &index_html(model),
+            &index_html(&state.model),
         ),
         ("GET", "/api/model") => {
-            let text = serde_json::to_string_pretty(&*model).unwrap_or_else(|_| "{}".into());
+            let text = serde_json::to_string_pretty(&state.model).unwrap_or_else(|_| "{}".into());
             write_response(&mut stream, "200 OK", "application/json", &text)
         }
         ("GET", "/api/objects") => write_response(
@@ -134,9 +154,21 @@ fn handle_connection(
             "application/json",
             &serde_json::json!({ "status": "ok", "version": VERSION }).to_string(),
         ),
-        ("POST", "/api/model") => save_model(&mut stream, model, model_path, &request.body),
-        ("POST", "/api/model/objects") => add_object(&mut stream, model, model_path, &request.body),
-        ("POST", "/api/run") => run_model_endpoint(&mut stream, model, &request.body),
+        ("POST", "/api/model") => save_model(&mut stream, state, model_path, &request.body),
+        ("POST", "/api/model/objects") => add_object(&mut stream, state, model_path, &request.body),
+        ("POST", "/api/run") => run_model_endpoint(&mut stream, state, &request.body),
+        ("POST", "/api/step") => step_endpoint(&mut stream, state, &request.body),
+        ("POST", "/api/reset") => {
+            state.step = None;
+            write_json(
+                &mut stream,
+                "200 OK",
+                &serde_json::json!({ "ok": true, "stepped_to": 0.0 }).to_string(),
+            )
+        }
+        ("POST", "/api/experiment") => {
+            experiment_endpoint(&mut stream, &state.model, &request.body)
+        }
         (method, path) if method == "DELETE" && path.starts_with("/api/model/objects/") => {
             let name = match percent_decode(path.trim_start_matches("/api/model/objects/")) {
                 Ok(name) => name,
@@ -148,7 +180,7 @@ fn handle_connection(
                     );
                 }
             };
-            delete_object(&mut stream, model, model_path, &name)
+            delete_object(&mut stream, state, model_path, &name)
         }
         ("GET", path) if path.starts_with("/api/") || path.starts_with("/assets/") => {
             not_found(&mut stream)
@@ -167,7 +199,7 @@ fn not_found(stream: &mut TcpStream) -> std::io::Result<()> {
 
 fn save_model(
     stream: &mut TcpStream,
-    model: &mut Model,
+    state: &mut StudioState,
     model_path: &Path,
     body: &[u8],
 ) -> std::io::Result<()> {
@@ -210,12 +242,17 @@ fn save_model(
             &serde_json::json!({ "ok": false, "error": error }).to_string(),
         );
     }
-    *model = new_model;
+    state.model = new_model;
+    state.step = None;
     write_json(
         stream,
         "200 OK",
-        &serde_json::json!({ "ok": true, "name": model.name, "objects": model.objects.len() })
-            .to_string(),
+        &serde_json::json!({
+            "ok": true,
+            "name": state.model.name,
+            "objects": state.model.objects.len()
+        })
+        .to_string(),
     )
 }
 
@@ -226,7 +263,11 @@ struct RunOverrides {
     replications: Option<u32>,
 }
 
-fn run_model_endpoint(stream: &mut TcpStream, model: &Model, body: &[u8]) -> std::io::Result<()> {
+fn run_model_endpoint(
+    stream: &mut TcpStream,
+    state: &mut StudioState,
+    body: &[u8],
+) -> std::io::Result<()> {
     let overrides: RunOverrides = if body.is_empty() || body == b"{}" {
         RunOverrides::default()
     } else {
@@ -242,7 +283,8 @@ fn run_model_endpoint(stream: &mut TcpStream, model: &Model, body: &[u8]) -> std
             }
         }
     };
-    let mut run_model = model.clone();
+    state.step = None;
+    let mut run_model = state.model.clone();
     if let Some(stop_time) = overrides.stop_time {
         if stop_time <= 0.0 || stop_time <= run_model.run.warmup {
             return write_json(
@@ -298,6 +340,261 @@ fn run_model_endpoint(stream: &mut TcpStream, model: &Model, body: &[u8]) -> std
 }
 
 #[derive(Debug, serde::Deserialize)]
+struct StepRequest {
+    until: f64,
+    #[serde(default)]
+    object: Option<String>,
+}
+
+/// Advance one replication to `until` (or to the first event of `object`),
+/// reusing the checkpoint from the previous step.
+fn step_endpoint(
+    stream: &mut TcpStream,
+    state: &mut StudioState,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let request: StepRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return write_json(
+                stream,
+                "400 Bad Request",
+                &serde_json::json!({ "ok": false, "error": format!("invalid step request: {error}") })
+                    .to_string(),
+            );
+        }
+    };
+    if !request.until.is_finite() || request.until <= 0.0 {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": "until must be a positive finite time" })
+                .to_string(),
+        );
+    }
+    if request.until <= state.model.run.warmup {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": "until must be greater than the warm-up" })
+                .to_string(),
+        );
+    }
+    let seed = openflex_core::derive_seed(state.model.run.seed, 0);
+    let warmup = state.model.run.warmup;
+    let last_time = state.step.as_ref().map(|step| step.time).unwrap_or(0.0);
+
+    // An object breakpoint is resolved with one traced pass over the requested
+    // window; the report itself is then produced by the checkpoint path.
+    let mut target = request.until;
+    let mut breakpoint = serde_json::Value::Null;
+    if let Some(object) = request
+        .object
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        let config = openflex_core::SimConfig {
+            stop_time: request.until,
+            warmup,
+            seed,
+        };
+        match openflex_core::simulate_traced(&state.model, &config, 0) {
+            Ok((_, trace)) => {
+                if let Some(event) = trace.events.iter().find(|event| {
+                    event.object == object
+                        && event.time > last_time + 1e-9
+                        && event.time > warmup + 1e-9
+                        && event.time <= request.until + 1e-9
+                }) {
+                    target = event.time.max(last_time + 1e-6).min(request.until);
+                    breakpoint = serde_json::json!({
+                        "object": event.object,
+                        "time": event.time,
+                        "event": event.event,
+                    });
+                }
+            }
+            Err(error) => return write_sim_error(stream, error),
+        }
+    }
+
+    let config = openflex_core::SimConfig {
+        stop_time: target,
+        warmup,
+        seed,
+    };
+    let previous = state
+        .step
+        .as_ref()
+        .filter(|step| {
+            step.seed == seed && (step.warmup - warmup).abs() <= f64::EPSILON && target >= step.time
+        })
+        .map(|step| step.checkpoint.clone());
+    let (result, checkpoint) = match openflex_core::simulate_with_checkpoint(
+        &state.model,
+        &config,
+        0,
+        previous.as_ref(),
+    ) {
+        Ok(result) => result,
+        Err(error) => return write_sim_error(stream, error),
+    };
+    state.step = Some(StepState {
+        checkpoint,
+        time: target,
+        seed,
+        warmup,
+    });
+
+    let mut report_model = state.model.clone();
+    report_model.run.stop_time = target;
+    report_model.run.replications = 1;
+    let report = openflex_core::SimReport::from_replications(&report_model, vec![result]);
+    let text = serde_json::json!({
+        "report": report,
+        "stepped_to": target,
+        "breakpoint": breakpoint,
+    });
+    write_json(stream, "200 OK", &text.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ExperimentRequest {
+    #[serde(default)]
+    experiment: Option<String>,
+    #[serde(default)]
+    replications: Option<u32>,
+    #[serde(default)]
+    scenarios: Vec<ExperimentScenario>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ExperimentScenario {
+    name: String,
+    #[serde(default)]
+    overrides: Vec<ExperimentOverride>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ExperimentOverride {
+    object: String,
+    param: String,
+    value: serde_json::Value,
+}
+
+/// Run scenario/parameter experiments inside the studio.
+fn experiment_endpoint(stream: &mut TcpStream, model: &Model, body: &[u8]) -> std::io::Result<()> {
+    let request: ExperimentRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return write_json(
+                stream,
+                "400 Bad Request",
+                &serde_json::json!({ "ok": false, "error": format!("invalid experiment request: {error}") })
+                    .to_string(),
+            );
+        }
+    };
+    let scenarios = if request.scenarios.is_empty() {
+        vec![ExperimentScenario {
+            name: "baseline".into(),
+            overrides: Vec::new(),
+        }]
+    } else {
+        request.scenarios
+    };
+    if scenarios.len() > MAX_SCENARIOS {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": format!("at most {MAX_SCENARIOS} scenarios are supported") })
+                .to_string(),
+        );
+    }
+    let replications = request
+        .replications
+        .unwrap_or(model.run.replications.max(1));
+    if replications == 0 || replications > MAX_REPLICATIONS {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": format!("replications must be between 1 and {MAX_REPLICATIONS}") })
+                .to_string(),
+        );
+    }
+
+    let mut reports = Vec::with_capacity(scenarios.len());
+    for scenario in scenarios {
+        let mut scenario_model = model.clone();
+        for over in &scenario.overrides {
+            scenario_model = match scenario_model.with_override(
+                &over.object,
+                &over.param,
+                over.value.clone(),
+            ) {
+                Ok(model) => model,
+                Err(error) => {
+                    return write_json(
+                        stream,
+                        "422 Unprocessable Entity",
+                        &serde_json::json!({ "ok": false, "error": format!("scenario '{}': {error}", scenario.name) })
+                            .to_string(),
+                    );
+                }
+            };
+        }
+        scenario_model.run.replications = replications;
+        if let Err(error) = scenario_model.validate() {
+            return write_json(
+                stream,
+                "422 Unprocessable Entity",
+                &serde_json::json!({ "ok": false, "error": format!("scenario '{}': {error}", scenario.name) })
+                    .to_string(),
+            );
+        }
+        match openflex_core::run_model(&scenario_model) {
+            Ok(report) => reports.push(openflex_report::ScenarioReport {
+                name: scenario.name.clone(),
+                overrides: scenario
+                    .overrides
+                    .iter()
+                    .map(|over| openflex_model::Override {
+                        object: over.object.clone(),
+                        param: over.param.clone(),
+                        value: over.value.clone(),
+                    })
+                    .collect(),
+                report,
+            }),
+            Err(error) => return write_sim_error(stream, error),
+        }
+    }
+    let experiment = openflex_report::ExperimentReport {
+        experiment: request.experiment.unwrap_or_else(|| "studio".into()),
+        model: model.name.clone(),
+        time_unit: model.time_unit,
+        scenarios: reports,
+    };
+    let text = serde_json::to_string(&experiment).unwrap_or_else(|_| "{}".into());
+    write_response(stream, "200 OK", "application/json", &text)
+}
+
+fn write_sim_error(stream: &mut TcpStream, error: openflex_core::SimError) -> std::io::Result<()> {
+    let status = match error {
+        openflex_core::SimError::Config(_) | openflex_core::SimError::Model(_) => {
+            "422 Unprocessable Entity"
+        }
+        _ => "500 Internal Server Error",
+    };
+    write_json(
+        stream,
+        status,
+        &serde_json::json!({ "ok": false, "error": error.to_string() }).to_string(),
+    )
+}
+
+#[derive(Debug, serde::Deserialize)]
 struct AddObjectRequest {
     kind: String,
     #[serde(default)]
@@ -309,7 +606,7 @@ struct AddObjectRequest {
 /// Add an object with kind-specific safe defaults, then validate and save.
 fn add_object(
     stream: &mut TcpStream,
-    model: &mut Model,
+    state: &mut StudioState,
     model_path: &Path,
     body: &[u8],
 ) -> std::io::Result<()> {
@@ -335,7 +632,7 @@ fn add_object(
             );
         }
     };
-    let mut value = serde_json::to_value(&*model).unwrap_or_else(|_| serde_json::json!({}));
+    let mut value = serde_json::to_value(&state.model).unwrap_or_else(|_| serde_json::json!({}));
     let Some(objects) = value
         .get_mut("objects")
         .and_then(|objects| objects.as_array_mut())
@@ -385,7 +682,7 @@ fn add_object(
     };
     persist_model(
         stream,
-        model,
+        state,
         model_path,
         new_model,
         serde_json::json!({ "added": name }),
@@ -395,11 +692,11 @@ fn add_object(
 /// Delete one object and clean connections/references to it, then validate.
 fn delete_object(
     stream: &mut TcpStream,
-    model: &mut Model,
+    state: &mut StudioState,
     model_path: &Path,
     name: &str,
 ) -> std::io::Result<()> {
-    let mut value = serde_json::to_value(&*model).unwrap_or_else(|_| serde_json::json!({}));
+    let mut value = serde_json::to_value(&state.model).unwrap_or_else(|_| serde_json::json!({}));
     let Some(objects) = value
         .get_mut("objects")
         .and_then(|objects| objects.as_array_mut())
@@ -462,7 +759,7 @@ fn delete_object(
     };
     persist_model(
         stream,
-        model,
+        state,
         model_path,
         new_model,
         serde_json::json!({
@@ -552,7 +849,7 @@ fn next_position(objects: &[serde_json::Value]) -> [f64; 2] {
 /// Persist a validated model atomically and return it to the UI.
 fn persist_model(
     stream: &mut TcpStream,
-    model: &mut Model,
+    state: &mut StudioState,
     model_path: &Path,
     new_model: Model,
     extra: serde_json::Value,
@@ -574,8 +871,9 @@ fn persist_model(
             &serde_json::json!({ "ok": false, "error": error }).to_string(),
         );
     }
-    *model = new_model;
-    let mut response = serde_json::json!({ "ok": true, "model": *model });
+    state.model = new_model;
+    state.step = None;
+    let mut response = serde_json::json!({ "ok": true, "model": state.model });
     if let (Some(target), Some(source)) = (response.as_object_mut(), extra.as_object()) {
         for (key, value) in source {
             target.insert(key.clone(), value.clone());

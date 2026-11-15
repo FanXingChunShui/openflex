@@ -252,7 +252,13 @@ if mode == "csv":
 
     with open(csv_path, newline="", encoding="utf-8-sig") as handle:
         reader = csv.reader(handle)
-        all_rows = [row for row in reader if any(cell.strip() for cell in row)]
+        # Skip blank lines and `#` comments (the shipped template starts with a
+        # short header explaining the columns).
+        all_rows = [
+            row
+            for row in reader
+            if any(cell.strip() for cell in row) and not row[0].lstrip().startswith("#")
+        ]
     if not all_rows:
         print("compare-flexsim: error: the CSV is empty", file=sys.stderr)
         sys.exit(2)

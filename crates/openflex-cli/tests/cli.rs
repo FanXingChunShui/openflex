@@ -2783,6 +2783,18 @@ fn studio_can_add_and_delete_objects_through_the_api() {
         "data-field",
         "OBJECT_FIELDS",
         "BLOCK_FIELDS",
+        "id=\"step\"",
+        "id=\"step-forward\"",
+        "id=\"resume\"",
+        "id=\"reset\"",
+        "id=\"step-until\"",
+        "id=\"breakpoint-object\"",
+        "id=\"experiment-panel\"",
+        "id=\"scenario-list\"",
+        "id=\"add-scenario\"",
+        "id=\"run-experiment\"",
+        "id=\"dashboard\"",
+        "id=\"export-png\"",
     ] {
         assert!(html.contains(marker), "missing marker {marker}");
     }
@@ -2984,4 +2996,123 @@ fn studio_flow_block_editor_can_add_a_block_that_validates() {
     assert!(http_status(&run).contains("200 OK"));
     let report = json(http_body(&run));
     assert_eq!(report["process_flow"]["tokens_created"], 10.0);
+}
+
+#[test]
+fn studio_step_api_matches_a_direct_run_and_resets() {
+    let dir = TempDir::new("studio-step");
+    let model = dir.write("demo.ofm", MODEL);
+    let (_server, address) = start_studio(&model);
+
+    let first = http_request(&address, "POST", "/api/step", Some(r#"{"until":50}"#));
+    assert!(
+        http_status(&first).contains("200 OK"),
+        "step 50: {}",
+        http_body(&first)
+    );
+    let first = json(http_body(&first));
+    assert_eq!(first["stepped_to"], 50.0);
+    assert_eq!(first["report"]["stop_time"], 50.0);
+    assert!(first["breakpoint"].is_null());
+
+    let second = http_request(&address, "POST", "/api/step", Some(r#"{"until":100}"#));
+    assert!(http_status(&second).contains("200 OK"));
+    let second = json(http_body(&second));
+    assert_eq!(second["report"]["stop_time"], 100.0);
+
+    let direct = http_request(&address, "POST", "/api/run", Some(r#"{"stop_time":100}"#));
+    assert!(http_status(&direct).contains("200 OK"));
+    assert_eq!(
+        second["report"],
+        json(http_body(&direct)),
+        "incremental step to 100 must equal a direct run to 100"
+    );
+
+    let reset = http_request(&address, "POST", "/api/reset", Some("{}"));
+    assert!(http_status(&reset).contains("200 OK"));
+    assert_eq!(json(http_body(&reset))["stepped_to"], 0.0);
+
+    let invalid = http_request(&address, "POST", "/api/step", Some(r#"{"until":0}"#));
+    assert!(http_status(&invalid).contains("422"), "invalid: {invalid}");
+}
+
+#[test]
+fn studio_step_can_stop_at_an_object_breakpoint() {
+    let dir = TempDir::new("studio-breakpoint");
+    let model = dir.write("demo.ofm", MODEL);
+    let (_server, address) = start_studio(&model);
+
+    let response = http_request(
+        &address,
+        "POST",
+        "/api/step",
+        Some(r#"{"until":200,"object":"Processor1"}"#),
+    );
+    assert!(
+        http_status(&response).contains("200 OK"),
+        "breakpoint: {}",
+        http_body(&response)
+    );
+    let response = json(http_body(&response));
+    let hit = &response["breakpoint"];
+    assert_eq!(hit["object"], "Processor1");
+    assert!(
+        hit["time"]
+            .as_f64()
+            .is_some_and(|time| time > 0.0 && time <= 200.0)
+    );
+    let stepped_to = response["stepped_to"].as_f64().expect("stepped_to");
+    assert!(stepped_to <= 200.0);
+    assert_eq!(response["report"]["stop_time"], stepped_to);
+}
+
+#[test]
+fn studio_experiment_endpoint_runs_scenarios() {
+    let dir = TempDir::new("studio-experiment");
+    let model = dir.write("demo.ofm", MODEL);
+    let (_server, address) = start_studio(&model);
+
+    let body = serde_json::json!({
+        "experiment": "studio-speed",
+        "replications": 2,
+        "scenarios": [
+            { "name": "baseline", "overrides": [] },
+            { "name": "faster", "overrides": [
+                { "object": "Processor1", "param": "process_time.mean", "value": 1.5 }
+            ] }
+        ]
+    });
+    let response = http_request(
+        &address,
+        "POST",
+        "/api/experiment",
+        Some(&serde_json::to_string(&body).expect("serialise")),
+    );
+    assert!(
+        http_status(&response).contains("200 OK"),
+        "experiment: {}",
+        http_body(&response)
+    );
+    let experiment = json(http_body(&response));
+    assert_eq!(experiment["experiment"], "studio-speed");
+    let scenarios = experiment["scenarios"].as_array().expect("scenarios");
+    assert_eq!(scenarios.len(), 2);
+    assert_eq!(scenarios[0]["name"], "baseline");
+    assert_eq!(scenarios[1]["name"], "faster");
+    for scenario in scenarios {
+        assert_eq!(
+            scenario["report"]["replications"].as_array().map(Vec::len),
+            Some(2)
+        );
+    }
+    let baseline = scenarios[0]["report"]["completed"]["mean"]
+        .as_f64()
+        .unwrap_or_default();
+    let faster = scenarios[1]["report"]["completed"]["mean"]
+        .as_f64()
+        .unwrap_or_default();
+    assert!(
+        faster > baseline,
+        "a faster processor must complete more items ({baseline} vs {faster})"
+    );
 }

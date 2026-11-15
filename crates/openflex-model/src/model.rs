@@ -1924,6 +1924,12 @@ pub struct FluidTankParams {
     /// Maximum released volume per time unit (default: unlimited).
     #[serde(default)]
     pub max_outflow: Option<f64>,
+    /// Fluid density (kg/m3), pressure = density * gravity * level.
+    #[serde(default)]
+    pub density: Option<f64>,
+    /// Gravity used for the pressure-height relation (default 9.81).
+    #[serde(default)]
+    pub gravity: Option<f64>,
     #[serde(default)]
     pub triggers: Triggers,
 }
@@ -1934,6 +1940,8 @@ impl Default for FluidTankParams {
             capacity: 100.0,
             initial_level: 0.0,
             max_outflow: None,
+            density: None,
+            gravity: None,
             triggers: Triggers::default(),
         }
     }
@@ -1948,10 +1956,16 @@ pub struct FluidValveParams {
     /// Fraction of the incoming flow that passes through (0..1).
     #[serde(default = "one_f64")]
     pub ratio: f64,
-    /// Minimum incoming flow rate that opens the valve (simplified pressure
-    /// threshold: below it the valve stays closed for the step).
+    /// Minimum incoming flow rate that opens the valve (legacy flow-rate
+    /// threshold: below it the valve latches closed).
     #[serde(default)]
     pub pressure_threshold: Option<f64>,
+    /// Inlet pressure that (re)opens the valve (Pa, hysteresis).
+    #[serde(default)]
+    pub pressure_open: Option<f64>,
+    /// Inlet pressure below which the valve closes (Pa, hysteresis).
+    #[serde(default)]
+    pub pressure_close: Option<f64>,
     #[serde(default)]
     pub triggers: Triggers,
 }
@@ -1962,6 +1976,8 @@ impl Default for FluidValveParams {
             open: true,
             ratio: 1.0,
             pressure_threshold: None,
+            pressure_open: None,
+            pressure_close: None,
             triggers: Triggers::default(),
         }
     }
@@ -1980,9 +1996,13 @@ pub struct FluidPipeParams {
     /// Optional transport delay override (time units).
     #[serde(default)]
     pub delay: Option<f64>,
-    /// Optional maximum volume per time unit through the pipe.
+    /// Optional maximum volume per time unit through the pipe (also the
+    /// pressure-flow calibration: delta_p of one reference head = flow_rate).
     #[serde(default)]
     pub flow_rate: Option<f64>,
+    /// Fluid temperature in Celsius (simplified viscosity correction).
+    #[serde(default)]
+    pub temperature: Option<f64>,
     #[serde(default)]
     pub triggers: Triggers,
 }
@@ -1994,6 +2014,7 @@ impl Default for FluidPipeParams {
             speed: 1.0,
             delay: None,
             flow_rate: None,
+            temperature: None,
             triggers: Triggers::default(),
         }
     }

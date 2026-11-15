@@ -123,6 +123,8 @@ SHELL_SCRIPTS=(
   "$ROOT_DIR/scripts/sign-checksums.sh"
   "$ROOT_DIR/scripts/compare-flexsim.sh"
   "$ROOT_DIR/scripts/fuzz-smoke.sh"
+  "$ROOT_DIR/scripts/bench-large-model.sh"
+  "$ROOT_DIR/scripts/sync-package-manifests.sh"
 )
 for script in "${SHELL_SCRIPTS[@]}"; do
   if [ -f "$script" ]; then
@@ -169,13 +171,13 @@ else
 fi
 
 if command -v python3 >/dev/null 2>&1 && python3 -c 'import tomllib' 2>/dev/null; then
-  run_ok "deny.toml and fuzz/Cargo.toml parse as TOML" python3 -c '
+  run_ok "deny.toml, fuzz/Cargo.toml and docs/book.toml parse as TOML" python3 -c '
 import sys, tomllib
 for path in sys.argv[1:]:
     with open(path, "rb") as handle:
         tomllib.load(handle)
     print("ok:", path)
-' "$ROOT_DIR/deny.toml" "$ROOT_DIR/fuzz/Cargo.toml"
+' "$ROOT_DIR/deny.toml" "$ROOT_DIR/fuzz/Cargo.toml" "$ROOT_DIR/docs/book.toml"
 else
   skip "python3 < 3.11 (no tomllib); skipping TOML checks"
 fi
@@ -196,7 +198,11 @@ for file in \
   "$ROOT_DIR/docs/verification/install-matrix.md" \
   "$ROOT_DIR/docs/verification/flexsim-comparison.md" \
   "$ROOT_DIR/docs/verification/flexsim-mm1-example.csv" \
-  "$ROOT_DIR/docs/verification/wasm.md"; do
+  "$ROOT_DIR/docs/verification/wasm.md" \
+  "$ROOT_DIR/docs/verification/performance.md" \
+  "$ROOT_DIR/docs/verification/flexsim-result-template.csv" \
+  "$ROOT_DIR/docs/book.toml" \
+  "$ROOT_DIR/docs/SUMMARY.md"; do
   if [ -f "$file" ]; then
     pass "exists: ${file#"$ROOT_DIR"/}"
   else
@@ -617,7 +623,9 @@ for tool in \
   "$ROOT_DIR/scripts/sign-macos.sh" \
   "$ROOT_DIR/scripts/sign-checksums.sh" \
   "$ROOT_DIR/scripts/compare-flexsim.sh" \
-  "$ROOT_DIR/scripts/fuzz-smoke.sh"; do
+  "$ROOT_DIR/scripts/fuzz-smoke.sh" \
+  "$ROOT_DIR/scripts/bench-large-model.sh" \
+  "$ROOT_DIR/scripts/sync-package-manifests.sh"; do
   run_ok "$(basename "$tool") --help exits 0" bash "$tool" --help
 done
 
@@ -706,6 +714,35 @@ print("winget, scoop and homebrew manifests match %s" % version)
 PY
 }
 run_ok "winget / scoop / homebrew manifests match $VERSION" check_packager_manifests
+
+# ---------------------------------------------------------------- docs site
+section "Documentation site (mdBook)"
+if command -v python3 >/dev/null 2>&1; then
+  check_summary_links() {
+    python3 - "$ROOT_DIR" <<'PY'
+import os
+import re
+import sys
+
+root = sys.argv[1]
+summary = os.path.join(root, "docs", "SUMMARY.md")
+text = open(summary, encoding="utf-8").read()
+missing = []
+for match in re.finditer(r"\]\(([^)#]+\.md)\)", text):
+    target = os.path.normpath(os.path.join(root, "docs", match.group(1)))
+    if not os.path.exists(target):
+        missing.append(match.group(1))
+if missing:
+    for path in missing:
+        print("  SUMMARY.md: missing " + path, file=sys.stderr)
+    sys.exit(1)
+print("every SUMMARY.md link resolves")
+PY
+  }
+  run_ok "every docs/SUMMARY.md link resolves" check_summary_links
+else
+  skip "python3 not installed (skipping the mdBook navigation check)"
+fi
 
 # ---------------------------------------------------------------- summary
 section "Summary"

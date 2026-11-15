@@ -1,0 +1,41 @@
+# mdBook configuration for the OpenFlex documentation site.
+#
+# The site is built from the `docs/` directory itself (`src = "."`), so the
+# Markdown files that ship in the repository are exactly the ones rendered —
+# there is no second copy to keep in sync.
+#
+# Local preview (not required for CI, the site is not deployed automatically):
+#
+#   cargo install mdbook --locked      # once, or: brew install mdbook
+#   mdbook serve docs --open           # http://localhost:3000, live reload
+#   mdbook build docs                  # static site in docs/book/
+#
+# `docs/book/` is generated output and must not be committed (add it to your
+# global gitignore, or delete it after previewing).
+#
+# Navigation lives in docs/SUMMARY.md. Files under docs/spec/ and docs/research/
+# are referenced there; they stay in their original directories and are not
+# edited by the documentation site.
+[book]
+title = "OpenFlex 文档"
+authors = ["OpenFlex contributors"]
+description = "净室离散事件仿真引擎与 CLI：模型格式、安装、验证与发布"
+language = "zh-CN"
+src = "."
+build-dir = "book"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/FanXingChunShui/openflex"
+site-url = "/openflex/"
+edit-url-template = "https://github.com/FanXingChunShui/openflex/edit/main/docs/{path}"
+additional-css = []
+additional-js = []
+
+[output.html.search]
+enable = true
+limit-results = 30
+
+[output.html.playground]
+editable = false

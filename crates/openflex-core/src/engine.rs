@@ -150,6 +150,10 @@ use crate::stats::{
 };
 use crate::trace::{TraceEvent, TraceLog};
 
+/// Reference fluid density/gravity for the simplified pressure model (B5).
+const REFERENCE_DENSITY: f64 = 1000.0;
+const REFERENCE_GRAVITY: f64 = 9.81;
+
 /// Safety valve: a model that never drains its events is reported instead of
 /// hanging forever.
 const MAX_EVENTS: u64 = 50_000_000;
@@ -274,6 +278,8 @@ pub(crate) enum EventKind {
     FluidStep,
     /// An AGV finished charging (B6 battery).
     ChargeDone(usize),
+    /// An AGV resumes a task after charging mid-route.
+    TransportResume(usize, usize),
     /// Warm-up boundary: reset the statistics accumulators.
     ResetStats,
 }
@@ -365,6 +371,12 @@ pub(crate) struct FluidObjectRt {
     /// Valve state (B5 backpressure): closed valves do not accept inflow.
     #[serde(default = "default_true_valve")]
     pub valve_open: bool,
+    /// Current pressure (Pa) at this node.
+    #[serde(default)]
+    pub pressure: f64,
+    /// Time integral of `pressure` for the reported average.
+    #[serde(default)]
+    pub pressure_integral: f64,
 }
 
 fn default_true_valve() -> bool {
@@ -382,6 +394,8 @@ impl FluidObjectRt {
             inflow: 0.0,
             buffer: Vec::new(),
             valve_open: true,
+            pressure: 0.0,
+            pressure_integral: 0.0,
         }
     }
 }
@@ -404,6 +418,11 @@ pub(crate) struct FluidRuntime {
     pub outgoing: Vec<Vec<usize>>,
     /// Topological processing order (fluid positions).
     pub order: Vec<usize>,
+    /// Pressure-driven pipes are enabled when any density/gravity, valve
+    /// hysteresis or pipe temperature is configured (B5); otherwise the legacy
+    /// flow-rate behaviour is kept.
+    #[serde(default)]
+    pub pressure_mode: bool,
     pub step: f64,
     pub last_time: f64,
     pub total_inflow: f64,
@@ -1856,6 +1875,9 @@ impl<'m> Simulation<'m> {
             EventKind::FlowDelayDone(block, token) => self.handle_flow_delay_done(block, token),
             EventKind::FluidStep => self.handle_fluid_step(),
             EventKind::ChargeDone(executor) => self.handle_charge_done(executor),
+            EventKind::TransportResume(executor, requester) => {
+                self.handle_transport_resume(executor, requester)
+            }
             EventKind::TransportPickup(transporter, requester) => {
                 self.handle_transport_pickup(transporter, requester)
             }
@@ -4060,12 +4082,53 @@ impl<'m> Simulation<'m> {
             .map(|&index| self.model.objects[index].kind)
             .collect();
         let mut influx = vec![0.0f64; count];
-        // B5 backpressure: how much volume each node can accept this step.
+        // B5 pressure field: tank pressure from the liquid column; pipes carry
+        // their inlet pressure, valves/sinks are treated as 0 Pa downstream.
+        let mut pressures = vec![0.0f64; count];
+        let mut inlet_pressures = vec![0.0f64; count];
+        let mut incoming_links: Vec<Vec<usize>> = vec![Vec::new(); count];
+        let mut link_source = vec![0usize; links.len()];
+        for (from, list) in outgoing.iter().enumerate() {
+            for &link in list {
+                if let Some(slot) = link_source.get_mut(link) {
+                    *slot = from;
+                }
+            }
+        }
+        for (index, link) in links.iter().enumerate() {
+            if let Some(list) = incoming_links.get_mut(link.to) {
+                list.push(index);
+            }
+        }
+        for &position in &order {
+            let upstream = incoming_links[position]
+                .iter()
+                .map(|&link| pressures[link_source[link]])
+                .fold(0.0f64, f64::max);
+            let own = match kinds[position] {
+                ObjectKind::FluidTank => {
+                    let (density, gravity, level) =
+                        match &self.model.objects[model_indices[position]].params {
+                            ObjectParams::FluidTank(params) => (
+                                params.density.unwrap_or(REFERENCE_DENSITY),
+                                params.gravity.unwrap_or(REFERENCE_GRAVITY),
+                                fluid.state[position].level,
+                            ),
+                            _ => (REFERENCE_DENSITY, REFERENCE_GRAVITY, 0.0),
+                        };
+                    density * gravity * level
+                }
+                ObjectKind::FluidPipe => upstream,
+                _ => 0.0,
+            };
+            pressures[position] = own;
+            inlet_pressures[position] = upstream;
+        }
+        // Acceptance capacities (backpressure) for this step.
+        let model_pressure = pressures.clone();
         let mut acceptance: Vec<f64> = (0..count)
             .map(|position| match kinds[position] {
                 ObjectKind::FluidSink => f64::INFINITY,
-                // A tank always accepts volume; what does not fit becomes
-                // overflow. Its release is limited by downstream acceptance.
                 ObjectKind::FluidTank => f64::INFINITY,
                 ObjectKind::FluidValve => {
                     if fluid.state[position].valve_open {
@@ -4075,22 +4138,50 @@ impl<'m> Simulation<'m> {
                     }
                 }
                 ObjectKind::FluidPipe => {
-                    match &self.model.objects[model_indices[position]].params {
-                        ObjectParams::FluidPipe(params) => {
-                            params.flow_rate.map_or(f64::INFINITY, |rate| rate * dt)
+                    let params = match &self.model.objects[model_indices[position]].params {
+                        ObjectParams::FluidPipe(params) => params.clone(),
+                        _ => {
+                            return f64::INFINITY;
                         }
-                        _ => f64::INFINITY,
+                    };
+                    if !fluid.pressure_mode {
+                        return params.flow_rate.map_or(f64::INFINITY, |rate| rate * dt);
                     }
+                    let (inlet, target) = match outgoing[position].first() {
+                        Some(&link) => (model_pressure[position], pressures[links[link].to]),
+                        None => (model_pressure[position], 0.0),
+                    };
+                    let delta = (inlet - target).max(0.0);
+                    let temperature = params.temperature.unwrap_or(20.0);
+                    let temperature_factor = 1.0 / (1.0 + 0.01 * (temperature - 20.0)).max(1e-6);
+                    let rate = params.flow_rate.unwrap_or(10.0);
+                    let k = rate / (REFERENCE_DENSITY * REFERENCE_GRAVITY);
+                    (k * delta * temperature_factor).min(rate) * dt
                 }
                 _ => 0.0,
             })
             .collect();
+        let _ = inlet_pressures;
+        // A pipe cannot accept more than its downstream can take (no infinite
+        // buffering), so a closed valve also backpressures the pipe.
+        let base_acceptance = acceptance.clone();
+        for position in 0..count {
+            if kinds[position] != ObjectKind::FluidPipe {
+                continue;
+            }
+            let downstream: f64 = outgoing[position]
+                .iter()
+                .map(|&link| base_acceptance[links[link].to])
+                .sum();
+            acceptance[position] = acceptance[position].min(downstream);
+        }
 
         // Time-weighted level uses the level at the start of the step.
         if let Some(fluid) = self.fluid.as_mut() {
             for state in &mut fluid.state {
                 state.level_integral += state.level * dt;
                 state.level_max = state.level_max.max(state.level);
+                state.pressure_integral += state.pressure * dt;
             }
         }
 
@@ -4150,6 +4241,9 @@ impl<'m> Simulation<'m> {
                         state.inflow += accepted;
                         state.overflow += overflow;
                         state.throughput += sent;
+                        let density = params.density.unwrap_or(REFERENCE_DENSITY);
+                        let gravity = params.gravity.unwrap_or(REFERENCE_GRAVITY);
+                        state.pressure = density * gravity * state.level;
                         fluid.total_overflow += overflow;
                     }
                 }
@@ -4181,10 +4275,30 @@ impl<'m> Simulation<'m> {
                         let state = &mut fluid.state[position];
                         state.inflow += entering;
                         state.throughput += sent;
-                        // The valve latches closed when the pressure (incoming
-                        // flow rate) drops below the threshold; upstream then
-                        // backs up instead of the valve discarding volume.
-                        if was_open && entering > EPS {
+                        state.pressure = inlet_pressures[position];
+                        // Hysteresis pressure control (B5): close below
+                        // pressure_close, reopen above pressure_open. Legacy
+                        // pressure_threshold keeps the flow-rate latch.
+                        if let (Some(open), Some(close)) =
+                            (params.pressure_open, params.pressure_close)
+                        {
+                            let inlet = inlet_pressures[position];
+                            let was_open = state.valve_open;
+                            state.valve_open = if was_open {
+                                params.open && inlet >= close - EPS
+                            } else {
+                                params.open && inlet >= open - EPS
+                            };
+                            if was_open != state.valve_open {
+                                let label = if state.valve_open {
+                                    "fluid_valve_open"
+                                } else {
+                                    "fluid_valve_close"
+                                };
+                                let index = model_indices[position];
+                                self.record_object_trace(label, index);
+                            }
+                        } else if was_open && entering > EPS {
                             state.valve_open = params.open
                                 && params
                                     .pressure_threshold
@@ -4238,6 +4352,7 @@ impl<'m> Simulation<'m> {
                         state.throughput += sent;
                         state.level = state.buffer.iter().map(|(_, volume)| volume).sum();
                         state.level_max = state.level_max.max(state.level);
+                        state.pressure = pressures[position];
                     }
                 }
                 ObjectKind::FluidSink => {
@@ -4289,7 +4404,7 @@ impl<'m> Simulation<'m> {
                     level_max: state.level_max,
                     throughput: state.throughput / denom,
                     overflow: state.overflow,
-                    pressure: state.inflow / denom,
+                    pressure: state.pressure_integral / denom,
                 }
             })
             .collect();
@@ -4834,6 +4949,11 @@ impl<'m> Simulation<'m> {
         let dwell = self.transport_dwell(transporter);
         let load = self.transport_load_time(transporter);
         let travel = self.transport_leg_travel(transporter, requester);
+        let pickup_distance =
+            self.transport_pickup_travel(transporter) * self.transport_speed(transporter);
+        if self.agv_mid_task_charge(transporter, requester, pickup_distance)? {
+            return Ok(());
+        }
         self.schedule(
             self.now + dwell + load + travel,
             EventKind::TransportArrive(transporter, requester),
@@ -4841,11 +4961,76 @@ impl<'m> Simulation<'m> {
         Ok(())
     }
 
+    /// B6/B29: consume battery for a leg; when empty, stop in place and charge,
+    /// then resume the pickup leg (no teleporting to the charger).
+    fn agv_mid_task_charge(
+        &mut self,
+        transporter: usize,
+        requester: usize,
+        distance: f64,
+    ) -> Result<bool, SimError> {
+        if self.objects[transporter].kind != ObjectKind::Agv {
+            return Ok(false);
+        }
+        let Some(capacity) = self.agv_battery_capacity(transporter) else {
+            return Ok(false);
+        };
+        let consumption = self.agv_consumption(transporter);
+        let needed = consumption * distance;
+        let battery = self.objects[transporter].battery.unwrap_or(capacity);
+        if battery >= needed - EPS {
+            self.objects[transporter].battery = Some((battery - needed).max(0.0));
+            self.objects[transporter].task_distance =
+                (self.objects[transporter].task_distance - distance).max(0.0);
+            return Ok(false);
+        }
+        self.objects[transporter].battery = Some(0.0);
+        self.record_object_trace("agv_charge", transporter);
+        let distribution = match &self.model.objects[transporter].params {
+            ObjectParams::Agv(params) => params.charge_time.clone(),
+            _ => Distribution::Constant { value: 0.0 },
+        };
+        let charge = self.sample(&distribution).max(0.0);
+        self.schedule(
+            self.now + charge,
+            EventKind::TransportResume(transporter, requester),
+        );
+        Ok(true)
+    }
+
+    fn handle_transport_resume(
+        &mut self,
+        transporter: usize,
+        requester: usize,
+    ) -> Result<(), SimError> {
+        if let Some(capacity) = self.agv_battery_capacity(transporter) {
+            self.objects[transporter].battery = Some(capacity);
+        }
+        self.handle_transport_pickup(transporter, requester)
+    }
+
     fn handle_transport_arrive(
         &mut self,
         transporter: usize,
         requester: usize,
     ) -> Result<(), SimError> {
+        if self.objects[transporter].kind == ObjectKind::Agv {
+            let busy_here = self.objects.iter().enumerate().any(|(index, object)| {
+                index != transporter
+                    && object.kind == ObjectKind::Agv
+                    && object.tasks > 0
+                    && distance(object.position, self.objects[requester].position) <= EPS
+            });
+            if busy_here {
+                // Node occupied: queue outside the node and retry (avoids
+                // entering the same station simultaneously / head-on deadlocks).
+                self.schedule(
+                    self.now + 0.5,
+                    EventKind::TransportArrive(transporter, requester),
+                );
+                return Ok(());
+            }
+        }
         self.objects[transporter].position = self.objects[requester].position;
         self.objects[transporter].z = self.objects[requester].z;
         let dwell = self.transport_dwell(transporter);
@@ -4903,11 +5088,44 @@ impl<'m> Simulation<'m> {
         (1.0 + 0.1 * peers as f64).recip().max(0.5)
     }
 
+    /// B6 density/avoidance: neighbours in the 8 surrounding cells slow a
+    /// walker (15% each), another person in the same cell waits (50%).
+    fn person_density_factor(&self, person: usize) -> f64 {
+        let Some(grid) = self.model.grid.as_ref() else {
+            return 1.0;
+        };
+        let size = grid.cell_size.max(EPS);
+        let cell = |point: [f64; 2]| {
+            (
+                (point[0] / size).floor() as i32,
+                (point[1] / size).floor() as i32,
+            )
+        };
+        let here = cell(self.objects[person].position);
+        let mut neighbors: f64 = 0.0;
+        let mut same: f64 = 0.0;
+        for (index, object) in self.objects.iter().enumerate() {
+            if index == person || object.kind != ObjectKind::Person {
+                continue;
+            }
+            let other = cell(object.position);
+            let distance = (other.0 - here.0).abs().max((other.1 - here.1).abs());
+            if distance == 0 {
+                same += 1.0;
+            } else if distance == 1 {
+                neighbors += 1.0;
+            }
+        }
+        (1.0 / (1.0 + 0.15 * neighbors + 0.5 * same)).max(0.4)
+    }
+
     fn transport_speed(&self, transporter: usize) -> f64 {
         match &self.model.objects[transporter].params {
             ObjectParams::Transporter(params) => params.speed.max(EPS),
             ObjectParams::Person(params) => {
-                params.speed.max(EPS) * self.person_congestion(transporter)
+                params.speed.max(EPS)
+                    * self.person_congestion(transporter)
+                    * self.person_density_factor(transporter)
             }
             ObjectParams::Agv(params) => params.speed.max(EPS),
             ObjectParams::Elevator(params) => params.speed.max(EPS),
@@ -6308,6 +6526,11 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
             "agv_charged",
             Some(("executor", *executor as f64)),
         ),
+        EventKind::TransportResume(executor, requester) => (
+            Some(*executor),
+            "agv_resume",
+            Some(("requester", *requester as f64)),
+        ),
         EventKind::ResetStats => (None, "reset_stats", None),
     }
 }
@@ -6489,25 +6712,49 @@ fn grid_distance(grid: &Grid, from: [f64; 2], to: [f64; 2]) -> Option<f64> {
     if blocked.contains(&start) || blocked.contains(&goal) {
         return None;
     }
-    let mut queue = VecDeque::from([(start, 0u32)]);
-    let mut seen = std::collections::HashSet::from([start]);
-    while let Some(((x, y), steps)) = queue.pop_front() {
+    // Dijkstra with 8-neighbour moves: straight 1000, diagonal 1414 units.
+    let mut best: std::collections::HashMap<(i32, i32), u64> = std::collections::HashMap::new();
+    let mut heap = std::collections::BinaryHeap::new();
+    best.insert(start, 0);
+    heap.push(std::cmp::Reverse((0u64, start)));
+    while let Some(std::cmp::Reverse((cost, (x, y)))) = heap.pop() {
         if (x, y) == goal {
-            return Some(f64::from(steps) * size);
+            return Some(cost as f64 / 1000.0 * size);
         }
-        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+        if best.get(&(x, y)).is_some_and(|&known| cost > known) {
+            continue;
+        }
+        for (dx, dy) in [
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
+            (1, 1),
+            (1, -1),
+            (-1, 1),
+            (-1, -1),
+        ] {
             let next = (x + dx, y + dy);
             if next.0 < 0
                 || next.1 < 0
                 || next.0 >= grid.width as i32
                 || next.1 >= grid.height as i32
                 || blocked.contains(&next)
-                || seen.contains(&next)
             {
                 continue;
             }
-            seen.insert(next);
-            queue.push_back((next, steps + 1));
+            if dx != 0
+                && dy != 0
+                && (blocked.contains(&(x + dx, y)) || blocked.contains(&(x, y + dy)))
+            {
+                continue;
+            }
+            let step = if dx != 0 && dy != 0 { 1414 } else { 1000 };
+            let next_cost = cost + step;
+            if best.get(&next).is_none_or(|&known| next_cost < known) {
+                best.insert(next, next_cost);
+                heap.push(std::cmp::Reverse((next_cost, next)));
+            }
         }
     }
     None
@@ -6870,6 +7117,14 @@ fn build_fluid_runtime(model: &Model) -> Option<FluidRuntime> {
         links,
         outgoing,
         order,
+        pressure_mode: model.objects.iter().any(|object| match &object.params {
+            ObjectParams::FluidTank(params) => params.density.is_some() || params.gravity.is_some(),
+            ObjectParams::FluidValve(params) => {
+                params.pressure_open.is_some() || params.pressure_close.is_some()
+            }
+            ObjectParams::FluidPipe(params) => params.temperature.is_some(),
+            _ => false,
+        }),
         step: model.fluid_step.unwrap_or(0.1).max(EPS),
         last_time: 0.0,
         total_inflow: 0.0,

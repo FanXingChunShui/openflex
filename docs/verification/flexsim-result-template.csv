@@ -1,0 +1,24 @@
+# FlexSim / 外部结果对照 CSV 模板
+#
+# 用法：把下面的数据替换成你在 FlexSim（或教材/解析解）里得到的数值，
+# 保存成 docs/verification/data/flexsim-<model>-<date>.csv，然后：
+#
+#   scripts/compare-flexsim.sh --report /tmp/of-report/report.json \
+#     --csv docs/verification/data/flexsim-mm1-<date>.csv --tolerance 0.05
+#
+# 列说明（顺序固定，表头可选）：
+#   object  模型里的对象名（与 .ofm 的 name 完全一致）；整次运行的计数器写 @model
+#   metric  报告字段：utilization / avg_content / avg_stay_time / input_count /
+#           output_count / throughput / max_content / down_fraction …
+#   value   数值；百分比可以写 "80%"（会自动除以 100），不要写千分位逗号
+#
+# 注意：
+#   - 这里的数值是 M/M/1 的公开解析解，仅用于演示模板格式；真实对照请替换。
+#   - 对象名必须与 .ofm 一致；FlexSim 里的名字如果不同，先在 CSV 里改名。
+#   - 一个 CSV 只放一个模型的指标；不同模型/停止时间请分开文件。
+object,metric,value
+Proc1,utilization,0.80
+Queue1,avg_content,3.2
+Queue1,avg_stay_time,16.0
+Proc1,avg_stay_time,4.0
+Proc1,throughput,0.20

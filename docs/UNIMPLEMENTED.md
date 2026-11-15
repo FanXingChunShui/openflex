@@ -8,9 +8,9 @@
 
 | # | 功能 | 现状 | 缺口 | 工作量 |
 |---|---|---|---|---|
-| 1 | **Fluid 真实压力/温度/密度** | ✅ 入口流量近似压力/阈值开关；**背压**（阀关闭时上游 tank 只接收不排放，液位上升并计溢流；pipe 延迟缓冲并保留在途量）；报告含 `pressure`（入口流量均值）；固定步长 | 无温度/密度/多相流、无泵/阀特性曲线、无真实压力传播/管满背压 | L |
-| 2 | **Person 人群模型** | `grid` 4 邻接 A* + 全局速度折减（每忙碌 person -10%，最低 50%） | 无对角/8 邻接、无个体避让/排队、无动态障碍、无楼梯/电梯换乘、无密度场/社会力模型 | L |
-| 3 | **AGV 交通控制** | transporter alias + 电池（任务完成后扣电） | 无途中耗尽、无充电桩容量/排队、无交通管制/死锁避免、不搬运 flow item（只做操作员任务） | L |
+| 1 | **Fluid 真实压力/温度/密度** | ✅ 压差驱动 pipe 流量（`flow = k·Δp`，`k` 由 `flow_rate` 标定）、tank `p=ρ·g·h`（density/gravity 参数）、valve 压差滞回 `pressure_open/close` 自动重开、pipe `temperature` 黏度修正、背压与 `pressure` 报告；示例 fluid-pressure/fluid-backpressure | 无多相流/泵与阀特性曲线、无管满/可压缩效应 | L |
+| 2 | **Person 人群模型** | ✅ `grid` 8 邻接 Dijkstra（对角 √2、禁切角）、局部密度（邻格 -15%、同格 -50%，下限 40%）、全局速度折减；示例 person-avoidance/person-grid | 无个体路径重规划/排队避让、无动态障碍、无楼梯/电梯换乘、无社会力模型 | L |
+| 3 | **AGV 交通控制** | transporter alias + 电池；✅ 取货段途中耗尽就地停车充电并 `TransportResume` 续跑、同节点占用等待（0.5 步重试）；示例 agv-traffic/agv-battery | 无单向路网边/路网节点图、无充电桩容量/排队、无完整死锁避免、不搬运 flow item | L |
 | 4 | **电梯门控** | 垂直运输、停靠、召唤/方向优先、capacity=并发任务数 | 无门状态机/超载/召唤按钮/井道冲突/多轿厢 | M |
 | 5 | **Conveyor 曲线与完整合流** | 直线带、PhotoEye/Station/Join（入口轮转）；✅ 可选 `curve: {radius, angle}`，按弧长计入行程时间（速度不变） | 无 3D 转弯几何/多段曲线/斜坡、无 Join 的 slug/gap 精细策略、无 Merge Controller、无电机/转盘/Transfers、PhotoEye 无遮挡持续状态/计数 | L |
 | 6 | **Rack 货位精细放置** | floor/gravity/push_back/drive_in 的顺序与容量 | 无货位/巷道坐标、无按 SKU/批次取货策略、无最小滞留时间（Storage Object 语义） | M |
@@ -35,12 +35,12 @@
 
 | # | 功能 | 现状 | 缺口 | 工作量 |
 |---|---|---|---|---|
-| 18 | **交互式运行控制** | CLI 批量运行；studio 有 Run 与动画播放 | 无逐事件步进/断点/暂停-恢复时钟、无实时速度控制 | M |
+| 18 | **交互式运行控制** | Studio 时间步进/对象断点/Reset、动画播放 | 无逐事件单步/trace 回放/实时时钟速度 | S |
 | 19 | **检查点多复现/续跑 trace** | 单复现快照；trace 不随续跑 | 多复现检查点、续跑段 trace、无限定时器以 null 存取的完整语义 | S–M |
 | 20 | **统计高级方法** | 均值/标准差/t 区间/Little 检查 | 无批均值法/方差缩减/自相关处理、无对象级时间序列导出（只有 replications.csv） | M |
-| 21 | **Experimenter UI** | CLI `experiment` + `optimize` | Studio 无实验界面；无场景对比图表 | M |
+| 21 | **Experimenter UI** | CLI `experiment` + Studio Experimenter（场景×复现对比表） | 无场景对比图表/参数选择器 | S |
 | 22 | **OptQuest 等价优化** | `optimize` 网格/确定性随机搜索（throughput/WIP/利用率） | 无贝叶斯/遗传/多目标优化、无约束优化、无自动停止规则 | L |
-| 23 | **Dashboard/图表** | 报告 Markdown/CSV + studio 柱状图 | 无完整 Dashboard/模板/图表库 | M |
+| 23 | **Dashboard/图表** | Studio 三联 Dashboard（吞吐/利用率/WIP）+ PNG 导出 | 无时间序列/模板/图表库 | S |
 
 ## 4. 文件与互操作
 
@@ -68,7 +68,7 @@
 | 33 | **签名/公证** | 脚本与 CI 可选步骤就绪（secrets 缺失自动跳过） | 无 macOS Developer ID/公证、无 Windows Authenticode、无 GPG 签名的实际密钥 | M（需证书） |
 | 34 | **包管理器/容器发布** | Homebrew/winget/scoop 模板、GHCR workflow 就绪 | 未发布 tap/镜像/清单；Docker 未实际 build | S–M |
 | 35 | **真实 FlexSim 对照** | `compare-flexsim.sh` 双报告模式 + 模板 | 无真实 FlexSim 运行数据（净室边界；需外部提供） | — |
-| 36 | **性能规模** | 约 1.8M events/s（bench）；最大实测约 20 万事件 | 10 万对象/1 亿事件未测；无 CI 性能门槛；并行仅复现级 | M |
+| 36 | **性能规模** | M/M/1 约 1.7M events/s；10k 对象 0.86s；100k 对象 validate 85s/run 272s（超线性 ~n^2.4，见 performance.md） | 需优化对象查找/校验以支撑 10 万对象；无 CI 性能门槛；并行仅复现级 | M |
 | 37 | **CI 质量门槛** | deny/audit/coverage（60% 行覆盖硬门槛）/fuzz 180s/arm64 必跑 | dependabot Actions PR 未合并 | S |
 
 ## 7. 文档与本地化

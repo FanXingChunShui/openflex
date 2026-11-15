@@ -298,10 +298,10 @@ fn person_grid_astar_detours_around_obstacles() {
         seed: 1,
     };
     let (result, trace) = simulate_traced(&grid_model, &config, 0).expect("grid run");
-    // Shortest 4-neighbour detour is 10 cells; at speed 2 the operator arrives
-    // in 5 time units (euclidean would be 4/2 = 2).
+    // 8-neighbour A* detours diagonally around the wall: 4.414 distance units
+    // at speed 2 (euclidean would be 2).
     let loaded = event_times(&trace, "Person1", "operator_loaded");
-    assert_near(loaded[0], 5.0, 1e-9, "A* walking time");
+    assert_near(loaded[0], 4.414, 1e-3, "A* walking time");
     assert_eq!(result.items_completed, 1);
 
     let plain = include_str!("../../../examples/objects/person-grid.ofm")
@@ -358,5 +358,50 @@ fn person_congestion_slows_down_parallel_walkers() {
     .expect("two-person run");
     // Both walkers are busy (10-cell detour / (2 / 1.1)).
     let loaded = event_times(&trace, "Person1", "operator_loaded");
-    assert_near(loaded[0], 5.5, 1e-6, "congested walking time");
+    assert_near(loaded[0], 7.2831, 1e-3, "congested walking time");
+}
+
+#[test]
+fn person_avoidance_uses_diagonal_moves() {
+    let model = model(include_str!(
+        "../../../examples/objects/person-avoidance.ofm"
+    ));
+    let (_, trace) = simulate_traced(
+        &model,
+        &SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        },
+        0,
+    )
+    .expect("run");
+    let loaded = event_times(&trace, "Walker", "operator_loaded");
+    // 4 diagonal steps of sqrt(2) at speed 1.
+    assert_near(
+        loaded[0],
+        4.0 * std::f64::consts::SQRT_2,
+        1e-2,
+        "diagonal walk",
+    );
+}
+
+#[test]
+fn agv_node_occupancy_makes_the_second_wait() {
+    let model = model(include_str!("../../../examples/objects/agv-traffic.ofm"));
+    let (_, trace) = simulate_traced(
+        &model,
+        &SimConfig {
+            stop_time: 60.0,
+            warmup: 0.0,
+            seed: 1,
+        },
+        0,
+    )
+    .expect("run");
+    let a1 = event_times(&trace, "A1", "operator_loaded");
+    let a2 = event_times(&trace, "A2", "operator_loaded");
+    assert_eq!(a1.len(), 1);
+    assert_eq!(a2.len(), 1);
+    assert!(a2[0] > a1[0] + 0.4, "second AGV should wait: {a1:?} {a2:?}");
 }

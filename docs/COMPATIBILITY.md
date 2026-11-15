@@ -30,7 +30,7 @@
 | Time Table | `params.timetable` | ✅ | `{windows:[{start,end}]}`，与 shifts 取交集 |
 | BasicFR / BasicTE | `basic_fr` / `basic_te` | ✅ | 通用固定资源与执行器 |
 | MultiProcessor | `multiprocessor` | ✅ | 多槽并行加工，每槽 setup/process，操作员按忙碌期申请 |
-| Fluid（流体） | `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_pipe` / `fluid_sink` | 🟡 | 固定步长、液位/溢出/吞吐、pipe 延迟与背压、valve 压力阈值（入口流量近似，含闭锁）；无真实压力传播/温度/密度 |
+| Fluid（流体） | `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_pipe` / `fluid_sink` | 🟡 | 固定步长、液位/溢出/吞吐、pipe 延迟与背压、压力场（p=ρgh + Δp 驱动流量）、valve 压力滞回自动重开、pipe 温度黏度修正；无多相/可压缩/泵阀曲线 |
 | People / A* 行走 | `person` | 🟡 | `grid` 4 邻接 A* + 拥堵速度折减；无对角移动/个体避让 |
 | AGV / 交通控制 | `agv` | 🟡 | transporter alias + 电池（容量/耗电/充电）；无交通控制/途中耗尽 |
 | Elevator / 电梯 | `elevator` | 🟡 | 垂直运输、停靠、召唤/方向优先；无门控/超载/井道冲突 |
@@ -73,7 +73,7 @@
 | 置信区间 | 报告 | ✅ | 正态近似 `1.96·se` |
 | OptQuest 优化 | — | ⛔ | 未实现 |
 | Dashboard / 图表 | 报告 + Studio 柱状图 | 🟡 | Studio 有吞吐柱状图；无完整 Dashboard/模板 |
-| 3D 视图 / 模型树 / GUI | `openflex studio` | 🟡 | 本地 Web Studio：Canvas 3D、字段级动态表单、增删对象、Process Flow 块编辑、撤销/重做、运行/动画；无 GPU 渲染 |
+| 3D 视图 / 模型树 / GUI | `openflex studio` | 🟡 | 本地 Web Studio：Canvas 3D、字段级表单、增删对象、Process Flow 块编辑、撤销/重做、时间步进/对象断点、Experimenter、Dashboard（可导出 PNG）；无 GPU 渲染/模型树 |
 | 导出 Excel / 数据库 | CSV / JSON / xlsx | ✅ | `run --xlsx` 输出 Summary/Objects/Replications 三个 sheet |
 
 ## 文件与集成

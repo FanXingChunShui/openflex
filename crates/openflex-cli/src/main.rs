@@ -279,7 +279,7 @@ enum Command {
         #[arg(long, short = 'o', value_name = "FILE")]
         output: Option<PathBuf>,
     },
-    /// Open a local web studio: 3D view, dynamic parameter forms, process-flow editor, undo/redo and run button.
+    /// Open a local web studio: 3D view, parameter/process-flow editors, stepping/breakpoints, experiments, dashboard and run button.
     Studio {
         /// Path to the model file to edit and run.
         model: PathBuf,

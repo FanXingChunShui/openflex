@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.12.0 — 2026-11-15
+
+### 对象与运行时
+
+- **Fluid 压力场**：tank p=ρgh、pipe Δp 驱动流量（flow_rate 标定）、valve `pressure_open/close` 滞回自动重开、
+  pipe 温度黏度修正；`pressure` 报告改为时间平均压力（Pa）。示例 `fluid-pressure.ofm`（19 次关/19 次重开）。
+- **Person**：8 邻接 A*（对角 √2、禁切角）；同格 −50%、邻格每人 −15%、全局每人 −10%（下限 40%）。
+- **AGV**：取货段途中实时扣电、耗尽就地充电后 `TransportResume` 续跑；目标节点占用等待；
+  单向路网/全段扣电/充电桩排队留待下一批。
+
+### Studio
+
+- 时间步进（`POST /api/step`，复用检查点，结果与一次性运行一致）、对象断点、Reset；
+- Experimenter（场景×复现对比表）；Dashboard 三联 Canvas（吞吐/利用率/WIP）与 PNG 导出。
+
+### 工程与发布
+
+- 10 万对象性能基准 `scripts/bench-large-model.sh`（M/M/1 1.7M events/s；100k 对象 272s，超线性已记录）；
+- 文档站骨架（mdBook）、FlexSim 对照采集流程与 CSV 模板；
+- 包管理器清单同步到 v0.11.0（homebrew/winget/scoop，修复 scoop URL 前缀 bug）。
+
+### 验证
+
+- 332 个测试全绿（core 157：golden 10、objects 46、p0 16、process_flow 12、fluid 11、b6 12、script 5）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.12.0 三平台产物发布并 SHA256 校验。
+
 ## v0.11.0 — 2026-11-15
 
 ### 对象与运行时
