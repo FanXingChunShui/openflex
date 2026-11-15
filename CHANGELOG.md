@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.10.0 — 2026-11-15
+
+### FlexScript 脚本执行
+
+- rhai 沙箱脚本在触发器动作、`ByCondition.script_condition`、Process Flow `Decision` 中执行；
+  模型加载时按 source 预编译缓存；可设置标签/类型、发消息、`release_item`、`log`（写 `script_log` trace）；
+  条件约定为把数值标签 `result` 设为正值；错误映射 `SimError::Script` 带对象/触发器位置。
+- 示例 `script-trigger.ofm`（VIP 4 / 普通 5、9 条日志）。
+
+### Person A* 与人群
+
+- `Model.grid`（宽/高/格距/障碍）：Person 4 邻接 A* 寻路（取货/送达/回程），越界或不可达回退 network/欧氏；
+  多个忙碌 person 之间速度折减（每多一人 -10%，最低 50%）。
+- 示例 `person-grid.ofm`：绕墙 10 格 / 速度 2 = 5s（欧氏 2s）。
+
+### Process Flow
+
+- `transfer(from_object)`：从 Queue/Rack 取首个 item 转 token，无 item 时等待唤醒；示例 `process-flow-from-object.ofm`。
+
+### Studio
+
+- 增删对象（自动命名/放置，删除清理 connections 与 params 引用）、Process Flow JSON 编辑与保存、
+  实时重投影（未保存即重绘）、动画回放（速度滑块 + Play/Pause）。
+
+### 验证
+
+- 321 个测试全绿（core 150：golden 10、objects 45、p0 16、process_flow 12、fluid 8、b6 10、script 3 等）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.10.0 三平台产物发布并 SHA256 校验。
+
 ## v0.9.0 — 2026-11-15
 
 ### 对象与运行时

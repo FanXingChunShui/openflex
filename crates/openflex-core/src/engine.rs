@@ -58,7 +58,10 @@
 //!   machine, overload detection, call/scheduling strategy or shaft collision.
 //!   Persons/AGVs move on the plane with straight lines or the optional
 //!   `network`, have no walking grid/A* or crowding, and AGV batteries are not
-//!   modelled (documented alias of the transporter). AGVs with a
+//!   modelled (documented alias of the transporter). Persons use the optional
+//!   model `grid` with 4-neighbour A* (falling back to `network`/euclidean) and
+//!   a simple congestion factor: each other busy person reduces speed by 10%
+//!   (minimum half speed). AGVs with a
 //!   `battery_capacity` spend `consumption_per_distance` per task distance and
 //!   recharge for `charge_time` when empty; the `charger` object is only a
 //!   validated reference and charging happens in place.
@@ -82,15 +85,20 @@
 //!   (`token_create`/`token_delay`/`token_assign`/`token_decision`/`token_sink`).
 //!   Every discrete object can own a `params.process_flow`: its `create` blocks
 //!   run on the model calendar or, with `on_entry`, once per received item, and
-//!   `transfer` blocks (`to_object`) convert a token into a flow item injected
-//!   into another object. `from_object` transfer is not implemented yet.
+//!   `transfer` blocks inject tokens as flow items into another object
+//!   (`to_object`) or pull the first buffered item out of a queue/rack and
+//!   continue as a token (`from_object`).
 //!   The object-free equivalent of the same graph is shown in
 //!   `examples/objects/process-flow-equivalent.ofm`.
 //! * An item leaving an object runs that object's `on_exit` trigger before the
 //!   receiver's `on_entry`/`on_receive` logic (Processor included); the sink
 //!   still runs its own `on_exit` when it destroys the item.
-//! * `Action::Script` is rejected by the engine until the script runtime is
-//!   wired in (`SimError::Config`); the model layer compiles scripts already.
+//! * `Action::Script` and `script_condition` run through the sandboxed rhai
+//!   layer (D2): model scripts are precompiled once per source, action outcomes
+//!   merge labels / item type / messages / release and `log` lines become
+//!   `script_log` trace events. Script conditions are truthy when they set the
+//!   numeric label `result` to a positive value; errors map to
+//!   `SimError::Script` with the object/trigger location.
 //! * The fluid family (B5) is incompressible: there is no pressure, temperature,
 //!   density or pipe delay. Integration uses a fixed step (`Model.fluid_step`,
 //!   default 0.1) that only exists while fluid objects are present; only steps
@@ -116,8 +124,8 @@ use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 
 use openflex_model::{
     Action, ArrivalStyle, CombinerMode, ConditionalPort, Distribution, DowntimeWindow, EvalContext,
-    FlowBlockKind, Model, NetworkEdge, Object, ObjectKind, ObjectParams, PortStrategy, ProcessFlow,
-    PullParams, QueueOrder, RackType, SeparateMode, SimTrigger, TransferMode, Value,
+    FlowBlockKind, Grid, Model, NetworkEdge, Object, ObjectKind, ObjectParams, PortStrategy,
+    ProcessFlow, PullParams, QueueOrder, RackType, SeparateMode, SimTrigger, TransferMode, Value,
 };
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
@@ -127,6 +135,7 @@ use serde::{Deserialize, Serialize};
 use crate::checkpoint::{CHECKPOINT_FORMAT_VERSION, Checkpoint};
 use crate::conveyor::Belt;
 use crate::error::SimError;
+use crate::script::{CompiledScript, ScriptContext, ScriptEngine, ScriptError};
 use crate::shifts;
 use crate::stats::{
     ObjectStats, ReplicationFlow, ReplicationFlowBlock, ReplicationFluid, ReplicationFluidObject,
@@ -1200,12 +1209,18 @@ struct Simulation<'m> {
     event_count: u64,
     /// B7: the optional process-flow token runtime (model and object flows).
     process_flow: Option<FlowRuntime>,
+    /// Precompiled FlexScript sources, keyed by their source text (D2).
+    scripts: HashMap<String, CompiledScript>,
+    /// Trigger location of the actions currently being applied (script errors).
+    action_location: String,
     /// Static definitions of every flow block, by global block index.
     flow_defs: Vec<FlowBlockMeta>,
     /// Transfer blocks that inject items into an object, by target object.
     flow_transfer_targets: Vec<Vec<usize>>,
     /// `on_entry` create blocks, by owning object.
     flow_entry_blocks: Vec<Vec<usize>>,
+    /// `from_object` transfer blocks waiting for items, by source object.
+    flow_pull_sources: Vec<Vec<usize>>,
     /// B5: the optional fluid sub-system.
     fluid: Option<FluidRuntime>,
     /// B12: recorded events when tracing is enabled.
@@ -1289,9 +1304,11 @@ impl<'m> Simulation<'m> {
             }
         }
 
+        let scripts = compile_model_scripts(model)?;
+
         // B7: resolve model-level and object-level process flows into one
         // global block graph (events identify blocks by their global index).
-        let (process_flow, flow_defs, flow_transfer_targets, flow_entry_blocks) =
+        let (process_flow, flow_defs, flow_transfer_targets, flow_entry_blocks, flow_pull_sources) =
             build_process_flows(model, &by_name);
 
         let fluid = build_fluid_runtime(model);
@@ -1316,9 +1333,12 @@ impl<'m> Simulation<'m> {
             stats_completed: 0,
             event_count: 0,
             process_flow,
+            scripts,
+            action_location: String::new(),
             flow_defs,
             flow_transfer_targets,
             flow_entry_blocks,
+            flow_pull_sources,
             fluid,
             trace: if trace {
                 Some(TraceLog::default())
@@ -2293,6 +2313,7 @@ impl<'m> Simulation<'m> {
         };
         let actions = self.trigger_actions(source, SimTrigger::OnCreate);
         if !actions.is_empty() {
+            self.action_location = format!("{}.on_create", self.objects[source].name);
             self.apply_actions(source, &mut item, actions)?;
         }
         Ok(item)
@@ -2537,7 +2558,13 @@ impl<'m> Simulation<'m> {
                 let name = self.objects[from].name.clone();
                 let mut chosen = None;
                 for condition in &conditions {
-                    let matched = {
+                    let matched = if let Some(script) = &condition.script_condition {
+                        self.eval_script_condition(
+                            script,
+                            &format!("{name} routing condition"),
+                            Some(item),
+                        )?
+                    } else {
                         let context = ExprContext::new(self, Some(item));
                         condition
                             .condition
@@ -2546,8 +2573,9 @@ impl<'m> Simulation<'m> {
                                 location: format!("{name} routing condition"),
                                 detail: err.to_string(),
                             })?
+                            .as_bool()
                     };
-                    if matched.as_bool() {
+                    if matched {
                         chosen = outputs.get(condition.port as usize).copied();
                         break;
                     }
@@ -2605,6 +2633,7 @@ impl<'m> Simulation<'m> {
         // before the receiving object's OnEntry/OnReceive logic (A10-on_exit).
         let exit_actions = self.trigger_actions(from, SimTrigger::OnExit);
         if !exit_actions.is_empty() {
+            self.action_location = format!("{}.on_exit", self.objects[from].name);
             self.apply_actions(from, &mut item, exit_actions)?;
         }
         self.receive_item(target, to_port, item)
@@ -2626,10 +2655,12 @@ impl<'m> Simulation<'m> {
         // Trigger the receiving object's OnEntry/OnReceive logic.
         let actions = self.trigger_actions(target, SimTrigger::OnEntry);
         if !actions.is_empty() {
+            self.action_location = format!("{}.on_entry", self.objects[target].name);
             self.apply_actions(target, &mut item, actions)?;
         }
         let receive_actions = self.trigger_actions(target, SimTrigger::OnReceive);
         if !receive_actions.is_empty() {
+            self.action_location = format!("{}.on_receive", self.objects[target].name);
             self.apply_actions(target, &mut item, receive_actions)?;
         }
         item.entry_time = self.now;
@@ -2747,6 +2778,14 @@ impl<'m> Simulation<'m> {
         // B7: transfer blocks waiting to inject an item into this object.
         let blocks = self
             .flow_transfer_targets
+            .get(index)
+            .cloned()
+            .unwrap_or_default();
+        for block in blocks {
+            self.flow_schedule_advance(block);
+        }
+        let blocks = self
+            .flow_pull_sources
             .get(index)
             .cloned()
             .unwrap_or_default();
@@ -2962,7 +3001,10 @@ impl<'m> Simulation<'m> {
             Some(PortStrategy::ByCondition { conditions }) => {
                 let mut order = Vec::new();
                 for condition in conditions {
-                    let matched = {
+                    let matched = if let Some(script) = &condition.script_condition {
+                        self.eval_script_condition(script, "pull routing condition", None)
+                            .unwrap_or(false)
+                    } else {
                         let context = ExprContext::new(self, None);
                         condition
                             .condition
@@ -3679,8 +3721,34 @@ impl<'m> Simulation<'m> {
                     self.record_token_trace("token_sink", block, token.id);
                 }
                 FlowBlockKind::Transfer(params) => {
-                    if params.mode != TransferMode::ToObject {
-                        break;
+                    if params.mode == TransferMode::FromObject {
+                        let Some(entry) = self.flow_take_token(block, index) else {
+                            break;
+                        };
+                        let mut token = entry.token;
+                        let Some(&source) = self.by_name.get(&params.object) else {
+                            break;
+                        };
+                        let Some(item) = self.objects[source].take_content(now, 0) else {
+                            // No item to pull yet: keep the token waiting and
+                            // retry when the source receives something.
+                            self.flow_add_token(block, token, None);
+                            break;
+                        };
+                        let stay = now - item.entry_time;
+                        {
+                            let state = &mut self.objects[source];
+                            state.acc.output += 1;
+                            state.acc.stay_sum += stay;
+                            state.acc.stay_count += 1;
+                        }
+                        token.item_type = item.item_type;
+                        token.labels = item.labels.clone();
+                        token.created = item.created;
+                        token.entry_time = now;
+                        self.record_token_trace("token_from_object", block, token.id);
+                        self.flow_route(block, token)?;
+                        continue;
                     }
                     let Some(&target) = self.by_name.get(&params.object) else {
                         break;
@@ -3823,16 +3891,20 @@ impl<'m> Simulation<'m> {
         conditions: &[ConditionalPort],
     ) -> Result<Option<u32>, SimError> {
         for condition in conditions {
-            let context = ExprContext::new(self, Some(token));
-            let matched =
+            let matched = if let Some(script) = &condition.script_condition {
+                self.eval_script_condition(script, "process flow decision", Some(token))?
+            } else {
+                let context = ExprContext::new(self, Some(token));
                 condition
                     .condition
                     .eval(&context)
                     .map_err(|err| SimError::Expression {
                         location: "process flow decision".into(),
                         detail: err.to_string(),
-                    })?;
-            if matched.as_bool() {
+                    })?
+                    .as_bool()
+            };
+            if matched {
                 return Ok(Some(condition.port));
             }
         }
@@ -4621,6 +4693,15 @@ impl<'m> Simulation<'m> {
         };
         if self.transport_is_elevator(transporter) {
             (self.objects[transporter].z - self.objects[home].z).abs() / speed
+        } else if self.objects[transporter].kind == ObjectKind::Person
+            && let Some(grid) = self.model.grid.as_ref()
+            && let Some(distance) = grid_distance(
+                grid,
+                self.objects[transporter].position,
+                self.objects[home].position,
+            )
+        {
+            distance / speed
         } else {
             distance(
                 self.objects[transporter].position,
@@ -4706,6 +4787,13 @@ impl<'m> Simulation<'m> {
         if self.transport_is_elevator(transporter) {
             return (self.objects[from].z - self.objects[to].z).abs();
         }
+        if self.objects[transporter].kind == ObjectKind::Person
+            && let Some(grid) = self.model.grid.as_ref()
+            && let Some(distance) =
+                grid_distance(grid, self.objects[from].position, self.objects[to].position)
+        {
+            return distance;
+        }
         let edges: Vec<NetworkEdge> = match &self.model.objects[transporter].params {
             ObjectParams::Transporter(params) | ObjectParams::Person(params) => {
                 params.network.clone()
@@ -4722,10 +4810,25 @@ impl<'m> Simulation<'m> {
         distance(self.objects[from].position, self.objects[to].position)
     }
 
+    /// B6 congestion: every other person currently on a task slows this one by
+    /// 10% (down to half speed).
+    fn person_congestion(&self, person: usize) -> f64 {
+        let peers = self
+            .objects
+            .iter()
+            .enumerate()
+            .filter(|(index, object)| {
+                *index != person && object.kind == ObjectKind::Person && object.tasks > 0
+            })
+            .count();
+        (1.0 + 0.1 * peers as f64).recip().max(0.5)
+    }
+
     fn transport_speed(&self, transporter: usize) -> f64 {
         match &self.model.objects[transporter].params {
-            ObjectParams::Transporter(params) | ObjectParams::Person(params) => {
-                params.speed.max(EPS)
+            ObjectParams::Transporter(params) => params.speed.max(EPS),
+            ObjectParams::Person(params) => {
+                params.speed.max(EPS) * self.person_congestion(transporter)
             }
             ObjectParams::Agv(params) => params.speed.max(EPS),
             ObjectParams::Elevator(params) => params.speed.max(EPS),
@@ -4741,6 +4844,26 @@ impl<'m> Simulation<'m> {
             None if self.transport_is_elevator(transporter) => {
                 (self.objects[transporter].z - self.objects[requester].z).abs() / speed
             }
+            None if self.objects[transporter].kind == ObjectKind::Person => self
+                .model
+                .grid
+                .as_ref()
+                .and_then(|grid| {
+                    grid_distance(
+                        grid,
+                        self.objects[transporter].position,
+                        self.objects[requester].position,
+                    )
+                })
+                .map_or_else(
+                    || {
+                        distance(
+                            self.objects[transporter].position,
+                            self.objects[requester].position,
+                        ) / speed
+                    },
+                    |grid_distance| grid_distance / speed,
+                ),
             None => {
                 distance(
                     self.objects[transporter].position,
@@ -5135,6 +5258,7 @@ impl<'m> Simulation<'m> {
         let Some(mut item) = self.objects[index].belt_items.get(item_index).cloned() else {
             return Ok(());
         };
+        self.action_location = format!("{}.on_photo_eye", self.objects[index].name);
         self.apply_actions(index, &mut item, actions)?;
         if let Some(slot) = self.objects[index].belt_items.get_mut(item_index) {
             *slot = item;
@@ -5754,6 +5878,7 @@ impl<'m> Simulation<'m> {
         if actions.is_empty() {
             return Ok(());
         }
+        self.action_location = format!("{}.{}", self.objects[index].name, trigger.as_str());
         self.apply_actions(index, item, actions)
     }
 
@@ -5800,10 +5925,62 @@ impl<'m> Simulation<'m> {
                     // Removing an item outside the normal flow is only safe at
                     // receive time; the item is simply dropped here.
                 }
-                Action::Script { .. } => {
-                    return Err(SimError::Config(
-                        "script actions are not executed by the engine yet".into(),
-                    ));
+                Action::Script { source } => {
+                    let location = if self.action_location.is_empty() {
+                        format!("{object_name} script action")
+                    } else {
+                        format!("{} script action", self.action_location)
+                    };
+                    let script =
+                        self.scripts
+                            .get(&source)
+                            .cloned()
+                            .ok_or_else(|| SimError::Script {
+                                location: location.clone(),
+                                source: ScriptError::Compile(
+                                    "script source was not precompiled with the model".into(),
+                                ),
+                            })?;
+                    let mut context = ScriptContext::new(self.now, item.item_type, item.id);
+                    context.labels = item.labels.clone();
+                    let outcome = script.run(&mut context).map_err(|error| SimError::Script {
+                        location: location.clone(),
+                        source: error,
+                    })?;
+                    item.labels = outcome.labels;
+                    if let Some(item_type) = outcome.item_type {
+                        item.item_type = item_type;
+                    }
+                    for message in &outcome.messages {
+                        if let Some(&target) = self.by_name.get(&message.target) {
+                            self.schedule(
+                                self.now + message.delay.max(0.0),
+                                EventKind::Message(target),
+                            );
+                        }
+                    }
+                    if outcome.release_item {
+                        // Same semantics as `release_item` (A4): lift the hold
+                        // and retry the delivery in this instant.
+                        self.objects[index].hold_release = false;
+                        if self.has_held_item(index) {
+                            self.objects[index].release_bypass = true;
+                        }
+                        self.schedule(self.now, EventKind::Flow(index));
+                    }
+                    for log in &outcome.logs {
+                        if self.trace.is_some() {
+                            let time = self.now;
+                            let seq = self.next_seq;
+                            self.next_seq += 1;
+                            if let Some(trace) = self.trace.as_mut() {
+                                trace.push(
+                                    TraceEvent::new(time, seq, "script_log", object_name.clone())
+                                        .with_message(log.clone()),
+                                );
+                            }
+                        }
+                    }
                 }
                 Action::ReleaseItem => {
                     // A4: clear the hold and retry the delivery in the same
@@ -5832,6 +6009,33 @@ impl<'m> Simulation<'m> {
             location: format!("{object_name} trigger"),
             detail: err.to_string(),
         })
+    }
+
+    /// Evaluate a sandboxed script condition (truthy when it sets the numeric
+    /// label `result` to a positive value).
+    fn eval_script_condition(
+        &self,
+        source: &str,
+        location: &str,
+        item: Option<&FlowItem>,
+    ) -> Result<bool, SimError> {
+        let script = self.scripts.get(source).ok_or_else(|| SimError::Script {
+            location: location.to_string(),
+            source: ScriptError::Compile("script source was not precompiled with the model".into()),
+        })?;
+        let mut context = ScriptContext::new(
+            self.now,
+            item.map_or(0, |item| item.item_type),
+            item.map_or(0, |item| item.id),
+        );
+        if let Some(item) = item {
+            context.labels = item.labels.clone();
+        }
+        let outcome = script.run(&mut context).map_err(|error| SimError::Script {
+            location: location.to_string(),
+            source: error,
+        })?;
+        Ok(outcome.labels.get("result").copied().unwrap_or(0.0) > 0.0)
     }
 
     // -----------------------------------------------------------------------
@@ -6096,6 +6300,53 @@ fn object_field(sim: &Simulation<'_>, index: usize, field: &str) -> Option<Value
     }
 }
 
+/// A* / BFS distance on a walking grid; `None` when a point is outside the
+/// grid, blocked or unreachable (callers fall back to network/euclidean).
+fn grid_distance(grid: &Grid, from: [f64; 2], to: [f64; 2]) -> Option<f64> {
+    let size = grid.cell_size.max(EPS);
+    let cell = |point: [f64; 2]| -> Option<(i32, i32)> {
+        let x = (point[0] / size).floor() as i32;
+        let y = (point[1] / size).floor() as i32;
+        if x < 0 || y < 0 || x >= grid.width as i32 || y >= grid.height as i32 {
+            None
+        } else {
+            Some((x, y))
+        }
+    };
+    let start = cell(from)?;
+    let goal = cell(to)?;
+    let blocked: std::collections::HashSet<(i32, i32)> = grid
+        .obstacles
+        .iter()
+        .map(|cell| (cell[0], cell[1]))
+        .collect();
+    if blocked.contains(&start) || blocked.contains(&goal) {
+        return None;
+    }
+    let mut queue = VecDeque::from([(start, 0u32)]);
+    let mut seen = std::collections::HashSet::from([start]);
+    while let Some(((x, y), steps)) = queue.pop_front() {
+        if (x, y) == goal {
+            return Some(f64::from(steps) * size);
+        }
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let next = (x + dx, y + dy);
+            if next.0 < 0
+                || next.1 < 0
+                || next.0 >= grid.width as i32
+                || next.1 >= grid.height as i32
+                || blocked.contains(&next)
+                || seen.contains(&next)
+            {
+                continue;
+            }
+            seen.insert(next);
+            queue.push_back((next, steps + 1));
+        }
+    }
+    None
+}
+
 /// Whether an object kind can execute dispatcher tasks (B4/B6).
 fn is_task_executer_kind(kind: ObjectKind) -> bool {
     matches!(
@@ -6172,6 +6423,100 @@ fn distribute_fluid(
     sent
 }
 
+/// Collect every sandboxed script source in the model with a diagnostic
+/// location (D2).
+fn collect_model_scripts(model: &Model) -> Vec<(String, String)> {
+    let mut sources = Vec::new();
+    fn push(sources: &mut Vec<(String, String)>, source: &str, location: String) {
+        if !source.trim().is_empty() {
+            sources.push((source.to_string(), location));
+        }
+    }
+    for object in &model.objects {
+        let triggers = object.params.triggers();
+        let lists = [
+            ("on_create", &triggers.on_create),
+            ("on_entry", &triggers.on_entry),
+            ("on_exit", &triggers.on_exit),
+            ("on_receive", &triggers.on_receive),
+            ("on_message", &triggers.on_message),
+            ("on_breakdown", &triggers.on_breakdown),
+            ("on_repair", &triggers.on_repair),
+            ("on_photo_eye", &triggers.on_photo_eye),
+        ];
+        for (trigger, actions) in lists {
+            for (position, action) in actions.iter().enumerate() {
+                if let Action::Script { source } = action {
+                    push(
+                        &mut sources,
+                        source,
+                        format!("objects.{}.triggers.{trigger}[{position}]", object.name),
+                    );
+                }
+            }
+        }
+    }
+    for connection in &model.connections {
+        if let Some(PortStrategy::ByCondition { conditions }) = &connection.strategy {
+            for (position, condition) in conditions.iter().enumerate() {
+                if let Some(source) = &condition.script_condition {
+                    push(
+                        &mut sources,
+                        source,
+                        format!(
+                            "connections {}->{}.conditions[{position}]",
+                            connection.from, connection.to
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    let flow_scripts = |flow: &ProcessFlow, prefix: &str, sources: &mut Vec<(String, String)>| {
+        for block in &flow.blocks {
+            if let FlowBlockKind::Decision(params) = &block.kind {
+                for (position, condition) in params.conditions.iter().enumerate() {
+                    if let Some(source) = &condition.script_condition {
+                        push(
+                            sources,
+                            source,
+                            format!("{prefix}.blocks.{}.conditions[{position}]", block.id),
+                        );
+                    }
+                }
+            }
+        }
+    };
+    if let Some(flow) = model.process_flow.as_ref() {
+        flow_scripts(flow, "process_flow", &mut sources);
+    }
+    for object in &model.objects {
+        if let Some(flow) = object.params.process_flow() {
+            let prefix = format!("objects.{}.process_flow", object.name);
+            flow_scripts(flow, &prefix, &mut sources);
+        }
+    }
+    sources
+}
+
+/// Precompile every script source of the model once (D2); run errors reference
+/// these cached ASTs.
+fn compile_model_scripts(model: &Model) -> Result<HashMap<String, CompiledScript>, SimError> {
+    let engine = ScriptEngine::new();
+    let mut scripts = HashMap::new();
+    for (source, location) in collect_model_scripts(model) {
+        if scripts.contains_key(&source) {
+            continue;
+        }
+        let compiled = engine.compile(&source).map_err(|error| SimError::Script {
+            location,
+            source: error,
+        })?;
+        scripts.insert(source, compiled);
+    }
+    Ok(scripts)
+}
+
 /// Resolve the model-level and object-level process flows into one graph (B7).
 #[allow(clippy::type_complexity)]
 fn build_process_flows(
@@ -6182,12 +6527,14 @@ fn build_process_flows(
     Vec<FlowBlockMeta>,
     Vec<Vec<usize>>,
     Vec<Vec<usize>>,
+    Vec<Vec<usize>>,
 ) {
     let mut defs: Vec<FlowBlockMeta> = Vec::new();
     let mut connections: Vec<FlowConnRt> = Vec::new();
     let mut outgoing: Vec<Vec<usize>> = Vec::new();
     let mut transfer_targets: Vec<Vec<usize>> = vec![Vec::new(); model.objects.len()];
     let mut entry_blocks: Vec<Vec<usize>> = vec![Vec::new(); model.objects.len()];
+    let mut pull_sources: Vec<Vec<usize>> = vec![Vec::new(); model.objects.len()];
 
     let mut add_flow = |flow: &ProcessFlow, owner: Option<usize>| {
         let base = defs.len();
@@ -6209,6 +6556,11 @@ fn build_process_flows(
                 FlowBlockKind::Transfer(params) if params.mode == TransferMode::ToObject => {
                     if let Some(&target) = by_name.get(params.object.as_str()) {
                         transfer_targets[target].push(global);
+                    }
+                }
+                FlowBlockKind::Transfer(params) if params.mode == TransferMode::FromObject => {
+                    if let Some(&source) = by_name.get(params.object.as_str()) {
+                        pull_sources[source].push(global);
                     }
                 }
                 FlowBlockKind::Create(params) if params.on_entry => {
@@ -6242,7 +6594,7 @@ fn build_process_flows(
     }
 
     if defs.is_empty() {
-        return (None, defs, transfer_targets, entry_blocks);
+        return (None, defs, transfer_targets, entry_blocks, pull_sources);
     }
     let runtime = FlowRuntime {
         blocks: vec![FlowBlockRt::default(); defs.len()],
@@ -6252,7 +6604,13 @@ fn build_process_flows(
         tokens_created: 0,
         tokens_completed: 0,
     };
-    (Some(runtime), defs, transfer_targets, entry_blocks)
+    (
+        Some(runtime),
+        defs,
+        transfer_targets,
+        entry_blocks,
+        pull_sources,
+    )
 }
 
 /// Resolve the fluid sub-graph once at start-up (B5).

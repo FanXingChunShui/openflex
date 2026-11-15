@@ -1,0 +1,27 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "person-grid",
+  "description": "Person A* (B6): a walker detours around a wall on a 5x5 grid (10 cells at speed 2 = 5s)",
+  "time_unit": "seconds",
+  "run": { "stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "grid": { "width": 5, "height": 5, "cell_size": 1.0,
+    "obstacles": [[2, 0], [2, 1], [2, 2], [2, 4]] },
+  "objects": [
+    { "name": "Source1", "kind": "source", "pos": [4, 0], "params": {
+        "interarrival": { "distribution": "constant", "value": 1000.0 },
+        "max_arrivals": 1, "first_arrival": 0.0 } },
+    { "name": "Processor1", "kind": "processor", "pos": [4, 0], "params": {
+        "process_time": { "distribution": "constant", "value": 2.0 },
+        "process_operator": "Dispatcher1" } },
+    { "name": "Sink1", "kind": "sink", "pos": [4, 4], "params": {} },
+    { "name": "Dispatcher1", "kind": "dispatcher", "pos": [0, 0], "params": {} },
+    { "name": "Person1", "kind": "person", "pos": [0, 0], "params": {
+        "speed": 2.0, "home": "Dispatcher1" } }
+  ],
+  "connections": [
+    { "from": "Source1", "to": "Processor1" },
+    { "from": "Processor1", "to": "Sink1" },
+    { "from": "Dispatcher1", "to": "Person1" }
+  ]
+}

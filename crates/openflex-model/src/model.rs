@@ -2442,6 +2442,33 @@ pub struct FlowConnection {
 // Model
 // ---------------------------------------------------------------------------
 
+/// Optional walking grid used by person A* routing (B6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Grid {
+    /// Number of cells along x.
+    pub width: u32,
+    /// Number of cells along y.
+    pub height: u32,
+    /// Size of one cell in layout units (default 1).
+    #[serde(default = "one_f64")]
+    pub cell_size: f64,
+    /// Blocked cells `[x, y]` (4-neighbour movement, no diagonals).
+    #[serde(default)]
+    pub obstacles: Vec<[i32; 2]>,
+}
+
+impl Default for Grid {
+    fn default() -> Self {
+        Self {
+            width: 1,
+            height: 1,
+            cell_size: 1.0,
+            obstacles: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Model {
@@ -2467,6 +2494,9 @@ pub struct Model {
     /// (default 0.1). Ignored by models without fluid objects.
     #[serde(default)]
     pub fluid_step: Option<f64>,
+    /// Optional walking grid for `person` A* routing (B6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid: Option<Grid>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
 }

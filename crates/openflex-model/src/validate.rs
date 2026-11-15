@@ -1130,19 +1130,13 @@ fn validate_process_flow(
                     ));
                 }
             }
-            FlowBlockKind::Transfer(params) => {
-                if matches!(params.mode, crate::model::TransferMode::FromObject) {
-                    issues.push(ValidationIssue::new(
-                        &location,
-                        "from_object transfers are not implemented yet (B7 backlog)",
-                    ));
-                }
-                match model.object(&params.object) {
-                    None => issues.push(ValidationIssue::new(
-                        &location,
-                        format!("transfer target '{}' is unknown", params.object),
-                    )),
-                    Some(target)
+            FlowBlockKind::Transfer(params) => match model.object(&params.object) {
+                None => issues.push(ValidationIssue::new(
+                    &location,
+                    format!("transfer target '{}' is unknown", params.object),
+                )),
+                Some(target) => match params.mode {
+                    crate::model::TransferMode::ToObject
                         if target.kind == ObjectKind::Source
                             || matches!(
                                 target.kind,
@@ -1150,6 +1144,7 @@ fn validate_process_flow(
                                     | ObjectKind::FluidTank
                                     | ObjectKind::FluidValve
                                     | ObjectKind::FluidSink
+                                    | ObjectKind::FluidPipe
                             ) =>
                     {
                         issues.push(ValidationIssue::new(
@@ -1160,9 +1155,26 @@ fn validate_process_flow(
                             ),
                         ));
                     }
-                    Some(_) => {}
-                }
-            }
+                    crate::model::TransferMode::FromObject
+                        if !matches!(target.kind, ObjectKind::Queue | ObjectKind::Rack) =>
+                    {
+                        issues.push(ValidationIssue::new(
+                            &location,
+                            format!(
+                                "from_object transfer source '{}' must be a queue or rack",
+                                params.object
+                            ),
+                        ));
+                    }
+                    crate::model::TransferMode::FromObject if outgoing[position].len() != 1 => {
+                        issues.push(ValidationIssue::new(
+                            &location,
+                            "a from_object transfer needs exactly one outgoing connection",
+                        ));
+                    }
+                    _ => {}
+                },
+            },
         }
     }
 
@@ -1405,6 +1417,7 @@ mod tests {
             experiments: Vec::new(),
             process_flow: None,
             fluid_step: None,
+            grid: None,
             metadata: Default::default(),
         }
     }

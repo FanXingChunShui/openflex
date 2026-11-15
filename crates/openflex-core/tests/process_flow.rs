@@ -309,3 +309,90 @@ fn invalid_transfer_and_entry_flows_are_rejected() {
     let error = Model::from_json(unknown).expect_err("unknown target");
     assert!(error.to_string().contains("unknown"), "{error}");
 }
+
+#[test]
+fn from_object_transfer_pulls_items_into_tokens() {
+    let model = Model::from_json(include_str!(
+        "../../../examples/objects/process-flow-from-object.ofm"
+    ))
+    .expect("model");
+    let report = run_model(&model).expect("run");
+    // Three source items are pulled out of Queue1 by three tokens.
+    assert_eq!(report.objects["Queue1"].output_count.mean, 3.0);
+    assert_eq!(report.objects["Queue1"].output_count.mean, 3.0);
+    let flow = report.process_flow.as_ref().expect("flow report");
+    assert_eq!(flow.tokens_created, 3.0);
+    assert_eq!(flow.tokens_completed, 3.0);
+    let pull = flow
+        .blocks
+        .iter()
+        .find(|block| block.id == "Pull1")
+        .expect("pull block");
+    assert_eq!(pull.input_count, 3.0);
+    assert_eq!(pull.output_count, 3.0);
+}
+
+#[test]
+fn from_object_transfer_waits_for_an_item() {
+    let json = r#"{
+      "format": "openflex-model", "version": 1, "name": "from-object-wait",
+      "run": { "stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+      "objects": [
+        { "name": "S", "kind": "source", "params": {
+            "interarrival": { "distribution": "constant", "value": 1000.0 },
+            "max_arrivals": 1, "first_arrival": 10.0 } },
+        { "name": "Q", "kind": "queue", "params": {} },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [{ "from": "S", "to": "Q" }],
+      "process_flow": {
+        "blocks": [
+          { "id": "C", "kind": "create", "max_creations": 1, "first_arrival": 0.0 },
+          { "id": "P", "kind": "transfer", "object": "Q", "mode": "from_object" },
+          { "id": "TS", "kind": "sink" }
+        ],
+        "connections": [
+          { "from": "C", "to": "P" }, { "from": "P", "to": "TS" }
+        ]
+      }
+    }"#;
+    let model = Model::from_json(json).expect("model");
+    let config = SimConfig {
+        stop_time: 100.0,
+        warmup: 0.0,
+        seed: 1,
+    };
+    let (_, trace) = openflex_core::simulate_traced(&model, &config, 0).expect("run");
+    let pulls: Vec<f64> = trace
+        .events
+        .iter()
+        .filter(|event| event.event == "token_from_object")
+        .map(|event| event.time)
+        .collect();
+    assert_eq!(pulls, vec![10.0]);
+}
+
+#[test]
+fn from_object_requires_a_buffer_source() {
+    let json = r#"{
+      "format": "openflex-model", "version": 1, "name": "bad-from-object",
+      "objects": [
+        { "name": "S", "kind": "source", "params": {} },
+        { "name": "P", "kind": "processor", "params": {} },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [{ "from": "S", "to": "P" }, { "from": "P", "to": "K" }],
+      "process_flow": {
+        "blocks": [
+          { "id": "C", "kind": "create", "max_creations": 1 },
+          { "id": "P1", "kind": "transfer", "object": "P", "mode": "from_object" },
+          { "id": "TS", "kind": "sink" }
+        ],
+        "connections": [
+          { "from": "C", "to": "P1" }, { "from": "P1", "to": "TS" }
+        ]
+      }
+    }"#;
+    let error = Model::from_json(json).expect_err("processor source");
+    assert!(error.to_string().contains("queue or rack"), "{error}");
+}

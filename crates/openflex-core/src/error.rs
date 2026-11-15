@@ -9,6 +9,13 @@ pub enum SimError {
     Config(String),
     #[error("expression error at {location}: {detail}")]
     Expression { location: String, detail: String },
+    #[error("script error at {location}: {source}")]
+    Script {
+        /// Object/trigger/route that ran the script.
+        location: String,
+        /// Sandboxed script error (compile, runtime or operation limit).
+        source: crate::script::ScriptError,
+    },
     #[error(
         "simulation exceeded the event limit of {0} events; the model may have a zero-time loop"
     )]

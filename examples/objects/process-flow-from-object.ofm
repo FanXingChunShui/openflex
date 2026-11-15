@@ -1,0 +1,29 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "process-flow-from-object",
+  "description": "B7 from_object transfer: tokens pull items from Queue1 and complete in a token sink",
+  "time_unit": "seconds",
+  "run": { "stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "Source1", "kind": "source", "params": {
+        "interarrival": { "distribution": "constant", "value": 10.0 },
+        "max_arrivals": 3, "first_arrival": 0.0 } },
+    { "name": "Queue1", "kind": "queue", "params": {} },
+    { "name": "Sink1", "kind": "sink", "params": {} }
+  ],
+  "connections": [{ "from": "Source1", "to": "Queue1" }],
+  "process_flow": {
+    "blocks": [
+      { "id": "Create1", "kind": "create", "first_arrival": 5.0,
+        "interarrival": { "distribution": "constant", "value": 10.0 },
+        "max_creations": 3 },
+      { "id": "Pull1", "kind": "transfer", "object": "Queue1", "mode": "from_object" },
+      { "id": "TokenSink", "kind": "sink" }
+    ],
+    "connections": [
+      { "from": "Create1", "to": "Pull1" },
+      { "from": "Pull1", "to": "TokenSink" }
+    ]
+  }
+}

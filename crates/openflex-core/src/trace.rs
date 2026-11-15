@@ -47,6 +47,9 @@ pub struct TraceEvent {
     /// Extra numeric fields (lane index, generation, ...), empty when unused.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub data: BTreeMap<String, f64>,
+    /// Text payload for log-style events (script `log`), empty otherwise.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
 }
 
 impl TraceEvent {
@@ -57,7 +60,14 @@ impl TraceEvent {
             event: event.into(),
             object: object.into(),
             data: BTreeMap::new(),
+            message: String::new(),
         }
+    }
+
+    /// Attach a text payload (builder style, used for script logs).
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = message.into();
+        self
     }
 
     /// Attach one numeric detail (builder style).

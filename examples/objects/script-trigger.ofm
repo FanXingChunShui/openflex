@@ -1,0 +1,29 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "script-trigger",
+  "description": "FlexScript (D2): on_create labels VIPs, on_entry logs each item, script_condition routes VIPs",
+  "time_unit": "seconds",
+  "run": { "stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "Source1", "kind": "source", "params": {
+        "interarrival": { "distribution": "constant", "value": 10.0 },
+        "max_arrivals": 9, "first_arrival": 0.0,
+        "triggers": { "on_create": [
+          { "action": "script",
+            "source": "if time < 35.0 { set_label(\"vip\", 1.0); } else { set_label(\"vip\", 0.0); }" } ] } } },
+    { "name": "Processor1", "kind": "processor", "params": {
+        "process_time": { "distribution": "constant", "value": 1.0 },
+        "triggers": { "on_entry": [
+          { "action": "script", "source": "log(\"processing item\");" } ] } } },
+    { "name": "SinkVip", "kind": "sink", "params": {} },
+    { "name": "SinkNormal", "kind": "sink", "params": {} }
+  ],
+  "connections": [
+    { "from": "Source1", "to": "Processor1" },
+    { "from": "Processor1", "to": "SinkVip", "strategy": { "type": "by_condition", "conditions": [
+        { "script_condition": "if label(\"vip\") > 0.5 { set_label(\"result\", 1.0); }", "port": 0 },
+        { "condition": "1 == 1", "port": 1 } ] } },
+    { "from": "Processor1", "to": "SinkNormal" }
+  ]
+}

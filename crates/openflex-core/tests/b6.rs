@@ -288,3 +288,75 @@ fn invalid_agv_battery_params_are_rejected() {
     let error = Model::from_json(unknown_charger).expect_err("unknown charger");
     assert!(error.to_string().contains("charger"), "{error}");
 }
+
+#[test]
+fn person_grid_astar_detours_around_obstacles() {
+    let grid_model = model(include_str!("../../../examples/objects/person-grid.ofm"));
+    let config = SimConfig {
+        stop_time: 100.0,
+        warmup: 0.0,
+        seed: 1,
+    };
+    let (result, trace) = simulate_traced(&grid_model, &config, 0).expect("grid run");
+    // Shortest 4-neighbour detour is 10 cells; at speed 2 the operator arrives
+    // in 5 time units (euclidean would be 4/2 = 2).
+    let loaded = event_times(&trace, "Person1", "operator_loaded");
+    assert_near(loaded[0], 5.0, 1e-9, "A* walking time");
+    assert_eq!(result.items_completed, 1);
+
+    let plain = include_str!("../../../examples/objects/person-grid.ofm")
+        .replace("\"grid\"", "\"unused_grid\"");
+    let error = Model::from_json(&plain).expect_err("unknown key");
+    assert!(error.to_string().contains("unknown"), "{error}");
+}
+
+#[test]
+fn person_congestion_slows_down_parallel_walkers() {
+    let json = r#"{
+      "format": "openflex-model", "version": 1, "name": "person-congestion",
+      "run": { "stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+      "grid": { "width": 5, "height": 5, "cell_size": 1.0,
+        "obstacles": [[2, 0], [2, 1], [2, 2], [2, 4]] },
+      "objects": [
+        { "name": "S1", "kind": "source", "pos": [4, 0], "params": {
+            "interarrival": { "distribution": "constant", "value": 1000.0 },
+            "max_arrivals": 1, "first_arrival": 0.0 } },
+        { "name": "S2", "kind": "source", "pos": [4, 0], "params": {
+            "interarrival": { "distribution": "constant", "value": 1000.0 },
+            "max_arrivals": 1, "first_arrival": 0.0 } },
+        { "name": "P1", "kind": "processor", "pos": [4, 0], "params": {
+            "process_time": { "distribution": "constant", "value": 2.0 },
+            "process_operator": "D1" } },
+        { "name": "P2", "kind": "processor", "pos": [4, 0], "params": {
+            "process_time": { "distribution": "constant", "value": 2.0 },
+            "process_operator": "D1" } },
+        { "name": "K1", "kind": "sink", "pos": [4, 4], "params": {} },
+        { "name": "K2", "kind": "sink", "pos": [4, 4], "params": {} },
+        { "name": "D1", "kind": "dispatcher", "pos": [0, 0], "params": {} },
+        { "name": "Person1", "kind": "person", "pos": [0, 0], "params": {
+            "speed": 2.0, "home": "D1" } },
+        { "name": "Person2", "kind": "person", "pos": [0, 0], "params": {
+            "speed": 2.0, "home": "D1" } }
+      ],
+      "connections": [
+        { "from": "S1", "to": "P1" }, { "from": "P1", "to": "K1" },
+        { "from": "S2", "to": "P2" }, { "from": "P2", "to": "K2" },
+        { "from": "D1", "to": "Person1" },
+        { "from": "D1", "to": "Person2" }
+      ]
+    }"#;
+    let model = model(json);
+    let (_, trace) = simulate_traced(
+        &model,
+        &SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        },
+        0,
+    )
+    .expect("two-person run");
+    // Both walkers are busy (10-cell detour / (2 / 1.1)).
+    let loaded = event_times(&trace, "Person1", "operator_loaded");
+    assert_near(loaded[0], 5.5, 1e-6, "congested walking time");
+}

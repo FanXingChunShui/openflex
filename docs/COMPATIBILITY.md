@@ -55,7 +55,7 @@
 | FlexScript / C++ 逻辑 | 表达式语言 + 动作 | 🟡 | 无任意脚本；支持变量、算术、比较、条件与少量函数；Processor 抢占见操作员参数 |
 | 全局表（Global Table） | — | ⛔ | 可用标签/参数覆盖模拟 |
 | Process Flow（流程图块） | `model.process_flow` / `params.process_flow` | 🟡 | 模型级+对象级 create/delay/assign/decision/sink/transfer(to_object)；from_object、块容量未实现 |
-| FlexScript 脚本 | `action: script` / `script_condition` | 🟡 | rhai 沙箱（模型层与运行时封装就绪，引擎执行待接线） |
+| FlexScript 脚本 | `action: script` / `script_condition` | ✅ | rhai 沙箱，触发器/路由/流程决策执行；条件用 `result` 标签约定 |
 
 ## 运行与统计
 

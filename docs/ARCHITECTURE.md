@@ -184,6 +184,7 @@ token 是带 id/标签/创建时间的轻量实体，沿块流转；引擎新增
 
 对象级 `params.process_flow` 与模型级流程合并为一张全局 block 图：`create.on_entry` 在该对象每次收货时产 token；
 `transfer(to_object)` 把 token 转成 flow item 注入目标对象（继承标签/类型，目标满时挂起并在容量释放时重试），
+`transfer(from_object)` 从 Queue/Rack 取首个 item 并把其标签/类型合并进 token（无 item 时等待唤醒），
 对象级 block 的报告 id 形如 `Queue1.Create1`；`from_object` 暂未实现。
 
 ## FlexScript 脚本层（模型层已就绪）
@@ -191,7 +192,10 @@ token 是带 id/标签/创建时间的轻量实体，沿块流转；引擎新增
 `rhai` 沙箱脚本：触发器动作 `{"action":"script","source":"..."}`、条件路由/流程决策的 `script_condition`。
 脚本可读 `time/item_type/item_id/label(name)`，调用 `set_label/set_item_type/send_message/release_item/log`，
 无文件/网络/时钟/随机 API，操作数与字符串长度受限。模型层已完成语法校验与 `core/src/script.rs` 运行时封装；
-**引擎执行集成尚未接线**（`apply_actions` 遇到 script 返回明确的未实现错误），下一批完成。
+引擎在模型加载时按 source 预编译缓存，并在触发器动作、`ByCondition.script_condition`、Process Flow `Decision`
+中执行；脚本可设置标签/类型、发消息、`release_item`、`log`（写入 trace 的 `script_log` 事件）。
+**条件约定**：脚本条件通过把数值标签 `result` 设为正值表示真；`Expr` 条件不受影响。
+运行期错误映射为 `SimError::Script { location, source }`，location 含对象/触发器。
 
 ## Process Flow 等价模式
 
@@ -206,6 +210,12 @@ token 是带 id/标签/创建时间的轻量实体，沿块流转；引擎新增
 | Sink | `sink` |
 
 示例：`examples/objects/process-flow-equivalent.ofm`。若要实现真正的 token 运行时，前置工作是补 Processor 的 `on_entry/on_exit` 触发点与零延迟消息动作。
+
+## Person 寻路与拥堵
+
+`Model.grid`（width/height/cell_size/obstacles）存在时，Person 用 4 邻接 A* 寻路（距离 = 格数 × cell_size），
+取货/送达/回程三段均使用网格距离；越界/障碍/不可达时回退 `network` 最短路或欧氏距离。多个正在执行任务的
+person 之间按人数折减速度（每多一人 -10%，最低 50%）。简化：无对角移动、无个体避让/排队。
 
 ## Fluid 子系统
 

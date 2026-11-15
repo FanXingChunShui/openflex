@@ -473,6 +473,28 @@ fn definitions() -> Value {
         }),
     );
     defs.insert(
+        "grid".into(),
+        json!({
+            "type": "object",
+            "properties": {
+                "width": { "type": "integer", "minimum": 1 },
+                "height": { "type": "integer", "minimum": 1 },
+                "cell_size": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
+                "obstacles": {
+                    "type": "array",
+                    "items": {
+                        "type": "array",
+                        "items": { "type": "integer" },
+                        "minItems": 2,
+                        "maxItems": 2
+                    }
+                }
+            },
+            "required": ["width", "height"],
+            "additionalProperties": false
+        }),
+    );
+    defs.insert(
         "process_flow".into(),
         json!({
             "type": "object",
@@ -601,6 +623,7 @@ fn model_schema() -> Value {
             },
             "process_flow": { "$ref": "#/$defs/process_flow" },
             "fluid_step": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+            "grid": { "$ref": "#/$defs/grid" },
             "metadata": { "type": "object" }
         },
         "required": ["name"],

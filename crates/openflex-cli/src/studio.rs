@@ -135,7 +135,21 @@ fn handle_connection(
             &serde_json::json!({ "status": "ok", "version": VERSION }).to_string(),
         ),
         ("POST", "/api/model") => save_model(&mut stream, model, model_path, &request.body),
+        ("POST", "/api/model/objects") => add_object(&mut stream, model, model_path, &request.body),
         ("POST", "/api/run") => run_model_endpoint(&mut stream, model, &request.body),
+        (method, path) if method == "DELETE" && path.starts_with("/api/model/objects/") => {
+            let name = match percent_decode(path.trim_start_matches("/api/model/objects/")) {
+                Ok(name) => name,
+                Err(error) => {
+                    return write_json(
+                        &mut stream,
+                        "400 Bad Request",
+                        &serde_json::json!({ "ok": false, "error": error }).to_string(),
+                    );
+                }
+            };
+            delete_object(&mut stream, model, model_path, &name)
+        }
         ("GET", path) if path.starts_with("/api/") || path.starts_with("/assets/") => {
             not_found(&mut stream)
         }
@@ -281,6 +295,323 @@ fn run_model_endpoint(stream: &mut TcpStream, model: &Model, body: &[u8]) -> std
             )
         }
     }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AddObjectRequest {
+    kind: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    pos: Option<[f64; 2]>,
+}
+
+/// Add an object with kind-specific safe defaults, then validate and save.
+fn add_object(
+    stream: &mut TcpStream,
+    model: &mut Model,
+    model_path: &Path,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let request: AddObjectRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return write_json(
+                stream,
+                "400 Bad Request",
+                &serde_json::json!({ "ok": false, "error": format!("invalid add request: {error}") })
+                    .to_string(),
+            );
+        }
+    };
+    let kind = match openflex_model::ObjectKind::parse(&request.kind.to_ascii_lowercase()) {
+        Some(kind) => kind,
+        None => {
+            return write_json(
+                stream,
+                "422 Unprocessable Entity",
+                &serde_json::json!({ "ok": false, "error": format!("unknown object kind '{}'", request.kind) })
+                    .to_string(),
+            );
+        }
+    };
+    let mut value = serde_json::to_value(&*model).unwrap_or_else(|_| serde_json::json!({}));
+    let Some(objects) = value
+        .get_mut("objects")
+        .and_then(|objects| objects.as_array_mut())
+    else {
+        return write_json(
+            stream,
+            "500 Internal Server Error",
+            &serde_json::json!({ "ok": false, "error": "model has no objects array" }).to_string(),
+        );
+    };
+    let name = match request
+        .name
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+    {
+        Some(name) => name,
+        None => unique_object_name(objects, kind.as_str()),
+    };
+    if objects
+        .iter()
+        .any(|object| object.get("name").and_then(|name| name.as_str()) == Some(name.as_str()))
+    {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": format!("an object named '{name}' already exists") })
+                .to_string(),
+        );
+    }
+    let pos = request.pos.unwrap_or_else(|| next_position(objects));
+    objects.push(serde_json::json!({
+        "name": name,
+        "kind": kind.as_str(),
+        "pos": pos,
+        "params": default_params(kind),
+    }));
+    let new_model = match Model::from_json(&value.to_string()) {
+        Ok(model) => model,
+        Err(error) => {
+            return write_json(
+                stream,
+                "422 Unprocessable Entity",
+                &serde_json::json!({ "ok": false, "error": format!("invalid model after add: {error}") })
+                    .to_string(),
+            );
+        }
+    };
+    persist_model(
+        stream,
+        model,
+        model_path,
+        new_model,
+        serde_json::json!({ "added": name }),
+    )
+}
+
+/// Delete one object and clean connections/references to it, then validate.
+fn delete_object(
+    stream: &mut TcpStream,
+    model: &mut Model,
+    model_path: &Path,
+    name: &str,
+) -> std::io::Result<()> {
+    let mut value = serde_json::to_value(&*model).unwrap_or_else(|_| serde_json::json!({}));
+    let Some(objects) = value
+        .get_mut("objects")
+        .and_then(|objects| objects.as_array_mut())
+    else {
+        return write_json(
+            stream,
+            "500 Internal Server Error",
+            &serde_json::json!({ "ok": false, "error": "model has no objects array" }).to_string(),
+        );
+    };
+    let Some(index) = objects
+        .iter()
+        .position(|object| object.get("name").and_then(|name| name.as_str()) == Some(name))
+    else {
+        return write_json(
+            stream,
+            "404 Not Found",
+            &serde_json::json!({ "ok": false, "error": format!("unknown object '{name}'") })
+                .to_string(),
+        );
+    };
+    objects.remove(index);
+    let connections_removed = value
+        .get_mut("connections")
+        .and_then(|connections| connections.as_array_mut())
+        .map(|connections| {
+            let before = connections.len();
+            connections.retain(|connection| {
+                connection.get("from").and_then(|from| from.as_str()) != Some(name)
+                    && connection.get("to").and_then(|to| to.as_str()) != Some(name)
+            });
+            before - connections.len()
+        })
+        .unwrap_or(0);
+    let references_cleaned = value
+        .get_mut("objects")
+        .and_then(|objects| objects.as_array_mut())
+        .map(|objects| {
+            objects
+                .iter_mut()
+                .map(|object| {
+                    object
+                        .get_mut("params")
+                        .map(|params| clean_references(params, name))
+                        .unwrap_or(0)
+                })
+                .sum()
+        })
+        .unwrap_or(0);
+    let new_model = match Model::from_json(&value.to_string()) {
+        Ok(model) => model,
+        Err(error) => {
+            return write_json(
+                stream,
+                "422 Unprocessable Entity",
+                &serde_json::json!({ "ok": false, "error": format!("invalid model after delete: {error}") })
+                    .to_string(),
+            );
+        }
+    };
+    persist_model(
+        stream,
+        model,
+        model_path,
+        new_model,
+        serde_json::json!({
+            "removed": name,
+            "connections_removed": connections_removed,
+            "references_cleaned": references_cleaned,
+        }),
+    )
+}
+
+/// Remove `home`/`charger`/`dispatcher`-style references to a deleted object.
+fn clean_references(value: &mut serde_json::Value, name: &str) -> usize {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut cleaned = 0;
+            let keys: Vec<String> = map.keys().cloned().collect();
+            for key in keys {
+                let remove = matches!(
+                    key.as_str(),
+                    "home"
+                        | "charger"
+                        | "dispatcher"
+                        | "home_floor"
+                        | "setup_operator"
+                        | "process_operator"
+                ) && map.get(&key).and_then(|value| value.as_str()) == Some(name);
+                if remove {
+                    map.remove(&key);
+                    cleaned += 1;
+                } else if let Some(child) = map.get_mut(&key) {
+                    cleaned += clean_references(child, name);
+                }
+            }
+            cleaned
+        }
+        serde_json::Value::Array(items) => items
+            .iter_mut()
+            .map(|item| clean_references(item, name))
+            .sum(),
+        _ => 0,
+    }
+}
+
+fn default_params(kind: openflex_model::ObjectKind) -> serde_json::Value {
+    if kind == openflex_model::ObjectKind::Source {
+        // The engine default inter-arrival is 0, which would create items at
+        // the same instant forever; a studio-added source gets a safe default.
+        serde_json::json!({ "interarrival": { "distribution": "constant", "value": 5.0 } })
+    } else {
+        serde_json::json!({})
+    }
+}
+
+fn unique_object_name(objects: &[serde_json::Value], kind: &str) -> String {
+    let prefix = {
+        let mut chars = kind.chars();
+        match chars.next() {
+            Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+            None => "Object".to_string(),
+        }
+    };
+    for suffix in 1.. {
+        let candidate = format!("{prefix}{suffix}");
+        if !objects.iter().any(|object| {
+            object.get("name").and_then(|name| name.as_str()) == Some(candidate.as_str())
+        }) {
+            return candidate;
+        }
+    }
+    unreachable!("an unused suffix always exists")
+}
+
+fn next_position(objects: &[serde_json::Value]) -> [f64; 2] {
+    let max_x = objects
+        .iter()
+        .filter_map(|object| {
+            object
+                .get("pos")
+                .and_then(|pos| pos.as_array())
+                .and_then(|pos| pos.first())
+                .and_then(|x| x.as_f64())
+        })
+        .fold(0.0_f64, f64::max);
+    [max_x + 150.0, 200.0]
+}
+
+/// Persist a validated model atomically and return it to the UI.
+fn persist_model(
+    stream: &mut TcpStream,
+    model: &mut Model,
+    model_path: &Path,
+    new_model: Model,
+    extra: serde_json::Value,
+) -> std::io::Result<()> {
+    let pretty = match serde_json::to_string_pretty(&new_model) {
+        Ok(pretty) => format!("{pretty}\n"),
+        Err(error) => {
+            return write_json(
+                stream,
+                "500 Internal Server Error",
+                &serde_json::json!({ "ok": false, "error": error.to_string() }).to_string(),
+            );
+        }
+    };
+    if let Err(error) = write_atomic(model_path, &pretty) {
+        return write_json(
+            stream,
+            "500 Internal Server Error",
+            &serde_json::json!({ "ok": false, "error": error }).to_string(),
+        );
+    }
+    *model = new_model;
+    let mut response = serde_json::json!({ "ok": true, "model": *model });
+    if let (Some(target), Some(source)) = (response.as_object_mut(), extra.as_object()) {
+        for (key, value) in source {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+    write_json(stream, "200 OK", &response.to_string())
+}
+
+fn percent_decode(input: &str) -> Result<String, String> {
+    let bytes = input.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' => {
+                if index + 2 >= bytes.len() {
+                    return Err(format!("invalid percent-encoding in '{input}'"));
+                }
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3])
+                    .map_err(|_| format!("invalid percent-encoding in '{input}'"))?;
+                let byte = u8::from_str_radix(hex, 16)
+                    .map_err(|_| format!("invalid percent-encoding in '{input}'"))?;
+                decoded.push(byte);
+                index += 3;
+            }
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| format!("invalid UTF-8 in path '{input}'"))
 }
 
 /// Read one HTTP request with strict header/body limits.

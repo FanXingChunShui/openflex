@@ -2755,3 +2755,156 @@ fn studio_rejects_unknown_paths_and_oversized_bodies() {
     let bad_run = http_request(&address, "POST", "/api/run", Some("not json"));
     assert!(http_status(&bad_run).contains("400"), "bad run: {bad_run}");
 }
+
+#[test]
+fn studio_can_add_and_delete_objects_through_the_api() {
+    let dir = TempDir::new("studio-crud");
+    let model = dir.write("demo.ofm", MODEL);
+    let (_server, address) = start_studio(&model);
+
+    // The page carries the new editing controls.
+    let html = http_body(&http_get(&address, "/")).to_string();
+    for marker in [
+        "id=\"add-object\"",
+        "id=\"delete-object\"",
+        "id=\"edit-process-flow\"",
+        "id=\"save-flow\"",
+        "id=\"speed\"",
+        "id=\"pause-animation\"",
+    ] {
+        assert!(html.contains(marker), "missing control {marker}");
+    }
+
+    // Add a queue: safe defaults, auto name and position, validated and saved.
+    let added = http_request(
+        &address,
+        "POST",
+        "/api/model/objects",
+        Some(r#"{"kind":"queue"}"#),
+    );
+    assert!(
+        http_status(&added).contains("200 OK"),
+        "add: {}",
+        http_body(&added)
+    );
+    let added = json(http_body(&added));
+    assert_eq!(added["added"], "Queue2");
+    assert_eq!(added["model"]["objects"].as_array().map(Vec::len), Some(5));
+    let validate = openflex(&["validate", &path_str(&model)]);
+    assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
+
+    // Delete the processor: both connections to it are removed as well.
+    let deleted = http_request(&address, "DELETE", "/api/model/objects/Processor1", None);
+    assert!(
+        http_status(&deleted).contains("200 OK"),
+        "delete: {}",
+        http_body(&deleted)
+    );
+    let deleted = json(http_body(&deleted));
+    assert_eq!(deleted["removed"], "Processor1");
+    assert_eq!(deleted["connections_removed"], 2);
+    assert_eq!(
+        deleted["model"]["connections"].as_array().map(Vec::len),
+        Some(1)
+    );
+    let text = fs::read_to_string(&model).expect("read model");
+    assert!(!text.contains("Processor1"));
+    let validate = openflex(&["validate", &path_str(&model)]);
+    assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
+
+    let missing = http_request(&address, "DELETE", "/api/model/objects/NoSuchObject", None);
+    assert!(http_status(&missing).contains("404"), "missing: {missing}");
+}
+
+#[test]
+fn studio_flow_json_can_be_edited_and_validated() {
+    let dir = TempDir::new("studio-flow-json");
+    let model = dir.write("flow.ofm", FLOW_MODEL);
+    let (_server, address) = start_studio(&model);
+
+    let mut current = json(http_body(&http_get(&address, "/api/model")));
+    current["process_flow"]["blocks"][0]["quantity"] = serde_json::json!(5);
+    let save = http_request(
+        &address,
+        "POST",
+        "/api/model",
+        Some(&serde_json::to_string(&current).expect("serialise")),
+    );
+    assert!(
+        http_status(&save).contains("200 OK"),
+        "save flow: {}",
+        http_body(&save)
+    );
+    let text = fs::read_to_string(&model).expect("read model");
+    assert!(text.contains("\"quantity\": 5"));
+    let validate = openflex(&["validate", &path_str(&model)]);
+    assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
+
+    let run = http_request(&address, "POST", "/api/run", Some("{}"));
+    assert!(http_status(&run).contains("200 OK"));
+    let report = json(http_body(&run));
+    assert_eq!(report["process_flow"]["tokens_created"], 5.0);
+
+    // An invalid process_flow is rejected by the same validation.
+    current["process_flow"]["blocks"][0]["kind"] = serde_json::json!("nope");
+    let reject = http_request(
+        &address,
+        "POST",
+        "/api/model",
+        Some(&serde_json::to_string(&current).expect("serialise")),
+    );
+    assert!(
+        http_status(&reject).contains("422"),
+        "reject: {}",
+        http_body(&reject)
+    );
+}
+
+#[test]
+fn studio_delete_cleans_references_to_the_object() {
+    let dir = TempDir::new("studio-delete-refs");
+    let model = dir.write("refs.ofm", MODEL);
+    let (_server, address) = start_studio(&model);
+
+    // Install a model whose transporter points its `home` at Processor1.
+    let mut current = json(http_body(&http_get(&address, "/api/model")));
+    current["objects"]
+        .as_array_mut()
+        .expect("objects")
+        .push(serde_json::json!({
+            "name": "Transporter1",
+            "kind": "transporter",
+            "pos": [0, 100],
+            "params": { "home": "Processor1" }
+        }));
+    let save = http_request(
+        &address,
+        "POST",
+        "/api/model",
+        Some(&serde_json::to_string(&current).expect("serialise")),
+    );
+    assert!(
+        http_status(&save).contains("200 OK"),
+        "setup: {}",
+        http_body(&save)
+    );
+
+    let deleted = http_request(&address, "DELETE", "/api/model/objects/Processor1", None);
+    assert!(
+        http_status(&deleted).contains("200 OK"),
+        "delete: {}",
+        http_body(&deleted)
+    );
+    let deleted = json(http_body(&deleted));
+    assert!(
+        deleted["references_cleaned"].as_u64().unwrap_or_default() >= 1,
+        "references not cleaned: {deleted}"
+    );
+    let text = fs::read_to_string(&model).expect("read model");
+    assert!(
+        !text.contains("\"home\": \"Processor1\""),
+        "reference survived: {text}"
+    );
+    let validate = openflex(&["validate", &path_str(&model)]);
+    assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
+}
