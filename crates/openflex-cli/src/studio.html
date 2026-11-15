@@ -59,8 +59,14 @@
   #flow-canvas { display: block; width: 100%; height: 220px; background: #ffffff;
                  border: 1px solid #cbd5e1; border-radius: 6px; cursor: grab; touch-action: none; }
   #scene.dragging { cursor: grabbing; }
-  .layout-controls { position: absolute; top: 8px; left: 8px; display: flex; gap: 4px; }
+  .layout-controls { position: absolute; top: 8px; left: 8px; display: flex; gap: 4px;
+                     align-items: center; flex-wrap: wrap; max-width: calc(100% - 16px); }
   .layout-controls button { padding: 3px 8px; font-size: 11px; background: rgba(255,255,255,.9); }
+  .layout-controls.align-controls { top: 38px; }
+  .layout-controls label { font-size: 11px; color: #475569; display: flex; gap: 3px;
+                           align-items: center; background: rgba(255,255,255,.9);
+                           padding: 2px 5px; border-radius: 5px; }
+  .layout-controls select { font-size: 11px; padding: 1px 3px; }
   .hint { position: absolute; left: 12px; bottom: 10px; font-size: 12px; color: #64748b;
           background: rgba(248,250,252,.85); padding: 2px 6px; border-radius: 5px; }
   #report table { border-collapse: collapse; width: 100%; font-size: 12px; }
@@ -185,6 +191,23 @@
       <button type="button" data-layout-grid="1">Grid</button>
       <button type="button" data-layout-circle="1">Circle</button>
       <button type="button" data-layout-force="1">Force</button>
+      <button id="view-2d" type="button" data-view-2d="1">2D top view</button>
+      <label class="muted">Snap
+        <select id="snap-grid" data-snap-grid="1">
+          <option value="0">off</option>
+          <option value="10" selected>10</option>
+          <option value="20">20</option>
+          <option value="50">50</option>
+        </select>
+      </label>
+    </div>
+    <div class="layout-controls align-controls" data-align-distribute="1">
+      <button type="button" data-align-left="1">Left</button>
+      <button type="button" data-align-right="1">Right</button>
+      <button type="button" data-align-top="1">Top</button>
+      <button type="button" data-align-bottom="1">Bottom</button>
+      <button type="button" data-distribute-h="1">Distribute H</button>
+      <button type="button" data-distribute-v="1">Distribute V</button>
     </div>
     <div class="hint" data-projection="perspective" data-depth-sort="1" data-focus-object="1" data-nudge="10">drag to rotate or move an object · wheel to zoom · double-click to focus · arrows nudge 10px (Shift 1px)</div>
   </section>
@@ -272,6 +295,9 @@ const state = {
   sceneInfo: null,
   sceneExport: null,
   dragObject: null,
+  view2d: false,
+  snapGrid: 10,
+  dragGuides: null,
   dragging: false,
   lastX: 0,
   lastY: 0,
@@ -2120,12 +2146,69 @@ function applyLayout(kind) {
   setStatus(`applied ${kind} layout (unsaved; use Save to persist)`);
 }
 
-function nudgeSelected(dx, dy) {
+function alignObjects(kind) {
+  if (!state.model || !state.model.objects || state.model.objects.length < 2) return;
+  rememberNow();
+  const objects = state.model.objects;
+  const xs = objects.map(object => Number((object.pos || [0, 0])[0]) || 0);
+  const ys = objects.map(object => Number((object.pos || [0, 0])[1]) || 0);
+  const target = kind === "left" ? Math.min(...xs)
+    : kind === "right" ? Math.max(...xs)
+    : kind === "top" ? Math.min(...ys)
+    : Math.max(...ys);
+  objects.forEach((object, index) => {
+    const pos = object.pos || [0, 0];
+    object.pos = kind === "left" || kind === "right" ? [target, pos[1]]
+      : [pos[0], target];
+  });
+  renderAll();
+  setStatus(`aligned ${kind} (unsaved)`);
+}
+
+function distributeObjects(axis) {
+  if (!state.model || !state.model.objects || state.model.objects.length < 3) return;
+  rememberNow();
+  const objects = state.model.objects;
+  const key = axis === "h" ? 0 : 1;
+  const ordered = objects.map((object, index) => ({
+    object,
+    index,
+    value: Number((object.pos || [0, 0])[key]) || 0,
+  })).sort((left, right) => left.value - right.value);
+  const first = ordered[0].value;
+  const last = ordered[ordered.length - 1].value;
+  if (last === first) {
+    setStatus("cannot distribute objects sharing the same coordinate", true);
+    return;
+  }
+  ordered.forEach((entry, rank) => {
+    const value = first + (last - first) * rank / (ordered.length - 1);
+    const pos = entry.object.pos || [0, 0];
+    entry.object.pos = axis === "h" ? [value, pos[1]] : [pos[0], value];
+  });
+  renderAll();
+  setStatus(`distributed ${axis === "h" ? "horizontally" : "vertically"} (unsaved)`);
+}
+
+function toggleView2d() {
+  state.view2d = !state.view2d;
+  $("view-2d").textContent = state.view2d ? "3D view" : "2D top view";
+  $("view-2d").classList.toggle("primary", state.view2d);
+  setStatus(state.view2d ? "top-down 2D view" : "perspective 3D view");
+}
+
+function nudgeSelected(dx, dy, snap = true) {
   const object = state.model && state.model.objects[state.selected];
   if (!object) return;
   rememberNow();
   const pos = Array.isArray(object.pos) ? object.pos : [0, 0];
-  object.pos = [Number(pos[0] || 0) + dx, Number(pos[1] || 0) + dy];
+  let x = Number(pos[0] || 0) + dx;
+  let y = Number(pos[1] || 0) + dy;
+  if (snap && state.snapGrid) {
+    x = snapValue(x);
+    y = snapValue(y);
+  }
+  object.pos = [x, y];
   if ($("edit-pos-x")) $("edit-pos-x").value = object.pos[0];
   if ($("edit-pos-y")) $("edit-pos-y").value = object.pos[1];
   setStatus(`nudged ${object.name} to ${object.pos[0]}, ${object.pos[1]} (unsaved)`);
@@ -2149,6 +2232,108 @@ function project(x, y, z, centerX, centerY, scale, span) {
   };
 }
 
+function snapValue(value) {
+  if (!state.snapGrid) return value;
+  return Math.round(value / state.snapGrid) * state.snapGrid;
+}
+
+function drawScene2d(now, width, height) {
+  const ctx = scene.getContext("2d");
+  const model = state.model;
+  const centers = modelCenters(model);
+  const positions = [...centers.values()];
+  const minX = Math.min(...positions.map(position => position[0]));
+  const maxX = Math.max(...positions.map(position => position[0]));
+  const minY = Math.min(...positions.map(position => position[1]));
+  const maxY = Math.max(...positions.map(position => position[1]));
+  const focus = state.focusName ? centers.get(state.focusName) : null;
+  const centerX = focus ? focus[0] : (minX + maxX) / 2;
+  const centerY = focus ? focus[1] : (minY + maxY) / 2;
+  const span = Math.max(maxX - minX, maxY - minY, 100);
+  const scale = Math.min(width, height) * 0.8 / span * state.zoom;
+  const unit = Math.max(10, span * 0.09);
+  state.sceneInfo = { mode: "2d", centerX, centerY, scale, span, width, height };
+  const project2d = (x, y) => ({
+    x: width / 2 + (x - centerX) * scale,
+    y: height / 2 + (y - centerY) * scale,
+  });
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#f8fafc";
+  ctx.fillRect(0, 0, width, height);
+  const grid = state.snapGrid || 50;
+  ctx.strokeStyle = "#e2e8f0";
+  ctx.lineWidth = 0.7;
+  const leftWorld = centerX - width / (2 * scale);
+  const rightWorld = centerX + width / (2 * scale);
+  const topWorld = centerY - height / (2 * scale);
+  const bottomWorld = centerY + height / (2 * scale);
+  for (let x = Math.ceil(leftWorld / grid) * grid; x <= rightWorld; x += grid) {
+    const p = project2d(x, centerY);
+    ctx.beginPath(); ctx.moveTo(p.x, 0); ctx.lineTo(p.x, height); ctx.stroke();
+  }
+  for (let y = Math.ceil(topWorld / grid) * grid; y <= bottomWorld; y += grid) {
+    const p = project2d(centerX, y);
+    ctx.beginPath(); ctx.moveTo(0, p.y); ctx.lineTo(width, p.y); ctx.stroke();
+  }
+  const objects = model.objects.map((object, index) => {
+    const center = centers.get(object.name) || [0, 0];
+    const point = project2d(center[0], center[1]);
+    return {
+      object, index, center, point,
+      width: unit * (object.kind === "conveyor" ? 2 : 1.2),
+      height: unit * (object.kind === "conveyor" ? 0.8 : 1),
+    };
+  }).sort((left, right) => left.point.y - right.point.y);
+  ctx.strokeStyle = "#94a3b8";
+  ctx.lineWidth = 1.2;
+  for (const connection of model.connections || []) {
+    const from = objects.find(item => item.object.name === connection.from);
+    const to = objects.find(item => item.object.name === connection.to);
+    if (!from || !to) continue;
+    ctx.beginPath();
+    ctx.moveTo(from.point.x, from.point.y);
+    ctx.lineTo(to.point.x, to.point.y);
+    ctx.stroke();
+  }
+  const selectedName = model.objects[state.selected] && model.objects[state.selected].name;
+  state.hitboxes = [];
+  state.sceneExport = { mode: "2d", width, height, objects: [], lines: [] };
+  for (const item of objects) {
+    const selected = item.object.name === selectedName;
+    const topShade = item.object.kind.startsWith("fluid") ? "#bae6fd"
+      : item.object.kind === "source" ? "#dcfce7"
+      : item.object.kind === "sink" ? "#fee2e2"
+      : item.object.kind === "processor" ? "#dbeafe" : "#e2e8f0";
+    const left = item.point.x - item.width / 2;
+    const top = item.point.y - item.height / 2;
+    ctx.fillStyle = selected ? "#fef3c7" : topShade;
+    ctx.strokeStyle = selected ? "#f59e0b" : "#334155";
+    ctx.lineWidth = selected ? 2.2 : 1;
+    ctx.fillRect(left, top, item.width, item.height);
+    ctx.strokeRect(left, top, item.width, item.height);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#0f172a";
+    ctx.font = "600 11px system-ui, sans-serif";
+    ctx.fillText(item.object.name, item.point.x, top - 6);
+    ctx.fillStyle = "#64748b";
+    ctx.font = "10px system-ui, sans-serif";
+    ctx.fillText(item.object.kind, item.point.x, top - 18);
+    state.hitboxes.push({ name: item.object.name, index: item.index, left, right: left + item.width, top, bottom: top + item.height });
+    state.sceneExport.objects.push({
+      name: item.object.name, kind: item.object.kind, x: left, y: top,
+      width: item.width, height: item.height, selected,
+    });
+  }
+  if (state.dragGuides) {
+    const guide = project2d(state.dragGuides.x, state.dragGuides.y);
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = "#f59e0b";
+    ctx.beginPath(); ctx.moveTo(guide.x, 0); ctx.lineTo(guide.x, height); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, guide.y); ctx.lineTo(width, guide.y); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
 function drawScene(now) {
   const width = scene.clientWidth;
   const height = scene.clientHeight;
@@ -2162,6 +2347,10 @@ function drawScene(now) {
   ctx.clearRect(0, 0, width, height);
   const model = state.model;
   if (!model || !model.objects || model.objects.length === 0) return;
+  if (state.view2d) {
+    drawScene2d(now, width, height);
+    return;
+  }
 
   const centers = modelCenters(model);
   const positions = [...centers.values()];
@@ -2344,6 +2533,17 @@ function exportSvg() {
   const selectedName = state.model.objects[state.selected] && state.model.objects[state.selected].name;
   const escape = escapeText;
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${data.width}" height="${data.height}" viewBox="0 0 ${data.width} ${data.height}">`;
+  if (data.mode === "2d") {
+    svg += `<rect width="100%" height="100%" fill="#f8fafc"/>`;
+    for (const object of data.objects) {
+      svg += `<rect x="${object.x.toFixed(2)}" y="${object.y.toFixed(2)}" width="${object.width.toFixed(2)}" height="${object.height.toFixed(2)}" fill="${object.selected ? "#fef3c7" : "#e2e8f0"}" stroke="${object.selected ? "#f59e0b" : "#334155"}" stroke-width="${object.selected ? 2.2 : 1}"/>`;
+      svg += `<text x="${(object.x + object.width / 2).toFixed(2)}" y="${(object.y - 6).toFixed(2)}" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#0f172a">${escape(object.name)}</text>`;
+    }
+    svg += "</svg>";
+    downloadText("openflex-scene.svg", svg, "image/svg+xml;charset=utf-8");
+    setStatus("exported openflex-scene.svg (2D)");
+    return;
+  }
   svg += `<rect width="100%" height="100%" fill="#f1f5f9"/>`;
   for (const line of data.lines) {
     svg += `<line x1="${line.x1.toFixed(2)}" y1="${line.y1.toFixed(2)}" x2="${line.x2.toFixed(2)}" y2="${line.y2.toFixed(2)}" stroke="#475569" stroke-width="1.4"/>`;
@@ -2396,10 +2596,13 @@ scene.addEventListener("pointerdown", event => {
   const hit = hitboxAt(x, y);
   if (hit && state.sceneInfo) {
     const center = modelCenters(state.model).get(hit.name) || [0, 0];
-    const point = project(center[0], center[1], 0, state.sceneInfo.centerX,
-      state.sceneInfo.centerY, state.sceneInfo.scale, state.sceneInfo.span);
+    const is2d = state.view2d;
+    const point = is2d ? { factor: 1 } : project(center[0], center[1], 0,
+      state.sceneInfo.centerX, state.sceneInfo.centerY,
+      state.sceneInfo.scale, state.sceneInfo.span);
     state.dragObject = {
       index: hit.index,
+      mode: is2d ? "2d" : "3d",
       startX: x,
       startY: y,
       factor: point.factor,
@@ -2428,14 +2631,25 @@ scene.addEventListener("pointermove", event => {
   const y = event.clientY - rect.top;
   if (state.dragObject && state.sceneInfo) {
     const drag = state.dragObject;
-    const start = unproject(drag.startX, drag.startY, 0, state.sceneInfo, drag.factor);
-    const current = unproject(x, y, 0, state.sceneInfo, drag.factor);
+    let xWorld;
+    let yWorld;
+    if (drag.mode === "2d") {
+      xWorld = drag.original[0] + (x - drag.startX) / state.sceneInfo.scale;
+      yWorld = drag.original[1] + (y - drag.startY) / state.sceneInfo.scale;
+    } else {
+      const start = unproject(drag.startX, drag.startY, 0, state.sceneInfo, drag.factor);
+      const current = unproject(x, y, 0, state.sceneInfo, drag.factor);
+      xWorld = drag.original[0] + current[0] - start[0];
+      yWorld = drag.original[1] + current[1] - start[1];
+    }
+    if (state.snapGrid) {
+      xWorld = snapValue(xWorld);
+      yWorld = snapValue(yWorld);
+    }
     const object = state.model.objects[drag.index];
     if (!object) return;
-    object.pos = [
-      drag.original[0] + current[0] - start[0],
-      drag.original[1] + current[1] - start[1],
-    ];
+    object.pos = [xWorld, yWorld];
+    state.dragGuides = state.snapGrid ? { x: xWorld, y: yWorld } : null;
     drag.moved = Math.hypot(object.pos[0] - drag.original[0], object.pos[1] - drag.original[1]) > 0.01;
     if ($("edit-pos-x")) $("edit-pos-x").value = object.pos[0].toFixed(2);
     if ($("edit-pos-y")) $("edit-pos-y").value = object.pos[1].toFixed(2);
@@ -2463,6 +2677,7 @@ const stopDrag = () => {
     }
   }
   state.dragging = false;
+  state.dragGuides = null;
   scene.classList.remove("dragging");
 };
 scene.addEventListener("pointerup", stopDrag);
@@ -2498,18 +2713,41 @@ document.querySelectorAll("[data-layout-grid],[data-layout-circle],[data-layout-
   });
 });
 document.addEventListener("keydown", event => {
-  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
   if (event.ctrlKey || event.metaKey || event.altKey) return;
   const tag = (event.target && event.target.tagName) || "";
   if (["INPUT", "TEXTAREA", "SELECT"].includes(tag) || event.target.isContentEditable) return;
+  if (event.key === "v" || event.key === "V") {
+    event.preventDefault();
+    toggleView2d();
+    return;
+  }
+  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
   const object = state.model && state.model.objects[state.selected];
   if (!object) return;
   event.preventDefault();
-  const step = event.shiftKey ? 1 : 10;
-  if (event.key === "ArrowLeft") nudgeSelected(-step, 0);
-  else if (event.key === "ArrowRight") nudgeSelected(step, 0);
-  else if (event.key === "ArrowUp") nudgeSelected(0, -step);
-  else nudgeSelected(0, step);
+  const step = event.shiftKey ? 1 : (state.snapGrid || 10);
+  if (event.key === "ArrowLeft") nudgeSelected(-step, 0, !event.shiftKey);
+  else if (event.key === "ArrowRight") nudgeSelected(step, 0, !event.shiftKey);
+  else if (event.key === "ArrowUp") nudgeSelected(0, -step, !event.shiftKey);
+  else nudgeSelected(0, step, !event.shiftKey);
+});
+
+$("view-2d").addEventListener("click", toggleView2d);
+$("snap-grid").addEventListener("change", event => {
+  state.snapGrid = Number(event.target.value) || 0;
+  setStatus(state.snapGrid ? `grid snap ${state.snapGrid}` : "grid snap off");
+  drawScene(state.clock);
+});
+document.querySelectorAll("[data-align-left],[data-align-right],[data-align-top],[data-align-bottom]").forEach(button => {
+  button.addEventListener("click", () => {
+    if (button.dataset.alignLeft) alignObjects("left");
+    else if (button.dataset.alignRight) alignObjects("right");
+    else if (button.dataset.alignTop) alignObjects("top");
+    else alignObjects("bottom");
+  });
+});
+document.querySelectorAll("[data-distribute-h],[data-distribute-v]").forEach(button => {
+  button.addEventListener("click", () => distributeObjects(button.dataset.distributeH ? "h" : "v"));
 });
 
 flowCanvas.addEventListener("pointerdown", event => {

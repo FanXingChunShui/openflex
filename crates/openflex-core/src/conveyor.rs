@@ -226,6 +226,25 @@ impl Belt {
         }
     }
 
+    /// task-71: enforce the minimum spacing from front to back by pushing
+    /// items backwards (`pos[i] <= pos[i-1] - spacing`). Items that were
+    /// placed too close are compressed onto the spacing grid instead of
+    /// overlapping.
+    fn compress(&mut self) {
+        for index in 1..self.positions.len() {
+            let limit = self.positions[index - 1] - self.spacing;
+            if self.positions[index] > limit {
+                self.positions[index] = limit.max(0.0);
+            }
+        }
+        // The last item may have been pushed behind the entry.
+        if let Some(last) = self.positions.last_mut()
+            && *last < 0.0
+        {
+            *last = 0.0;
+        }
+    }
+
     /// The belt is jammed: the leading item is at the exit and the belt is
     /// non-accumulating, so nothing moves.
     pub fn frozen(&self) -> bool {
@@ -286,6 +305,9 @@ impl Belt {
         if dt <= 0.0 || self.frozen() {
             return;
         }
+        // task-71: strict pushing - items can never overlap, even when a model
+        // placed them closer than `spacing`.
+        self.compress();
         // task-59: advance in the smallest constrained step instead of
         // consuming the whole `dt`. An item that is dwelling at a station or
         // waiting for the item in front keeps its remaining time and moves on
@@ -537,5 +559,40 @@ mod stop_tests {
         // behind and reaches 9.
         assert!((belt.position(0).unwrap() - 10.0).abs() < 1e-9);
         assert!((belt.position(1).unwrap() - 9.0).abs() < 1e-9);
+    }
+}
+#[cfg(test)]
+mod push_tests {
+    use super::*;
+
+    /// task-71: three items closer than the spacing are compressed onto the
+    /// spacing grid before they move, so they never overlap.
+    #[test]
+    fn advance_compresses_overlapping_items() {
+        let mut belt = Belt::new(20.0, 1.0, 1.0, true);
+        belt.admit();
+        belt.admit();
+        belt.admit();
+        belt.set_position(0, 2.0);
+        belt.set_position(1, 1.5);
+        belt.set_position(2, 1.0);
+        belt.advance(1.0);
+        // The train is re-spaced, then moves as a whole.
+        assert!((belt.position(0).unwrap() - 3.0).abs() < 1e-9);
+        assert!((belt.position(1).unwrap() - 2.0).abs() < 1e-9);
+        assert!((belt.position(2).unwrap() - 1.0).abs() < 1e-9);
+        for index in 1..3 {
+            let gap = belt.position(index - 1).unwrap() - belt.position(index).unwrap();
+            assert!(gap >= 1.0 - 1e-9, "items must not overlap, gap {gap}");
+        }
+    }
+
+    /// Compression does not change the travel time of a well-spaced belt.
+    #[test]
+    fn compress_does_not_change_travel_time() {
+        let mut belt = Belt::new(10.0, 2.0, 1.0, true);
+        belt.admit();
+        belt.advance(5.0);
+        assert!((belt.position(0).unwrap() - 10.0).abs() < 1e-9);
     }
 }

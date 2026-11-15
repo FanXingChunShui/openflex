@@ -19,7 +19,7 @@
 | Sink | `sink` | ✅ | 吞吐与停留时间统计 |
 | Combiner | `combiner` | ✅ | pack / join / batch（setup+process）；容器先到、等待组件数 |
 | Separator | `separator` | ✅ | `separate_mode: unpack`（qty+1 件）/ `split`（qty 件）；0 = 容器内全部组件 |
-| Conveyor | `conveyor` | ✅ | 速度/长度/间距/容量、`curve` 弧长、`segments` 逐段积分、被挡住时精确回退；`photo_eyes`/`stations`/`join_inputs` |
+| Conveyor | `conveyor` | ✅ | 速度/长度/间距/容量、`curve` 弧长、`segments` 逐段积分、精确回退、严格最小间距（推挤压缩）；`photo_eyes`/`stations`/`join_inputs` |
 | Merge | `merge` | ✅ | 多输入合流；可选等待全部输入 |
 | Split | `split` | ✅ | 轮询或按 item type 分流 |
 | Transporter / TaskExecuter | `transporter` | 🟡 | 速度、装载/卸载时间、`network` 最短路、`home` 取货、两段任务；`capacity`=并发任务数（不搬运 flow item）；无多段自定义任务序列 |
@@ -76,7 +76,7 @@
 | 置信区间 | 报告 | ✅ | 正态近似 `1.96·se` |
 | OptQuest 优化 | `openflex optimize` | 🟡 | grid/random/genetic、多目标加权/自定义权重、Pareto 前沿；无贝叶斯/约束优化 |
 | Dashboard / 图表 | 报告 + Studio 柱状图 | 🟡 | Studio 有吞吐柱状图；无完整 Dashboard/模板 |
-| 3D 视图 / 模型树 / GUI | `openflex studio` | 🟡 | Web Studio：Canvas 透视 3D（深度遮挡/标签避让/拖拽/布局）、PNG/SVG/model-JSON 导出、字段表单、模型树、Process Flow 拖拽画布、撤销、原生 pause/step/resume、Experimenter、Dashboard、Global Table 编辑器；无 GPU/WebGL |
+| 3D 视图 / 模型树 / GUI | `openflex studio` | 🟡 | Web Studio：3D 透视（遮挡/标签避让/拖拽/布局）+ **2D 俯视视图（网格吸附/对齐/分布）**、PNG/SVG/model-JSON 导出、字段表单、模型树、Process Flow 拖拽画布、撤销、pause/step/resume、Experimenter、Dashboard、Global Table 编辑器；无 GPU/WebGL |
 | 导出 Excel / 数据库 | CSV / JSON / xlsx | ✅ | `run --xlsx` 输出 Summary/Objects/Replications 三个 sheet |
 
 ## 文件与集成
