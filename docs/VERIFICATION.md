@@ -358,12 +358,12 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 | Homebrew 公式（v0.32.0 真实 sha256） | **已完成**（`ruby -c` 通过）；tap 待创建 | `packaging/homebrew/openflex.rb` |
 | Homebrew `brew audit` / `brew install --build-from-source` | **待环境** | 本机 Homebrew 非 Tier 1 配置，audit 被 SIGTERM；命令见 `packaging/homebrew/README.md` |
 | winget / scoop 清单（v0.32.0 URL/SHA256） | **已完成，待提交** | `packaging/winget/`、`packaging/scoop/openflex.json`；由 `sync-package-manifests.sh` 同步 |
-| GHCR 镜像发布与验证 | **0.10.0–0.31.0 + latest（=0.31.0）全部 200**（0.31.0 在发布约 24 分钟后出现）；0.32.0 随 tag 构建中 | `scripts/verify-ghcr.sh` 核对；docker 本地运行**待环境** |
+| GHCR 镜像发布与验证 | **0.10.0–0.32.0 + latest（=0.32.0）全部 200**（0.31.0 约 24 分钟、0.32.0 约 32 分钟出现） | `scripts/verify-ghcr.sh` 核对；docker 本地运行**待环境** |
 | container run `43726461023`（v0.28.0） | **已 completed / success** | 14:49:36 → 15:22:38（33 分钟，含 QEMU arm64 构建）；上一轮看到的 in_progress 是正常构建阶段，非卡死 |
 | container run `43729706956`（v0.29.0） | **已 completed / success** | 15:24:29 → 15:57:25（33 分钟） |
 | container run `43731896900`（v0.30.0） | **已 completed / success** | 15:48:11 → 16:23:22（35 分钟）；经验值：tag → 镜像可用 25–35 分钟 |
 | container run（v0.31.0） | **已推送，run 收尾中** | 16:35:20 创建；镜像 24 分钟后可用（GHCR 200），run 仍在 buildx 收尾 |
-| container run（v0.32.0） | **进行中** | 16:53:03 创建，按经验 25–35 分钟 |
+| container run（v0.32.0） | **已推送，run 收尾中** | 16:53:03 创建；镜像 32 分钟后可用（GHCR 200），run 仍在 buildx 收尾 |
 | container workflow 加固 | **已完成** | `timeout-minutes: 45`、`provenance: false`、推送后 registry API 复核、失败时打印 buildx/docker 诊断 |
 | GHCR registry 检查工具 | **已完成** | `scripts/verify-ghcr.sh`（无需 docker/token；支持 `--retry`/`--expect-latest`/`--json`） |
 | Windows / Linux / deb / rpm / MSI 真机安装 | **待环境** | 脚本与命令清单就绪，见安装矩阵第 5 节 |
