@@ -33,27 +33,27 @@ scripts/release.sh --version 0.22.0 --phase publish   # [3/5] sync 清单 → [4
 `--dry-run` 只打印、不改文件；`--phase publish` 忽略预检中的"工作区干净"要求（清单同步会改
 `packaging/`）。脚本**从不**替你 commit / tag / push。
 
-**一次真实的 dry-run**（`scripts/release.sh --version 0.29.0 --dry-run`，节选）：
+**一次真实的 dry-run**（`scripts/release.sh --version 0.31.0 --dry-run`，节选）：
 
 ```text
 [1/5] Preflight (branch, working tree, versions)
 [dry-run] would check: branch == main, working tree clean
-[2/5] Bump Cargo.toml (0.28.0 -> 0.29.0) and update Cargo.lock
-[dry-run] would set [workspace.package].version = "0.29.0" in Cargo.toml
+[2/5] Bump Cargo.toml (0.30.0 -> 0.31.0) and update Cargo.lock
+[dry-run] would set [workspace.package].version = "0.31.0" in Cargo.toml
 [dry-run] would run: CARGO_INCREMENTAL=0 cargo check --workspace   # updates Cargo.lock
 [3/5] Sync package-manager manifests (needs the release; deferred)
-[dry-run] would run after the tag exists: scripts/sync-package-manifests.sh --version 0.29.0
+[dry-run] would run after the tag exists: scripts/sync-package-manifests.sh --version 0.31.0
 [4/5] verify-packaging (needs synced manifests; deferred to --phase publish)
 [dry-run] would run after the release exists: CARGO_INCREMENTAL=0 scripts/verify-packaging.sh --skip-build
 [5/5] Next steps (commands are printed, never executed)
   git add Cargo.toml Cargo.lock packaging docs
-  git commit -m "Release v0.29.0: <one-line summary>"
-  git tag -a v0.29.0 -m "OpenFlex 0.29.0"
+  git commit -m "Release v0.31.0: <one-line summary>"
+  git tag -a v0.31.0 -m "OpenFlex 0.31.0"
   git push origin main
-  git push origin v0.29.0
-  scripts/release.sh --version 0.29.0 --phase publish
-  scripts/verify-ghcr.sh --tags 0.29.0,latest --expect-latest 0.29.0
-  OPENFLEX_REPO=FanXingChunShui/openflex scripts/verify-install.sh --version 0.29.0
+  git push origin v0.31.0
+  scripts/release.sh --version 0.31.0 --phase publish
+  scripts/verify-ghcr.sh --tags 0.31.0,latest --expect-latest 0.31.0
+  OPENFLEX_REPO=FanXingChunShui/openflex scripts/verify-install.sh --version 0.31.0
 ```
 
 **常见场景**：
@@ -432,7 +432,8 @@ ghcr.io/fanxingchunshui/openflex:latest
 | `0.27.0` | ✅ 可用（tag 发布后约 10 分钟出现） | `237b9bf947dc` |
 | `0.28.0` | ✅ 可用（tag 发布后约 30 分钟出现；container run `43726461023` 最终 success，33 分钟） | `dea3c81c6a5f` |
 | `0.29.0` | ✅ 可用（tag 发布后约 32 分钟出现；container run `43729706956` 推送后仍 in_progress） | `94363c25c95a` |
-| `latest` | ✅ 指向 0.29.0 | `94363c25c95a` |
+| `0.30.0` | ✅ 可用（tag 发布后约 33 分钟出现） | `7b37e5401daa` |
+| `latest` | ✅ 指向 0.30.0 | `7b37e5401daa` |
 
 | 项 | 值 |
 |---|---|
@@ -462,9 +463,9 @@ buildx 多架构（amd64 + arm64）推送 → `docker pull` 后再次 `--version
 发布后验证（有 Docker 的机器）：
 
 ```sh
-docker run --rm ghcr.io/fanxingchunshui/openflex:0.29.0 --version   # openflex 0.29.0
+docker run --rm ghcr.io/fanxingchunshui/openflex:0.30.0 --version   # openflex 0.30.0
 docker run --rm -v "$PWD/examples:/models:ro" \
-  ghcr.io/fanxingchunshui/openflex:0.29.0 run /models/golden/mm1.ofm --format json | head -c 200
+  ghcr.io/fanxingchunshui/openflex:0.30.0 run /models/golden/mm1.ofm --format json | head -c 200
 ```
 
 没有 Docker 时的替代检查（本仓库用的方法）：查询 registry 的 manifest 是否存在、是否为
