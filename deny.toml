@@ -29,7 +29,11 @@ yanked = "deny"
 # Empty on purpose: every advisory is a bug we want to see. If an advisory has
 # no fix and is not exploitable here, add `{ id = "RUSTSEC-...", reason = "..." }`
 # instead of disabling the check.
-ignore = []
+ignore = [
+  # smartstring (rhai's string type) is unmaintained but has no safe upgrade;
+  # rhai 1.x still depends on it and the crate has no known vulnerability.
+  { id = "RUSTSEC-2026-0249", reason = "transitive dependency of rhai; no safe upgrade, no known vulnerability" },
+]
 
 [licenses]
 version = 2
@@ -45,6 +49,9 @@ allow = [
   "Unicode-3.0",
   "Unlicense",
   "CC0-1.0",
+  # rhai's smartstring dependency is MPL-2.0; MPL is file-level copyleft and
+  # compatible with shipping an MIT/Apache-2.0 binary.
+  "MPL-2.0",
 ]
 confidence-threshold = 0.8
 

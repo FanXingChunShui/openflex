@@ -9,7 +9,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const BIN: &str = env!("CARGO_BIN_EXE_openflex");
 
@@ -837,29 +837,52 @@ impl Drop for ServerChild {
     }
 }
 
+fn connect_with_retry(address: &str) -> TcpStream {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match TcpStream::connect(address) {
+            Ok(stream) => return stream,
+            Err(error) => {
+                if Instant::now() >= deadline {
+                    panic!("could not connect to the server: {error}");
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        }
+    }
+}
+
 fn http_request(address: &str, method: &str, path: &str, body: Option<&str>) -> String {
-    let mut stream = TcpStream::connect(address).expect("could not connect to the server");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .expect("timeout");
     let body = body.unwrap_or_default();
-    write!(
-        stream,
-        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    )
-    .expect("request");
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .expect("could not read the response");
-    response
+    for attempt in 0..3 {
+        let mut stream = connect_with_retry(address);
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        write!(
+            stream,
+            "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .expect("request");
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+        let mut response = String::new();
+        match stream.read_to_string(&mut response) {
+            Ok(_) => return response,
+            Err(error) if attempt < 2 => {
+                std::thread::sleep(Duration::from_millis(50));
+                let _ = error;
+            }
+            Err(error) => panic!("could not read the response: {error}"),
+        }
+    }
+    unreachable!("the loop always returns or panics")
 }
 
 /// Send headers that claim a large body without actually sending it, so the
 /// server's header-only size check can be tested without a multi-megabyte write.
 fn http_oversized(address: &str, method: &str, path: &str, content_length: usize) -> String {
-    let mut stream = TcpStream::connect(address).expect("could not connect to the server");
+    let mut stream = connect_with_retry(address);
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("timeout");
