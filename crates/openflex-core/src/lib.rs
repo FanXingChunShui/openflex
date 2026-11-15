@@ -30,9 +30,11 @@ pub mod trace;
 
 pub use checkpoint::{CHECKPOINT_FORMAT_VERSION, Checkpoint};
 pub use engine::{
-    EventPreview, FlowItem, ReplicationCheckpoint, SimulationHandle, SimulationState, derive_seed,
-    resume_from_checkpoint, run_model, run_model_with_checkpoints, simulate, simulate_traced,
-    simulate_until, simulate_with_checkpoint, simulate_with_checkpoint_traced,
+    CheckpointManifest, CheckpointManifestEntry, CheckpointRun, EventPreview, FlowItem,
+    ReplicationCheckpoint, SimulationHandle, SimulationState, derive_seed, resume_from_checkpoint,
+    run_model, run_model_parallel, run_model_with_checkpoints, run_model_with_checkpoints_retained,
+    simulate, simulate_traced, simulate_until, simulate_with_checkpoint,
+    simulate_with_checkpoint_traced,
 };
 pub use error::SimError;
 pub use script::{

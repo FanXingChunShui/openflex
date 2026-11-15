@@ -145,6 +145,9 @@ enum Command {
         /// Save one checkpoint per replication into DIR as checkpoint.rep0.json, checkpoint.rep1.json, …
         #[arg(long, value_name = "DIR", conflicts_with_all = ["save_checkpoint", "resume"])]
         save_checkpoints: Option<PathBuf>,
+        /// With --save-checkpoints, keep only the newest N checkpoint files.
+        #[arg(long, value_name = "N", requires = "save_checkpoints")]
+        keep_checkpoints: Option<usize>,
         /// Resume from a checkpoint written by --save-checkpoint (single replication; cannot be combined with --parallel > 1, several --seed values, --trace or --set).
         #[arg(long, value_name = "FILE")]
         resume: Option<PathBuf>,
@@ -342,7 +345,7 @@ enum Command {
         #[arg(long, short = 'o', value_name = "FILE")]
         output: Option<PathBuf>,
     },
-    /// Open a local web studio: 3D view, model tree with rename/duplicate/delete, global tables, parameter/process-flow editors, native event/time stepping with pause/resume, experiments and dashboard/time-series export.
+    /// Open a local web studio: 3D view, model tree with rename/duplicate/delete, global tables, checkpoint restore panel, parameter/process-flow editors, native event/time stepping with pause/resume, experiments and dashboard/time-series export.
     Studio {
         /// Path to the model file to edit and run.
         model: PathBuf,
@@ -352,6 +355,9 @@ enum Command {
         /// Do not open a browser window.
         #[arg(long)]
         no_open: bool,
+        /// Checkpoint directory shown in the studio panel (default: DIR/checkpoints next to the model).
+        #[arg(long, value_name = "DIR")]
+        checkpoints: Option<PathBuf>,
     },
     /// Serve a minimal read-only HTTP API on 127.0.0.1 (`/health`, `/objects`).
     Serve {
@@ -683,6 +689,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             batch_means_objects,
             save_checkpoint,
             save_checkpoints,
+            keep_checkpoints,
             resume,
             flow,
             fluid,
@@ -762,6 +769,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                         quiet,
                     },
                     progress,
+                    keep_checkpoints,
                 );
             }
             if save_checkpoint.is_some() || resume.is_some() {
@@ -1010,8 +1018,18 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             model,
             port,
             no_open,
-        } => studio::serve(&model, port, !no_open, quiet)
-            .map_err(|error| Failure::runtime(anyhow!(error))),
+            checkpoints,
+        } => {
+            let checkpoint_dir = checkpoints.unwrap_or_else(|| {
+                model
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."))
+                    .join("checkpoints")
+            });
+            studio::serve(&model, port, !no_open, quiet, &checkpoint_dir)
+                .map_err(|error| Failure::runtime(anyhow!(error)))
+        }
         Command::Serve { port } => {
             serve::serve(port, quiet).map_err(|error| Failure::runtime(anyhow!(error)))
         }
@@ -1244,6 +1262,44 @@ fn validate_checkpoint_options(
 /// [`openflex_core::ReplicationResult`] as a single run to the later stop
 /// time, so the report rendered here is byte-for-byte the one `openflex run`
 /// would print for the full horizon.
+/// Delete older `checkpoint.repN.json` files, keeping the highest N indices.
+fn prune_checkpoints(directory: &Path, keep: usize) -> Result<usize, Failure> {
+    let entries = fs::read_dir(directory).map_err(|error| {
+        Failure::runtime(anyhow!(
+            "could not read checkpoint directory {}: {error}",
+            directory.display()
+        ))
+    })?;
+    let mut found: Vec<(u32, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(index) = name
+            .strip_prefix("checkpoint.rep")
+            .and_then(|rest| rest.strip_suffix(".json"))
+            .and_then(|index| index.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        found.push((index, path));
+    }
+    found.sort_by_key(|(index, _)| *index);
+    let remove = found.len().saturating_sub(keep);
+    let mut removed = 0;
+    for (_, path) in found.into_iter().take(remove) {
+        fs::remove_file(&path).map_err(|error| {
+            Failure::runtime(anyhow!(
+                "could not remove old checkpoint {}: {error}",
+                path.display()
+            ))
+        })?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
 /// Run every replication and write one checkpoint per replication.
 ///
 /// The core exposes per-replication `simulate_with_checkpoint`; the CLI loops
@@ -1254,6 +1310,7 @@ fn run_batch_checkpoints(
     directory: &Path,
     output: &RunOutput<'_>,
     progress: bool,
+    keep: Option<usize>,
 ) -> Result<(), Failure> {
     let configs = run_configs(model, seeds);
     let reporter = Progress::new(progress, configs.len());
@@ -1274,6 +1331,20 @@ fn run_batch_checkpoints(
         paths.push(path);
         results.push(result);
         reporter.tick();
+    }
+    if let Some(keep) = keep {
+        if keep == 0 {
+            return Err(Failure::usage(anyhow!(
+                "--keep-checkpoints must be at least 1"
+            )));
+        }
+        let removed = prune_checkpoints(directory, keep)?;
+        if removed > 0 {
+            note(
+                output.quiet,
+                &format!("removed {removed} older checkpoint file(s), kept {keep}"),
+            );
+        }
     }
     note(
         output.quiet,

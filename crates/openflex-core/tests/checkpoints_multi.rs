@@ -112,3 +112,60 @@ fn rejects_non_positive_stop_time() {
     assert!(error.to_string().contains("stop_time"));
     assert!(!dir.exists(), "nothing may be written");
 }
+
+// ---------------------------------------------------------------------------
+// task-59: manifest and pruning
+// ---------------------------------------------------------------------------
+
+use openflex_core::{CheckpointManifest, run_model_with_checkpoints_retained};
+
+/// The directory gets a `manifest.json` describing every replication.
+#[test]
+fn writes_a_manifest() {
+    let dir = temp_dir("manifest");
+    let run = run_model_with_checkpoints_retained(&model(3), &dir, 100.0, None).expect("run");
+    let manifest_path = dir.join("manifest.json");
+    assert!(manifest_path.is_file(), "manifest.json must exist");
+    let text = fs::read_to_string(&manifest_path).expect("read manifest");
+    let manifest: CheckpointManifest = serde_json::from_str(&text).expect("parse manifest");
+    assert_eq!(manifest.format_version, 1);
+    assert_eq!(manifest.model, "multi-checkpoint");
+    assert_eq!(manifest.stop_time, 100.0);
+    assert_eq!(manifest.replications, 3);
+    assert_eq!(manifest.base_seed, 7);
+    assert!(manifest.created_at > 0, "a timestamp is recorded");
+    assert_eq!(manifest.entries.len(), 3);
+    assert_eq!(manifest.entries, run.manifest.entries);
+    for entry in &manifest.entries {
+        assert!(entry.seed > 0);
+        assert_eq!(entry.file, format!("checkpoint-{}.json", entry.index));
+        assert!(entry.retained);
+    }
+}
+
+/// `keep` prunes the oldest files but keeps them in the manifest.
+#[test]
+fn keep_prunes_old_checkpoints() {
+    let dir = temp_dir("keep");
+    let run = run_model_with_checkpoints_retained(&model(3), &dir, 100.0, Some(2)).expect("run");
+    let files: Vec<String> = fs::read_dir(&dir)
+        .expect("read dir")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter(|name| name.starts_with("checkpoint-"))
+        .collect();
+    assert_eq!(files.len(), 2, "keep must leave two checkpoint files");
+    assert_eq!(run.entries.len(), 3, "all replications are still reported");
+    assert_eq!(run.manifest.entries.len(), 3);
+    let pruned = run
+        .manifest
+        .entries
+        .iter()
+        .filter(|entry| !entry.retained)
+        .count();
+    assert_eq!(pruned, 1, "exactly one file was pruned");
+    // The newest files (highest index, written last) are the retained ones.
+    assert!(dir.join("checkpoint-2.json").is_file());
+    assert!(dir.join("checkpoint-1.json").is_file());
+    let _ = fs::remove_dir_all(&dir);
+}

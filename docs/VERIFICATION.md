@@ -94,21 +94,20 @@ pwsh、docker，registry 检查默认关闭；清单已同步到 v0.13.0）。
 
 ## 6. 性能基线
 
-在 2026-11 的 macOS 15.8.1 x86_64 机器上，release 构建（**v0.16.0**）：
+在 2026-11 的 macOS 15.8.1 x86_64 机器上，release 构建（**v0.20.0**）：
 
 | 场景 | 规模 | 用时 / 吞吐 |
 |---|---|---|
-| M/M/1 长仿真（`bench_mm1`） | 120,318 事件 | 0.079 s → **1.52M events/s**、252,802 items/s |
+| M/M/1 长仿真（`bench_mm1`） | 120,318 事件 | 0.079 s → **1.52M events/s**、252,802 items/s（v0.16 基线） |
 | 多复现 | 5 × 48000 时间单位 | < 0.2 s |
-| 大模型 1k 对象 | 1,500 事件 | validate 0.02 s / run 0.02 s → 60,799 events/s |
-| 大模型 10k 对象 | 15,000 事件 | validate 0.14 s / run 0.40 s → 37,266 events/s |
-| 大模型 100k 对象 | 150,000 事件 | validate **0.78 s** / run **2.58 s** → 58,200 events/s，峰值 392 MB |
+| 大模型 10k 对象 | 15,000 事件 | validate 0.08 s / run 0.20 s → 76,239 events/s |
+| 大模型 100k 对象 | 150,000 事件 | validate **0.73 s** / run **2.40 s** → 62,404 events/s，峰值 394 MB |
 
-**规模结论**：10× 对象带来约 6–10× 时间，**接近线性**（v0.16 相比 v0.11 的
-85.12 s / 271.56 s 快约 **100×**，一次 run 从 4.5 分钟降到 2.6 秒）。
+**规模结论**：10× 对象带来 9.1×（validate）/12×（run）时间，**接近线性**；v0.20.0 相比
+v0.11.0 的 85.12 s / 271.56 s 快约 **110×**（一次 run 从 4.5 分钟降到 2.4 秒）。
 
 **CI 性能门槛（`bench` job）**：每个 PR 跑 10k 对象基准，
-**validate < 2 s、run < 5 s** 为硬门槛（本机基线 0.14 s / 0.40 s，留 12–14× 余量），
+**validate < 2 s、run < 5 s** 为硬门槛（v0.20.0 本机基线 0.08 s / 0.20 s，留 **25×** 余量），
 超限直接失败；结果写进 job summary 并作为 artifact 保留。理由与调整方法见
 [performance.md](verification/performance.md) §4.1。
 
@@ -168,6 +167,9 @@ profile 数据再叠加 `target/`，容易接近上限，表现为构建中途 `
 - 本地同理：曾因反复生成 100 万对象模型 + 多次完整构建把磁盘填满（见
   [performance.md](verification/performance.md) 的 profiling 记录）；排查顺序是
   `cargo clean` → 清理 `/tmp` 下的大模型与 profile 产物。
+- **效果（2026-11-15 实测）**：本地用 `CARGO_INCREMENTAL=0` 跑 `verify-packaging.sh --skip-build`
+  （含 wasm32 check）+ 10k/100k 基准，磁盘始终 26–27 Gi 可用、无膨胀；本轮全程用 release
+  二进制做真机/基准验证，未触发本地完整构建。
 
 `fuzz/` 是独立的 cargo-fuzz workspace（不在主 workspace 内，`cargo test --workspace` 不受影响）；
 在 stable 工具链上无法运行 libFuzzer，所以 CI 把它设为 optional，本地用 fallback 模式兜底。

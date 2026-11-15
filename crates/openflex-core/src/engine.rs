@@ -1224,6 +1224,57 @@ pub fn run_model(model: &Model) -> Result<SimReport, SimError> {
     Ok(SimReport::from_replications(model, results))
 }
 
+/// task-59: run every replication on `workers` threads.
+///
+/// The replications are independent (each has its own seed and engine), so the
+/// results are identical to [`run_model`]; they are re-assembled in replication
+/// order, which keeps the report deterministic.
+pub fn run_model_parallel(model: &Model, workers: usize) -> Result<SimReport, SimError> {
+    let replications = model.run.replications.max(1);
+    let worker_count = workers.max(1).min(replications as usize);
+    if worker_count <= 1 {
+        return run_model(model);
+    }
+    let mut collected: Vec<Option<ReplicationResult>> = vec![None; replications as usize];
+    let mut failure: Option<SimError> = None;
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
+        for worker in 0..worker_count {
+            handles.push(scope.spawn(move || {
+                let mut local: Vec<(u32, ReplicationResult)> = Vec::new();
+                let mut errors: Vec<SimError> = Vec::new();
+                let mut index = worker as u32;
+                while index < replications {
+                    let seed = derive_seed(model.run.seed, index);
+                    let config = SimConfig::from_run_settings(&model.run, seed);
+                    match simulate(model, &config, index) {
+                        Ok(result) => local.push((index, result)),
+                        Err(error) => errors.push(error),
+                    }
+                    index += worker_count as u32;
+                }
+                (local, errors)
+            }));
+        }
+        for handle in handles {
+            let (local, errors) = handle.join().expect("a replication worker panicked");
+            for (index, result) in local {
+                collected[index as usize] = Some(result);
+            }
+            if failure.is_none()
+                && let Some(error) = errors.into_iter().next()
+            {
+                failure = Some(error);
+            }
+        }
+    });
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    let results: Vec<ReplicationResult> = collected.into_iter().flatten().collect();
+    Ok(SimReport::from_replications(model, results))
+}
+
 /// Run one replication.
 pub fn simulate(
     model: &Model,
@@ -1355,7 +1406,7 @@ pub struct EventPreview {
 }
 
 /// One replication of a multi-checkpoint run (task-56).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ReplicationCheckpoint {
     /// Replication index (0-based).
     pub index: u32,
@@ -1365,17 +1416,66 @@ pub struct ReplicationCheckpoint {
     pub path: PathBuf,
 }
 
+/// One entry of a checkpoint directory manifest (task-59).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckpointManifestEntry {
+    /// Replication index (0-based).
+    pub index: u32,
+    /// Seed used by this replication.
+    pub seed: u64,
+    /// Checkpoint file name inside the directory.
+    pub file: String,
+    pub items_created: u64,
+    pub items_completed: u64,
+    pub items_in_system: u64,
+    /// False when `keep` pruned the file after the run.
+    pub retained: bool,
+}
+
+/// `manifest.json` written next to the checkpoints (task-59).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckpointManifest {
+    pub format_version: u32,
+    pub model: String,
+    pub stop_time: f64,
+    pub replications: u32,
+    pub base_seed: u64,
+    /// Unix timestamp (seconds) of the run.
+    pub created_at: u64,
+    pub entries: Vec<CheckpointManifestEntry>,
+}
+
+/// Result of a checkpointed multi-replication run (task-59).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckpointRun {
+    /// One entry per replication (files that `keep` pruned are still listed,
+    /// with `retained: false`).
+    pub entries: Vec<ReplicationCheckpoint>,
+    pub manifest: CheckpointManifest,
+}
+
 /// task-56: run every replication of the model to `stop_time` and write one
-/// checkpoint per replication into `dir`.
-///
-/// The files are named `checkpoint-<index>.json` and use the regular
-/// [`Checkpoint`] format, so [`simulate_with_checkpoint`] can resume any of
-/// them later. The directory is created when it does not exist.
+/// checkpoint per replication into `dir` (no pruning).
 pub fn run_model_with_checkpoints(
     model: &Model,
     dir: &Path,
     stop_time: f64,
 ) -> Result<Vec<ReplicationCheckpoint>, SimError> {
+    Ok(run_model_with_checkpoints_retained(model, dir, stop_time, None)?.entries)
+}
+
+/// task-59: like [`run_model_with_checkpoints`], but also writes
+/// `manifest.json` and prunes the directory when `keep` is set.
+///
+/// `keep = Some(n)` keeps the newest `n` checkpoint files (by modification
+/// time) and deletes the older ones; entries whose file was pruned stay in the
+/// manifest with `retained: false`.
+pub fn run_model_with_checkpoints_retained(
+    model: &Model,
+    dir: &Path,
+    stop_time: f64,
+    keep: Option<usize>,
+) -> Result<CheckpointRun, SimError> {
     if stop_time <= 0.0 {
         return Err(SimError::Config("stop_time must be positive".into()));
     }
@@ -1387,26 +1487,99 @@ pub fn run_model_with_checkpoints(
     })?;
     let replications = model.run.replications.max(1);
     let mut written = Vec::with_capacity(replications as usize);
+    let mut entries = Vec::with_capacity(replications as usize);
     for index in 0..replications {
         let seed = derive_seed(model.run.seed, index);
         let mut config = SimConfig::from_run_settings(&model.run, seed);
         config.stop_time = stop_time;
         let (result, checkpoint) = simulate_with_checkpoint(model, &config, index, None)?;
-        let path = dir.join(format!("checkpoint-{index}.json"));
+        let file = format!("checkpoint-{index}.json");
+        let path = dir.join(&file);
         let json = checkpoint.to_json()?;
         std::fs::write(&path, json).map_err(|error| {
             SimError::Config(format!("could not write {}: {error}", path.display()))
         })?;
+        entries.push(CheckpointManifestEntry {
+            index,
+            seed,
+            file,
+            items_created: result.items_created,
+            items_completed: result.items_completed,
+            items_in_system: result.items_in_system,
+            retained: true,
+        });
         written.push(ReplicationCheckpoint {
             index,
             result,
             path,
         });
     }
-    Ok(written)
+    // task-59: keep only the newest `keep` checkpoint files.
+    if let Some(limit) = keep {
+        let removed = prune_checkpoints(dir, limit)?;
+        for entry in &mut entries {
+            if removed.contains(&entry.file) {
+                entry.retained = false;
+            }
+        }
+    }
+    let manifest = CheckpointManifest {
+        format_version: 1,
+        model: model.name.clone(),
+        stop_time,
+        replications,
+        base_seed: model.run.seed,
+        created_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0),
+        entries,
+    };
+    let json = serde_json::to_string_pretty(&manifest)
+        .map_err(|error| SimError::Config(format!("could not serialise manifest: {error}")))?;
+    std::fs::write(dir.join("manifest.json"), json).map_err(|error| {
+        SimError::Config(format!(
+            "could not write {}: {error}",
+            dir.join("manifest.json").display()
+        ))
+    })?;
+    Ok(CheckpointRun {
+        entries: written,
+        manifest,
+    })
 }
 
-/// A live simulation that can be advanced incrementally (task-47).
+/// Delete the oldest `checkpoint-*.json` files until at most `keep` remain.
+/// Returns the names of the removed files.
+fn prune_checkpoints(dir: &Path, keep: usize) -> Result<Vec<String>, SimError> {
+    let mut files: Vec<(std::time::SystemTime, String)> = Vec::new();
+    let read = std::fs::read_dir(dir)
+        .map_err(|error| SimError::Config(format!("could not read {}: {error}", dir.display())))?;
+    for entry in read.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with("checkpoint-") || !name.ends_with(".json") {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        files.push((modified, name));
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let mut removed = Vec::new();
+    while files.len() > keep {
+        let (_, name) = files.remove(0);
+        let path = dir.join(&name);
+        std::fs::remove_file(&path).map_err(|error| {
+            SimError::Config(format!("could not remove {}: {error}", path.display()))
+        })?;
+        removed.push(name);
+    }
+    Ok(removed)
+}
+
+/// A live simulation that can be advanced incrementally (task-47)./// A live simulation that can be advanced incrementally (task-47).
 ///
 /// The one-shot helpers ([`simulate_until`], [`resume_from_checkpoint`]) build a
 /// fresh engine for every segment. A handle keeps the event calendar and the

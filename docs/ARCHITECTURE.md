@@ -168,7 +168,14 @@ FlexSim 的公开帮助没有定义下面几项行为，但任何离散事件引
 
 `ConveyorParams.segments: [{length, speed, angle?}]` 非空时皮带安装段边界/段速度，`advance_position()` 与
 `time_to_reach()` **按段积分**（跨段携带剩余时间），photo eye/station/出口到达时间都按段速度；单速路径不变。
-`angle` 仅在 `curve.radius` 存在时折算弧长。
+`angle` 仅在 `curve.radius` 存在时折算弧长。`Belt::advance()` 用最小约束步长迭代：dwell 到期/阻塞解除后
+在同一 `dt` 的剩余时间继续移动，不再整步消耗。
+
+## 检查点与并行
+
+`run_model_with_checkpoints_retained(model, dir, stop_time, keep)` 写 `checkpoint-<index>.json` 与 `manifest.json`
+（model/stop_time/replications/base_seed/created_at/entries），`keep=Some(n)` 保留最新 n 个文件；
+`run_model_parallel(model, workers)` 用 `std::thread::scope` 按复现下标分区，报告顺序确定、与串行逐位一致。
 
 ## 路径缓存
 

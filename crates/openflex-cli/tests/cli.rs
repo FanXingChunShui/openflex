@@ -2814,6 +2814,9 @@ fn studio_can_add_and_delete_objects_through_the_api() {
         "id=\"timeseries-interval\"",
         "id=\"timeseries-object\"",
         "id=\"global-tables\"",
+        "id=\"checkpoints\"",
+        "data-checkpoint-panel",
+        "data-restore-checkpoint",
         "id=\"step-event\"",
         "id=\"next-event\"",
         "id=\"event-list\"",
@@ -3668,6 +3671,9 @@ fn studio_global_table_editor_updates_the_model() {
     let html = http_body(&http_get(&address, "/")).to_string();
     for marker in [
         "id=\"global-tables\"",
+        "id=\"checkpoints\"",
+        "data-checkpoint-panel",
+        "data-restore-checkpoint",
         "id=\"step-event\"",
         "id=\"next-event\"",
         "id=\"event-list\"",
@@ -4047,4 +4053,97 @@ fn batch_means_can_include_per_object_metrics() {
         "--quiet",
     ]);
     assert_eq!(code(&too_few), 2, "stderr: {}", stderr(&too_few));
+}
+
+#[test]
+fn run_keep_checkpoints_retains_only_the_newest_files() {
+    let dir = TempDir::new("keep-checkpoints");
+    let model = dir.write("demo.ofm", MODEL);
+    let checkpoints = dir.join("checkpoints");
+
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "3",
+        "--save-checkpoints",
+        &path_str(&checkpoints),
+        "--keep-checkpoints",
+        "2",
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let names: Vec<String> = fs::read_dir(&checkpoints)
+        .expect("checkpoints")
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    assert_eq!(names.len(), 2, "kept files: {names:?}");
+    assert!(names.contains(&"checkpoint.rep1.json".to_string()));
+    assert!(names.contains(&"checkpoint.rep2.json".to_string()));
+    assert!(!names.contains(&"checkpoint.rep0.json".to_string()));
+
+    // The flag is only meaningful with --save-checkpoints.
+    let invalid = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "2",
+        "--keep-checkpoints",
+        "1",
+        "--quiet",
+    ]);
+    assert_eq!(code(&invalid), 2, "stderr: {}", stderr(&invalid));
+}
+
+#[test]
+fn studio_checkpoint_panel_lists_and_restores() {
+    let dir = TempDir::new("studio-checkpoints");
+    let model = dir.write("demo.ofm", MODEL);
+    let checkpoints = dir.join("checkpoints");
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "3",
+        "--save-checkpoints",
+        &path_str(&checkpoints),
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+
+    let (_server, address) = start_studio(&model);
+    let listed = http_get(&address, "/api/checkpoints");
+    assert!(http_status(&listed).contains("200 OK"), "list: {listed}");
+    let listed = json(http_body(&listed));
+    let entries = listed["checkpoints"].as_array().expect("checkpoints");
+    assert_eq!(entries.len(), 3);
+    for (index, entry) in entries.iter().enumerate() {
+        assert_eq!(entry["index"], index as u64);
+        assert_eq!(entry["now"], 200.0);
+        assert!(entry["size"].as_u64().unwrap_or_default() > 0);
+    }
+
+    let restored = http_request(
+        &address,
+        "POST",
+        "/api/resume-checkpoint",
+        Some(r#"{"file":"checkpoint.rep1.json"}"#),
+    );
+    assert!(
+        http_status(&restored).contains("200 OK"),
+        "restore: {}",
+        http_body(&restored)
+    );
+    let restored = json(http_body(&restored));
+    assert_eq!(restored["state"]["now"], 200.0);
+    assert!(restored["state"]["paused"].is_boolean());
+
+    let missing = http_request(
+        &address,
+        "POST",
+        "/api/resume-checkpoint",
+        Some(r#"{"file":"nope.json"}"#),
+    );
+    assert!(http_status(&missing).contains("404"), "missing: {missing}");
 }

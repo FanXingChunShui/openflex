@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.21.0 — 2026-11-15
+
+### 运行与对象
+
+- **检查点目录管理**：`run_model_with_checkpoints_retained`（`manifest.json` + `keep=Some(n)` 保留最新 n 个），
+  CLI `--keep-checkpoints N`，Studio 检查点面板（列表/恢复）。
+- **多复现并行**：`run_model_parallel(model, workers)`（线程按复现下标分区，报告顺序确定，与串行逐位一致）。
+- **conveyor 精确回退**：`Belt::advance()` 最小约束步长迭代，dwell 到期/阻塞解除后在同一 dt 剩余时间继续移动
+  （旧实现整步消耗）；测试 [10, 9] 跟进。
+
+### 验证
+
+- 450 个测试全绿（core 218、CLI 83、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.21.0 三平台产物发布并 SHA256 校验。
+
 ## v0.20.0 — 2026-11-15
 
 ### 运行与对象

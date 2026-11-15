@@ -106,7 +106,7 @@ fn english(key: &str) -> &'static str {
              openflex run basic.ofm --flow --format markdown\n  \
              openflex run basic.ofm --fluid\n  \
              openflex report out/report.json --flow --fluid\n  \
-             openflex studio basic.ofm --port 0 --no-open\n  \
+             openflex studio basic.ofm --port 0 --no-open --checkpoints checkpoints/\n  \
              cargo run --release -p openflex-cli --example bench_mm1 -- --model examples/mm1.ofm --stop 100000"
         }
         "error_prefix" => "error:",
@@ -216,7 +216,7 @@ fn chinese(key: &str) -> &'static str {
              openflex run basic.ofm --flow --format markdown\n  \
              openflex run basic.ofm --fluid\n  \
              openflex report out/report.json --flow --fluid\n  \
-             openflex studio basic.ofm --port 0 --no-open\n  \
+             openflex studio basic.ofm --port 0 --no-open --checkpoints checkpoints/\n  \
              cargo run --release -p openflex-cli --example bench_mm1 -- --model examples/mm1.ofm --stop 100000"
         }
         "error_prefix" => "错误：",

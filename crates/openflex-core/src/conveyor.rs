@@ -286,20 +286,57 @@ impl Belt {
         if dt <= 0.0 || self.frozen() {
             return;
         }
-        for index in 0..self.positions.len() {
-            let hold = self.hold_remaining(index);
-            if hold > 0.0 {
-                // The dwell uses the whole step; the item starts moving at the
-                // next event (the dwell expiry).
-                if let Some(slot) = self.holds.get_mut(index) {
-                    *slot = (hold - dt).max(0.0);
+        // task-59: advance in the smallest constrained step instead of
+        // consuming the whole `dt`. An item that is dwelling at a station or
+        // waiting for the item in front keeps its remaining time and moves on
+        // once the constraint clears, so `advance(5)` with a 2 s dwell still
+        // moves the item for the remaining 3 s.
+        let mut remaining = dt;
+        let mut guard = 0;
+        while remaining > EPS && guard < 10_000 {
+            guard += 1;
+            let mut step = remaining;
+            let mut has_moving = false;
+            for index in 0..self.positions.len() {
+                let hold = self.hold_remaining(index);
+                if hold > EPS {
+                    // The dwell ends after `hold`; the item may move afterwards.
+                    has_moving = true;
+                    step = step.min(hold);
+                    continue;
                 }
-                continue;
+                let gap = self.limit(index) - self.positions[index];
+                if gap <= EPS {
+                    // Jammed against its limit for now; other items may still
+                    // have room, so it does not stop the whole step.
+                    continue;
+                }
+                has_moving = true;
+                step = step.min(self.time_to_reach(self.positions[index], self.limit(index)));
             }
-            let limit = self.limit(index);
-            // task-56: integrate the speed profile instead of a single speed.
-            let target = self.advance_position(self.positions[index], dt).min(limit);
-            self.positions[index] = target.max(self.positions[index]);
+            if step <= EPS {
+                break;
+            }
+            let step = step.min(remaining);
+            for index in 0..self.positions.len() {
+                let hold = self.hold_remaining(index);
+                if hold > EPS {
+                    if let Some(slot) = self.holds.get_mut(index) {
+                        *slot = (hold - step).max(0.0);
+                    }
+                    continue;
+                }
+                let limit = self.limit(index);
+                let target = self
+                    .advance_position(self.positions[index], step)
+                    .min(limit);
+                self.positions[index] = target.max(self.positions[index]);
+            }
+            remaining -= step;
+            if !has_moving {
+                // Every item is jammed: the rest of `dt` cannot move anything.
+                break;
+            }
         }
     }
 
@@ -473,5 +510,32 @@ mod stop_tests {
         // ... but the first half is reached after 5 s, not after 10 s.
         assert!((fast_first.time_to_reach(0.0, 10.0) - 5.0).abs() < 1e-9);
         assert!((slow_first.time_to_reach(0.0, 10.0) - 10.0).abs() < 1e-9);
+    }
+
+    /// task-59: after a station dwell the item keeps the remaining time of the
+    /// step instead of losing it.
+    #[test]
+    fn advance_after_a_dwell_uses_the_remaining_time() {
+        let mut belt = Belt::new(10.0, 1.0, 1.0, true);
+        belt.admit();
+        belt.set_hold(0, 2.0);
+        belt.advance(5.0);
+        // 2 s of dwelling + 3 s of travel at speed 1.
+        assert!((belt.position(0).unwrap() - 3.0).abs() < 1e-9);
+    }
+
+    /// task-59: a blocked item starts moving as soon as the leader makes room.
+    #[test]
+    fn advance_resumes_a_blocked_item_when_the_leader_moves() {
+        let mut belt = Belt::new(10.0, 1.0, 1.0, true);
+        belt.admit();
+        belt.admit();
+        belt.set_position(0, 5.0);
+        belt.set_position(1, 3.0);
+        belt.advance(10.0);
+        // The leader reaches the exit at t = 5, the follower keeps one spacing
+        // behind and reaches 9.
+        assert!((belt.position(0).unwrap() - 10.0).abs() < 1e-9);
+        assert!((belt.position(1).unwrap() - 9.0).abs() < 1e-9);
     }
 }

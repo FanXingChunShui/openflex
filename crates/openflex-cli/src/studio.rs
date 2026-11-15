@@ -35,7 +35,7 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use openflex_model::Model;
@@ -82,6 +82,10 @@ enum RunnerCommand {
     },
     NextEvent {
         reply: std::sync::mpsc::Sender<Result<RunnerEventReply, String>>,
+    },
+    Restore {
+        checkpoint: Box<openflex_core::Checkpoint>,
+        reply: std::sync::mpsc::Sender<Result<RunnerReply, String>>,
     },
     Reset {
         reply: std::sync::mpsc::Sender<Result<RunnerReply, String>>,
@@ -147,6 +151,13 @@ impl NativeRunner {
         received
             .recv()
             .map_err(|_| "the simulation worker stopped".to_string())?
+    }
+
+    fn restore(&self, checkpoint: openflex_core::Checkpoint) -> Result<RunnerReply, String> {
+        self.request(|reply| RunnerCommand::Restore {
+            checkpoint: Box::new(checkpoint),
+            reply,
+        })
     }
 
     fn reset(&self) -> Result<RunnerReply, String> {
@@ -306,6 +317,42 @@ fn run_worker(model: Model, receiver: std::sync::mpsc::Receiver<RunnerCommand>) 
                     state: simulation.state(),
                 }));
             }
+            RunnerCommand::Restore { checkpoint, reply } => {
+                // A checkpoint can come from any replication, so build the
+                // handle with the checkpoint's derived seed instead of the
+                // studio's default replication-0 seed.
+                let restore_config = openflex_core::SimConfig {
+                    stop_time: model.run.stop_time,
+                    warmup: checkpoint.warmup(),
+                    seed: checkpoint.seed(),
+                };
+                let mut simulation =
+                    match openflex_core::SimulationHandle::new(&model, &restore_config, 0) {
+                        Ok(simulation) => simulation,
+                        Err(error) => {
+                            let _ = reply.send(Err(error.to_string()));
+                            continue;
+                        }
+                    };
+                if let Err(error) = simulation.restore(&checkpoint) {
+                    let _ = reply.send(Err(error.to_string()));
+                    continue;
+                }
+                let mut report_model = model.clone();
+                report_model.run.stop_time = simulation.now();
+                report_model.run.replications = 1;
+                let report = openflex_core::SimReport::from_replications(
+                    &report_model,
+                    vec![simulation.result()],
+                );
+                let state = simulation.state();
+                handle = Some(simulation);
+                let _ = reply.send(Ok(RunnerReply {
+                    report,
+                    state,
+                    event: None,
+                }));
+            }
             RunnerCommand::Reset { reply } => {
                 handle = None;
                 let _ = reply.send(Ok(RunnerReply {
@@ -335,10 +382,17 @@ fn ensure_runner(state: &mut StudioState) -> &NativeRunner {
 struct StudioState {
     model: Model,
     runner: Option<NativeRunner>,
+    checkpoints: PathBuf,
 }
 
 /// Serve the studio until the process is killed.
-pub fn serve(model_path: &Path, port: u16, open: bool, quiet: bool) -> Result<(), String> {
+pub fn serve(
+    model_path: &Path,
+    port: u16,
+    open: bool,
+    quiet: bool,
+    checkpoints: &Path,
+) -> Result<(), String> {
     let text = fs::read_to_string(model_path)
         .map_err(|error| format!("could not read model {}: {error}", model_path.display()))?;
     let model = Model::from_json(&text)
@@ -346,6 +400,7 @@ pub fn serve(model_path: &Path, port: u16, open: bool, quiet: bool) -> Result<()
     let mut state = StudioState {
         model,
         runner: None,
+        checkpoints: checkpoints.to_path_buf(),
     };
     let listener = TcpListener::bind(("127.0.0.1", port))
         .map_err(|error| format!("could not bind 127.0.0.1:{port}: {error}"))?;
@@ -445,6 +500,10 @@ fn handle_connection(
         ("POST", "/api/step") => step_endpoint(&mut stream, state, &request.body),
         ("POST", "/api/step-event") => step_event_endpoint(&mut stream, state),
         ("GET", "/api/next-event") => next_event_endpoint(&mut stream, state),
+        ("GET", "/api/checkpoints") => list_checkpoints_endpoint(&mut stream, state),
+        ("POST", "/api/resume-checkpoint") => {
+            resume_checkpoint_endpoint(&mut stream, state, &request.body)
+        }
         ("POST", "/api/pause") => {
             let runner = ensure_runner(state);
             match runner.pause() {
@@ -1701,6 +1760,157 @@ fn table_endpoint(
         model,
         serde_json::json!({ "table": request.table }),
     )
+}
+
+#[derive(Debug, serde::Serialize)]
+struct CheckpointEntry {
+    index: u32,
+    file: String,
+    now: f64,
+    warmup: f64,
+    model_name: String,
+    size: u64,
+}
+
+fn list_checkpoints_endpoint(stream: &mut TcpStream, state: &StudioState) -> std::io::Result<()> {
+    let mut entries = Vec::new();
+    if let Ok(directory) = fs::read_dir(&state.checkpoints) {
+        for entry in directory.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let Some(index) = name
+                .strip_prefix("checkpoint.rep")
+                .and_then(|rest| rest.strip_suffix(".json"))
+                .and_then(|index| index.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(checkpoint) = openflex_core::Checkpoint::from_json(&text) else {
+                continue;
+            };
+            entries.push(CheckpointEntry {
+                index,
+                file: name.to_string(),
+                now: checkpoint.now(),
+                warmup: checkpoint.warmup(),
+                model_name: checkpoint.model_name().to_string(),
+                size: entry.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+            });
+        }
+    }
+    entries.sort_by_key(|entry| entry.index);
+    write_json(
+        stream,
+        "200 OK",
+        &serde_json::json!({
+            "directory": state.checkpoints.display().to_string(),
+            "checkpoints": entries,
+        })
+        .to_string(),
+    )
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ResumeCheckpointRequest {
+    file: String,
+}
+
+fn resume_checkpoint_endpoint(
+    stream: &mut TcpStream,
+    state: &mut StudioState,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let request: ResumeCheckpointRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return write_json(
+                stream,
+                "400 Bad Request",
+                &serde_json::json!({ "ok": false, "error": format!("invalid checkpoint request: {error}") })
+                    .to_string(),
+            );
+        }
+    };
+    let Some(name) = Path::new(&request.file)
+        .file_name()
+        .and_then(|name| name.to_str())
+    else {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": "invalid checkpoint file name" })
+                .to_string(),
+        );
+    };
+    let path = state.checkpoints.join(name);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => {
+            return write_json(
+                stream,
+                "404 Not Found",
+                &serde_json::json!({ "ok": false, "error": format!("could not read {}: {error}", path.display()) })
+                    .to_string(),
+            );
+        }
+    };
+    let checkpoint = match openflex_core::Checkpoint::from_json(&text) {
+        Ok(checkpoint) => checkpoint,
+        Err(error) => {
+            return write_json(
+                stream,
+                "422 Unprocessable Entity",
+                &serde_json::json!({ "ok": false, "error": format!("invalid checkpoint: {error}") }).to_string(),
+            );
+        }
+    };
+    if checkpoint.model_name() != state.model.name {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": format!(
+                "checkpoint belongs to model '{}', not '{}'",
+                checkpoint.model_name(),
+                state.model.name
+            ) })
+            .to_string(),
+        );
+    }
+    if (checkpoint.warmup() - state.model.run.warmup).abs() > f64::EPSILON {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": format!(
+                "checkpoint warm-up {} does not match the model warm-up {}",
+                checkpoint.warmup(),
+                state.model.run.warmup
+            ) })
+            .to_string(),
+        );
+    }
+    let runner = ensure_runner(state);
+    match runner.restore(checkpoint) {
+        Ok(reply) => write_json(
+            stream,
+            "200 OK",
+            &serde_json::json!({
+                "ok": true,
+                "report": reply.report,
+                "state": reply.state,
+            })
+            .to_string(),
+        ),
+        Err(error) => write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": error }).to_string(),
+        ),
+    }
 }
 
 fn next_event_endpoint(stream: &mut TcpStream, state: &mut StudioState) -> std::io::Result<()> {

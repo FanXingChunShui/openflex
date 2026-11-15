@@ -75,6 +75,9 @@
   .event-row { display: grid; grid-template-columns: 64px 90px 1fr 1fr; gap: 6px; padding: 2px 4px;
                border-radius: 4px; color: #334155; }
   .event-row.current { background: #fef3c7; font-weight: 600; }
+  .checkpoint-row { display: grid; grid-template-columns: 46px 72px 1fr auto; gap: 6px; align-items: center;
+                    padding: 3px 4px; border-bottom: 1px solid #e2e8f0; font-size: 11px; }
+  .checkpoint-row button { padding: 2px 6px; font-size: 11px; }
   .table-editor { border-collapse: collapse; width: 100%; font-size: 11px; }
   .table-editor th, .table-editor td { border: 1px solid #cbd5e1; padding: 2px; }
   .table-editor input { padding: 2px 4px; font-size: 11px; }
@@ -133,6 +136,9 @@
       <button id="revert-object" type="button">Revert</button>
       <button id="delete-object" class="danger" type="button">Delete</button>
     </div>
+
+    <h2>Checkpoints</h2>
+    <div id="checkpoints" data-checkpoint-panel="1"><p class="muted">loading…</p></div>
 
     <h2>Global tables</h2>
     <div id="global-tables" data-table-editor="1"><p class="muted">loading…</p></div>
@@ -521,6 +527,7 @@ function renderAll() {
   renderObjectList();
   renderEditor();
   renderGlobalTables();
+  loadCheckpoints();
   renderFlow();
   $("edit-process-flow").value = JSON.stringify(state.model.process_flow ?? null, null, 2);
   updateHistoryButtons();
@@ -1036,6 +1043,55 @@ function renderFlowCanvas() {
     ctx.strokeStyle = "#f59e0b";
     ctx.lineWidth = 2;
     ctx.stroke();
+  }
+}
+
+async function loadCheckpoints() {
+  const container = $("checkpoints");
+  try {
+    const payload = await api("/api/checkpoints");
+    const entries = payload.checkpoints || [];
+    if (entries.length === 0) {
+      container.innerHTML = `<p class="muted">No checkpoints in ${escapeText(payload.directory || "")}.</p>`;
+      return;
+    }
+    container.innerHTML = entries.map(entry =>
+      `<div class="checkpoint-row" data-checkpoint-entry="${entry.index}">
+        <span>#${entry.index}</span>
+        <span>t=${Number(entry.now).toFixed(2)}</span>
+        <span>${Math.round(Number(entry.size) / 1024)} KiB</span>
+        <button type="button" data-restore-checkpoint="${escapeText(entry.file)}">Restore</button>
+      </div>`
+    ).join("") + `<button id="refresh-checkpoints" type="button">Refresh checkpoints</button>`;
+    container.querySelectorAll("[data-restore-checkpoint]").forEach(button => {
+      button.addEventListener("click", () => resumeCheckpoint(button.dataset.restoreCheckpoint));
+    });
+    $("refresh-checkpoints").addEventListener("click", loadCheckpoints);
+  } catch (error) {
+    container.innerHTML = `<p class="muted">Could not list checkpoints: ${escapeText(error.message)}</p>`;
+  }
+}
+
+async function resumeCheckpoint(file) {
+  setStatus(`restoring ${file}…`);
+  try {
+    const response = await api("/api/resume-checkpoint", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file }),
+    });
+    state.report = response.report;
+    state.lastStep = Number(response.state.now);
+    state.runState = "paused";
+    state.runPaused = true;
+    state.events = [];
+    renderEventList();
+    setRunState("Paused (checkpoint)");
+    renderReport(response.report);
+    $("step-info").textContent = `t=${state.lastStep.toFixed(2)} (restored)`;
+    setStatus(`restored ${file} at t=${Number(response.state.now).toFixed(2)}`);
+  } catch (error) {
+    setStatus(error.message, true);
   }
 }
 
