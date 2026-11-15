@@ -59,6 +59,8 @@
   #scene { display: block; width: 100%; height: 100%; cursor: grab; }
   #webgl { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
            display: none; background: #f1f5f9; }
+  #axis-indicator { position: absolute; left: 10px; bottom: 34px; width: 76px; height: 76px;
+                    pointer-events: none; z-index: 4; }
   #flow-canvas { display: block; width: 100%; height: 220px; background: #ffffff;
                  border: 1px solid #cbd5e1; border-radius: 6px; cursor: grab; touch-action: none; }
   #scene.dragging { cursor: grabbing; }
@@ -208,6 +210,14 @@
   <section class="view">
     <canvas id="scene" aria-label="3D model view" data-drag-object="1" data-group-drag="1" data-occlusion="1" data-box-select="1" data-marquee-3d="1" data-axis="1"></canvas>
     <canvas id="webgl" data-webgl="1" aria-label="WebGL 3D view"></canvas>
+    <svg id="axis-indicator" data-axis="1" viewBox="0 0 76 76" aria-label="X Y Z axes">
+      <line x1="12" y1="64" x2="58" y2="64" stroke="#dc2626" stroke-width="2"/>
+      <line x1="12" y1="64" x2="12" y2="18" stroke="#16a34a" stroke-width="2"/>
+      <line x1="12" y1="64" x2="38" y2="42" stroke="#2563eb" stroke-width="2"/>
+      <text x="62" y="68" fill="#dc2626" font-size="11" font-weight="600">X</text>
+      <text x="8" y="14" fill="#16a34a" font-size="11" font-weight="600">Y</text>
+      <text x="41" y="39" fill="#2563eb" font-size="11" font-weight="600">Z</text>
+    </svg>
     <div class="layout-controls" data-layout-controls="1">
       <button type="button" data-layout-grid="1">Grid</button>
       <button type="button" data-layout-circle="1">Circle</button>
@@ -2647,6 +2657,20 @@ function drawWebGL(now) {
     const edges = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
     for (const [a, b] of edges) pushLine(corners[a], corners[b], edgeColor);
   });
+  if (state.gridVisible) {
+    const grid = state.snapGrid || 50;
+    const fromX = Math.floor((minX - grid) / grid) * grid;
+    const toX = Math.ceil((maxX + grid) / grid) * grid;
+    const fromY = Math.floor((minY - grid) / grid) * grid;
+    const toY = Math.ceil((maxY + grid) / grid) * grid;
+    const gridColor = hexRgb("#cbd5e1");
+    for (let gx = fromX; gx <= toX; gx += grid) {
+      pushLine([gx, fromY, 0], [gx, toY, 0], gridColor);
+    }
+    for (let gy = fromY; gy <= toY; gy += grid) {
+      pushLine([fromX, gy, 0], [toX, gy, 0], gridColor);
+    }
+  }
   for (const connection of model.connections || []) {
     const from = boxes.find(box => box.object.name === connection.from);
     const to = boxes.find(box => box.object.name === connection.to);
@@ -2882,7 +2906,6 @@ function drawScene2d(now, width, height) {
     ctx.strokeRect(left, top, boxWidth, boxHeight);
     ctx.setLineDash([]);
   }
-  drawAxes2d(ctx, width, height);
 }
 
 function drawScene(now) {
@@ -3100,8 +3123,6 @@ function drawScene(now) {
     ctx.strokeRect(left, top, boxWidth, boxHeight);
     ctx.setLineDash([]);
   }
-  drawAxes3d(ctx, (x, y, z) => project(x, y, z, centerX, centerY, scale, span),
-    [centerX, centerY], width, height);
 }
 
 function downloadText(filename, text, type) {
