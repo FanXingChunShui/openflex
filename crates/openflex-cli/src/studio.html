@@ -334,7 +334,6 @@ const state = {
   events: [],
   scenarios: [{ name: "baseline", overrides: "" }],
 };
-window.__studio = state;
 
 const $ = id => document.getElementById(id);
 const scene = $("scene");
@@ -2722,6 +2721,17 @@ scene.addEventListener("pointerdown", event => {
   const x = event.clientX - rect.left;
   const y = event.clientY - rect.top;
   const hit = hitboxAt(x, y);
+  if (hit && (event.ctrlKey || event.metaKey || event.shiftKey)) {
+    if (state.multiSelection.has(hit.index)) state.multiSelection.delete(hit.index);
+    else state.multiSelection.add(hit.index);
+    state.selected = hit.index;
+    updateSelectionUi();
+    renderObjectList();
+    renderEditor();
+    setStatus(`${state.multiSelection.size} selected`);
+    event.preventDefault();
+    return;
+  }
   if (hit && state.sceneInfo) {
     const center = modelCenters(state.model).get(hit.name) || [0, 0];
     const is2d = state.view2d;
