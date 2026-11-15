@@ -267,6 +267,8 @@ pub(crate) enum EventKind {
     TransportSettle(usize),
     /// task-47: the picker reached the rack bay; the item may leave.
     RackPick(usize),
+    /// task-65: a preempted request becomes eligible again after a delay.
+    PreemptRetry(usize, usize),
     /// A shift window starts or ends.
     ShiftChange(usize),
     /// A linear availability calendar (B11) window starts or ends.
@@ -704,6 +706,13 @@ pub(crate) struct ObjectRt {
     /// task-47: an in-progress rack pick (content position, ready time).
     #[serde(default)]
     rack_pick: Option<(usize, f64)>,
+    /// task-65: how often this object's request was preempted.
+    #[serde(default)]
+    preempt_retries: u32,
+    /// task-65: model time of the last preemption (a request is not preempted
+    /// twice at the same instant, which would otherwise loop forever).
+    #[serde(default = "negative_one")]
+    preempt_epoch: f64,
     /// task-47: how many items this rack has stored so far, used to rotate the
     /// (level, aisle, bay) addresses.
     #[serde(default)]
@@ -811,6 +820,8 @@ impl ObjectRt {
             dwell_at: f64::INFINITY,
             last_picked_level: None,
             rack_pick: None,
+            preempt_retries: 0,
+            preempt_epoch: -1.0,
             rack_slots: 0,
             belt_stops: Vec::new(),
             belt_handled: Vec::new(),
@@ -1604,6 +1615,193 @@ fn load_manifest(dir: &Path) -> Option<CheckpointManifest> {
     let text = std::fs::read_to_string(dir.join("manifest.json")).ok()?;
     let manifest: CheckpointManifest = serde_json::from_str(&text).ok()?;
     (manifest.format_version == 1).then_some(manifest)
+}
+
+fn negative_one() -> f64 {
+    -1.0
+}
+
+fn now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
+/// task-62/65: merge `entries` into the directory manifest and write it back.
+fn write_merged_manifest(
+    dir: &Path,
+    model_name: &str,
+    base_seed: u64,
+    stop_time: f64,
+    replications: u32,
+    entries: Vec<CheckpointManifestEntry>,
+    created_at: u64,
+) -> Result<CheckpointManifest, SimError> {
+    let previous = load_manifest(dir);
+    let mut merged: Vec<CheckpointManifestEntry> = previous
+        .as_ref()
+        .map(|manifest| manifest.entries.clone())
+        .unwrap_or_default();
+    for entry in entries {
+        match merged
+            .iter_mut()
+            .find(|existing| existing.index == entry.index)
+        {
+            Some(existing) => *existing = entry,
+            None => merged.push(entry),
+        }
+    }
+    merged.sort_by_key(|entry| entry.index);
+    for entry in &mut merged {
+        entry.retained = dir.join(&entry.file).is_file();
+    }
+    let mut history = previous
+        .map(|manifest| manifest.history)
+        .unwrap_or_default();
+    history.push(CheckpointManifestRun {
+        created_at,
+        stop_time,
+        replications,
+    });
+    let manifest = CheckpointManifest {
+        format_version: 1,
+        model: model_name.to_string(),
+        stop_time,
+        replications,
+        base_seed,
+        created_at,
+        entries: merged,
+        history,
+    };
+    let json = serde_json::to_string_pretty(&manifest)
+        .map_err(|error| SimError::Config(format!("could not serialise manifest: {error}")))?;
+    let path = dir.join("manifest.json");
+    std::fs::write(&path, json).map_err(|error| {
+        SimError::Config(format!("could not write {}: {error}", path.display()))
+    })?;
+    Ok(manifest)
+}
+
+/// task-65: run the replications in parallel and write one checkpoint each.
+///
+/// The files are the same `checkpoint-<index>.json` files the serial variant
+/// writes, the manifest is merged the same way, and the replication order in
+/// the result is preserved.
+pub fn run_model_with_checkpoints_parallel(
+    model: &Model,
+    dir: &Path,
+    stop_time: f64,
+    workers: usize,
+) -> Result<CheckpointRun, SimError> {
+    if stop_time <= 0.0 {
+        return Err(SimError::Config("stop_time must be positive".into()));
+    }
+    std::fs::create_dir_all(dir).map_err(|error| {
+        SimError::Config(format!(
+            "could not create the checkpoint directory {}: {error}",
+            dir.display()
+        ))
+    })?;
+    let replications = model.run.replications.max(1);
+    let requested = if workers == 0 {
+        std::thread::available_parallelism()
+            .map(|value| value.get())
+            .unwrap_or(1)
+    } else {
+        workers
+    };
+    let worker_count = requested.max(1).min(replications as usize);
+    // (result, file name) per replication index.
+    let mut collected: Vec<Option<(ReplicationResult, String)>> = vec![None; replications as usize];
+    let mut failure: Option<SimError> = None;
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
+        for worker in 0..worker_count {
+            handles.push(scope.spawn(move || {
+                let mut local: Vec<(u32, ReplicationResult, String)> = Vec::new();
+                let mut errors: Vec<SimError> = Vec::new();
+                let mut index = worker as u32;
+                while index < replications {
+                    let seed = derive_seed(model.run.seed, index);
+                    let mut config = SimConfig::from_run_settings(&model.run, seed);
+                    config.stop_time = stop_time;
+                    match simulate_with_checkpoint(model, &config, index, None) {
+                        Ok((result, checkpoint)) => {
+                            let file = format!("checkpoint-{index}.json");
+                            let path = dir.join(&file);
+                            let written = checkpoint.to_json().and_then(|json| {
+                                std::fs::write(&path, json).map_err(|error| {
+                                    SimError::Config(format!(
+                                        "could not write {}: {error}",
+                                        path.display()
+                                    ))
+                                })
+                            });
+                            match written {
+                                Ok(()) => local.push((index, result, file)),
+                                Err(error) => errors.push(error),
+                            }
+                        }
+                        Err(error) => errors.push(error),
+                    }
+                    index += worker_count as u32;
+                }
+                (local, errors)
+            }));
+        }
+        for handle in handles {
+            let (local, errors) = handle.join().expect("a checkpoint worker panicked");
+            for (index, result, file) in local {
+                collected[index as usize] = Some((result, file));
+            }
+            if failure.is_none()
+                && let Some(error) = errors.into_iter().next()
+            {
+                failure = Some(error);
+            }
+        }
+    });
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    let mut written = Vec::with_capacity(replications as usize);
+    let mut entries = Vec::with_capacity(replications as usize);
+    for (index, slot) in collected.into_iter().enumerate() {
+        let Some((result, file)) = slot else {
+            return Err(SimError::Config(format!(
+                "replication {index} produced no checkpoint"
+            )));
+        };
+        let seed = derive_seed(model.run.seed, index as u32);
+        entries.push(CheckpointManifestEntry {
+            index: index as u32,
+            seed,
+            file: file.clone(),
+            items_created: result.items_created,
+            items_completed: result.items_completed,
+            items_in_system: result.items_in_system,
+            retained: true,
+        });
+        written.push(ReplicationCheckpoint {
+            index: index as u32,
+            result,
+            path: dir.join(file),
+        });
+    }
+    let manifest = write_merged_manifest(
+        dir,
+        &model.name,
+        model.run.seed,
+        stop_time,
+        replications,
+        entries,
+        now_seconds(),
+    )?;
+    Ok(CheckpointRun {
+        entries: written,
+        manifest,
+    })
 }
 
 /// Delete the oldest `checkpoint-*.json` files until at most `keep` remain.
@@ -2700,6 +2898,9 @@ impl<'m> Simulation<'m> {
             EventKind::EmptierSweep(index) => self.handle_emptier_sweep(index),
             EventKind::TransportSettle(transporter) => self.finish_task(transporter),
             EventKind::RackPick(index) => self.flow(index),
+            EventKind::PreemptRetry(dispatcher, requester) => {
+                self.handle_preempt_retry(dispatcher, requester)
+            }
             EventKind::ShiftChange(index) => self.handle_shift_change(index),
             EventKind::TimetableChange(index) => self.handle_timetable_change(index),
             EventKind::FlowCreate(block) => self.handle_flow_create(block),
@@ -5872,6 +6073,10 @@ impl<'m> Simulation<'m> {
             if low == requester {
                 continue;
             }
+            // task-65: never preempt the same request twice at one instant.
+            if self.objects[low].preempt_epoch >= self.now - EPS {
+                continue;
+            }
             if self.request_priority(low) < new_priority {
                 victim = Some((transporter, low));
                 break;
@@ -5880,6 +6085,10 @@ impl<'m> Simulation<'m> {
         let Some((transporter, low)) = victim else {
             return Ok(false);
         };
+        // task-65: mark the instant even if the victim no longer holds the
+        // executer; otherwise the same request is picked again and again at
+        // this instant.
+        self.objects[low].preempt_epoch = self.now;
         self.preempt_operator(low, transporter)?;
         Ok(true)
     }
@@ -5890,6 +6099,11 @@ impl<'m> Simulation<'m> {
             |source| matches!(source, OperatorSource::Transporter(t) if *t == transporter),
         );
         let Some(position) = removed else {
+            // The victim no longer holds this executer: clear the stale task so
+            // the request can be served again instead of blocking the queue.
+            self.objects[transporter].serving_requester = None;
+            self.objects[transporter].tasks = self.objects[transporter].tasks.saturating_sub(1);
+            self.set_state(transporter, State::Idle);
             return Ok(());
         };
         self.objects[index].operator_sources.remove(position);
@@ -5901,13 +6115,44 @@ impl<'m> Simulation<'m> {
         // Pause the interrupted setup/process step and re-queue the request.
         self.pause_phase(index);
         self.objects[index].operator_preempted = true;
+        self.objects[index].preempt_epoch = self.now;
         self.objects[index].requesting_operator = true;
         self.objects[index].operators_pending += 1;
         self.block(index, BlockReason::Transport);
         if let Some(dispatcher) = self.objects[transporter].assigned_dispatcher {
-            // `pick_request` always serves the highest priority first, so the
-            // queue order itself does not matter.
-            self.objects[dispatcher].requests.push_back(index);
+            // task-65: an optional delay before the preempted request is
+            // queued again, bounded by `preempt_max_retries`.
+            let (delay, max_retries) = match &self.model.objects[dispatcher].params {
+                ObjectParams::Dispatcher(params) => (
+                    params.preempt_retry_delay.max(0.0),
+                    params.preempt_max_retries,
+                ),
+                _ => (0.0, 0),
+            };
+            self.objects[index].preempt_retries =
+                self.objects[index].preempt_retries.wrapping_add(1);
+            let retries = self.objects[index].preempt_retries;
+            let delay_applies = delay > EPS && (max_retries == 0 || retries <= max_retries);
+            if delay_applies && self.now + delay < self.config.stop_time - EPS {
+                self.schedule(self.now + delay, EventKind::PreemptRetry(dispatcher, index));
+            } else {
+                // `pick_request` always serves the highest priority first, so
+                // the queue order itself does not matter.
+                self.objects[dispatcher].requests.push_back(index);
+            }
+        }
+        Ok(())
+    }
+
+    /// task-65: queue a preempted request again once its delay elapsed.
+    fn handle_preempt_retry(
+        &mut self,
+        dispatcher: usize,
+        requester: usize,
+    ) -> Result<(), SimError> {
+        if self.objects[requester].requesting_operator {
+            self.objects[dispatcher].requests.push_back(requester);
+            self.dispatch(dispatcher)?;
         }
         Ok(())
     }
@@ -7855,6 +8100,11 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
         EventKind::EmptierSweep(index) => (Some(*index), "emptier_sweep", None),
         EventKind::TransportSettle(transporter) => (Some(*transporter), "transport_settle", None),
         EventKind::RackPick(index) => (Some(*index), "rack_pick", None),
+        EventKind::PreemptRetry(dispatcher, requester) => (
+            Some(*dispatcher),
+            "preempt_retry",
+            Some(("requester", *requester as f64)),
+        ),
         EventKind::ShiftChange(index) => (Some(*index), "shift_change", None),
         EventKind::TimetableChange(index) => (Some(*index), "timetable_change", None),
         EventKind::TransportPickup(transporter, requester) => (

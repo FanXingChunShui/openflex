@@ -59,6 +59,8 @@
   #flow-canvas { display: block; width: 100%; height: 220px; background: #ffffff;
                  border: 1px solid #cbd5e1; border-radius: 6px; cursor: grab; touch-action: none; }
   #scene.dragging { cursor: grabbing; }
+  .layout-controls { position: absolute; top: 8px; left: 8px; display: flex; gap: 4px; }
+  .layout-controls button { padding: 3px 8px; font-size: 11px; background: rgba(255,255,255,.9); }
   .hint { position: absolute; left: 12px; bottom: 10px; font-size: 12px; color: #64748b;
           background: rgba(248,250,252,.85); padding: 2px 6px; border-radius: 5px; }
   #report table { border-collapse: collapse; width: 100%; font-size: 12px; }
@@ -178,8 +180,13 @@
   </aside>
 
   <section class="view">
-    <canvas id="scene" aria-label="3D model view"></canvas>
-    <div class="hint" data-projection="perspective" data-depth-sort="1" data-focus-object="1">drag to rotate · wheel to zoom · double-click an object to focus</div>
+    <canvas id="scene" aria-label="3D model view" data-drag-object="1"></canvas>
+    <div class="layout-controls" data-layout-controls="1">
+      <button type="button" data-layout-grid="1">Grid</button>
+      <button type="button" data-layout-circle="1">Circle</button>
+      <button type="button" data-layout-force="1">Force</button>
+    </div>
+    <div class="hint" data-projection="perspective" data-depth-sort="1" data-focus-object="1" data-nudge="10">drag to rotate or move an object · wheel to zoom · double-click to focus · arrows nudge 10px (Shift 1px)</div>
   </section>
 
   <section class="report">
@@ -260,6 +267,8 @@ const state = {
   zoom: 1,
   focusName: null,
   hitboxes: [],
+  sceneInfo: null,
+  dragObject: null,
   dragging: false,
   lastX: 0,
   lastY: 0,
@@ -2007,6 +2016,118 @@ function modelCenters(model) {
 
 // Perspective projection: near objects are larger, far objects smaller.
 // `depth` is the camera-space distance used for painter's-algorithm sorting.
+function unproject(screenX, screenY, z, info, factor) {
+  const yaw = state.yaw * Math.PI / 180;
+  const pitch = state.pitch * Math.PI / 180;
+  const sinP = Math.max(Math.sin(pitch), 1e-6);
+  const sx = (screenX - info.width / 2) / (info.scale * factor);
+  const sy = (screenY - info.height / 2) / (info.scale * factor);
+  const xr = sx;
+  const yr = (sy + z * Math.cos(pitch)) / sinP;
+  return [
+    info.centerX + xr * Math.cos(yaw) + yr * Math.sin(yaw),
+    info.centerY - xr * Math.sin(yaw) + yr * Math.cos(yaw),
+  ];
+}
+
+function hitboxAt(x, y) {
+  let hit = (state.hitboxes || []).find(box =>
+    x >= box.left && x <= box.right && y >= box.top && y <= box.bottom);
+  if (!hit) {
+    hit = (state.hitboxes || [])
+      .map(box => ({
+        box,
+        distance: Math.hypot(x - (box.left + box.right) / 2, y - (box.top + box.bottom) / 2),
+      }))
+      .filter(candidate => candidate.distance <= 60)
+      .sort((left, right) => left.distance - right.distance)[0]?.box;
+  }
+  return hit || null;
+}
+
+function applyLayout(kind) {
+  if (!state.model || !state.model.objects || state.model.objects.length === 0) return;
+  rememberNow();
+  const objects = state.model.objects;
+  const count = objects.length;
+  if (kind === "grid") {
+    const columns = Math.max(1, Math.ceil(Math.sqrt(count)));
+    objects.forEach((object, index) => {
+      object.pos = [
+        (index % columns) * 220,
+        Math.floor(index / columns) * 180,
+      ];
+    });
+  } else if (kind === "circle") {
+    const radius = Math.max(220, count * 70);
+    objects.forEach((object, index) => {
+      const angle = (index / Math.max(1, count)) * Math.PI * 2 - Math.PI / 2;
+      object.pos = [Math.cos(angle) * radius, Math.sin(angle) * radius];
+    });
+  } else if (kind === "force") {
+    const positions = objects.map((object, index) => {
+      const angle = (index / Math.max(1, count)) * Math.PI * 2;
+      return [Math.cos(angle) * 200 + index * 7, Math.sin(angle) * 200 + index * 3];
+    });
+    const indexByName = new Map(objects.map((object, index) => [object.name, index]));
+    const springs = (state.model.connections || [])
+      .map(connection => [indexByName.get(connection.from), indexByName.get(connection.to)])
+      .filter(([from, to]) => from != null && to != null);
+    const area = Math.max(300, Math.sqrt(count) * 240);
+    const k = Math.sqrt(area * area / Math.max(1, count));
+    let temperature = k * 0.12;
+    for (let iteration = 0; iteration < 80; iteration += 1) {
+      const disp = positions.map(() => [0, 0]);
+      for (let i = 0; i < count; i += 1) {
+        for (let j = i + 1; j < count; j += 1) {
+          const dx = positions[i][0] - positions[j][0] || 0.1;
+          const dy = positions[i][1] - positions[j][1] || 0.1;
+          const distance = Math.max(1, Math.hypot(dx, dy));
+          const force = k * k / distance;
+          disp[i][0] += dx / distance * force;
+          disp[i][1] += dy / distance * force;
+          disp[j][0] -= dx / distance * force;
+          disp[j][1] -= dy / distance * force;
+        }
+      }
+      for (const [from, to] of springs) {
+        const dx = positions[to][0] - positions[from][0];
+        const dy = positions[to][1] - positions[from][1];
+        const distance = Math.max(1, Math.hypot(dx, dy));
+        const force = distance * distance / k;
+        disp[from][0] += dx / distance * force;
+        disp[from][1] += dy / distance * force;
+        disp[to][0] -= dx / distance * force;
+        disp[to][1] -= dy / distance * force;
+      }
+      for (let i = 0; i < count; i += 1) {
+        const length = Math.max(0.001, Math.hypot(disp[i][0], disp[i][1]));
+        positions[i][0] += disp[i][0] / length * Math.min(length, temperature);
+        positions[i][1] += disp[i][1] / length * Math.min(length, temperature);
+      }
+      temperature = Math.max(0.5, temperature * 0.95);
+    }
+    const minX = Math.min(...positions.map(position => position[0]));
+    const minY = Math.min(...positions.map(position => position[1]));
+    objects.forEach((object, index) => {
+      object.pos = [positions[index][0] - minX + 60, positions[index][1] - minY + 60];
+    });
+  }
+  renderAll();
+  setStatus(`applied ${kind} layout (unsaved; use Save to persist)`);
+}
+
+function nudgeSelected(dx, dy) {
+  const object = state.model && state.model.objects[state.selected];
+  if (!object) return;
+  rememberNow();
+  const pos = Array.isArray(object.pos) ? object.pos : [0, 0];
+  object.pos = [Number(pos[0] || 0) + dx, Number(pos[1] || 0) + dy];
+  if ($("edit-pos-x")) $("edit-pos-x").value = object.pos[0];
+  if ($("edit-pos-y")) $("edit-pos-y").value = object.pos[1];
+  setStatus(`nudged ${object.name} to ${object.pos[0]}, ${object.pos[1]} (unsaved)`);
+}
+
 function project(x, y, z, centerX, centerY, scale, span) {
   const yaw = state.yaw * Math.PI / 180;
   const pitch = state.pitch * Math.PI / 180;
@@ -2051,6 +2172,7 @@ function drawScene(now) {
   const span = Math.max(maxX - minX, maxY - minY, 100);
   const unit = span * 0.055;
   const scale = Math.min(width, height) * 0.32 / span * state.zoom;
+  state.sceneInfo = { centerX, centerY, scale, span, width, height };
   const heightFactor = Number((model.metadata && model.metadata.height) || 1);
 
   const boxes = model.objects.map((object, index) => {
@@ -2168,6 +2290,32 @@ function animationFrame(now) {
 }
 
 scene.addEventListener("pointerdown", event => {
+  const rect = scene.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  const hit = hitboxAt(x, y);
+  if (hit && state.sceneInfo) {
+    const center = modelCenters(state.model).get(hit.name) || [0, 0];
+    const point = project(center[0], center[1], 0, state.sceneInfo.centerX,
+      state.sceneInfo.centerY, state.sceneInfo.scale, state.sceneInfo.span);
+    state.dragObject = {
+      index: hit.index,
+      startX: x,
+      startY: y,
+      factor: point.factor,
+      original: [...(state.model.objects[hit.index].pos || [0, 0])],
+      snapshot: snapshot(),
+      moved: false,
+    };
+    state.selected = hit.index;
+    commitEdit();
+    renderObjectList();
+    renderEditor();
+    state.dragging = false;
+    scene.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    return;
+  }
   state.dragging = true;
   state.lastX = event.clientX;
   state.lastY = event.clientY;
@@ -2175,6 +2323,24 @@ scene.addEventListener("pointerdown", event => {
   scene.setPointerCapture(event.pointerId);
 });
 scene.addEventListener("pointermove", event => {
+  const rect = scene.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  if (state.dragObject && state.sceneInfo) {
+    const drag = state.dragObject;
+    const start = unproject(drag.startX, drag.startY, 0, state.sceneInfo, drag.factor);
+    const current = unproject(x, y, 0, state.sceneInfo, drag.factor);
+    const object = state.model.objects[drag.index];
+    if (!object) return;
+    object.pos = [
+      drag.original[0] + current[0] - start[0],
+      drag.original[1] + current[1] - start[1],
+    ];
+    drag.moved = Math.hypot(object.pos[0] - drag.original[0], object.pos[1] - drag.original[1]) > 0.01;
+    if ($("edit-pos-x")) $("edit-pos-x").value = object.pos[0].toFixed(2);
+    if ($("edit-pos-y")) $("edit-pos-y").value = object.pos[1].toFixed(2);
+    return;
+  }
   if (!state.dragging) return;
   const dx = event.clientX - state.lastX;
   const dy = event.clientY - state.lastY;
@@ -2183,7 +2349,22 @@ scene.addEventListener("pointermove", event => {
   state.yaw = (state.yaw + dx * 0.45) % 360;
   state.pitch = Math.max(5, Math.min(80, state.pitch - dy * 0.3));
 });
-const stopDrag = () => { state.dragging = false; scene.classList.remove("dragging"); };
+const stopDrag = () => {
+  if (state.dragObject) {
+    const drag = state.dragObject;
+    state.dragObject = null;
+    if (drag.moved) {
+      state.undoStack.push(drag.snapshot);
+      if (state.undoStack.length > 50) state.undoStack.shift();
+      state.redoStack = [];
+      updateHistoryButtons();
+      setStatus(`moved ${state.model.objects[drag.index].name} (unsaved)`);
+      renderEditor();
+    }
+  }
+  state.dragging = false;
+  scene.classList.remove("dragging");
+};
 scene.addEventListener("pointerup", stopDrag);
 scene.addEventListener("pointercancel", stopDrag);
 scene.addEventListener("wheel", event => {
@@ -2194,18 +2375,7 @@ scene.addEventListener("dblclick", event => {
   const rect = scene.getBoundingClientRect();
   const x = event.clientX - rect.left;
   const y = event.clientY - rect.top;
-  let hit = (state.hitboxes || []).find(box =>
-    x >= box.left && x <= box.right && y >= box.top && y <= box.bottom);
-  if (!hit) {
-    // The label sits above the box, so also accept a click near its centre.
-    hit = (state.hitboxes || [])
-      .map(box => ({
-        box,
-        distance: Math.hypot(x - (box.left + box.right) / 2, y - (box.top + box.bottom) / 2),
-      }))
-      .filter(candidate => candidate.distance <= 60)
-      .sort((left, right) => left.distance - right.distance)[0]?.box;
-  }
+  const hit = hitboxAt(x, y);
   if (hit) {
     state.focusName = hit.name;
     state.selected = hit.index;
@@ -2217,6 +2387,29 @@ scene.addEventListener("dblclick", event => {
     state.focusName = null;
     setStatus("camera reset to the model centre");
   }
+});
+
+// Layout buttons and arrow-key nudging.
+document.querySelectorAll("[data-layout-grid],[data-layout-circle],[data-layout-force]").forEach(button => {
+  button.addEventListener("click", () => {
+    if (button.dataset.layoutGrid) applyLayout("grid");
+    else if (button.dataset.layoutCircle) applyLayout("circle");
+    else applyLayout("force");
+  });
+});
+document.addEventListener("keydown", event => {
+  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  const tag = (event.target && event.target.tagName) || "";
+  if (["INPUT", "TEXTAREA", "SELECT"].includes(tag) || event.target.isContentEditable) return;
+  const object = state.model && state.model.objects[state.selected];
+  if (!object) return;
+  event.preventDefault();
+  const step = event.shiftKey ? 1 : 10;
+  if (event.key === "ArrowLeft") nudgeSelected(-step, 0);
+  else if (event.key === "ArrowRight") nudgeSelected(step, 0);
+  else if (event.key === "ArrowUp") nudgeSelected(0, -step);
+  else nudgeSelected(0, step);
 });
 
 flowCanvas.addEventListener("pointerdown", event => {

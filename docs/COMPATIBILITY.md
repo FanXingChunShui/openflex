@@ -23,7 +23,7 @@
 | Merge | `merge` | ✅ | 多输入合流；可选等待全部输入 |
 | Split | `split` | ✅ | 轮询或按 item type 分流 |
 | Transporter / TaskExecuter | `transporter` | 🟡 | 速度、装载/卸载时间、`network` 最短路、`home` 取货、两段任务；`capacity`=并发任务数（不搬运 flow item）；无多段自定义任务序列 |
-| Dispatcher | `dispatcher` | 🟡 | 派发操作员/运输任务，支持优先级与抢占、电梯召唤（优先级→同层→同向→最近） |
+| Dispatcher | `dispatcher` | 🟡 | 派发/优先级/抢占（`preempt_retry_delay`/`preempt_max_retries`）、电梯召唤；无多段中途事件 |
 | Operator / Resource | `resource` | ✅ | 资源池容量与停机窗口 |
 | Rack | `rack` | 🟡 | 四类 + `min_dwell` + `aisles`/`bays`/`pick_policy` 货位分配与取货行走时间；无空位查表/并发取货 |
 | 班次 / 计划停机 | `params.shifts` | ✅ | `[{start, duration, repeat_every}]`，停机进入 off_shift、暂停处理、恢复后继续 |
@@ -76,7 +76,7 @@
 | 置信区间 | 报告 | ✅ | 正态近似 `1.96·se` |
 | OptQuest 优化 | `openflex optimize` | 🟡 | grid/random/genetic、多目标加权/自定义权重、Pareto 前沿；无贝叶斯/约束优化 |
 | Dashboard / 图表 | 报告 + Studio 柱状图 | 🟡 | Studio 有吞吐柱状图；无完整 Dashboard/模板 |
-| 3D 视图 / 模型树 / GUI | `openflex studio` | 🟡 | Web Studio：Canvas 透视 3D（深度排序/双击聚焦）、字段表单、模型树、Process Flow 拖拽画布、撤销、原生 pause/step/resume、Experimenter、Dashboard+CSV+时间序列、Global Table 编辑器；无 GPU/WebGL |
+| 3D 视图 / 模型树 / GUI | `openflex studio` | 🟡 | Web Studio：Canvas 透视 3D（深度排序/双击聚焦/拖拽移动/自动布局）、字段表单、模型树、Process Flow 拖拽画布、撤销、原生 pause/step/resume、Experimenter、Dashboard+CSV+时间序列、Global Table 编辑器；无 GPU/WebGL |
 | 导出 Excel / 数据库 | CSV / JSON / xlsx | ✅ | `run --xlsx` 输出 Summary/Objects/Replications 三个 sheet |
 
 ## 文件与集成

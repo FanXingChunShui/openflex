@@ -1817,6 +1817,14 @@ pub struct DispatcherParams {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub task_sequence: Vec<TaskStep>,
 
+    /// task-65: delay before a preempted request is re-queued (0 = at once).
+    #[serde(default)]
+    pub preempt_retry_delay: f64,
+
+    /// task-65: maximum delayed retries after a preemption (0 = unlimited).
+    #[serde(default)]
+    pub preempt_max_retries: u32,
+
     /// Optional object-level process flow (B7). Its `create` blocks can run at
     /// t = 0 or whenever this object receives an item (`on_entry`), and its
     /// `transfer` blocks can inject tokens as flow items into other objects.

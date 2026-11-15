@@ -968,3 +968,55 @@ fn task_sequence_false_condition_skips_the_step() {
     ));
     assert_eq!(out(&skipped, "P"), out(&standard, "P"));
 }
+
+// ---------------------------------------------------------------------------
+// task-65: preemption retry delay
+// ---------------------------------------------------------------------------
+
+fn preempt_model(delay: f64) -> String {
+    format!(
+        r#"{{
+      "format": "openflex-model", "version": 1, "name": "preempt-delay",
+      "run": {{ "stop_time": 400.0, "warmup": 0.0, "seed": 1, "replications": 1 }},
+      "objects": [
+        {{ "name": "S1", "kind": "source", "pos": [10, 0], "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 40.0 }}, "first_arrival": 0.0 }} }},
+        {{ "name": "High", "kind": "processor", "pos": [10, 0], "params": {{
+            "process_time": {{ "distribution": "constant", "value": 4.0 }},
+            "process_operator": "Dispatcher1", "operator_priority": 10,
+            "operator_preempt": true }} }},
+        {{ "name": "S2", "kind": "source", "pos": [0, 0], "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 10.0 }}, "first_arrival": 0.0 }} }},
+        {{ "name": "Low", "kind": "processor", "pos": [0, 0], "params": {{
+            "process_time": {{ "distribution": "constant", "value": 4.0 }},
+            "process_operator": "Dispatcher1", "operator_priority": 0 }} }},
+        {{ "name": "K", "kind": "sink", "params": {{}} }},
+        {{ "name": "Dispatcher1", "kind": "dispatcher", "pos": [0, 0], "params": {{
+            "preempt_retry_delay": {delay} }} }},
+        {{ "name": "Executer1", "kind": "transporter", "pos": [0, 0], "params": {{
+            "capacity": 1, "speed": 2.0, "home": "Dispatcher1" }} }}
+      ],
+      "connections": [
+        {{ "from": "S1", "to": "High" }}, {{ "from": "High", "to": "K" }},
+        {{ "from": "S2", "to": "Low" }}, {{ "from": "Low", "to": "K" }},
+        {{ "from": "Dispatcher1", "to": "Executer1" }}
+      ]
+    }}"#
+    )
+}
+
+/// A preemption delay slows the recovery of the interrupted (low priority)
+/// processor down.
+#[test]
+fn preempt_retry_delay_slows_the_victim() {
+    let immediate = run(&preempt_model(0.0));
+    let delayed = run(&preempt_model(40.0));
+    assert!(
+        out(&delayed, "Low") < out(&immediate, "Low"),
+        "the delayed retry must cost the victim throughput: {} vs {}",
+        out(&delayed, "Low"),
+        out(&immediate, "Low"),
+    );
+    // The high-priority processor keeps working in both cases.
+    assert!(out(&delayed, "High") > 0.0);
+}

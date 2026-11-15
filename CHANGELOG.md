@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.23.0 — 2026-11-15
+
+### 运行与调度
+
+- **并行检查点**：`run_model_with_checkpoints_parallel(model, dir, stop_time, workers)`（每复现写 checkpoint，
+  workers=0 自适应，结果与串行逐项一致）。
+- **抢占恢复延迟**：`DispatcherParams.preempt_retry_delay` / `preempt_max_retries`；修复“victim 已不持有执行器导致同刻
+  无限抢占”的死循环（`preempt_epoch` 去重 + 清理 stale 任务）。
+
+### Studio
+
+- 对象拖拽移动（屏幕反投影到 pos）、自动布局（grid/circle/force）、方向键微调（Shift 精细）、可撤销。
+
+### 验证
+
+- 455 个测试全绿（core 226、CLI 83、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.23.0 三平台产物发布并 SHA256 校验。
+
 ## v0.22.0 — 2026-11-15
 
 ### 任务与并行

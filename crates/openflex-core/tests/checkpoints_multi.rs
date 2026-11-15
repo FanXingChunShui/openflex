@@ -248,3 +248,79 @@ fn manifest_marks_missing_files() {
     assert!(!entry.retained, "a deleted checkpoint is not retained");
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// task-65: parallel checkpoint runs
+// ---------------------------------------------------------------------------
+
+use openflex_core::run_model_with_checkpoints_parallel;
+
+/// The parallel variant writes the same checkpoints and results as the serial
+/// one.
+#[test]
+fn parallel_checkpoints_match_serial() {
+    let model = model(4);
+    let serial_dir = temp_dir("parallel-serial");
+    let parallel_dir = temp_dir("parallel-parallel");
+    let serial =
+        run_model_with_checkpoints_retained(&model, &serial_dir, 100.0, None).expect("serial");
+    let parallel =
+        run_model_with_checkpoints_parallel(&model, &parallel_dir, 100.0, 3).expect("parallel");
+
+    assert_eq!(parallel.entries.len(), serial.entries.len());
+    for (parallel_entry, serial_entry) in parallel.entries.iter().zip(&serial.entries) {
+        assert_eq!(parallel_entry.index, serial_entry.index);
+        assert_eq!(parallel_entry.result, serial_entry.result);
+        assert_eq!(
+            parallel_entry.path.file_name(),
+            serial_entry.path.file_name()
+        );
+        assert!(
+            parallel_entry.path.is_file(),
+            "{} must exist",
+            parallel_entry.path.display()
+        );
+    }
+    // The manifests agree on everything but the timestamp.
+    assert_eq!(
+        parallel.manifest.entries.len(),
+        serial.manifest.entries.len()
+    );
+    for (parallel_entry, serial_entry) in parallel
+        .manifest
+        .entries
+        .iter()
+        .zip(&serial.manifest.entries)
+    {
+        assert_eq!(parallel_entry.index, serial_entry.index);
+        assert_eq!(parallel_entry.seed, serial_entry.seed);
+        assert_eq!(parallel_entry.items_created, serial_entry.items_created);
+        assert_eq!(parallel_entry.file, serial_entry.file);
+    }
+    // A parallel checkpoint resumes like a serial one.
+    let text = fs::read_to_string(&parallel.entries[0].path).expect("read");
+    let checkpoint = Checkpoint::from_json(&text).expect("parse");
+    let config = SimConfig {
+        stop_time: 200.0,
+        warmup: 0.0,
+        seed: parallel.entries[0].result.seed,
+    };
+    let resumed = simulate_with_checkpoint(&model, &config, 0, Some(&checkpoint)).expect("resume");
+    let direct = simulate(&model, &config, 0).expect("direct");
+    assert_eq!(resumed.0, direct);
+    let _ = fs::remove_dir_all(&serial_dir);
+    let _ = fs::remove_dir_all(&parallel_dir);
+}
+
+/// `workers = 0` uses the available parallelism; one worker is serial.
+#[test]
+fn parallel_checkpoint_worker_counts() {
+    let model = model(3);
+    for workers in [0usize, 1, 8] {
+        let dir = temp_dir(&format!("parallel-workers-{workers}"));
+        let run = run_model_with_checkpoints_parallel(&model, &dir, 50.0, workers).expect("run");
+        assert_eq!(run.entries.len(), 3);
+        assert_eq!(run.manifest.entries.len(), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

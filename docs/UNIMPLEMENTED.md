@@ -17,7 +17,7 @@
 | 7 | **MultiProcessor 完整语义** | 多槽并行、每槽 setup/process、整批 crew 申请 | 无每槽独立操作员/故障、无槽位选择策略（优先级/最短队列） | M |
 | 8 | **缺失对象** | Emptier + Robot/Crane/ASRS/Escalator 最小族 | Conveyor 电机/转盘、Fluid 泵/混合器、独立人员密度/碰撞模型 | M |
 | 9 | **全局表（Global Table）** | schema/校验/访问器 + 表达式 `table(...)` 只读访问 | 写入/表驱动参数更新未支持 | S |
-| 10 | **完整任务序列** | `task_sequence` 条件分支/自定义时长/优先级/抢占 | 段仍为收尾额外时长（非中途事件）、无物理载货量 | M |
+| 10 | **完整任务序列** | `task_sequence` 条件分支/自定义时长/优先级/抢占/恢复延迟 | 段仍为收尾额外时长（非中途事件）、无物理载货量 | M |
 | 11 | **完整触发器集合** | OnCreate/Entry/Exit/Receive/Message/Breakdown/Repair/PhotoEye | 无 OnContentChange/OnStateChange/OnDraw/OnReset/OnStop/OnResume 等 | M |
 | 12 | **A/S 连接与 Pull 细节** | 基础 Pull（strategy/requirement） | 无 A/S 连接端口语义、无 Pull 的完整策略（按端口条件等） | S–M |
 | 13 | **Processor 故障细节** | 立即打断+补足剩余时间、MTBF/MTTR、first_failure_time、状态计时 | 无故障期间操作员释放策略、无 Down Behavior 动作复用 | S |

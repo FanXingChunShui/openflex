@@ -176,7 +176,8 @@ FlexSim 的公开帮助没有定义下面几项行为，但任何离散事件引
 `run_model_with_checkpoints_retained(model, dir, stop_time, keep)` 写 `checkpoint-<index>.json` 与 `manifest.json`
 （model/stop_time/replications/base_seed/created_at/entries），`keep=Some(n)` 保留最新 n 个文件；
 `run_model_parallel(model, workers)` 用 `std::thread::scope` 按复现下标分区（`workers=0` 取
-`available_parallelism`），报告顺序确定、与串行逐位一致；`manifest.json` 多次运行按 index 合并 entries 并记录 `history`。
+`available_parallelism`），报告顺序确定、与串行逐位一致；`run_model_with_checkpoints_parallel` 并行写每复现 checkpoint；
+`manifest.json` 多次运行按 index 合并 entries 并记录 `history`。
 
 ## 任务序列
 
