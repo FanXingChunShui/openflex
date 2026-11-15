@@ -218,7 +218,7 @@
   <section class="view">
     <canvas id="scene" aria-label="3D model view" data-drag-object="1" data-group-drag="1" data-occlusion="1" data-box-select="1" data-marquee-3d="1" data-axis="1"></canvas>
     <canvas id="webgl" data-webgl="1" aria-label="WebGL 3D view"></canvas>
-    <div id="webgl-labels" data-webgl-labels="1"></div>
+    <div id="webgl-labels" data-webgl-labels="1" data-webgl-depth="1"></div>
     <svg id="axis-indicator" data-axis="1" viewBox="0 0 76 76" aria-label="X Y Z axes">
       <line x1="12" y1="64" x2="58" y2="64" stroke="#dc2626" stroke-width="2"/>
       <line x1="12" y1="64" x2="12" y2="18" stroke="#16a34a" stroke-width="2"/>
@@ -2456,6 +2456,7 @@ uniform mat4 u_view_projection;
 varying vec3 v_color;
 void main() {
   gl_Position = u_view_projection * vec4(a_position, 1.0);
+  gl_PointSize = 5.0;
   v_color = a_color;
 }`;
 
@@ -2471,6 +2472,8 @@ const webglState = {
   program: null,
   triangleBuffer: null,
   lineBuffer: null,
+  pointBuffer: null,
+  highlightBuffer: null,
   vertexCount: 0,
   lineCount: 0,
   matrix: null,
@@ -2518,6 +2521,8 @@ function initWebGL() {
     webglState.program = program;
     webglState.triangleBuffer = gl.createBuffer();
     webglState.lineBuffer = gl.createBuffer();
+    webglState.pointBuffer = gl.createBuffer();
+    webglState.highlightBuffer = gl.createBuffer();
     return true;
   } catch (error) {
     console.warn("WebGL disabled:", error.message);
@@ -2580,6 +2585,7 @@ function updateWebGLLabels(candidates, width, height) {
   const visible = [];
   const sorted = [...candidates].sort((left, right) => left.y - right.y);
   for (const candidate of sorted) {
+    if (candidate.occluded) continue;
     let y = candidate.y;
     let rect = null;
     for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -2685,6 +2691,10 @@ function drawWebGL(now) {
   const triangleColors = [];
   const lines = [];
   const lineColors = [];
+  const points = [];
+  const pointColors = [];
+  const highlightLines = [];
+  const highlightColors = [];
   const selectedName = model.objects[state.selected] && model.objects[state.selected].name;
   const multi = state.multiSelection;
   const faceShades = ["#94a3b8", "#cbd5e1", "#e2e8f0"];
@@ -2695,6 +2705,14 @@ function drawWebGL(now) {
   const pushLine = (a, b, color) => {
     lines.push(...a, ...b);
     lineColors.push(...color, ...color);
+  };
+  const pushPoint = (point, color) => {
+    points.push(...point);
+    pointColors.push(...color);
+  };
+  const pushHighlight = (a, b, color) => {
+    highlightLines.push(...a, ...b);
+    highlightColors.push(...color, ...color);
   };
   const boxes = [];
   model.objects.forEach((object, index) => {
@@ -2738,6 +2756,9 @@ function drawWebGL(now) {
     const edgeColor = highlighted ? hexRgb("#f59e0b") : isMulti ? hexRgb("#0284c7") : hexRgb("#334155");
     const edges = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
     for (const [a, b] of edges) pushLine(corners[a], corners[b], edgeColor);
+    if (highlighted) {
+      for (const [a, b] of edges) pushHighlight(corners[a], corners[b], hexRgb("#fbbf24"));
+    }
   });
   if (state.gridVisible) {
     const grid = state.snapGrid || 50;
@@ -2760,6 +2781,8 @@ function drawWebGL(now) {
     const start = from.center;
     const end = to.center;
     pushLine(start, end, hexRgb("#475569"));
+    pushPoint(start, hexRgb("#0284c7"));
+    pushPoint(end, hexRgb("#0284c7"));
     const dx = end[0] - start[0];
     const dy = end[1] - start[1];
     const length = Math.hypot(dx, dy) || 1;
@@ -2795,10 +2818,38 @@ function drawWebGL(now) {
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(lineColors), gl.DYNAMIC_DRAW);
   gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 0, 0);
   gl.drawArrays(gl.LINES, 0, lines.length / 3);
-  gl.deleteBuffer(colorBuffer);
+  const cssWidth = webglCanvas.clientWidth;
+  const cssHeight = webglCanvas.clientHeight;
+  for (const box of boxes) {
+    const projected = box.corners.map(corner => projectWorld(matrix, corner, cssWidth, cssHeight));
+    if (projected.some(point => !point)) {
+      box.screenBox = null;
+      box.distance = Number.POSITIVE_INFINITY;
+      continue;
+    }
+    const xs = projected.map(point => point.x);
+    const ys = projected.map(point => point.y);
+    box.screenBox = {
+      left: Math.min(...xs),
+      right: Math.max(...xs),
+      top: Math.min(...ys),
+      bottom: Math.max(...ys),
+    };
+    box.distance = Math.hypot(
+      box.center[0] - eye[0],
+      box.center[1] - eye[1],
+      box.center[2] - eye[2],
+    );
+  }
   const labels = boxes.map(box => {
-    const point = projectWorld(matrix, box.labelWorld, webglCanvas.clientWidth, webglCanvas.clientHeight);
+    const point = projectWorld(matrix, box.labelWorld, cssWidth, cssHeight);
     if (!point) return null;
+    const occluded = box.screenBox && boxes.some(other =>
+      other !== box
+      && other.screenBox
+      && other.distance < box.distance - 1e-6
+      && point.x >= other.screenBox.left && point.x <= other.screenBox.right
+      && point.y >= other.screenBox.top && point.y <= other.screenBox.bottom);
     return {
       name: box.object.name,
       kind: box.object.kind,
@@ -2806,9 +2857,31 @@ function drawWebGL(now) {
       y: point.y,
       selected: box.object.name === selectedName,
       multi: multi.has(box.index),
+      occluded: Boolean(occluded),
     };
   }).filter(Boolean);
-  updateWebGLLabels(labels, webglCanvas.clientWidth, webglCanvas.clientHeight);
+  updateWebGLLabels(labels, cssWidth, cssHeight);
+
+  // Connection endpoint dots.
+  gl.bindBuffer(gl.ARRAY_BUFFER, webglState.pointBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(points), gl.DYNAMIC_DRAW);
+  gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(pointColors), gl.DYNAMIC_DRAW);
+  gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 0, 0);
+  gl.drawArrays(gl.POINTS, 0, points.length / 3);
+
+  // Selected outline glow: draw without depth testing so it stays visible.
+  gl.disable(gl.DEPTH_TEST);
+  gl.bindBuffer(gl.ARRAY_BUFFER, webglState.highlightBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(highlightLines), gl.DYNAMIC_DRAW);
+  gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(highlightColors), gl.DYNAMIC_DRAW);
+  gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 0, 0);
+  gl.drawArrays(gl.LINES, 0, highlightLines.length / 3);
+  gl.enable(gl.DEPTH_TEST);
+  gl.deleteBuffer(colorBuffer);
 }
 
 function setRenderMode(mode) {

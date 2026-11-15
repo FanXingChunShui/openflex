@@ -5516,7 +5516,12 @@ impl<'m> Simulation<'m> {
                     let temperature_factor = 1.0 / (1.0 + 0.01 * (temperature - 20.0)).max(1e-6);
                     let rate = params.flow_rate.unwrap_or(10.0);
                     let k = rate / (REFERENCE_DENSITY * REFERENCE_GRAVITY);
-                    (k * delta * temperature_factor).min(rate) * dt
+                    // task-89: a pipe with diameter/friction_factor/density
+                    // follows the Darcy-Weisbach law; otherwise the linear
+                    // pressure-flow calibration is kept.
+                    let linear = (k * delta * temperature_factor).min(rate);
+                    let capacity = darcy_flow(&params, delta).unwrap_or(linear);
+                    capacity * dt
                 }
                 _ => 0.0,
             })
@@ -8465,6 +8470,35 @@ fn is_fluid_kind(kind: ObjectKind) -> bool {
     )
 }
 
+/// task-89: Darcy-Weisbach flow law for a pipe.
+///
+/// With `diameter`, `friction_factor` and `density` set, the pipe resistance is
+/// `R = f·L / (D·2·ρ·A²)` and the flow follows `Q = sqrt(Δp / R)`. The density
+/// is corrected for temperature with the linear approximation
+/// `ρ(T) = ρ0·(1 − β·T)` (`β` = `temperature_coefficient`, default 0.0002/K).
+/// Without the three parameters the caller falls back to the `flow_rate`
+/// calibration, so every existing model keeps its behaviour.
+fn darcy_flow(pipe: &openflex_model::FluidPipeParams, delta_p: f64) -> Option<f64> {
+    let diameter = pipe.diameter?;
+    let friction = pipe.friction_factor?;
+    let density = pipe.density?;
+    if diameter <= 0.0 || friction <= 0.0 || density <= 0.0 {
+        return None;
+    }
+    let beta = pipe.temperature_coefficient.unwrap_or(0.0002);
+    let temperature = pipe.temperature.unwrap_or(0.0);
+    let rho = density * (1.0 - beta * temperature).max(0.0);
+    if rho <= 0.0 {
+        return None;
+    }
+    let area = std::f64::consts::PI * diameter * diameter / 4.0;
+    let resistance = friction * pipe.length.max(EPS) / (diameter * 2.0 * rho * area * area);
+    if resistance <= 0.0 {
+        return None;
+    }
+    Some((delta_p.max(0.0) / resistance).sqrt())
+}
+
 fn fluid_kind_name(kind: ObjectKind) -> &'static str {
     match kind {
         ObjectKind::FluidGenerator => "fluid_generator",
@@ -9170,5 +9204,37 @@ mod tests {
             cached_first > 4.0,
             "the wall forces a detour: {cached_first}"
         );
+    }
+
+    /// task-89: the Darcy law gives `Q ∝ sqrt(Δp)` and a slightly lower flow
+    /// for warmer (less dense) fluid.
+    #[test]
+    fn darcy_flow_follows_the_quadratic_law() {
+        let pipe = openflex_model::FluidPipeParams {
+            diameter: Some(0.1),
+            friction_factor: Some(0.02),
+            density: Some(1000.0),
+            length: 10.0,
+            ..Default::default()
+        };
+        let low = darcy_flow(&pipe, 1000.0).expect("darcy");
+        let high = darcy_flow(&pipe, 2000.0).expect("darcy");
+        assert!(
+            (high / low - 2.0f64.sqrt()).abs() < 1e-9,
+            "doubling the pressure drop multiplies the flow by sqrt(2): {}",
+            high / low
+        );
+        // Without the three parameters the old calibration path is used.
+        let plain = openflex_model::FluidPipeParams {
+            flow_rate: Some(5.0),
+            ..Default::default()
+        };
+        assert!(darcy_flow(&plain, 1000.0).is_none());
+        // Warmer fluid is less dense and therefore flows a little slower.
+        let mut warm = pipe.clone();
+        warm.temperature = Some(80.0);
+        let warm_flow = darcy_flow(&warm, 1000.0).expect("darcy");
+        assert!(warm_flow < low, "warm flow {warm_flow} vs cold {low}");
+        assert!((warm_flow / low - (1.0f64 - 0.0002 * 80.0).sqrt()).abs() < 1e-9);
     }
 }

@@ -432,8 +432,28 @@ ghcr.io/fanxingchunshui/openflex:latest
 | `0.27.0` | ✅ 可用（tag 发布后约 10 分钟出现） | `237b9bf947dc` |
 | `0.28.0` | ✅ 可用（tag 发布后约 30 分钟出现；container run `43726461023` 最终 success，33 分钟） | `dea3c81c6a5f` |
 | `0.29.0` | ✅ 可用（tag 发布后约 32 分钟出现；container run `43729706956` 推送后仍 in_progress） | `94363c25c95a` |
-| `0.30.0` | ✅ 可用（tag 发布后约 33 分钟出现） | `7b37e5401daa` |
+| `0.30.0` | ✅ 可用（tag 发布后约 33 分钟出现；container run `43731896900` success，35 分钟） | `7b37e5401daa` |
 | `latest` | ✅ 指向 0.30.0 | `7b37e5401daa` |
+
+**container run 观察与经验值（2026-11-15）**：GHCR 镜像由 tag 触发的 `container` workflow 构建，
+耗时基本由 step「Build and push multi-arch image」里的 QEMU arm64 构建决定：
+
+| 版本 | tag → 镜像可用 | run 结论 |
+|---|---|---|
+| v0.24.0 | ~25 分钟 | success |
+| v0.25.0 | ~21 分钟 | success |
+| v0.26.0 | ~24 分钟 | success |
+| v0.27.0 | ~26 分钟 | success |
+| v0.28.0 | ~33 分钟 | success（run `43726461023`） |
+| v0.29.0 | ~32 分钟 | success（run `43729706956`） |
+| v0.30.0 | ~35 分钟 | success（run `43731896900`） |
+
+- **观察到 `in_progress` 不等于失败**：镜像在 run 结束前就已推送成功（GHCR 各 tag 已 200、`latest` 已前移），
+  剩余步骤是 buildx 收尾与 run 内的自校验（docker pull + run、registry tag 校验）。
+- **经验值：tag → 镜像可用 25–35 分钟**；超过 60 分钟仍 `in_progress` 才需要取消并用
+  `workflow_dispatch`（tag 填对应版本）重跑。
+- 收尾验证用 `scripts/verify-ghcr.sh --tags <v>,latest --expect-latest <v> --retry 12 --wait 60`，
+  它与 run 内的自校验等价，不必等 run 结束。
 
 | 项 | 值 |
 |---|---|

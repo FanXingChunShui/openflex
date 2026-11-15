@@ -296,13 +296,14 @@ docker pull ghcr.io/fanxingchunshui/openflex@sha256:7b37e5401daa16265a53516968be
 
 （该 digest 是 v0.30.0 与 `latest` 共同指向的 OCI manifest list，2026-11-16 核对；用 `scripts/verify-ghcr.sh --tags 0.30.0,latest --expect-latest 0.30.0` 可复核。）
 
-> **container run 观察（2026-11-15）**：推送 v0.28.0 的 run
+> **container run 观察（2026-11-15/16）**：v0.28.0 / v0.29.0 / v0.30.0 的 run 最终均
+> **completed / success**，耗时 33 / 33 / 35 分钟。推送 v0.28.0 的 run
 > [`43726461023`](https://github.com/FanXingChunShui/openflex/actions/runs/43726461023) 最终
 > **completed / success**，14:49:36 → 15:22:38（33 分钟）；上一轮看到的 `in_progress`（step 8
 > 「Build and push multi-arch image」）只是正常的 arm64/QEMU 构建阶段，不是卡死——镜像在 run 结束前
 > 就已可拉取。推送 v0.29.0 的 run
 > [`43729706956`](https://github.com/FanXingChunShui/openflex/actions/runs/43729706956) 也是同样的
-> 形态（step 8 持续构建中）。经验值：**tag 到镜像可用约 25–33 分钟**；超过 60 分钟仍 `in_progress`
+> 形态（step 8 持续构建中）。经验值：**tag 到镜像可用约 25–35 分钟**；超过 60 分钟仍 `in_progress`
 > 才需要取消并用 `workflow_dispatch` 重跑。
 
 ### winget（Windows）— 清单已更新到 v0.12.0，尚未提交

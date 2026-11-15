@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.31.0 — 2026-11-15
+
+### Fluid
+
+- **Darcy 接线**：pressure-mode 的 pipe 流量在 `diameter+friction_factor+density` 齐全时按
+  `R=f·L/(D·2ρA²)`、`Q=√(Δp/R)` 计算（含 ρ(T) 线性修正）；缺参数回退原线性标定（`fluid_safety_net` 3 项固定默认行为）。
+- distribute cap 与 valve opening 开度曲线留待下一批（代码已注释 TODO 位置）。
+
+### Studio
+
+- WebGL 标签**深度遮挡**（被更近对象包围盒遮挡时隐藏）、连接端点圆点、选中琥珀描边（关闭深度测试），
+  与 Canvas fallback 一致。
+
+### 发布
+
+- container run 经验值补全：v0.24–v0.30 实测 tag → 镜像可用 **25–35 分钟**，全部 success；
+  `in_progress` ≠ 失败，超 60 分钟才需重跑（已写入 install/releasing/VERIFICATION）。
+
+### 验证
+
+- 472 个测试全绿（core 241、CLI 83、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.31.0 三平台产物发布并 SHA256 校验。
+
 ## v0.30.0 — 2026-11-15
 
 ### Fluid
