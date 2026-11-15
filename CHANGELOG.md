@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.39.0 — 2026-11-16
+
+### Person
+
+- **pickup 起点格等待（途中避让最小版）**：开始 pickup 段前若共享起点格被索引更小的 person 占用（tasks>0、距离<0.5）
+  → 不下格、trace `person_wait`、`now+0.5` 重试；与目标格等待共用“小 id 先行”，前后跟随不死锁。
+
+### Studio
+
+- **报告对比面板**：载入两份 report JSON（或当前报告 + 文件），按对象显示 input/output/utilization 差异
+  （delta 与百分比、正负着色）。
+
+### 验证
+
+- 478 个测试全绿（core 246、CLI 84、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.39.0 三平台产物发布并 SHA256 校验。
+
 ## v0.38.0 — 2026-11-16
 
 ### Person

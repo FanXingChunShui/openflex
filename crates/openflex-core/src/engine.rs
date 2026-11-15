@@ -6489,6 +6489,28 @@ impl<'m> Simulation<'m> {
         transporter: usize,
         requester: usize,
     ) -> Result<(), SimError> {
+        // task-112: a person cannot step onto a cell already taken by a
+        // lower-index person; it waits one tick and retries the pickup leg.
+        if self.objects[transporter].kind == ObjectKind::Person
+            && let Some(home) = self.objects[transporter].home
+        {
+            let target = self.objects[home].position;
+            let blocked = self.objects.iter().enumerate().any(|(index, object)| {
+                index != transporter
+                    && index < transporter
+                    && object.kind == ObjectKind::Person
+                    && object.tasks > 0
+                    && distance(object.position, target) < 0.5
+            });
+            if blocked {
+                self.record_object_trace("person_wait", transporter);
+                self.schedule(
+                    self.now + 0.5,
+                    EventKind::TransportPickup(transporter, requester),
+                );
+                return Ok(());
+            }
+        }
         if let Some(home) = self.objects[transporter].home {
             self.objects[transporter].position = self.objects[home].position;
             self.objects[transporter].z = self.objects[home].z;
@@ -9480,5 +9502,63 @@ mod tests {
         sim.handle_transport_arrive(second, processor)
             .expect("arrive");
         assert_eq!(sim.objects[second].position, [5.0, 0.0]);
+    }
+
+    /// task-112: a following person waits when the pickup cell is occupied by
+    /// a lower-index person, and proceeds once it is free.
+    #[test]
+    fn person_waits_before_starting_the_pickup_leg() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "person-follow",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "D", "kind": "dispatcher", "pos": [0, 0], "params": {} },
+            { "name": "P", "kind": "processor", "pos": [5, 0], "params": {} },
+            { "name": "E0", "kind": "person", "pos": [0, 0], "params": { "home": "D" } },
+            { "name": "E1", "kind": "person", "pos": [0, 0], "params": { "home": "D" } },
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let processor = sim.by_name["P"];
+        let first = sim.by_name["E0"];
+        let second = sim.by_name["E1"];
+        assert!(first < second);
+
+        // The first person occupies the shared pickup cell.
+        sim.objects[first].position = [0.0, 0.0];
+        sim.objects[first].tasks = 1;
+        sim.objects[second].position = [5.0, 0.0];
+        sim.objects[second].tasks = 1;
+        let before = sim.events.len();
+
+        sim.handle_transport_pickup(second, processor)
+            .expect("pickup");
+        assert!(
+            sim.events.len() > before,
+            "a retry must be scheduled while the cell is taken"
+        );
+        assert_eq!(
+            sim.objects[second].position,
+            [5.0, 0.0],
+            "the waiting person must not jump onto the occupied cell"
+        );
+
+        // Once the cell is free the pickup proceeds and the person moves to
+        // its home (the shared cell).
+        sim.objects[first].tasks = 0;
+        sim.handle_transport_pickup(second, processor)
+            .expect("pickup");
+        assert_eq!(sim.objects[second].position, [0.0, 0.0]);
     }
 }

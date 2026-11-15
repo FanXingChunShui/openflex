@@ -59,6 +59,12 @@
   #scene { display: block; width: 100%; height: 100%; cursor: grab; }
   #webgl { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
            display: none; background: #f1f5f9; }
+  #compare-results table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  #compare-results th, #compare-results td { border: 1px solid #cbd5e1; padding: 2px 4px; text-align: right; }
+  #compare-results th:first-child, #compare-results td:first-child { text-align: left; }
+  #compare-results td.positive { color: #15803d; }
+  #compare-results td.negative { color: #b91c1c; }
+  #compare-results td.neutral { color: #64748b; }
   #heatmap-legend { position: absolute; right: 10px; bottom: 34px; z-index: 4; width: 170px;
                     background: rgba(248,250,252,.92); border: 1px solid #cbd5e1; border-radius: 6px;
                     padding: 5px 7px; font-size: 10px; color: #475569; }
@@ -375,6 +381,19 @@
         <button id="load-timeseries" type="button">Load time series</button>
       </div>
       <canvas id="timeseries-chart" aria-label="Content time series"></canvas>
+      <details id="compare-panel" data-compare-panel="1">
+        <summary>Compare reports</summary>
+        <div class="row">
+          <button id="compare-a" type="button" data-compare-load="1">Load report A</button>
+          <button id="compare-b" type="button" data-compare-load="1">Load report B</button>
+          <button id="compare-current" type="button">Use current report as B</button>
+          <button id="compare-run" class="primary" type="button">Compare</button>
+        </div>
+        <input id="compare-a-file" type="file" accept="application/json,.json" hidden>
+        <input id="compare-b-file" type="file" accept="application/json,.json" hidden>
+        <p id="compare-labels" class="muted"></p>
+        <div id="compare-results"></div>
+      </details>
     </div>
   </section>
 </main>
@@ -412,6 +431,10 @@ const state = {
   heatmapMetric: "utilization",
   traceEvents: [],
   traceInfo: null,
+  compareA: null,
+  compareB: null,
+  compareAName: "A",
+  compareBName: "B",
   checkpoints: null,
   dragging: false,
   lastX: 0,
@@ -3623,6 +3646,73 @@ function reportDoorTimes(report, name) {
   return [opening / divisor, open / divisor, closing / divisor];
 }
 
+function compareMetric(report, name, path) {
+  const object = report && report.objects && report.objects[name];
+  if (!object) return null;
+  let value = object;
+  for (const part of path.split(".")) {
+    if (value == null) return null;
+    value = value[part];
+  }
+  return Number.isFinite(Number(value)) ? Number(value) : null;
+}
+
+function renderCompare() {
+  const container = $("compare-results");
+  const labels = $("compare-labels");
+  if (!container) return;
+  if (!state.compareA || !state.compareB) {
+    container.innerHTML = '<p class="muted">Load two reports (or current report as B) and press Compare.</p>';
+    return;
+  }
+  const names = [...new Set([
+    ...Object.keys(state.compareA.objects || {}),
+    ...Object.keys(state.compareB.objects || {}),
+  ])].sort();
+  const metrics = [
+    ["input", "input_count.mean"],
+    ["output", "output_count.mean"],
+    ["utilization", "utilization.mean"],
+  ];
+  const rows = [];
+  for (const name of names) {
+    for (const [label, path] of metrics) {
+      const a = compareMetric(state.compareA, name, path);
+      const b = compareMetric(state.compareB, name, path);
+      if (a == null && b == null) continue;
+      const aValue = a == null ? 0 : a;
+      const bValue = b == null ? 0 : b;
+      const delta = bValue - aValue;
+      const pct = Math.abs(aValue) > 1e-12 ? (delta / Math.abs(aValue)) * 100 : null;
+      const cls = Math.abs(delta) < 1e-12 ? "neutral" : delta > 0 ? "positive" : "negative";
+      rows.push(`<tr><td>${escapeText(name)}</td><td>${label}</td>
+        <td>${aValue.toFixed(3)}</td><td>${bValue.toFixed(3)}</td>
+        <td class="${cls}">${delta >= 0 ? "+" : ""}${delta.toFixed(3)}</td>
+        <td class="${cls}">${pct == null ? "n/a" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}</td></tr>`);
+    }
+  }
+  labels.textContent = `A: ${state.compareAName} · B: ${state.compareBName}`;
+  container.innerHTML = `<table><thead><tr><th>Object</th><th>Metric</th><th>A</th><th>B</th><th>Δ</th><th>Δ%</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="6" class="muted">no matching objects</td></tr>'}</tbody></table>`;
+}
+
+async function loadCompareFile(file, side) {
+  try {
+    const parsed = JSON.parse(await file.text());
+    if (!parsed || !parsed.objects) throw new Error("report JSON has no objects map");
+    if (side === "A") {
+      state.compareA = parsed;
+      state.compareAName = file.name;
+    } else {
+      state.compareB = parsed;
+      state.compareBName = file.name;
+    }
+    renderCompare();
+    setStatus(`loaded report ${side}: ${file.name}`);
+  } catch (error) {
+    setStatus(`could not load report ${side}: ${error.message}`, true);
+  }
+}
+
 function exportReportJson() {
   if (!state.report) {
     setStatus("run or step the model before exporting the report", true);
@@ -4231,6 +4321,35 @@ $("object-menu").addEventListener("click", event => {
 });
 document.addEventListener("click", event => {
   if (!event.target.closest("#object-menu")) hideObjectMenu();
+});
+$("compare-a").addEventListener("click", () => $("compare-a-file").click());
+$("compare-b").addEventListener("click", () => $("compare-b-file").click());
+$("compare-a-file").addEventListener("change", async event => {
+  const file = event.target.files && event.target.files[0];
+  if (file) await loadCompareFile(file, "A");
+  event.target.value = "";
+});
+$("compare-b-file").addEventListener("change", async event => {
+  const file = event.target.files && event.target.files[0];
+  if (file) await loadCompareFile(file, "B");
+  event.target.value = "";
+});
+$("compare-current").addEventListener("click", () => {
+  if (!state.report) {
+    setStatus("run or step the model before comparing the current report", true);
+    return;
+  }
+  state.compareB = state.report;
+  state.compareBName = "current report";
+  renderCompare();
+});
+$("compare-run").addEventListener("click", () => {
+  if (!state.compareA || !state.compareB) {
+    setStatus("load report A and report B (or use current) first", true);
+    return;
+  }
+  renderCompare();
+  setStatus("compared reports");
 });
 $("export-report-json").addEventListener("click", exportReportJson);
 $("export-report-csv").addEventListener("click", exportReportCsv);
