@@ -1020,3 +1020,45 @@ fn preempt_retry_delay_slows_the_victim() {
     // The high-priority processor keeps working in both cases.
     assert!(out(&delayed, "High") > 0.0);
 }
+
+// ---------------------------------------------------------------------------
+// task-103: elevator door state statistics
+// ---------------------------------------------------------------------------
+
+/// The doors take 2 s to open and 2 s to close, and both times are reported.
+#[test]
+fn elevator_door_times_are_reported() {
+    let report = run(r#"{
+      "format": "openflex-model", "version": 1, "name": "door-stats",
+      "run": { "stop_time": 10.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+      "objects": [
+        { "name": "S", "kind": "source", "params": {
+            "interarrival": { "distribution": "constant", "value": 100.0 }, "first_arrival": 0.0 } },
+        { "name": "P", "kind": "processor", "pos": [0, 0], "params": {
+            "process_time": { "distribution": "constant", "value": 0.0 },
+            "process_operator": "Dispatcher1" } },
+        { "name": "K", "kind": "sink", "params": {} },
+        { "name": "Dispatcher1", "kind": "dispatcher", "pos": [0, 0], "params": {} },
+        { "name": "E", "kind": "elevator", "pos": [0, 0], "params": {
+            "capacity": 1, "speed": 10.0, "home": "Dispatcher1",
+            "door_open_time": 2.0, "door_close_time": 2.0 } }
+      ],
+      "connections": [
+        { "from": "S", "to": "P" }, { "from": "P", "to": "K" },
+        { "from": "Dispatcher1", "to": "E" }
+      ]
+    }"#);
+    let states = report.replications[0].objects["E"].state_times;
+    assert!(
+        (states.door_opening - 2.0).abs() < 1e-9,
+        "door opening time: {}",
+        states.door_opening
+    );
+    assert!(
+        (states.door_closing - 2.0).abs() < 1e-9,
+        "door closing time: {}",
+        states.door_closing
+    );
+    // The rest of the elevator time is busy (travel/dwell).
+    assert!(states.busy > 0.0);
+}

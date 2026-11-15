@@ -20,13 +20,60 @@ pub const REPORT_CSV: &str = "report.csv";
 pub const REPORT_MARKDOWN: &str = "report.md";
 pub const REPLICATIONS_CSV: &str = "replications.csv";
 
-const WIDTH: usize = 80;
+const WIDTH: usize = 120;
 
 /// Pretty JSON, suitable for machine consumption and for the report archive.
 pub fn to_json(report: &SimReport) -> Result<String, ReportError> {
-    let mut text = serde_json::to_string_pretty(report)?;
+    let value = report_value(report)?;
+    let mut text = serde_json::to_string_pretty(&value)?;
     text.push('\n');
     Ok(text)
+}
+
+/// SimReport as a JSON value with per-object door-state means injected.
+fn report_value(report: &SimReport) -> Result<serde_json::Value, ReportError> {
+    let mut value = serde_json::to_value(report)?;
+    if let Some(objects) = value
+        .get_mut("objects")
+        .and_then(|objects| objects.as_object_mut())
+    {
+        for (name, object) in objects.iter_mut() {
+            let (opening, open, closing) = door_times(report, name);
+            object["door_opening"] = serde_json::json!(opening);
+            object["door_open"] = serde_json::json!(open);
+            object["door_closing"] = serde_json::json!(closing);
+        }
+    }
+    Ok(value)
+}
+
+/// Mean door-state times for one object across replications.
+///
+/// Core currently exposes `door_opening`/`door_closing`; `door_open` is shown
+/// as 0 until the engine field is added.
+fn door_times(report: &SimReport, name: &str) -> (f64, f64, f64) {
+    let mut opening = 0.0;
+    let mut open = 0.0;
+    let mut closing = 0.0;
+    let mut samples = 0.0;
+    for replication in &report.replications {
+        if let Some(stats) = replication.objects.get(name) {
+            opening += stats.state_times.door_opening;
+            closing += stats.state_times.door_closing;
+            // `door_open` may be added to StateTimes after this build; read it
+            // from the serialized form so the report picks it up automatically.
+            open += serde_json::to_value(stats.state_times)
+                .ok()
+                .and_then(|value| value.get("door_open").and_then(|v| v.as_f64()))
+                .unwrap_or(0.0);
+            samples += 1.0;
+        }
+    }
+    if samples > 0.0 {
+        (opening / samples, open / samples, closing / samples)
+    } else {
+        (0.0, 0.0, 0.0)
+    }
 }
 
 /// Pretty JSON with an optional `batch_means` summary object.
@@ -37,7 +84,7 @@ pub fn to_json_with_batch_means(
     let Some(batch) = batch_means else {
         return to_json(report);
     };
-    let mut value = serde_json::to_value(report)?;
+    let mut value = report_value(report)?;
     if let Some(object) = value.as_object_mut() {
         object.insert("batch_means".into(), batch_json(batch));
     }
@@ -135,18 +182,22 @@ pub fn to_table_with_sections(
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "{:<22} {:>9} {:>9} {:>9} {:>9} {:>10} {:>8}",
+        "{:<22} {:>8} {:>8} {:>8} {:>8} {:>9} {:>7} {:>8} {:>8} {:>8}",
         i18n::t("object"),
         i18n::t("in"),
         i18n::t("out"),
         i18n::t("avg_wip"),
         i18n::t("max_wip"),
         format!("{} ({unit})", i18n::t("stay")),
-        i18n::t("util")
+        i18n::t("util"),
+        "door_open",
+        "door_opening",
+        "door_closing"
     );
     let _ = writeln!(out, "{}", "-".repeat(WIDTH));
     for (name, stats) in &report.objects {
-        let _ = writeln!(out, "{}", row(name, stats));
+        let (opening, open, closing) = door_times(report, name);
+        let _ = writeln!(out, "{}", row(name, stats, opening, open, closing));
     }
     let _ = writeln!(out, "{}", "-".repeat(WIDTH));
     let in_system = in_system(report);
@@ -170,15 +221,24 @@ pub fn to_table_with_sections(
     out
 }
 
-fn row(name: &str, stats: &ObjectAggregate) -> String {
+fn row(
+    name: &str,
+    stats: &ObjectAggregate,
+    door_opening: f64,
+    door_open: f64,
+    door_closing: f64,
+) -> String {
     let mut row = String::new();
     let _ = write!(row, "{name:<22}");
-    let _ = write!(row, " {:>9.1}", stats.input_count.mean);
-    let _ = write!(row, " {:>9.1}", stats.output_count.mean);
-    let _ = write!(row, " {:>9.2}", stats.avg_content.mean);
-    let _ = write!(row, " {:>9.1}", stats.max_content.mean);
-    let _ = write!(row, " {:>10.2}", stats.avg_stay_time.mean);
-    let _ = write!(row, " {:>8.1}", stats.utilization.mean * 100.0);
+    let _ = write!(row, " {:>8.1}", stats.input_count.mean);
+    let _ = write!(row, " {:>8.1}", stats.output_count.mean);
+    let _ = write!(row, " {:>8.2}", stats.avg_content.mean);
+    let _ = write!(row, " {:>8.1}", stats.max_content.mean);
+    let _ = write!(row, " {:>9.2}", stats.avg_stay_time.mean);
+    let _ = write!(row, " {:>7.1}", stats.utilization.mean * 100.0);
+    let _ = write!(row, " {:>8.2}", door_opening);
+    let _ = write!(row, " {:>8.2}", door_open);
+    let _ = write!(row, " {:>8.2}", door_closing);
     row
 }
 
@@ -334,7 +394,7 @@ pub fn to_markdown_with_sections(
     let _ = writeln!(out, "## {}\n", i18n::t("objects"));
     let _ = writeln!(
         out,
-        "| {} | {} | {} | {} | {} | {} | {} ({unit}) | {} | {} | {} | {} |",
+        "| {} | {} | {} | {} | {} | {} | {} ({unit}) | {} | {} | {} | {} | door_open | door_opening | door_closing |",
         i18n::t("object"),
         i18n::t("kind"),
         i18n::t("in"),
@@ -349,12 +409,13 @@ pub fn to_markdown_with_sections(
     );
     let _ = writeln!(
         out,
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
     );
     for (name, stats) in &report.objects {
+        let (opening, open, closing) = door_times(report, name);
         let _ = writeln!(
             out,
-            "| {name} | {:?} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {name} | {:?} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.2} | {:.2} | {:.2} |",
             stats.kind,
             fmt_count(stats.input_count.mean),
             fmt_count(stats.output_count.mean),
@@ -364,7 +425,10 @@ pub fn to_markdown_with_sections(
             fmt_ci(stats.avg_stay_time.ci95),
             fmt_percent(stats.utilization.mean),
             fmt_ci(stats.utilization.ci95),
-            fmt_rate(stats.throughput.mean)
+            fmt_rate(stats.throughput.mean),
+            open,
+            opening,
+            closing
         );
     }
     let in_system = in_system(report);

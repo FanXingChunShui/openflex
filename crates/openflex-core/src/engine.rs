@@ -499,6 +499,8 @@ struct StateDetail {
     processing: f64,
     waiting_operator: f64,
     waiting_transport: f64,
+    door_opening: f64,
+    door_closing: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1179,6 +1181,8 @@ impl ObjectRt {
         states.processing = detail.processing;
         states.waiting_for_operator = detail.waiting_operator;
         states.waiting_for_transport = detail.waiting_transport;
+        states.door_opening = detail.door_opening;
+        states.door_closing = detail.door_closing;
         let content_dt = (now - self.last_content_change).max(0.0);
         let content_integral = self.acc.content_integral + self.held() as f64 * content_dt;
         ObjectStats {
@@ -1205,6 +1209,8 @@ impl ObjectRt {
         state_times.processing = self.acc.detail.processing;
         state_times.waiting_for_operator = self.acc.detail.waiting_operator;
         state_times.waiting_for_transport = self.acc.detail.waiting_transport;
+        state_times.door_opening = self.acc.detail.door_opening;
+        state_times.door_closing = self.acc.detail.door_closing;
         ObjectStats {
             kind: self.kind,
             input_count: self.acc.input,
@@ -6532,6 +6538,8 @@ impl<'m> Simulation<'m> {
         let unload = self.transport_unload_time(transporter);
         // Task-36: the doors have to open before loading/unloading starts.
         let door_open = self.elevator_door_open(transporter);
+        // task-103: door state statistics.
+        self.objects[transporter].acc.detail.door_opening += door_open;
         self.schedule(
             self.now + door_open + dwell + unload,
             EventKind::OperatorLoaded(transporter, requester),
@@ -6761,6 +6769,8 @@ impl<'m> Simulation<'m> {
         }
         // Task-36: the doors must close before the cabin may travel again.
         let door_close = self.elevator_door_close(transporter);
+        // task-103: door state statistics.
+        self.objects[transporter].acc.detail.door_closing += door_close;
         if let Some(travel) = home_travel
             && travel > EPS
         {

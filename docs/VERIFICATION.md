@@ -369,7 +369,9 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 | container run `43729706956`（v0.29.0） | **已 completed / success** | 15:24:29 → 15:57:25（33 分钟） |
 | container run `43731896900`（v0.30.0） | **已 completed / success** | 15:48:11 → 16:23:22（35 分钟）；经验值：tag → 镜像可用 25–35 分钟 |
 | container run（v0.31.0） | **已推送，run 收尾中** | 16:35:20 创建；镜像 24 分钟后可用（GHCR 200），run 仍在 buildx 收尾 |
-| container run（v0.32.0） | **已推送，run 收尾中** | 16:53:03 创建；镜像 32 分钟后可用（GHCR 200），run 仍在 buildx 收尾 |
+| container run（v0.32.0） | **已 completed / success** | 镜像 32 分钟后可用；run 最终 success |
+| container run（v0.34.0） | **已 completed / success** | 17:54:47 → 18:26:49（32 分钟） |
+| container run（v0.35.0） | **已 completed / success** | 18:15:49 → 18:41:19（25.5 分钟，近期最快之一） |
 | container workflow 加固 | **已完成** | `timeout-minutes: 45`、`provenance: false`、推送后 registry API 复核、失败时打印 buildx/docker 诊断 |
 | GHCR registry 检查工具 | **已完成** | `scripts/verify-ghcr.sh`（无需 docker/token；支持 `--retry`/`--expect-latest`/`--json`） |
 | Windows / Linux / deb / rpm / MSI 真机安装 | **待环境** | 脚本与命令清单就绪，见安装矩阵第 5 节 |

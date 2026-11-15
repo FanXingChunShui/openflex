@@ -407,11 +407,11 @@ mod tests {
         assert!(to_table(&report).contains("Queue1"));
         assert!(to_csv(&report).contains("object,kind"));
         assert!(to_markdown(&report).contains("| Queue1 |"));
-        assert!(
-            to_json(&report)
-                .expect("json")
-                .contains("\"model\": \"demo\"")
-        );
+        let json = to_json(&report).expect("json");
+        assert!(json.contains("\"model\": \"demo\""));
+        assert!(json.contains("\"door_opening\""));
+        assert!(to_table(&report).contains("door_opening"));
+        assert!(to_markdown(&report).contains("door_opening"));
         for format in [Format::Table, Format::Json, Format::Csv, Format::Markdown] {
             let text = render_sim(&report, format).expect("render");
             assert!(text.ends_with('\n'), "{format:?} must end with a newline");

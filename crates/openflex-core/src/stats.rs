@@ -68,6 +68,12 @@ pub struct StateTimes {
     /// Detail of `blocked`: waiting for an operator that travels to the object.
     #[serde(default)]
     pub waiting_for_transport: f64,
+    /// task-103: time an elevator spent opening its doors.
+    #[serde(default)]
+    pub door_opening: f64,
+    /// task-103: time an elevator spent closing its doors.
+    #[serde(default)]
+    pub door_closing: f64,
 }
 
 impl StateTimes {
@@ -88,6 +94,8 @@ impl StateTimes {
             "processing" => self.processing,
             "waiting_for_operator" => self.waiting_for_operator,
             "waiting_for_transport" => self.waiting_for_transport,
+            "door_opening" => self.door_opening,
+            "door_closing" => self.door_closing,
             _ => 0.0,
         }
     }
@@ -717,6 +725,8 @@ mod tests {
             processing: 5.0,
             waiting_for_operator: 1.5,
             waiting_for_transport: 0.5,
+            door_opening: 0.0,
+            door_closing: 0.0,
         };
         let sum = states.fraction("idle")
             + states.fraction("busy")
@@ -751,6 +761,8 @@ mod tests {
             processing: 8.0,
             waiting_for_operator: 4.0,
             waiting_for_transport: 2.0,
+            door_opening: 0.0,
+            door_closing: 0.0,
         };
         assert!(states.setup + states.processing <= states.busy);
         assert!(states.waiting_for_operator + states.waiting_for_transport <= states.blocked);

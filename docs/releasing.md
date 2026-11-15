@@ -437,7 +437,7 @@ ghcr.io/fanxingchunshui/openflex:latest
 | `0.32.0` | ✅ 可用（tag 发布后约 32 分钟出现） | `158ad687b5b8` |
 | `0.33.0` | ✅ 可用 | `d79065bf17d9` |
 | `0.34.0` | ✅ 可用（tag 发布后约 31 分钟出现） | `a35bd49f4501` |
-| `0.35.0` | ✅ 可用（tag 发布后约 24 分钟出现） | `709ad9047722` |
+| `0.35.0` | ✅ 可用（tag 发布后约 24 分钟出现；container run success，25.5 分钟） | `709ad9047722` |
 | `latest` | ✅ 指向 0.35.0 | `709ad9047722` |
 
 **container run 观察与经验值（2026-11-15）**：GHCR 镜像由 tag 触发的 `container` workflow 构建，
@@ -452,8 +452,10 @@ ghcr.io/fanxingchunshui/openflex:latest
 | v0.28.0 | ~33 分钟 | success（run `43726461023`） |
 | v0.29.0 | ~32 分钟 | success（run `43729706956`） |
 | v0.30.0 | ~35 分钟 | success（run `43731896900`） |
-| v0.31.0 | ~24 分钟 | success（run `43737960728` 之前的 run） |
-| v0.32.0 | ~32 分钟 | 镜像已可用（run 仍在收尾） |
+| v0.31.0 | ~24 分钟 | success |
+| v0.32.0 | ~32 分钟 | success |
+| v0.34.0 | ~32 分钟 | success（run 17:54:47 → 18:26:49） |
+| v0.35.0 | ~25 分钟 | success（run 18:15:49 → 18:41:19） |
 
 - **观察到 `in_progress` 不等于失败**：镜像在 run 结束前就已推送成功（GHCR 各 tag 已 200、`latest` 已前移），
   剩余步骤是 buildx 收尾与 run 内的自校验（docker pull + run、registry tag 校验）。

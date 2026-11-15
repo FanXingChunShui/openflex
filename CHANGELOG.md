@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.36.0 — 2026-11-16
+
+### 对象
+
+- **电梯门态统计**：`StateTimes` 新增 `door_opening`/`door_closing`（`#[serde(default)]`），在
+  `handle_transport_arrive`/`handle_operator_released` 累计；`stats()` 与 `stats_at()` 双路径一致；
+  确定性测试断言 opening/closing 各 2.0（1e-9）。
+- **报告显示**：table/markdown/json 的电梯对象行输出 `door_opening`/`door_closing`（`door_open` 预留）。
+
+### 验证
+
+- 473 个测试全绿（core 243、CLI 83、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.36.0 三平台产物发布并 SHA256 校验。
+
 ## v0.35.0 — 2026-11-16
 
 ### Studio
