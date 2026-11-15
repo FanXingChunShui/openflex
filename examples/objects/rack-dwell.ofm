@@ -1,0 +1,20 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "rack-dwell",
+  "time_unit": "seconds",
+  "description": "Rack minimum dwell: every item stays at least 10 seconds before the sink may take it",
+  "run": {"stop_time": 200.0, "warmup": 0.0, "seed": 1, "replications": 1},
+  "objects": [
+    {"name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+      "interarrival": {"distribution": "constant", "value": 10.0},
+      "items_per_arrival": 1, "first_arrival": 0.0}},
+    {"name": "Rack1", "kind": "rack", "pos": [5, 0], "params": {
+      "capacity": 10, "levels": 2, "min_dwell": 10.0}},
+    {"name": "Sink1", "kind": "sink", "pos": [10, 0], "params": {}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Rack1"},
+    {"from": "Rack1", "to": "Sink1"}
+  ]
+}

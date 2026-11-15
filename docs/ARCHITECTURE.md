@@ -70,7 +70,7 @@ OpenFlex 的目标是：用 Rust 实现一个与 FlexSim 核心建模语义一�
 | Split | 按 `by_item_type` 选端口，或轮询输出端口 |
 | Transporter / Dispatcher | Processor 通过 `process_operator` 向 Dispatcher 请求操作员；任务拆两段：home→取货（`network` 双向最短路或欧氏距离）→ load → 送达 → unload → 加工 → 空车回 home；`network` 缺失时回退欧氏；容量 = 可并发的任务数 |
 | Person / AGV | `person`（capacity 固定 1，平面行走，network 或欧氏）、`agv`（transporter alias）；与 Dispatcher 的优先级/抢占/容量机制共用 |
-| Elevator | 只做垂直运输：距离 = |Δz|，到站采样 `stop_time`（取货/送达各一次），`capacity` 表示并发任务数；对象新增 `z`（楼层/高度） |
+| Elevator | 垂直运输（|Δz|）+ 门开/关时间、`max_load`/`load_per_task` 折算有效载客、`shaft` 井道互斥（同一时刻一台轿厢在途）；`capacity` 为并发任务数，`z` 为楼层 |
 | Resource | 计数型资源池（`capacity`、`downtimes`）；占用期间 Processor 处于 `Blocked`，停机窗口内不发放 |
 | 全部对象 | 可选 `shifts`（`start`/`duration`/`repeat_every`）与 `timetable`（窗口列表）：窗口外进入 `OffShift`、暂停加工并拒绝进件，恢复后补足剩余加工时间 |
 | Pull 模式 | 对象可配置 `pull:{enabled,strategy,requirement}`，由下游主动从上游取件；`requirement` 为假的件被跳过 |
@@ -163,6 +163,12 @@ FlexSim 的公开帮助没有定义下面几项行为，但任何离散事件引
 7. **统计窗口**：`warmup` 之前的计数与时间加权量在 warmup 时刻清零；`created/completed` 只统计
    warmup 之后创建的项。
 
+## Emptier（basic_fr）
+
+`basic_fr.emptier: { interval, max_items, destroy }`：按周期清空输入连接上游的 content/out_pending，
+`destroy=true` 直接丢弃（不计 completed），否则经自身输出路由到下游；`can_accept=false`（不接受 push，只被清扫）。
+语义等价 FlexSim Emptier，但复用 `basic_fr` kind 以避免新增枚举破坏下游 match。
+
 ## 检查点与续跑
 
 `openflex run --save-checkpoint cp.json` 把运行到停止时刻的状态写成 JSON；`--resume cp.json --until T`
@@ -249,17 +255,22 @@ valve 用 `pressure_open/pressure_close` 滞回自动启闭（trace `fluid_valve
 
 ## 全局表、A/S 连接与迁移
 
-- `Model.global_tables`：`GlobalTable{columns, rows}`，单元格支持 number/bool/string；模型层已提供校验与 `Model::table()` 访问器，引擎/表达式访问待接线。
-- `Connection.kind: "a" | "s"`：S（中心端口/资源链接）不参与输出端口编号与路由；模型层已校验，引擎待按 kind 跳过 A 路由。
-- 触发器枚举已扩展到 13 个点（含 OnContentChange/OnStateChange/OnReset/OnStop/OnResume），执行接线待后续。
+- `Model.global_tables`：`GlobalTable{columns, rows}`，单元格支持 number/bool/string；引擎在表达式上下文中提供只读
+  `table(name,row,col)` 与 `table.<Name>.<row>.<col>` / `table.<Name>.<column>`（首行）。
+- `Connection.kind: "a" | "s"`：S 连接不参与输出端口编号与 SendToPort 路由，仅作为资源链接（Dispatcher→Transporter 团队识别用）；
+  A 与缺省完全等价。
+- 触发器枚举 13 个点：OnContentChange（接收/取出 item）、OnStateChange（状态真变化）、OnReset（warmup 重置）已执行；
+  OnStop/OnResume 需运行控制（当前引擎无暂停事件）。生命周期触发器使用合成 item，`trigger_depth` 防递归。
 - 模型迁移：`migrate_json` 校验版本并提供 v1→v2 钩子；CLI `openflex migrate` 可规范化输出（字段级迁移待 v2）。
 
 ## 性能基线
 
 `scripts/bench-large-model.sh` 可生成 1k/10k/100k 对象模型并记录耗时与峰值 RSS（见
 [verification/performance.md](verification/performance.md)）。当前基线：M/M/1 约 1.7M events/s；
-10k 对象约 0.37–0.96 s；100k 对象 validate 约 81 s / run 约 259 s（超线性，连接/聚合索引化后约 −5%；
-瓶颈仍在反序列化/逐对象校验/重复 validate，后续继续 profiling）。
+10k 对象约 0.37–0.96 s；**100k 对象 v0.14.0 实测 validate 0.75 s / run 2.61 s**（较 v0.11.0 约 100×，
+扩展性接近线性）。profiling（[verification/performance.md](verification/performance.md)）显示 validate 热点在
+`serde_ignored` 未知字段跟踪（~50%）而非语义校验（~2%）；run 热点在 `flow`/`flow_queue`/`notify_*`（~72%）
+与参数 clone（~6%），report/CSV 与重复 validate <1%。
 
 ## 统计口径
 

@@ -98,7 +98,8 @@
       <select id="add-kind" aria-label="kind of the new object"></select>
       <button id="add-object" type="button">Add</button>
     </div>
-    <div id="object-list"><p class="muted">loading…</p></div>
+    <input id="object-search" type="search" placeholder="Filter objects by name or kind…" aria-label="Filter objects">
+    <div id="object-list" data-object-tree="1"><p class="muted">loading…</p></div>
 
     <h2>Edit object</h2>
     <div id="editor"><p class="muted">Select an object to edit its name, kind and parameters.</p></div>
@@ -219,6 +220,8 @@ const state = {
   undoStack: [],
   redoStack: [],
   pendingSnapshot: null,
+  objectFilter: "",
+  collapsedKinds: new Set(),
   lastStep: 0,
   replicationMetric: "throughput",
   flowDrag: null,
@@ -485,19 +488,47 @@ function renderObjectList() {
     list.innerHTML = '<p class="muted">The model has no objects.</p>';
     return;
   }
-  list.innerHTML = "";
+  const filter = state.objectFilter.trim().toLowerCase();
+  const groups = new Map();
   state.model.objects.forEach((object, index) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "object-button" + (index === state.selected ? " active" : "");
-    button.innerHTML = `<span>${escapeText(object.name)}</span><span class="kind">${escapeText(object.kind)}</span>`;
-    button.addEventListener("click", () => {
-      commitEdit();
-      state.selected = index;
-      renderObjectList();
-      renderEditor();
+    if (filter && !object.name.toLowerCase().includes(filter)
+        && !object.kind.toLowerCase().includes(filter)) {
+      return;
+    }
+    if (!groups.has(object.kind)) groups.set(object.kind, []);
+    groups.get(object.kind).push({ object, index });
+  });
+  if (groups.size === 0) {
+    list.innerHTML = '<p class="muted">No objects match the filter.</p>';
+    return;
+  }
+  list.innerHTML = "";
+  [...groups.entries()].sort(([left], [right]) => left.localeCompare(right)).forEach(([kind, entries]) => {
+    const details = document.createElement("details");
+    details.className = "tree-kind";
+    details.setAttribute("data-kind-group", kind);
+    details.open = !state.collapsedKinds.has(kind);
+    const summary = document.createElement("summary");
+    summary.textContent = `${kind} (${entries.length})`;
+    details.appendChild(summary);
+    details.addEventListener("toggle", () => {
+      if (details.open) state.collapsedKinds.delete(kind);
+      else state.collapsedKinds.add(kind);
     });
-    list.appendChild(button);
+    entries.forEach(({ object, index }) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "object-button" + (index === state.selected ? " active" : "");
+      button.innerHTML = `<span>${escapeText(object.name)}</span><span class="kind">${escapeText(object.kind)}</span>`;
+      button.addEventListener("click", () => {
+        commitEdit();
+        state.selected = index;
+        renderObjectList();
+        renderEditor();
+      });
+      details.appendChild(button);
+    });
+    list.appendChild(details);
   });
 }
 
@@ -1488,8 +1519,10 @@ function drawScene(now) {
     return { ...box, corners, centerPoint };
   }).sort((left, right) => left.centerPoint.y - right.centerPoint.y);
 
+  const selectedName = state.model.objects[state.selected] && state.model.objects[state.selected].name;
   for (const box of projected) {
     const [b0, b1, b2, b3, t0, t1, t2, t3] = box.corners;
+    const highlighted = box.object.name === selectedName;
     const face = (points, fill) => {
       ctx.beginPath();
       ctx.moveTo(points[0].x, points[0].y);
@@ -1497,14 +1530,15 @@ function drawScene(now) {
       ctx.closePath();
       ctx.fillStyle = fill;
       ctx.fill();
-      ctx.strokeStyle = "#334155";
-      ctx.lineWidth = 0.8;
+      ctx.strokeStyle = highlighted ? "#f59e0b" : "#334155";
+      ctx.lineWidth = highlighted ? 2.2 : 0.8;
       ctx.stroke();
     };
-    const topShade = box.object.kind.startsWith("fluid") ? "#bae6fd"
+    let topShade = box.object.kind.startsWith("fluid") ? "#bae6fd"
       : box.object.kind === "source" ? "#dcfce7"
       : box.object.kind === "sink" ? "#fee2e2"
       : box.object.kind === "processor" ? "#dbeafe" : "#e2e8f0";
+    if (highlighted) topShade = "#fef3c7";
     face([b0, b1, t1, t0], "#94a3b8");
     face([b1, b2, t2, t1], "#cbd5e1");
     face([t0, t1, t2, t3], topShade);
@@ -1634,6 +1668,10 @@ window.addEventListener("resize", () => {
   renderFlowCanvas();
 });
 
+$("object-search").addEventListener("input", event => {
+  state.objectFilter = event.target.value;
+  renderObjectList();
+});
 $("reload").addEventListener("click", loadAll);
 $("run").addEventListener("click", runModel);
 $("save-object").addEventListener("click", saveObject);

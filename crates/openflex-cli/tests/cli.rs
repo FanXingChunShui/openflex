@@ -2797,6 +2797,10 @@ fn studio_can_add_and_delete_objects_through_the_api() {
         "id=\"export-png\"",
         "id=\"replication-chart\"",
         "id=\"replication-metric\"",
+        "id=\"object-search\"",
+        "data-object-tree",
+        "data-kind-group",
+        "tree-kind",
         "id=\"flow-canvas\"",
         "flow-node",
         "draggable",
@@ -3403,6 +3407,13 @@ fn migrate_writes_a_valid_model_and_rejects_unknown_versions() {
     let validate = openflex(&["validate", &path_str(&output_path)]);
     assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
 
+    // --in-place also writes atomically and keeps the model valid.
+    let in_place = dir.write("in-place.ofm", MODEL);
+    let output = openflex(&["migrate", &path_str(&in_place), "--in-place", "--quiet"]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let validate = openflex(&["validate", &path_str(&in_place)]);
+    assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
+
     let mut value: serde_json::Value = serde_json::from_str(MODEL).expect("fixture");
     value["version"] = serde_json::json!(99);
     let future = dir.write(
@@ -3471,4 +3482,62 @@ fn run_timeseries_writes_interval_samples() {
         "--quiet",
     ]);
     assert_eq!(code(&invalid), 2, "stderr: {}", stderr(&invalid));
+}
+
+#[test]
+fn optimize_custom_weights_change_the_weighted_score() {
+    let dir = TempDir::new("optimize-weights");
+    let model = dir.write("demo.ofm", MODEL);
+
+    let output = openflex(&[
+        "optimize",
+        &path_str(&model),
+        "--param",
+        "Processor1.process_time.mean=2..6",
+        "--steps",
+        "3",
+        "--objective",
+        "throughput,wip",
+        "--weight",
+        "throughput=0.7,wip=0.3",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let result = json(&stdout(&output));
+    assert_eq!(result["weights"]["throughput"], 0.7);
+    assert_eq!(result["weights"]["wip"], 0.3);
+    let best = &result["best"];
+    let throughput = best["objective_values"]["throughput"]
+        .as_f64()
+        .expect("throughput");
+    let wip = best["objective_values"]["wip"].as_f64().expect("wip");
+    let score = best["score"].as_f64().expect("score");
+    assert!(
+        (score - (0.7 * throughput - 0.3 * wip)).abs() < 1e-12,
+        "weighted score {score} != 0.7*{throughput} - 0.3*{wip}"
+    );
+
+    for bad_weight in ["throughput=0.7", "throughput=1,wip=1,utilization=1"] {
+        let invalid = openflex(&[
+            "optimize",
+            &path_str(&model),
+            "--param",
+            "Processor1.process_time.mean=2..6",
+            "--steps",
+            "2",
+            "--objective",
+            "throughput,wip",
+            "--weight",
+            bad_weight,
+            "--quiet",
+        ]);
+        assert_eq!(
+            code(&invalid),
+            2,
+            "{bad_weight}: stderr: {}",
+            stderr(&invalid)
+        );
+    }
 }

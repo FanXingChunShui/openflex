@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.15.0 — 2026-11-15
+
+### 引擎集成
+
+- **S 连接**：不参与输出端口编号/SendToPort 路由，仅作资源链接（`Processor -S-> Dispatcher` 团队识别）；
+  A 与缺省等价。
+- **Global Table 表达式**：`table(name, row, column)` 与 `table.<Name>.<row>.<col>` / `table.<Name>.<column>` 只读访问。
+- **新触发器**：OnContentChange（接收/取出）、OnStateChange（状态真变化）、OnReset（warmup 重置）已执行，
+  `trigger_depth` 防递归；OnStop/OnResume 待运行控制。
+
+### 对象
+
+- **Rack `min_dwell`**：最小滞留（`DwellDone` 事件，push/pull 两条路径都尊重）。
+- **电梯门控**：`door_open_time`/`door_close_time`、`max_load`+`load_per_task` 有效载客、`shaft` 井道互斥。
+- **Emptier**：`basic_fr.emptier{interval,max_items,destroy}` 周期清空上游（等价 FlexSim Emptier，不新增 kind）。
+
+### Studio 与工具
+
+- Studio 模型树（按 kind 分组/折叠/搜索/3D 高亮联动）。
+- `openflex migrate` 接线 `migrate_json`（v1/未知版本/原子写）。
+- `optimize --weight throughput=0.7,wip=0.3` 自定义权重。
+- 性能：100k 对象 validate 0.75s / run 2.61s（v0.11.0 的约 100×）；profiling 定位 validate 热点为
+  `serde_ignored`（~50%）而非语义校验（~2%），run 热点在 flow/notify（~72%）。
+- 真机安装命令清单（Windows/Linux）、清单同步 v0.14.0、GHCR 0.14.0 已发布。
+
+### 验证
+
+- 368+ 测试全绿（core 173、model 95、CLI 73、report 16）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.15.0 三平台产物发布并 SHA256 校验。
+
 ## v0.14.0 — 2026-11-15
 
 ### 模型能力

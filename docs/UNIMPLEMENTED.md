@@ -11,12 +11,12 @@
 | 1 | **Fluid 真实压力/温度/密度** | ✅ 压差驱动 pipe 流量（`flow = k·Δp`，`k` 由 `flow_rate` 标定）、tank `p=ρ·g·h`（density/gravity 参数）、valve 压差滞回 `pressure_open/close` 自动重开、pipe `temperature` 黏度修正、背压与 `pressure` 报告；示例 fluid-pressure/fluid-backpressure | 无多相流/泵与阀特性曲线、无管满/可压缩效应 | L |
 | 2 | **Person 人群模型** | ✅ `grid` 8 邻接 Dijkstra（对角 √2、禁切角）、局部密度（邻格 -15%、同格 -50%，下限 40%）、全局速度折减；示例 person-avoidance/person-grid | 无个体路径重规划/排队避让、无动态障碍、无楼梯/电梯换乘、无社会力模型 | L |
 | 3 | **AGV 交通控制** | transporter alias + 电池；✅ 取货段途中耗尽就地停车充电并 `TransportResume` 续跑、同节点占用等待（0.5 步重试）；示例 agv-traffic/agv-battery | 无单向路网边/路网节点图、无充电桩容量/排队、无完整死锁避免、不搬运 flow item | L |
-| 4 | **电梯门控** | 垂直运输、停靠、召唤/方向优先、capacity=并发任务数 | 无门状态机/超载/召唤按钮/井道冲突/多轿厢 | M |
+| 4 | **电梯门控** | 门开/关时间、超载折算、井道互斥、召唤/方向 | 无独立门态统计/对向调度/多轿厢群控 | S |
 | 5 | **Conveyor 曲线与完整合流** | 直线带、PhotoEye/Station/Join（入口轮转）；✅ 可选 `curve: {radius, angle}`，按弧长计入行程时间（速度不变） | 无 3D 转弯几何/多段曲线/斜坡、无 Join 的 slug/gap 精细策略、无 Merge Controller、无电机/转盘/Transfers、PhotoEye 无遮挡持续状态/计数 | L |
-| 6 | **Rack 货位精细放置** | floor/gravity/push_back/drive_in 的顺序与容量 | 无货位/巷道坐标、无按 SKU/批次取货策略、无最小滞留时间（Storage Object 语义） | M |
+| 6 | **Rack 货位精细放置** | 四类顺序/容量 + `min_dwell` 最小滞留 | 无 level/aisle 坐标与按层取货、无按 SKU/批次策略 | M |
 | 7 | **MultiProcessor 完整语义** | 多槽并行、每槽 setup/process、整批 crew 申请 | 无每槽独立操作员/故障、无槽位选择策略（优先级/最短队列） | M |
-| 8 | **缺失对象** | — | Emptier、BasicFR 完整语义、Robot/Crane/ASRSvehicle、Conveyor 电机/转盘、Fluid 泵/混合器、Escalator 等 | L–XL |
-| 9 | **全局表（Global Table）** | `Model.global_tables` schema/校验/访问器 | 引擎与表达式访问、表驱动参数（`table.<Name>`）待接线 | S |
+| 8 | **缺失对象** | Emptier（经 basic_fr.emptier） | Robot/Crane/ASRSvehicle、Conveyor 电机/转盘、Fluid 泵/混合器、Escalator 等 | L–XL |
+| 9 | **全局表（Global Table）** | schema/校验/访问器 + 表达式 `table(...)` 只读访问 | 写入/表驱动参数更新未支持 | S |
 | 10 | **完整任务序列** | 固定“取货→送达→回 home”两段 | 无自定义多段序列（travel/load/unload 组合）、无载货量（capacity=并发任务数而非物理载货）、无交通路网节点图（`network` 只是距离表） | L |
 | 11 | **完整触发器集合** | OnCreate/Entry/Exit/Receive/Message/Breakdown/Repair/PhotoEye | 无 OnContentChange/OnStateChange/OnDraw/OnReset/OnStop/OnResume 等 | M |
 | 12 | **A/S 连接与 Pull 细节** | 基础 Pull（strategy/requirement） | 无 A/S 连接端口语义、无 Pull 的完整策略（按端口条件等） | S–M |
@@ -68,7 +68,7 @@
 | 33 | **签名/公证** | 脚本与 CI 可选步骤就绪（secrets 缺失自动跳过） | 无 macOS Developer ID/公证、无 Windows Authenticode、无 GPG 签名的实际密钥 | M（需证书） |
 | 34 | **包管理器/容器发布** | Homebrew/winget/scoop 模板、GHCR workflow 就绪 | 未发布 tap/镜像/清单；Docker 未实际 build | S–M |
 | 35 | **真实 FlexSim 对照** | `compare-flexsim.sh` 双报告模式 + 模板 | 无真实 FlexSim 运行数据（净室边界；需外部提供） | — |
-| 36 | **性能规模** | M/M/1 约 1.7M events/s；10k 对象 0.37/0.96s；100k 对象 validate 81s/run 259s（索引化后 −5%，仍超线性） | 需继续 profiling（反序列化/逐对象校验/重复 validate）以支撑 10 万对象；无 CI 性能门槛 | L |
+| 36 | **性能规模** | M/M/1 约 1.75M events/s；**100k 对象 validate 0.75s / run 2.61s**（v0.14.0，较 v0.11.0 约 100×） | 仍可优化 serde_ignored（~50% validate）与 notify 广播；无 CI 性能门槛 | M |
 | 37 | **CI 质量门槛** | deny/audit/coverage（60% 行覆盖硬门槛）/fuzz 180s/arm64 必跑 | dependabot Actions PR 未合并 | S |
 
 ## 7. 文档与本地化

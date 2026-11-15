@@ -292,6 +292,13 @@ enum Command {
         /// Genetic mutation probability per gene.
         #[arg(long, default_value_t = 0.15)]
         mutation_rate: f64,
+        /// Objective weight, e.g. --weight throughput=0.7,wip=0.3 (default: equal weights).
+        #[arg(
+            long = "weight",
+            value_name = "OBJECTIVE=WEIGHT",
+            value_delimiter = ','
+        )]
+        weights: Vec<String>,
         /// Output the Pareto front for multi-objective searches.
         #[arg(long)]
         pareto: bool,
@@ -907,6 +914,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             population,
             generations,
             mutation_rate,
+            weights,
             pareto,
             steps,
             replications,
@@ -925,6 +933,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                 population,
                 generations,
                 mutation_rate,
+                weights,
                 pareto,
                 steps,
                 replications,
@@ -1865,27 +1874,9 @@ fn migrate_model(
         Failure::runtime(anyhow!("could not read model {}: {error}", path.display()))
             .with_path(path)
     })?;
-    let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
-        Failure::usage(anyhow!("invalid model {}: {error}", path.display())).with_path(path)
+    let model = openflex_model::migrate_json(&text).map_err(|error| {
+        Failure::usage(anyhow!("cannot migrate {}: {error}", path.display())).with_path(path)
     })?;
-    let version = value.get("version").and_then(serde_json::Value::as_u64);
-    match version {
-        Some(1) => {}
-        Some(version) => {
-            return Err(Failure::usage(anyhow!(
-                "model {} uses format version {version}, but this build supports version 1; update OpenFlex or migrate with a newer release",
-                path.display()
-            )));
-        }
-        None => {
-            return Err(Failure::usage(anyhow!(
-                "model {} has no numeric `version` field; cannot migrate it",
-                path.display()
-            )));
-        }
-    }
-    let model = Model::from_json(&text)
-        .map_err(|error| Failure::usage(anyhow!("invalid model {}: {error}", path.display())))?;
     let migrated = match model.to_json() {
         Ok(mut json) => {
             if !json.ends_with('\n') {
@@ -1896,13 +1887,21 @@ fn migrate_model(
         Err(error) => return Err(Failure::runtime(anyhow!(error))),
     };
     match (out, in_place) {
-        (Some(out), false) => emit(&migrated, Some(out), quiet),
-        (None, true) => emit(&migrated, Some(path), quiet),
+        (Some(out), false) => {
+            write_model_atomic(out, &migrated)?;
+            note(quiet, &format!("{} {}", i18n::t("wrote"), out.display()));
+            Ok(())
+        }
+        (None, true) => {
+            write_model_atomic(path, &migrated)?;
+            note(quiet, &format!("{} {}", i18n::t("wrote"), path.display()));
+            Ok(())
+        }
         (None, false) => {
             emit(&migrated, None, quiet)?;
             note(
                 quiet,
-                "note: model version 1 is current; the canonical JSON was printed to stdout",
+                "note: the migrated model was printed to stdout; pass --out or --in-place to write it",
             );
             Ok(())
         }
@@ -1912,11 +1911,43 @@ fn migrate_model(
     }
 }
 
+/// Write a model atomically: validate happened before, then rename in place.
+fn write_model_atomic(path: &Path, text: &str) -> Result<(), Failure> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            Failure::runtime(anyhow!("could not create {}: {error}", parent.display()))
+        })?;
+    }
+    let directory = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let temporary = directory.join(format!(".openflex-migrate-{}.tmp", std::process::id()));
+    if let Err(error) = fs::write(&temporary, text) {
+        let _ = fs::remove_file(&temporary);
+        return Err(Failure::runtime(anyhow!(
+            "could not write {}: {error}",
+            temporary.display()
+        )));
+    }
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(Failure::runtime(anyhow!(
+            "could not replace {}: {error}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Options for one `openflex optimize` invocation.
 struct OptimizeOptions<'a> {
     population: usize,
     generations: usize,
     mutation_rate: f64,
+    weights: Vec<String>,
     pareto: bool,
     steps: u32,
     replications: Option<u32>,
@@ -2000,6 +2031,7 @@ fn run_optimize(
         .iter()
         .map(|spec| optimize::parse_param(spec, options.steps).map_err(optimize_usage))
         .collect::<Result<Vec<_>, _>>()?;
+    let weights = optimize::parse_weights(&options.weights, objectives).map_err(optimize_usage)?;
 
     let estimate = match algorithm {
         optimize::Algorithm::Grid => {
@@ -2061,8 +2093,16 @@ fn run_optimize(
             .map(|(report, values)| {
                 let index = next_index;
                 next_index += 1;
-                optimize::candidate(index, &ranges, values, report, objectives, options.object)
-                    .map_err(optimize_usage)
+                optimize::candidate(
+                    index,
+                    &ranges,
+                    values,
+                    report,
+                    objectives,
+                    &weights,
+                    options.object,
+                )
+                .map_err(optimize_usage)
             })
             .collect()
     };
@@ -2099,6 +2139,7 @@ fn run_optimize(
     let text = optimize::render(
         &base.name,
         objectives,
+        &weights,
         options.object,
         &ranges,
         &candidates,

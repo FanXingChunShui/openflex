@@ -99,15 +99,24 @@ function Get-MsiCommands([string]$MsiPath) {
     if (-not $localAppData) { $localAppData = '%LOCALAPPDATA%' }
     $binPath = Join-Path $localAppData 'OpenFlex\bin\openflex.exe'
     @(
-        '# Run these in an elevated or normal PowerShell 5.1+ window:',
-        ('msiexec /i "{0}" /qn /norestart' -f $MsiPath),
+        '# MSI verification sheet, PowerShell 5.1+ (no admin rights needed).',
+        '# 1) Optional: check the download against SHA256SUMS.txt.',
+        ('Get-FileHash -Algorithm SHA256 "{0}" | Format-List' -f $MsiPath),
+        '# 2) Install silently (perUser: %LOCALAPPDATA%\OpenFlex\bin, user PATH is updated).',
+        ('msiexec /i "{0}" /qn /norestart /l*v "$env:TEMP\openflex-msi.log"' -f $MsiPath),
+        '# 3) Smoke test: every command must exit 0.',
         ('"{0}" --version' -f $binPath),
         ('"{0}" new "$env:TEMP\of-verify" --template mm1' -f $binPath),
         ('"{0}" validate "$env:TEMP\of-verify\mm1.ofm"' -f $binPath),
-        ('"{0}" run "$env:TEMP\of-verify\mm1.ofm" --format json' -f $binPath),
+        ('"{0}" run "$env:TEMP\of-verify\mm1.ofm" --format json > "$env:TEMP\of-verify\report.json"' -f $binPath),
+        ('Get-Content "$env:TEMP\of-verify\report.json" -Raw | ConvertFrom-Json | Out-Null'),
+        '# 4) Optional: Authenticode signature (only when the release is signed).',
+        ('signtool verify /pa /v "{0}"' -f $MsiPath),
+        '# 5) Uninstall and prove the binary is gone.',
         ('msiexec /x "{0}" /qn /norestart' -f $MsiPath),
-        '# Exit criteria: every command exits 0, --version prints "openflex <version>",',
-        '# and %LOCALAPPDATA%\OpenFlex\bin\openflex.exe no longer exists after /x.'
+        ('Start-Sleep -Seconds 5; if (Test-Path "{0}") {{ Write-Error "binary still present" }}' -f $binPath),
+        '# Pass criteria: --version prints "openflex <version>"; new/validate/run exit 0;',
+        '# the JSON report parses; the binary no longer exists after /x.'
     )
 }
 
@@ -116,11 +125,22 @@ function Get-ZipCommands([string]$ZipPath) {
     if (-not $tempDir) { $tempDir = '%TEMP%' }
     $zipBin = Join-Path $tempDir 'of-verify\bin\openflex.exe'
     @(
-        ('.\packaging\install.ps1 -FromDir "{0}" -Version {1} -InstallDir "$env:TEMP\of-verify\bin"' -f (Split-Path -Parent $ZipPath), $Version),
+        '# ZIP verification sheet, PowerShell 5.1+.',
+        '# 1) Optional: check the download against SHA256SUMS.txt.',
+        ('Get-FileHash -Algorithm SHA256 "{0}" | Format-List' -f $ZipPath),
+        '# 2) Install into a throwaway directory (does not touch the user PATH).',
+        ('.\packaging\install.ps1 -FromDir "{0}" -Version {1} -InstallDir "$env:TEMP\of-verify\bin" -NoPathHint' -f (Split-Path -Parent $ZipPath), $Version),
+        '# 3) Smoke test: every command must exit 0.',
         ('"{0}" --version' -f $zipBin),
+        ('"{0}" new "$env:TEMP\of-verify\model" --template mm1' -f $zipBin),
+        ('"{0}" validate "$env:TEMP\of-verify\model\mm1.ofm"' -f $zipBin),
+        ('"{0}" run "$env:TEMP\of-verify\model\mm1.ofm" --format csv | Select-Object -First 5' -f $zipBin),
+        ('Get-Content (Join-Path "$env:TEMP\of-verify" "share\openflex\install-receipt.txt")'),
+        '# 4) Uninstall and prove the binary is gone.',
         ('.\packaging\uninstall.ps1 -InstallDir "$env:TEMP\of-verify\bin"'),
-        '# Exit criteria: install exits 0 after verifying SHA-256, the binary reports',
-        '# "openflex <version>", and uninstall removes the binary and the receipt.'
+        ('if (Test-Path "{0}") {{ Write-Error "binary still present" }}' -f $zipBin),
+        '# Pass criteria: install exits 0 after verifying SHA-256; the receipt exists;',
+        '# --version prints "openflex <version>"; uninstall removes the binary and receipt.'
     )
 }
 
@@ -393,9 +413,25 @@ if ($Zip -and $isWindowsHost -and -not $PrintOnly) {
 
 if ($PrintOnly) {
     Write-Section 'Command sheet (PrintOnly)'
-    if ($Msi) { Get-MsiCommands $Msi | ForEach-Object { Write-Host ("  {0}" -f $_) } }
-    if ($Zip) { Get-ZipCommands $Zip | ForEach-Object { Write-Host ("  {0}" -f $_) } }
-    if (-not $Msi -and -not $Zip) { Write-Skip 'nothing to print (pass -Msi or -Zip)' }
+    Write-Host ("  Host: {0}; PowerShell {1}; arch {2}" -f [System.Environment]::OSVersion.VersionString, $PSVersionTable.PSVersion, $env:PROCESSOR_ARCHITECTURE)
+    if ($Msi) {
+        Write-Host ''
+        Write-Host '  # --- MSI ---'
+        Get-MsiCommands $Msi | ForEach-Object { Write-Host ("  {0}" -f $_) }
+    }
+    if ($Zip) {
+        Write-Host ''
+        Write-Host '  # --- ZIP ---'
+        Get-ZipCommands $Zip | ForEach-Object { Write-Host ("  {0}" -f $_) }
+    }
+    if (-not $Msi -and -not $Zip) {
+        Write-Skip 'nothing to print (pass -Msi or -Zip)'
+        Write-Host ''
+        Write-Host '  # Without -Msi/-Zip, run one of:'
+        Write-Host '  #   .\scripts\verify-install.ps1 -FromDir .\dist -Version 0.14.0'
+        Write-Host '  #   .\scripts\verify-install.ps1 -Msi .\dist\openflex-0.14.0-windows-x64.msi'
+        Write-Host '  #   .\scripts\verify-install.ps1 -FromDir .\dist -Version 0.14.0 -PrintOnly'
+    }
 }
 
 # ---------------------------------------------------------------- summary

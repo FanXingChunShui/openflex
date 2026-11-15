@@ -1,0 +1,21 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "emptier",
+  "time_unit": "seconds",
+  "description": "Emptier behaviour on a basic_fr object: every 50 seconds it flushes the upstream queue to the sink",
+  "run": {"stop_time": 200.0, "warmup": 0.0, "seed": 1, "replications": 1},
+  "objects": [
+    {"name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+      "interarrival": {"distribution": "constant", "value": 10.0}, "first_arrival": 0.0}},
+    {"name": "Queue1", "kind": "queue", "pos": [5, 0], "params": {"max_content": 100}},
+    {"name": "Emptier1", "kind": "basic_fr", "pos": [10, 0], "params": {
+      "emptier": {"interval": {"distribution": "constant", "value": 50.0}}}},
+    {"name": "Sink1", "kind": "sink", "pos": [15, 0], "params": {}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Queue1"},
+    {"from": "Queue1", "to": "Emptier1"},
+    {"from": "Emptier1", "to": "Sink1"}
+  ]
+}

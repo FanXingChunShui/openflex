@@ -25,10 +25,10 @@
 | Transporter / TaskExecuter | `transporter` | 🟡 | 速度、装载/卸载时间、`network` 最短路、`home` 取货、两段任务；`capacity`=并发任务数（不搬运 flow item）；无多段自定义任务序列 |
 | Dispatcher | `dispatcher` | 🟡 | 派发操作员/运输任务，支持优先级与抢占、电梯召唤（优先级→同层→同向→最近） |
 | Operator / Resource | `resource` | ✅ | 资源池容量与停机窗口 |
-| Rack | `rack` | 🟡 | `rack_type`：floor(FIFO)/gravity(LIFO)/push_back(LIFO，levels×channels)/drive_in(FIFO，channels×depth)；无货位精细放置 |
+| Rack | `rack` | 🟡 | `rack_type` 四类 + `min_dwell` 最小滞留；无 level/aisle 坐标与按层取货 |
 | 班次 / 计划停机 | `params.shifts` | ✅ | `[{start, duration, repeat_every}]`，停机进入 off_shift、暂停处理、恢复后继续 |
 | Time Table | `params.timetable` | ✅ | `{windows:[{start,end}]}`，与 shifts 取交集 |
-| BasicFR / BasicTE | `basic_fr` / `basic_te` | ✅ | 通用固定资源与执行器 |
+| BasicFR / BasicTE | `basic_fr` / `basic_te` | ✅ | 通用固定资源与执行器；`basic_fr.emptier` 周期清空上游（等价 FlexSim Emptier，可 destroy） |
 | MultiProcessor | `multiprocessor` | ✅ | 多槽并行加工，每槽 setup/process，操作员按忙碌期申请 |
 | Fluid（流体） | `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_pipe` / `fluid_sink` | 🟡 | 固定步长、液位/溢出/吞吐、pipe 延迟与背压、压力场（p=ρgh + Δp 驱动流量）、valve 压力滞回自动重开、pipe 温度黏度修正；无多相/可压缩/泵阀曲线 |
 | People / A* 行走 | `person` | 🟡 | `grid` 4 邻接 A* + 拥堵速度折减；无对角移动/个体避让 |
@@ -44,7 +44,7 @@
 | OnMessage | `params.triggers.on_message` | ✅ | `send_message` 支持延迟 |
 | OnBreakdown / OnRepair | `params.triggers.*` | ✅ | 故障/修复时触发 |
 | OnPhotoEye | `params.triggers.on_photo_eye` | ✅ | 传送带光电门在精确位置触发 |
-| OnContentChange / OnStateChange / OnReset / OnStop / OnResume | `params.triggers.*` | 🟡 | schema/校验已就绪，引擎执行待接线 |
+| OnContentChange / OnStateChange / OnReset / OnStop / OnResume | `params.triggers.*` | 🟡 | 前三个已执行；OnStop/OnResume 待运行控制 |
 | OnCreate | `params.triggers.on_create` | ✅ | Source 创建项时触发 |
 | Send To Port：First Available | `strategy: first_available` | ✅ | 默认 |
 | Send To Port：Round Robin | `round_robin` | ✅ | |
@@ -54,7 +54,7 @@
 | Send To Port：By Item Type | `by_item_type` | ✅ | |
 | Send To Port：By Label | `by_label` | ✅ | |
 | FlexScript / C++ 逻辑 | 表达式 + rhai 脚本 | ✅ | `action: script` / `script_condition`（条件用 `result` 标签约定）；沙箱无文件/网络/随机 |
-| 全局表（Global Table） | `model.global_tables` | 🟡 | schema/校验/访问器已就绪；引擎/表达式访问待接线 |
+| 全局表（Global Table） | `model.global_tables` | ✅ | schema/校验/访问器 + 表达式 `table(name,row,col)`/`table.<Name>.<row>.<col>` 只读访问 |
 | Process Flow（流程图块） | `model.process_flow` / `params.process_flow` | 🟡 | 模型级+对象级 create/delay/assign/decision/sink/transfer(to/from)；块无容量/触发器；Studio 可编辑块与连接 |
 | FlexScript 脚本 | `action: script` / `script_condition` | ✅ | rhai 沙箱，触发器/路由/流程决策；条件可直接返回布尔（兼容 `result` 标签）；查询 `object_content/state/utilization`；动作 `set_state/create_item/move_item` |
 
@@ -72,7 +72,7 @@
 | 停留时间 | 报告 | ✅ | 平均停留时间 |
 | Experimenter（场景 × 复现） | `experiments` + `openflex experiment` | ✅ | 95% 置信区间 |
 | 置信区间 | 报告 | ✅ | 正态近似 `1.96·se` |
-| OptQuest 优化 | `openflex optimize` | 🟡 | grid/random/genetic、多目标加权、Pareto 前沿；无 OptQuest 全套策略 |
+| OptQuest 优化 | `openflex optimize` | 🟡 | grid/random/genetic、多目标加权/自定义权重、Pareto 前沿；无贝叶斯/约束优化 |
 | Dashboard / 图表 | 报告 + Studio 柱状图 | 🟡 | Studio 有吞吐柱状图；无完整 Dashboard/模板 |
 | 3D 视图 / 模型树 / GUI | `openflex studio` | 🟡 | 本地 Web Studio：Canvas 3D、字段级表单、增删对象、Process Flow 拖拽画布/块表单、撤销/重做、时间步进/对象断点、Experimenter、Dashboard（PNG）；无 GPU 渲染/模型树 |
 | 导出 Excel / 数据库 | CSV / JSON / xlsx | ✅ | `run --xlsx` 输出 Summary/Objects/Replications 三个 sheet |

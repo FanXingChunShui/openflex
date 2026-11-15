@@ -96,7 +96,7 @@ fn english(key: &str) -> &'static str {
              openflex import --objects objects.csv --connections connections.csv --out model.ofm\n  \
              openflex import --xlsx workbook.xlsx --out model.ofm\n  \
              openflex optimize basic.ofm --param Proc1.process_time.mean=2..6 --objective throughput --steps 5\n  \
-             openflex optimize basic.ofm --param Proc1.process_time.mean=2..6 --algorithm genetic --objective throughput,wip --pareto\n  \
+             openflex optimize basic.ofm --param Proc1.process_time.mean=2..6 --algorithm genetic --objective throughput,wip --weight throughput=0.7,wip=0.3 --pareto\n  \
              openflex migrate basic.ofm --out migrated.ofm\n  \
              openflex run basic.ofm --timeseries series.csv --interval 10\n  \
              openflex layout basic.ofm --dimension 3d --html preview.html --animate 10\n  \
@@ -200,7 +200,7 @@ fn chinese(key: &str) -> &'static str {
              openflex import --objects objects.csv --connections connections.csv --out model.ofm\n  \
              openflex import --xlsx workbook.xlsx --out model.ofm\n  \
              openflex optimize basic.ofm --param Proc1.process_time.mean=2..6 --objective throughput --steps 5\n  \
-             openflex optimize basic.ofm --param Proc1.process_time.mean=2..6 --algorithm genetic --objective throughput,wip --pareto\n  \
+             openflex optimize basic.ofm --param Proc1.process_time.mean=2..6 --algorithm genetic --objective throughput,wip --weight throughput=0.7,wip=0.3 --pareto\n  \
              openflex migrate basic.ofm --out migrated.ofm\n  \
              openflex run basic.ofm --timeseries series.csv --interval 10\n  \
              openflex layout basic.ofm --dimension 3d --html preview.html --animate 10\n  \

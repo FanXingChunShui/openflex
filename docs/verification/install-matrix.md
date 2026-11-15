@@ -7,7 +7,7 @@ CI 只证明「能构建出文件」，不证明「装上以后能跑」——�
   [`scripts/verify-install.ps1`](../../scripts/verify-install.ps1)（Windows）
 - 记录汇总：[`docs/VERIFICATION.md`](../VERIFICATION.md)
 - 安装文档：[`docs/install.md`](../install.md)
-- **当前基线：v0.13.0（2026-11-15，11 个产物）**；本页记录按时间倒序，最新在最前。
+- **当前基线：v0.14.0（2026-11-15，11 个产物）**；本页记录按时间倒序，最新在最前。
 
 ## 1. 判定标准
 
@@ -29,7 +29,7 @@ CI 只证明「能构建出文件」，不证明「装上以后能跑」——�
 
 | 平台 | tar.gz | zip | deb | rpm | msi | brew | docker |
 |---|---|---|---|---|---|---|---|
-| macOS（Apple Silicon / Intel） | ✅ `install.sh` v0.1.0 / v0.4.0 / v0.10.0 / v0.11.0 / v0.12.0 / v0.13.0（2026-11-15） | ➖ | ➖ | ➖ | ➖ | ❌ tap 未创建（公式已同步到 v0.13.0 真实校验和） | 🟡 GHCR 镜像 0.10.0–0.13.0 均已发布并 CI 冒烟，本机无 docker 未本地跑 |
+| macOS（Apple Silicon / Intel） | ✅ `install.sh` v0.1.0 / v0.4.0 / v0.10.0 / v0.11.0 / v0.12.0 / v0.13.0 / v0.14.0（2026-11-15） | ➖ | ➖ | ➖ | ➖ | ❌ tap 未创建（公式已同步到 v0.14.0 真实校验和） | 🟡 GHCR 镜像 0.10.0–0.14.0 均已发布并 CI 冒烟，本机无 docker 未本地跑 |
 | Linux x86_64 | ❌ | ➖ | ❌ | ❌ | ➖ | ❌ | ❌ |
 | Linux aarch64 | ❌ | ➖ | ❌ | ❌ | ➖ | ❌ | ❌ |
 | Windows x64 | ➖ | ❌ | ➖ | ➖ | ❌ | ➖ | ➖ |
@@ -39,7 +39,7 @@ CI 只证明「能构建出文件」，不证明「装上以后能跑」——�
 
 - **macOS tar.gz**：在本机（macOS 15.8.1 x86_64）用 `scripts/verify-install.sh` 跑通两种模式：
   `--from-dir`（22 项检查）与 `--version` 真实下载 GitHub Release
-  （v0.1.0 / v0.4.0 / v0.10.0 / v0.11.0 / v0.12.0 / v0.13.0 各 20 项检查），见第 4 节。
+  （v0.1.0 / v0.4.0 / v0.10.0 / v0.11.0 / v0.12.0 / v0.13.0 / v0.14.0 各 20 项检查），见第 4 节。
 - **Windows**：本仓库的验证是在 macOS 上开发的，没有 Windows 主机；`verify-install.ps1`
   在非 Windows 主机上只输出可复制的命令清单。需要有人在 Windows 10/11 上跑一次。
 - **deb/rpm**：`scripts/verify-install.sh --deb/--rpm` 已实现（deb 用私有 dpkg root，
@@ -64,14 +64,14 @@ bash scripts/verify-install.sh --from-dir dist
 
 # 从 GitHub Release 下载指定版本（需要网络）
 # install.sh 的默认仓库名是占位符 openflex/openflex，真实仓库要显式指定：
-OPENFLEX_REPO=FanXingChunShui/openflex bash scripts/verify-install.sh --version 0.1.0
+OPENFLEX_REPO=FanXingChunShui/openflex bash scripts/verify-install.sh --version 0.14.0
 # 或者指向镜像/自建发布站：
-bash scripts/verify-install.sh --version 0.1.0 --base-url https://mirror.example.com/openflex/releases/download
+bash scripts/verify-install.sh --version 0.14.0 --base-url https://mirror.example.com/openflex/releases/download
 
 # 顺带验证 deb / rpm（只在 Linux 上生效）
 bash scripts/verify-install.sh --from-dir dist \
-  --deb dist/openflex_0.1.0_amd64.deb \
-  --rpm dist/openflex-0.1.0-1.x86_64.rpm
+  --deb dist/openflex_0.14.0_amd64.deb \
+  --rpm dist/openflex-0.14.0-1.x86_64.rpm
 
 # 结果追加成一行 markdown，便于贴回本页
 bash scripts/verify-install.sh --from-dir dist --report /tmp/install-matrix-row.md
@@ -84,19 +84,34 @@ bash scripts/verify-install.sh --from-dir dist --report /tmp/install-matrix-row.
 
 ```powershell
 # ZIP + install.ps1（装入临时目录，不写用户 PATH）
-.\scripts\verify-install.ps1 -FromDir .\dist -Version 0.1.0
+.\scripts\verify-install.ps1 -FromDir .\dist -Version 0.14.0
 
 # MSI（perUser 装入 %LOCALAPPDATA%\OpenFlex\bin，卸载会清理）
-.\scripts\verify-install.ps1 -Msi .\dist\openflex-0.1.0-windows-x64.msi
+.\scripts\verify-install.ps1 -Msi .\dist\openflex-0.14.0-windows-x64.msi
 
 # 在非 Windows 主机上只打印命令清单（不执行安装）
-.\scripts\verify-install.ps1 -FromDir .\dist -Version 0.1.0
+.\scripts\verify-install.ps1 -FromDir .\dist -Version 0.14.0
 ```
 
 MSI 验证前脚本会检查 `%LOCALAPPDATA%\OpenFlex\bin\openflex.exe` 是否已存在：
 **已存在就 SKIP**，避免覆盖并卸载掉别人的真实安装。
 
 ## 4. 已完成的记录
+
+### 记录 2026-11-15 — macOS 15.8.1 (x86_64)，v0.14.0 GitHub Release 网络安装
+
+- 基线版本：**v0.14.0**（11 个产物）
+- 命令：
+
+  ```sh
+  OPENFLEX_REPO=FanXingChunShui/openflex \
+    bash scripts/verify-install.sh --version 0.14.0 --report /tmp/install-rows.md
+  ```
+
+- 结果：**RESULT: PASS**，20 项检查，0 失败 0 跳过（下载 → SHA-256 → 安装 →
+  `--version`=0.14.0 → `new`/`validate`/`run` JSON+CSV → 回执 → 卸载 → 重复卸载）。
+- 备注：`--report` 行 `| Darwin 24.6.0 (x86_64) | network | unknown | 0.14.0 | PASS | 2026-11-15 … |`
+  （platform 列为 `unknown` 是已知显示缺陷，不影响判定）。
 
 ### 记录 2026-11-15 — macOS 15.8.1 (x86_64)，v0.13.0 GitHub Release 网络安装
 
@@ -278,14 +293,18 @@ MSI 验证前脚本会检查 `%LOCALAPPDATA%\OpenFlex\bin\openflex.exe` 是否�
 
 ## 5. 待办（要把表填满还缺什么）
 
-| 缺口 | 需要什么 | 建议做法 |
+| 缺口 | 需要什么 | 可直接执行的命令 / 判断标准 |
 |---|---|---|
-| Windows zip / MSI | 一台 Windows 10/11（x64，可选 arm64） | 在 Windows 上 `verify-install.ps1`，把输出贴回本页 |
-| Linux tar.gz / deb / rpm | 一台 Ubuntu 22.04+ 或 Fedora/Debian | `verify-install.sh --from-dir dist --deb … --rpm …` |
-| brew | **创建 `FanXingChunShui/homebrew-openflex` 仓库**（公式已就绪） | 按 [packaging/homebrew/README.md](../../packaging/homebrew/README.md) 复制 `Formula/openflex.rb` 并推送 |
+| **Windows zip** | Windows 10/11（x64 或 arm64），PowerShell 5.1+ | `.\scripts\verify-install.ps1 -FromDir .\dist -Version 0.14.0`；PASS = 20 项、回执存在、卸载后二进制消失。先看清单：`-PrintOnly` |
+| **Windows MSI** | 同上（perUser，不需要管理员） | `.\scripts\verify-install.ps1 -Msi .\dist\openflex-0.14.0-windows-x64.msi`；PASS 条件同上；MSI 卸载后 `%LOCALAPPDATA%\OpenFlex\bin\openflex.exe` 不存在 |
+| **Linux tar.gz** | Ubuntu 22.04+ / Debian 11+ / Fedora | `OPENFLEX_REPO=FanXingChunShui/openflex bash scripts/verify-install.sh --version 0.14.0` |
+| **Linux deb** | Debian/Ubuntu（需 root 或 sudo） | `sudo dpkg -i openflex_0.14.0_amd64.deb` → `openflex --version` → `sudo dpkg -r openflex`；无需 root 的包内容验证：`verify-install.sh --deb <file>` |
+| **Linux rpm** | Fedora/RHEL/openSUSE（需 root 或 sudo） | `sudo rpm -i openflex-0.14.0-1.x86_64.rpm` → `openflex --version` → `sudo rpm -e openflex`；无需 root：`verify-install.sh --rpm <file>` |
+| **命令清单** | 任意机器（无需安装） | `bash scripts/verify-install.sh --print-commands` 打印 macOS/Linux/Windows 全套可复制命令与判定标准 |
+| brew | **创建 `FanXingChunShui/homebrew-openflex` 仓库**（公式已同步到 v0.14.0） | 按 [packaging/homebrew/README.md](../../packaging/homebrew/README.md) 复制 `Formula/openflex.rb` 并推送 |
 | brew 本地校验 | 一台受支持的 Homebrew 环境 | `brew audit --strict --new Formula/openflex.rb` + `brew install --build-from-source` |
-| docker | 有 Docker 的机器 | `docker run --rm ghcr.io/fanxingchunshui/openflex:0.10.0 --version`（镜像已发布，待本地确认） |
-| winget / scoop | 提交清单（已填 v0.10.0 的 URL/SHA256） | 提 PR 到 `microsoft/winget-pkgs` / 自建 bucket |
+| docker | 有 Docker 的机器 | `docker run --rm ghcr.io/fanxingchunshui/openflex:0.14.0 --version`（0.14.0 镜像已发布，待本地确认） |
+| winget / scoop | 提交清单（已同步 v0.14.0 的 URL/SHA256） | 提 PR 到 `microsoft/winget-pkgs` / 自建 bucket |
 
 > 每填一格，请同时更新 [docs/VERIFICATION.md](../VERIFICATION.md) 的「安装验证」章节，
 > 让两个页面不出现互相矛盾的状态。

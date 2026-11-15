@@ -126,6 +126,7 @@ SHELL_SCRIPTS=(
   "$ROOT_DIR/scripts/bench-large-model.sh"
   "$ROOT_DIR/scripts/sync-package-manifests.sh"
   "$ROOT_DIR/scripts/verify-ghcr.sh"
+  "$ROOT_DIR/scripts/profile-large-model.sh"
 )
 for script in "${SHELL_SCRIPTS[@]}"; do
   if [ -f "$script" ]; then
@@ -627,7 +628,8 @@ for tool in \
   "$ROOT_DIR/scripts/fuzz-smoke.sh" \
   "$ROOT_DIR/scripts/bench-large-model.sh" \
   "$ROOT_DIR/scripts/sync-package-manifests.sh" \
-  "$ROOT_DIR/scripts/verify-ghcr.sh"; do
+  "$ROOT_DIR/scripts/verify-ghcr.sh" \
+  "$ROOT_DIR/scripts/profile-large-model.sh"; do
   run_ok "$(basename "$tool") --help exits 0" bash "$tool" --help
 done
 
@@ -773,6 +775,7 @@ printf '  [ ] Docker image build — CI only (set OPENFLEX_VERIFY_DOCKER=1 with 
 printf '  [x] new release tooling parses and answers --help (verify-install, sign-*, compare-flexsim, fuzz-smoke)\n'
 printf '  [x] workflows / dependabot / winget manifests parse; deny.toml and fuzz/Cargo.toml parse\n'
 printf '  [x] winget / scoop / homebrew manifests carry the workspace version and real sha256 values\n'
+printf '  [x] large-model benchmarks and macOS sample profiling tools respond to --help\n'
 printf '  [ ] Code signing and macOS notarisation — scripts ready, certificates/secrets not configured (docs/releasing.md 6)\n'
 printf '  [ ] Real-machine MSI/deb/rpm install — scripts/verify-install.{sh,ps1} (docs/verification/install-matrix.md)\n'
 printf '  [x] openflex-core checks for wasm32-unknown-unknown (docs/verification/wasm.md; CI job wasm)\n'

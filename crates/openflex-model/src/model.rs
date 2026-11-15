@@ -1572,6 +1572,28 @@ pub struct ElevatorParams {
     #[serde(default)]
     pub home: Option<String>,
 
+    /// Time the doors need to open when the cabin reaches a floor.
+    #[serde(default)]
+    pub door_open_time: f64,
+
+    /// Time the doors need to close before the cabin may travel again.
+    #[serde(default)]
+    pub door_close_time: f64,
+
+    /// Maximum load of the cabin (0 = unlimited). Tasks are weighed with
+    /// `load_per_task`, so `max_load = 160` with the default 80 admits two.
+    #[serde(default)]
+    pub max_load: f64,
+
+    /// Load one task adds to the cabin (default 80 = one person).
+    #[serde(default = "default_load_per_task")]
+    pub load_per_task: f64,
+
+    /// Shaft group: elevators that share a shaft cannot travel at the same
+    /// time, which models a single-car shaft and head-on conflicts.
+    #[serde(default)]
+    pub shaft: Option<String>,
+
     /// Optional object-level process flow (B7). Its `create` blocks can run at
     /// t = 0 or whenever this object receives an item (`on_entry`), and its
     /// `transfer` blocks can inject tokens as flow items into other objects.
@@ -1596,6 +1618,10 @@ pub struct ElevatorParams {
     pub shifts: Vec<Shift>,
 }
 
+fn default_load_per_task() -> f64 {
+    80.0
+}
+
 impl Default for ElevatorParams {
     fn default() -> Self {
         Self {
@@ -1603,6 +1629,11 @@ impl Default for ElevatorParams {
             speed: 1.0,
             stop_time: Distribution::default(),
             home: None,
+            door_open_time: 0.0,
+            door_close_time: 0.0,
+            max_load: 0.0,
+            load_per_task: default_load_per_task(),
+            shaft: None,
             process_flow: None,
             timetable: None,
             pull: None,
@@ -1787,6 +1818,11 @@ pub struct RackParams {
     #[serde(default)]
     pub depth: Option<u32>,
 
+    /// Minimum time an item stays in the rack before it may be released
+    /// (0 = release as soon as the downstream object accepts).
+    #[serde(default)]
+    pub min_dwell: f64,
+
     /// Optional object-level process flow (B7). Its `create` blocks can run at
     /// t = 0 or whenever this object receives an item (`on_entry`), and its
     /// `transfer` blocks can inject tokens as flow items into other objects.
@@ -1819,6 +1855,7 @@ impl Default for RackParams {
             rack_type: RackType::Floor,
             channels: None,
             depth: None,
+            min_dwell: 0.0,
             shifts: Vec::new(),
             process_flow: None,
             timetable: None,
@@ -1828,9 +1865,43 @@ impl Default for RackParams {
     }
 }
 
+/// Emptier behaviour of a `basic_fr` object (task-36).
+///
+/// Semantically this is FlexSim's Emptier: the object periodically clears the
+/// objects connected to its input ports. The model format keeps `kind:
+/// "basic_fr"` (no extra `ObjectKind`) so older tooling keeps working.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmptierParams {
+    /// Time between two sweeps.
+    #[serde(default = "one_dist")]
+    pub interval: Distribution,
+    /// Maximum number of items one sweep moves (0 = unlimited).
+    #[serde(default)]
+    pub max_items: u32,
+    /// Remove the items instead of sending them to the object's outputs.
+    #[serde(default)]
+    pub destroy: bool,
+}
+
+impl Default for EmptierParams {
+    fn default() -> Self {
+        Self {
+            interval: one_dist(),
+            max_items: 0,
+            destroy: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct BasicFrParams {
+    /// Emptier behaviour (task-36): periodically clear the objects connected to
+    /// this object's inputs.
+    #[serde(default)]
+    pub emptier: Option<EmptierParams>,
+
     /// Optional object-level process flow (B7). Its `create` blocks can run at
     /// t = 0 or whenever this object receives an item (`on_entry`), and its
     /// `transfer` blocks can inject tokens as flow items into other objects.

@@ -1,0 +1,33 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "elevator-doors",
+  "time_unit": "seconds",
+  "description": "Elevator with door times, an overload limit (one passenger) and a shared shaft",
+  "run": {"stop_time": 300.0, "warmup": 0.0, "seed": 1, "replications": 1},
+  "objects": [
+    {"name": "Source1", "kind": "source", "z": 0, "params": {
+      "interarrival": {"distribution": "constant", "value": 10.0}, "first_arrival": 0.0}},
+    {"name": "Processor1", "kind": "processor", "z": 0, "params": {
+      "process_time": {"distribution": "constant", "value": 4.0},
+      "process_operator": "Dispatcher1"}},
+    {"name": "Source2", "kind": "source", "z": 20, "params": {
+      "interarrival": {"distribution": "constant", "value": 10.0}, "first_arrival": 0.0}},
+    {"name": "Processor2", "kind": "processor", "z": 20, "params": {
+      "process_time": {"distribution": "constant", "value": 4.0},
+      "process_operator": "Dispatcher1"}},
+    {"name": "Sink1", "kind": "sink", "z": 0, "params": {}},
+    {"name": "Dispatcher1", "kind": "dispatcher", "params": {}},
+    {"name": "Elevator1", "kind": "elevator", "z": 0, "params": {
+      "capacity": 4, "speed": 5.0, "home": "Dispatcher1",
+      "door_open_time": 3.0, "door_close_time": 3.0,
+      "max_load": 80.0, "load_per_task": 80.0, "shaft": "A"}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Processor1"},
+    {"from": "Source2", "to": "Processor2"},
+    {"from": "Processor1", "to": "Sink1"},
+    {"from": "Processor2", "to": "Sink1"},
+    {"from": "Dispatcher1", "to": "Elevator1"}
+  ]
+}

@@ -30,6 +30,8 @@
 #   --workdir <DIR>    Scratch directory (default: mktemp -d).
 #   --report <FILE>    Append a markdown table row with the result to FILE.
 #   --keep             Keep the scratch directory.
+#   --print-commands   Print copy-paste command sheets for every platform and exit
+#                      (useful when the target machine is not this one).
 #   -h, --help         Show this help.
 #
 # Exit code: 0 when every check passed (SKIP does not fail the run), 1 when at
@@ -49,6 +51,7 @@ RPM_FILE=""
 WORKDIR=""
 REPORT=""
 KEEP=0
+PRINT_COMMANDS=0
 
 PASSED=0
 FAILED=0
@@ -93,10 +96,87 @@ while [ "$#" -gt 0 ]; do
     --report) [ "$#" -ge 2 ] || usage_error "--report needs a value"; REPORT="$2"; shift 2 ;;
     --report=*) REPORT="${1#*=}"; shift ;;
     --keep) KEEP=1; shift ;;
+    --print-commands) PRINT_COMMANDS=1; shift ;;
     -h | --help) usage; exit 0 ;;
     *) usage_error "unknown argument '$1'" ;;
   esac
 done
+
+print_commands() {
+  cat <<'EOF'
+# OpenFlex 真机安装验证命令清单
+#
+# 每段都可以直接复制执行；最后一行是"通过"的判定标准。
+# 仓库地址：https://github.com/FanXingChunShui/openflex
+
+## macOS（tar.gz + install.sh）
+```
+VERSION=0.14.0
+OPENFLEX_REPO=FanXingChunShui/openflex \
+  bash scripts/verify-install.sh --version "$VERSION"
+# 或离线：bash scripts/verify-install.sh --from-dir dist
+```
+通过标准：RESULT: PASS，20 项；安装后的二进制 `openflex --version` 输出 `openflex 0.14.0`。
+
+## Linux x86_64 / aarch64（tar.gz）
+```
+OPENFLEX_REPO=FanXingChunShui/openflex \
+  bash scripts/verify-install.sh --version 0.14.0
+# 期望：RESULT: PASS（安装 → 校验和 → --version → new/validate/run → 卸载）
+```
+
+## Debian / Ubuntu（.deb，需要 root 或 sudo）
+```
+sudo dpkg -i openflex_0.14.0_amd64.deb     # arm64 用 openflex_0.14.0_arm64.deb
+openflex --version                          # 期望：openflex 0.14.0
+openflex new /tmp/of-check --template mm1
+openflex validate /tmp/of-check/mm1.ofm
+openflex run /tmp/of-check/mm1.ofm --format json | head -c 200
+sudo dpkg -r openflex
+dpkg -l | grep openflex || echo "removed"
+```
+不用 root 的替代（私有 dpkg root，验证包内容）：
+```
+bash scripts/verify-install.sh --deb openflex_0.14.0_amd64.deb
+```
+
+## Fedora / RHEL / openSUSE（.rpm，需要 root 或 sudo）
+```
+sudo rpm -i openflex-0.14.0-1.x86_64.rpm    # aarch64 用 openflex-0.14.0-1.aarch64.rpm
+openflex --version
+openflex new /tmp/of-check --template mm1 && openflex validate /tmp/of-check/mm1.ofm
+sudo rpm -e openflex
+rpm -q openflex || echo "removed"
+```
+不用 root 的替代（rpm2cpio 解包验证）：
+```
+bash scripts/verify-install.sh --rpm openflex-0.14.0-1.x86_64.rpm
+```
+
+## Windows 10/11（见 scripts/verify-install.ps1）
+```
+# zip + install.ps1（装到临时目录，不动用户 PATH）
+.\scripts\verify-install.ps1 -FromDir .\dist -Version 0.14.0
+
+# MSI（perUser 安装到 %LOCALAPPDATA%\OpenFlex\bin）
+.\scripts\verify-install.ps1 -Msi .\dist\openflex-0.14.0-windows-x64.msi
+
+# 只打印命令清单（不执行）
+.\scripts\verify-install.ps1 -PrintOnly
+```
+通过标准：`--version` 输出 `openflex 0.14.0`；`new`/`validate`/`run` 退出码 0；
+MSI 卸载后 `%LOCALAPPDATA%\OpenFlex\bin\openflex.exe` 不存在。
+
+## 记录
+把结果追加到 docs/verification/install-matrix.md（行格式见该文件的「记录模板」），
+并同步 docs/VERIFICATION.md 的三态表。
+EOF
+}
+
+if [ "$PRINT_COMMANDS" -eq 1 ]; then
+  print_commands
+  exit 0
+fi
 
 if [ -z "$FROM_DIR" ] && [ -z "$VERSION" ] && [ -z "$DEB_FILE" ] && [ -z "$RPM_FILE" ]; then
   usage_error "pass --from-dir <DIR> or --version <V> (or --deb/--rpm on Linux)"

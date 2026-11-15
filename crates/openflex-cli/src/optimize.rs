@@ -18,7 +18,7 @@ use openflex_report::Format;
 use serde_json::json;
 
 /// What the search maximises or minimises.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
 pub enum Objective {
     /// Completed items per time unit (maximise).
     Throughput,
@@ -258,18 +258,74 @@ pub struct Candidate {
 }
 
 /// Weighted score of one candidate: maximise objectives, minimise `wip`.
-pub fn weighted_score(objectives: &[Objective], values: &[(Objective, f64)]) -> f64 {
+pub fn weighted_score(
+    objectives: &[Objective],
+    values: &[(Objective, f64)],
+    weights: &std::collections::BTreeMap<Objective, f64>,
+) -> f64 {
     let mut score = 0.0;
     for objective in objectives {
         if let Some((_, value)) = values.iter().find(|(kind, _)| kind == objective) {
-            score += if objective.maximize() {
-                *value
-            } else {
-                -*value
-            };
+            let weight = weights.get(objective).copied().unwrap_or(1.0);
+            score += weight
+                * if objective.maximize() {
+                    *value
+                } else {
+                    -*value
+                };
         }
     }
     score
+}
+
+/// Parse `--weight objective=value` specifications.
+pub fn parse_weights(
+    specs: &[String],
+    objectives: &[Objective],
+) -> Result<std::collections::BTreeMap<Objective, f64>, String> {
+    let mut weights = std::collections::BTreeMap::new();
+    if specs.is_empty() {
+        for objective in objectives {
+            weights.insert(*objective, 1.0);
+        }
+        return Ok(weights);
+    }
+    for spec in specs {
+        let (name, value) = spec
+            .split_once('=')
+            .ok_or_else(|| format!("--weight expects OBJECTIVE=WEIGHT, found '{spec}'"))?;
+        let objective = objectives
+            .iter()
+            .find(|objective| objective.label() == name.trim())
+            .copied()
+            .ok_or_else(|| {
+                format!(
+                    "--weight '{name}' is not one of the selected objectives ({})",
+                    objectives
+                        .iter()
+                        .map(|objective| objective.label())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            })?;
+        let weight = value
+            .trim()
+            .parse::<f64>()
+            .map_err(|error| format!("--weight '{spec}': invalid number: {error}"))?;
+        if !weight.is_finite() || weight < 0.0 {
+            return Err(format!("--weight '{spec}': weight must be non-negative"));
+        }
+        weights.insert(objective, weight);
+    }
+    for objective in objectives {
+        if !weights.contains_key(objective) {
+            return Err(format!(
+                "--weight is missing a value for '{}'",
+                objective.label()
+            ));
+        }
+    }
+    Ok(weights)
 }
 
 /// Extract the objective value from one run report.
@@ -322,6 +378,7 @@ pub fn candidate(
     values: &[f64],
     report: &SimReport,
     objectives: &[Objective],
+    weights: &std::collections::BTreeMap<Objective, f64>,
     object: Option<&str>,
 ) -> Result<Candidate, String> {
     let assignments = ranges
@@ -333,7 +390,7 @@ pub fn candidate(
         .iter()
         .map(|objective| Ok((*objective, metric(report, *objective, object)?)))
         .collect::<Result<_, String>>()?;
-    let score = weighted_score(objectives, &objective_values);
+    let score = weighted_score(objectives, &objective_values, weights);
     let primary = objective_values
         .first()
         .map(|(_, value)| *value)
@@ -429,6 +486,7 @@ pub fn pareto_indices(candidates: &[Candidate], objectives: &[Objective]) -> Vec
 pub fn render(
     model: &str,
     objectives: &[Objective],
+    weights: &std::collections::BTreeMap<Objective, f64>,
     object: Option<&str>,
     ranges: &[ParamRange],
     candidates: &[Candidate],
@@ -437,7 +495,7 @@ pub fn render(
     format: Format,
 ) -> Result<String, String> {
     Ok(match format {
-        Format::Json => to_json(model, objectives, object, candidates, best, pareto)?,
+        Format::Json => to_json(model, objectives, weights, object, candidates, best, pareto)?,
         Format::Csv => to_csv(objectives, ranges, candidates, best, pareto),
         Format::Table => to_table(model, objectives, object, candidates, best, pareto),
         Format::Markdown => to_markdown(model, objectives, object, candidates, best, pareto),
@@ -472,11 +530,21 @@ fn candidate_json(candidate: &Candidate, pareto: bool) -> serde_json::Value {
 fn to_json(
     model: &str,
     objectives: &[Objective],
+    weights: &std::collections::BTreeMap<Objective, f64>,
     object: Option<&str>,
     candidates: &[Candidate],
     best: usize,
     pareto: bool,
 ) -> Result<String, String> {
+    let weight_json: serde_json::Map<String, serde_json::Value> = objectives
+        .iter()
+        .map(|objective| {
+            (
+                objective.label().to_string(),
+                json!(weights.get(objective).copied().unwrap_or(1.0)),
+            )
+        })
+        .collect();
     let front: Vec<serde_json::Value> = if pareto {
         pareto_indices(candidates, objectives)
             .into_iter()
@@ -514,6 +582,7 @@ fn to_json(
         })).collect::<Vec<_>>(),
         "direction": direction,
         "object": object,
+        "weights": weight_json,
         "pareto_enabled": pareto,
         "pareto_front": front,
         "best": &values[best],

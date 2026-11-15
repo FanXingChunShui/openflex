@@ -1,0 +1,41 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "engine-integration",
+  "time_unit": "seconds",
+  "description": "Engine integration: an S connection links the processor to its dispatcher, and a global table drives the routing condition",
+  "run": {"stop_time": 200.0, "warmup": 0.0, "seed": 1, "replications": 1},
+  "global_tables": {
+    "Routes": {"columns": ["sink"], "rows": [[0], [1]]}
+  },
+  "objects": [
+    {"name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+      "interarrival": {"distribution": "constant", "value": 10.0},
+      "items_per_arrival": 1, "first_arrival": 0.0, "item_type": 0}},
+    {"name": "Source2", "kind": "source", "pos": [0, 4], "params": {
+      "interarrival": {"distribution": "constant", "value": 10.0},
+      "items_per_arrival": 1, "first_arrival": 0.0, "item_type": 1}},
+    {"name": "Queue1", "kind": "queue", "pos": [5, 0], "params": {"max_content": 100}},
+    {"name": "Processor1", "kind": "processor", "pos": [10, 0], "params": {
+      "setup_time": {"distribution": "constant", "value": 0.0},
+      "process_time": {"distribution": "constant", "value": 2.0},
+      "max_content": 1,
+      "process_operator": "Dispatcher1"}},
+    {"name": "SinkA", "kind": "sink", "pos": [20, 0], "params": {}},
+    {"name": "SinkB", "kind": "sink", "pos": [20, 4], "params": {}},
+    {"name": "Dispatcher1", "kind": "dispatcher", "pos": [10, 8], "params": {}},
+    {"name": "Transporter1", "kind": "transporter", "pos": [10, 8], "params": {
+      "capacity": 1, "speed": 20.0, "home": "Dispatcher1"}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Queue1"},
+    {"from": "Source2", "to": "Queue1"},
+    {"from": "Queue1", "to": "Processor1"},
+    {"from": "Processor1", "to": "SinkA", "strategy": {"type": "by_condition", "conditions": [
+      {"condition": "table(\"Routes\", item.type, \"sink\") == 0", "port": 0},
+      {"condition": "table(\"Routes\", item.type, \"sink\") == 1", "port": 1}]}},
+    {"from": "Processor1", "to": "SinkB"},
+    {"from": "Processor1", "to": "Dispatcher1", "kind": "s"},
+    {"from": "Dispatcher1", "to": "Transporter1"}
+  ]
+}

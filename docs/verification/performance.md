@@ -1,26 +1,32 @@
 # 性能与规模基线
 
-本页记录 OpenFlex 在**大模型**上的实测性能：模型解析/校验、仿真运行、内存峰值，
-以及与 `bench_mm1`（小模型吞吐）的对比。它对应 `docs/BACKLOG.md` C5「性能与规模」。
+本页记录 OpenFlex 在**大模型**上的实测性能与 profiling 结论：模型解析/校验、仿真运行、
+内存峰值，以及与 `bench_mm1`（小模型吞吐）的对比。对应 `docs/BACKLOG.md` C5「性能与规模」。
 
-> **结论先行（v0.11.0，2026-11-15）**：小模型（4 个对象）约 **1.7M 事件/秒**；
-> 10 万对象时降到 **552 事件/秒**（validate 85 s、run 272 s、峰值内存 397 MB）。
-> 时间随对象数**超线性**增长（10× 对象 → 242×/316× 时间），说明瓶颈在对象规模而非事件数。
-> 10 万对象/1 亿事件的目标**尚未达成**，优化方向见第 6 节。
+> **结论先行（v0.14.0，2026-11-15）**
+> - 10 万对象：`validate` **0.75 s**、`run` **2.61 s**（57,505 events/s、9,584 items/s），
+>   峰值内存 142 / 385 MB。相比 v0.11.0（85.12 s / 271.56 s / 552 events/s）**快约 100×**，
+>   扩展性已接近线性（10× 对象 → 9.4×/13× 时间，此前是 242×/316×）。
+> - 小模型（M/M/1）：**1.75M events/s**。
+> - profiling 结论：`validate` 的 **70.8%** 时间在 serde/serde_json 反序列化，
+>   其中 **50.5% 是 `serde_ignored` 的未知字段跟踪**（单点最大优化机会）；
+>   `run` 的 **72%** 在引擎事件推进（`flow` / `flow_queue` / `notify_*`），
+>   参数 `clone` 约 6%，`report`/CSV 写出 < 1%。
 
 ## 1. 测量方法
 
-工具：[`scripts/bench-large-model.sh`](../../scripts/bench-large-model.sh)
+工具：[`scripts/bench-large-model.sh`](../../scripts/bench-large-model.sh)（基准）、
+[`scripts/profile-large-model.sh`](../../scripts/profile-large-model.sh)（macOS `sample` + `atos` 火焰图/热点）。
 
 ```sh
-# 快速基准（10k 对象，约 2 秒）
+# 快速基准（10k 对象，约 0.3 秒）
 scripts/bench-large-model.sh
 
-# 完整 10 万对象基线（本页第 3 节的数据，约 10 分钟）
-scripts/bench-large-model.sh --objects 100000 --json /tmp/bench-100k.json
+# 10 万对象基线（v0.14.0 约 4 秒；输出 JSON + 可直接贴表的 markdown 行）
+scripts/bench-large-model.sh --objects 100000 --json /tmp/bench-100k.json --markdown /tmp/row.md
 
-# 把结果追加成 markdown 表格行
-scripts/bench-large-model.sh --markdown /tmp/row.md
+# 只生成模型（给 profiler 用）
+scripts/bench-large-model.sh --objects 100000 --generate-only /tmp/bench-100k
 ```
 
 脚本做三件事：
@@ -50,14 +56,14 @@ scripts/bench-large-model.sh --markdown /tmp/row.md
 | 报告 CSV | 8.4 MB，100,000 行对象统计 |
 | 事件总数 | 150,000（每条链 6 个事件） |
 
-## 3. 实测结果（macOS 15.8.1 x86_64，release 构建 v0.11.0）
+## 3. 实测结果（macOS 15.8.1 x86_64，release 构建 v0.14.0）
 
 | 场景 | 对象数 | 事件数 | validate | run | 峰值 RSS（validate / run） | events/s | items/s |
 |---|---|---|---|---|---|---|---|
-| `bench_mm1`（内置 M/M/1） | 4 | 120,318 | — | 0.070 s | —（未测） | **1,709,048** | 284,841 |
-| 大模型 1k | 1,000 | 1,500 | 0.04 s | 0.05 s | 3.3 / 7.2 MB | 29,560 | 4,927 |
-| 大模型 10k | 10,000 | 15,000 | 0.35 s | 0.86 s | 18.9 / 44.5 MB | 17,390 | 2,898 |
-| 大模型 100k | 100,000 | 150,000 | **85.12 s** | **271.56 s** | 134.3 / 396.7 MB | **552** | 92 |
+| `bench_mm1`（内置 M/M/1） | 4 | 120,318 | — | 0.069 s | —（未测） | **1,747,867** | 291,311 |
+| 大模型 1k | 1,000 | 1,500 | 0.02 s | 0.02 s | 3.5 / 7.1 MB | 64,142 | 10,690 |
+| 大模型 10k | 10,000 | 15,000 | 0.08 s | 0.20 s | 25.1 / 45.1 MB | 74,689 | 12,448 |
+| 大模型 100k | 100,000 | 150,000 | **0.75 s** | **2.61 s** | 142.1 / 385.1 MB | **57,505** | 9,584 |
 
 `bench_mm1` 的命令与输出（对照用）：
 
@@ -65,51 +71,145 @@ scripts/bench-large-model.sh --markdown /tmp/row.md
 cargo run --release -p openflex-cli --example bench_mm1 -- --stop 100000
 # items completed: 20053
 # events processed: 120318
-# untraced: 0.070 s -> 1709048 events/s, 284841 items/s
-# traced:   0.099 s -> 1220444 events/s, 203407 items/s (tracing overhead included)
+# untraced: 0.069 s -> 1747867 events/s, 291311 items/s
+# traced:   0.099 s -> 1212762 events/s, 202127 items/s (tracing overhead included)
 ```
 
-## 4. 扩展性分析
+### 历史对比（同一模型，v0.11.0 → v0.14.0）
+
+| 指标 | v0.11.0 | v0.14.0 | 改善 |
+|---|---|---|---|
+| 100k `validate` | 85.12 s | **0.75 s** | **113×** |
+| 100k `run` | 271.56 s | **2.61 s** | **104×** |
+| 100k events/s | 552 | **57,505** | **104×** |
+| 100k 峰值 RSS（run） | 396.7 MB | 385.1 MB | ≈ 持平 |
+
+> v0.11.0 的数据来自本页旧版（同机同模型）；从 v0.12 起引入的对象索引/全局表等改动
+> 把超线性查找消掉了，所以这不再是"规模不可用"的模型。
+
+## 4. 扩展性分析（v0.14.0）
 
 | 规模变化 | validate 时间 | run 时间 |
 |---|---|---|
-| 1k → 10k（对象 ×10） | 0.04 → 0.35 s（×8.75） | 0.05 → 0.86 s（×17.2） |
-| 10k → 100k（对象 ×10） | 0.35 → 85.12 s（**×242**） | 0.86 → 271.56 s（**×316**） |
+| 1k → 10k（对象 ×10） | 0.02 → 0.08 s（×4） | 0.02 → 0.20 s（×10） |
+| 10k → 100k（对象 ×10） | 0.08 → 0.75 s（**×9.4**） | 0.20 → 2.61 s（**×13**） |
 
-- 如果时间与对象数线性，10× 对象应该只带来 10× 时间；实测是 242×/316×，
-  拟合指数约 **n²·⁴ ~ n²·⁵**。
-- 事件数只与链数线性相关（25k 链 → 150k 事件），但 events/s 从 1.7M 掉到 552，
-  说明耗时不在事件处理循环，而在**与对象总数相关的查找/校验**上。
-- 内存基本线性（100k 对象 → 397 MB 峰值，其中模型 14 MB、报告 8.4 MB）。
+- 10× 对象带来 9.4×/13× 时间，**基本线性**；run 略高于线性（×13）主要来自事件数固定
+  但每事件的对象访问变多，以及内存分配（见 profiling）。
+- 事件数只与链数线性相关（25k 链 → 150k 事件）；100k 对象 57.5k events/s 与 10k 对象
+  74.7k events/s 同一量级，说明规模已不再是数量级问题。
+- 内存线性：142 MB（validate）/ 385 MB（run，含 8.4 MB 报告与 14 MB 模型）。
 
-**推断（未做 profile，因为不能改 `crates/`）**：`validate` 的每条连接/对象检查看起来对
-全对象集合做了二次扫描；`run` 中每个事件可能也要按名字/连接线性查找对象。两者叠加导致
-10 万对象不可用。验证方法（在允许改 `crates/` 的任务里）：`cargo flamegraph` /
-`perf record`，或对 `validate` 单独做对象数扫描基准。
+## 5. Profiling 结论（macOS `sample` + `atos`）
 
-## 5. 这组数据能说明什么、不能说明什么
+### 5.1 方法
+
+release profile 里 `strip = true`，`sample` 只能看到 `???`。不修改 `Cargo.toml` 的
+做法是构建一个**带符号的临时二进制**，并用 `atos` 把采样地址还原成函数名：
+
+```sh
+# 1) 带符号构建（输出到独立 target 目录，不影响发布产物）
+cargo build --release --locked -p openflex-cli \
+  --target-dir /tmp/prof-target \
+  --config 'profile.release.strip=false'
+
+# 2) 采样（脚本会自动用 atos 解析 openflex 的地址）
+scripts/profile-large-model.sh --binary /tmp/prof-target/release/openflex \
+  --objects 1000000 --skip-run --warmup 1 --sample-seconds 8 --out-dir /tmp/prof-validate --keep
+
+# 3) run 需要更多事件：对象数不变、items/source 提高
+scripts/profile-large-model.sh --binary /tmp/prof-target/release/openflex \
+  --objects 100000 --items 40 --skip-validate --warmup 2 --sample-seconds 8 --out-dir /tmp/prof-run --keep
+```
+
+`profile-large-model.sh` 会把 `sample` 的原始文件、每阶段耗时与 `profile.md` 摘要写进
+`--out-dir`；`--keep` 保留现场（默认删除）。`sample` 输出里 `???` 的地址会用
+`atos -o <binary> -l <load address> <addr>` 还原符号（Rust 符号保留 mangled 名，能看出
+`openflex_core::engine::Simulation::flow` 这类路径）。
+
+### 5.2 `validate` 热点（100 万对象，24,755 样本，总耗时 10 s）
+
+| 函数 | 样本 | 占比 |
+|---|---|---|
+| `serde_ignored::TrackedSeed<…openflex_model::model::Model::parse_json…>` | 4297 | 50.5% |
+| `szone_malloc_should_clear` | 541 | 6.4% |
+| `free_tiny` | 358 | 4.2% |
+| `serde_ignored::MapAccess<…Model::parse_json…>::next_value` | 290 | 3.4% |
+| `serde_ignored::MapAccess<…>::next_entry` | 290 | 3.4% |
+| `serde_json::value::de::MapDeserializer::next_entry_seed` | 287 | 3.4% |
+| `_platform_memcmp` | 264 | 3.1% |
+| `BTreeMap<String, Value>::insert`（未知字段收集） | 193 | 2.3% |
+| `tiny_malloc_should_clear` | 160 | 1.9% |
+| `serde_ignored::Wrap<Value>::deserialize`（visit_borrowed_str） | 146 | 1.7% |
+| `hashbrown::HashMap<…>::get` | 137 | 1.6% |
+| `openflex_model::validate::validate_object` | 130 | 1.5% |
+
+分类占比：**JSON/serde 反序列化 70.8%**、内存分配/释放 17.7%、字符串/UTF-8 5.0%、
+哈希/查找 3.0%、语义校验 **2.0%**、其他 1.4%。
+
+**解读**：`validate` 的慢不是"逐对象校验逻辑重"（`validate_object` 只占 1.5%），
+而是**反序列化**：`Model::parse_json` 走 `serde_ignored` 逐字段跟踪未知键，仅这一层就
+占 50.5%；再加上 `serde_json::Value` 中转、`BTreeMap` 插入与大量 `String`/`Vec` 分配，
+解析 14 MB JSON 的代价远高于校验本身。
+
+### 5.3 `run` 热点（100k 对象 × 40 items ≈ 600 万事件，5,531 样本，总耗时 11 s）
+
+| 函数 | 样本 | 占比 |
+|---|---|---|
+| `openflex_core::engine::Simulation::flow` | 1866 | 33.7% |
+| `Simulation::flow_queue` | 1194 | 21.6% |
+| `Simulation::notify_upstreams` | 527 | 9.5% |
+| `Simulation::notify_pullers` | 423 | 7.6% |
+| `Simulation::flow_processor` | 269 | 4.9% |
+| `Simulation::drain_out_pending` | 218 | 3.9% |
+| `SourceParams::clone` | 137 | 2.5% |
+| `free_tiny` | 118 | 2.1% |
+| `ProcessorParams::clone` | 105 | 1.9% |
+| `tiny_malloc_should_clear` | 74 | 1.3% |
+| `Triggers::clone` | 57 | 1.0% |
+| `Simulation::set_phase` | 54 | 1.0% |
+| `Action::clone` | 20 | 0.4% |
+
+（采样中最栈顶的叶子帧分类：引擎事件推进 ≈ 72%，参数克隆 ≈ 6%，内存分配 ≈ 6.6%，
+`validate`/`report`/CSV 相关 < 1%。）
+
+**解读**：
+
+- `run` 的开销集中在**事件推进与上下游通知**（`flow` + `flow_queue` + `notify_*` ≈ 72%）。
+  `notify_upstreams` / `notify_pullers` 会在每次状态变化时广播给邻居，即使邻居没有状态变化。
+- **参数 `clone` 约 6%**：`SourceParams` / `ProcessorParams` / `Triggers` / `Action` 在热路径上
+  被克隆（每次取参数或建对象时）。这是最容易拿的一段收益（改成引用/`Arc`）。
+- **`report` 聚合与 CSV 写出 < 1%**：8.4 MB 报告不是瓶颈，之前"run 慢可能因为报告"的猜测不成立。
+- `validate` 在 run 里只占 0.1%，说明 run **没有重复做完整校验**（此前怀疑不成立）。
+
+### 5.4 具体优化建议（按收益/风险排序）
+
+| # | 位置 | 建议 | 预期收益 | 风险 |
+|---|---|---|---|---|
+| 1 | `openflex_model::model::Model::parse_json` | 去掉 `serde_ignored` 热路径：默认用 `serde_json::from_slice::<Model>`（或 `deny_unknown_fields`），只在 `--strict`/`validate --unknown` 时启用未知键收集；或解析后对原始 JSON 做一次"已知键集合"比对（不建 `BTreeMap`） | validate 最高可省 ~50% 的解析时间 | 需要保持 A1 的"未知字段报错"语义与退出码 |
+| 2 | 同上 | 避免 `serde_json::Value` 中转与 `BTreeMap<String, Value>`：未知键用 `Vec<(String, Value)>`（本题只有少量），或直接跳过存储只计数 | 省 2–3% + 分配 | 低 |
+| 3 | `Simulation::flow*` / `notify_*` | 把"通知上游/下游"改成 dirty 标记 + 批量处理（每步只处理变化过的对象），或缓存"该端口是否可推进" | run 10–20% | 中（需保持语义/确定性） |
+| 4 | 引擎热路径 | 参数 `clone` 改引用或 `Arc<Params>`；`process_time` 的分布采样可预计算/缓存 | run ~5% | 低 |
+| 5 | 引擎/报告 | `Vec` 预分配（`with_capacity(objects)`）、字符串 intern（对象名在报告中重复出现） | 内存 -10~20% | 低 |
+| 6 | 解析层 | 若 `serde_json` 仍是瓶颈，评估 `simd-json`/`yyjson`（需要 `&mut [u8]` 与 unsafe 审查） | 解析再 -20~30% | 中（依赖与新 unsafe） |
+| 7 | 命令行 | `--strict`（未知字段检查）与默认解析拆成两条路径，并在文档标出性能差异 | — | 低 |
+
+> 本任务只做 profiling 与建议，未修改 `crates/`。落地 1/3/4 中的任意一项，都建议用
+> `scripts/profile-large-model.sh` 前后各采一次样对比（同一模型、同一采样时长）。
+
+## 6. 这组数据能说明什么、不能说明什么
 
 **能说明**：
 
-- 10 万对象规模**当前不可用**：一次 run 要 4.5 分钟，交互/CI 都不现实。
-- 小模型（M/M/1、典型教学模型）的吞吐是健康的：**约 170 万事件/秒**。
-- 内存不是主要障碍（100k 对象 397 MB，线性增长）。
+- 10 万对象**已经可用**：validate 0.75 s、run 2.61 s；不再是"规模不可用"。
+- 小模型吞吐健康（**1.75M events/s**），大规模（57.5k events/s）与对象数基本线性。
+- 瓶颈位置明确：validate 在反序列化（`serde_ignored` 占一半），run 在事件推进与通知。
 
 **不能说明**：
 
-- 不能把 1.7M events/s 外推到大规模模型；事件/秒强烈依赖对象数。
-- 没有测 1 亿事件（需要小对象数 + 长 stop_time；本页只覆盖对象规模维度）。
-- 没有与优化版本对比（v0.11.0 是当前唯一基线）。
-
-## 6. 待优化项（对应 BACKLOG C5）
-
-| 项 | 影响 | 建议 |
-|---|---|---|
-| validate 超线性 | 100k 对象 85 s | 为连接/对象建立索引（name → index 的 HashMap 一次构建），避免重复线性扫描 |
-| run 中对象查找 | 552 events/s | 事件里用对象 id 而非名字查找；连接预解析成端口数组 |
-| 报告生成 | 100k 行 CSV 8.4 MB | 已含在 run 时间里；若需要可单独测 `--format csv` vs `--format json` |
-| 1 亿事件 | 未测 | 用 4 对象 + stop_time≈1e7 测长跑；确认事件堆没有退化 |
-| 并行复现 | `--parallel` 未纳入本页 | 加一个 5 复现并行/串行对比 |
+- 不能外推到 1 亿事件（未测；需要小对象数 + 长 stop_time）。
+- 不同机器/OS 之间不要直接比绝对值（本页全部为 macOS 15.8.1 x86_64）。
+- `sample` 只采最栈顶叶子帧，行号/内联信息缺失；百分比是"时间占比"而非精确指令数。
 
 ## 7. 复现与记录
 
@@ -117,20 +217,29 @@ cargo run --release -p openflex-cli --example bench_mm1 -- --stop 100000
 # 1) 构建 release 二进制
 cargo build --release --locked -p openflex-cli
 
-# 2) 10 万对象基线（约 10 分钟；输出 JSON + 可直接贴进表格的行）
+# 2) 10 万对象基线（v0.14.0 约 4 秒）
 scripts/bench-large-model.sh --objects 100000 \
   --json /tmp/bench-100k.json --markdown /tmp/bench-row.md
 
 # 3) 小模型对照
 cargo run --release -p openflex-cli --example bench_mm1 -- --stop 100000
+
+# 4) profiling（带符号二进制 + sample + atos）
+cargo build --release --locked -p openflex-cli --target-dir /tmp/prof-target \
+  --config 'profile.release.strip=false'
+scripts/profile-large-model.sh --binary /tmp/prof-target/release/openflex \
+  --objects 1000000 --skip-run --warmup 1 --sample-seconds 8 --out-dir /tmp/prof-validate --keep
+scripts/profile-large-model.sh --binary /tmp/prof-target/release/openflex \
+  --objects 100000 --items 40 --skip-validate --warmup 2 --sample-seconds 8 --out-dir /tmp/prof-run --keep
 ```
 
 每次记录写一行（`--markdown` 的格式）：
 
 | 日期 | 主机 | 对象数 | 模型大小 | validate s | validate MB | run s | run MB | 事件数 | events/s | items/s |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 2026-11-15 | Darwin 24.6.0 (x86_64) | 100000 (25000 chains) | 14.2 MB | 85.12 | 134 | 271.56 | 397 | 150000 | 552 | 92 |
-| 2026-11-15 | Darwin 24.6.0 (x86_64) | 10000 (2500 chains) | 1.4 MB | 0.35 | 19 | 0.86 | 45 | 15000 | 17390 | 2898 |
-| 2026-11-15 | Darwin 24.6.0 (x86_64) | 1000 (250 chains) | 0.1 MB | 0.04 | 3 | 0.05 | 7 | 1500 | 29560 | 4927 |
+| 2026-11-15 | Darwin 24.6.0 (x86_64) | 100000 (25000 chains) | 14.2 MB | 0.75 | 142 | 2.61 | 385 | 150000 | 57505 | 9584 |
+| 2026-11-15 | Darwin 24.6.0 (x86_64) | 10000 (2500 chains) | 1.4 MB | 0.08 | 25 | 0.20 | 45 | 15000 | 74689 | 12448 |
+| 2026-11-15 | Darwin 24.6.0 (x86_64) | 1000 (250 chains) | 0.1 MB | 0.02 | 3 | 0.02 | 7 | 1500 | 64142 | 10690 |
+| 2026-11-15（历史） | Darwin 24.6.0 (x86_64) | 100000 | 14.2 MB | 85.12 | 134 | 271.56 | 397 | 150000 | 552 | 92 |
 
 > 基准数据只用于同机对比；macOS 与 Linux、不同 CPU 之间不要直接比绝对值。

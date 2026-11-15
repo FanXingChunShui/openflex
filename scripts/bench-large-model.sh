@@ -24,6 +24,7 @@
 #   scripts/bench-large-model.sh --items 5 --stop-time 200
 #   scripts/bench-large-model.sh --json bench.json --markdown row.md
 #   scripts/bench-large-model.sh --dry-run
+#   scripts/bench-large-model.sh --objects 100000 --generate-only /tmp/bench   # model only
 #   scripts/bench-large-model.sh --help
 #
 # Options:
@@ -38,6 +39,8 @@
 #   --markdown <FILE>   Append a markdown table row (for docs/verification/performance.md).
 #   --skip-trace        Skip the untimed event-counting pass (faster, no events/s).
 #   --keep              Keep the generated model and outputs in the work directory.
+#   --generate-only <DIR>  Write the model to DIR/large-model.ofm and exit (no measurement).
+#                       Useful for profilers: `sample $(pgrep openflex) 30`.
 #   --dry-run           Print the plan; generate nothing.
 #   -h, --help          Show this help.
 #
@@ -59,6 +62,7 @@ OUT_MARKDOWN=""
 KEEP=0
 DRY_RUN=0
 SKIP_TRACE=0
+GENERATE_ONLY=""
 
 info() { printf '%s: %s\n' "$PROGRAM" "$*"; }
 die() {
@@ -93,6 +97,8 @@ while [ "$#" -gt 0 ]; do
     --json=*) OUT_JSON="${1#*=}"; shift ;;
     --markdown) [ "$#" -ge 2 ] || usage_error "--markdown needs a value"; OUT_MARKDOWN="$2"; shift 2 ;;
     --markdown=*) OUT_MARKDOWN="${1#*=}"; shift ;;
+    --generate-only) [ "$#" -ge 2 ] || usage_error "--generate-only needs a directory"; GENERATE_ONLY="$2"; shift 2 ;;
+    --generate-only=*) GENERATE_ONLY="${1#*=}"; shift ;;
     --skip-trace) SKIP_TRACE=1; shift ;;
     --keep) KEEP=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
@@ -120,11 +126,11 @@ esac
 if [ -z "$BINARY" ]; then
   BINARY="$ROOT_DIR/target/release/openflex"
 fi
-if [ ! -x "$BINARY" ]; then
-  die "no executable at $BINARY — build it first: cargo build --release -p openflex-cli"
-fi
 if ! command -v python3 >/dev/null 2>&1; then
   die "python3 is required (model generation + rusage measurement)"
+fi
+if [ ! -x "$BINARY" ]; then
+  die "no executable at $BINARY — build it first: cargo build --release -p openflex-cli"
 fi
 
 snapshot_dir() {
@@ -147,6 +153,59 @@ if [ "$objects" -ne "$OBJECTS" ]; then
   info "rounding --objects $OBJECTS down to $objects (multiple of 4: Source/Queue/Processor/Sink)"
 fi
 [ "$groups" -ge 1 ] || die "--objects too small: need at least 4"
+
+if [ -n "$GENERATE_ONLY" ]; then
+  mkdir -p "$GENERATE_ONLY"
+  GENERATE_ONLY="$(cd "$GENERATE_ONLY" && pwd)"
+  info "generating a model only: $GENERATE_ONLY/large-model.ofm"
+  python3 - "$GENERATE_ONLY" "$groups" "$ITEMS" "$STOP_TIME" "$REPLICATIONS" "$SEED" <<'PY'
+import json
+import os
+import sys
+
+out_dir, groups, items, stop_time, replications, seed = sys.argv[1:7]
+groups = int(groups)
+items = int(items)
+stop_time = float(stop_time)
+replications = int(replications)
+seed = int(seed)
+
+interarrival = stop_time / (items + 1)
+objects = []
+connections = []
+for index in range(groups):
+    source, queue, processor, sink = ("S%d" % index, "Q%d" % index, "P%d" % index, "K%d" % index)
+    objects.append({"name": source, "kind": "source", "pos": [0, index], "params": {
+        "interarrival": {"distribution": "constant", "value": interarrival},
+        "items_per_arrival": 1, "first_arrival": interarrival}})
+    objects.append({"name": queue, "kind": "queue", "pos": [1, index], "params": {"max_content": 1000, "order": "fifo"}})
+    objects.append({"name": processor, "kind": "processor", "pos": [2, index], "params": {
+        "setup_time": {"distribution": "constant", "value": 0.0},
+        "process_time": {"distribution": "constant", "value": 0.0001},
+        "max_content": 1}})
+    objects.append({"name": sink, "kind": "sink", "pos": [3, index], "params": {}})
+    connections.append({"from": source, "to": queue})
+    connections.append({"from": queue, "to": processor})
+    connections.append({"from": processor, "to": sink})
+
+model = {
+    "format": "openflex-model",
+    "version": 1,
+    "name": "bench-large",
+    "description": "synthetic benchmark: %d Source/Queue/Processor/Sink chains" % groups,
+    "time_unit": "seconds",
+    "run": {"stop_time": stop_time, "warmup": 0.0, "seed": seed, "replications": replications},
+    "objects": objects,
+    "connections": connections,
+}
+path = os.path.join(out_dir, "large-model.ofm")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(model, handle, separators=(",", ":"))
+print("bench-large-model: wrote %s (%d objects, %.1f MB)" % (path, len(objects), os.path.getsize(path) / (1024 * 1024)))
+PY
+  printf '\nRESULT: PASS (model generated)\n'
+  exit 0
+fi
 
 info "binary:     $BINARY ($("$BINARY" --version 2>&1 || echo unknown))"
 info "objects:    $objects ($groups chains x 4)"

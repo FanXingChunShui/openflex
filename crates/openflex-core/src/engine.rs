@@ -130,9 +130,10 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 
 use openflex_model::{
-    Action, ArrivalStyle, CombinerMode, ConditionalPort, Distribution, DowntimeWindow, EvalContext,
-    FlowBlockKind, Grid, Model, NetworkEdge, Object, ObjectKind, ObjectParams, PortStrategy,
-    ProcessFlow, PullParams, QueueOrder, RackType, SeparateMode, SimTrigger, TransferMode, Value,
+    Action, ArrivalStyle, CombinerMode, ConditionalPort, ConnectionKind, Distribution,
+    DowntimeWindow, EvalContext, FlowBlockKind, Grid, Model, NetworkEdge, Object, ObjectKind,
+    ObjectParams, PortStrategy, ProcessFlow, PullParams, QueueOrder, RackType, SeparateMode,
+    SimTrigger, TableCell, TransferMode, Value,
 };
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
@@ -181,6 +182,12 @@ mod infinite_time {
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
         let value = Option::<f64>::deserialize(deserializer)?;
         Ok(value.unwrap_or(f64::INFINITY))
+    }
+
+    /// Default for timers that a checkpoint written before the field existed
+    /// does not contain: "no timer armed".
+    pub fn default() -> f64 {
+        f64::INFINITY
     }
 }
 
@@ -250,6 +257,10 @@ pub(crate) enum EventKind {
     MpDone(usize, usize, u64),
     /// A queue batch waited `batch_max_wait` and is released early.
     BatchTimeout(usize),
+    /// A rack item finished its minimum dwell time and may be released.
+    DwellDone(usize),
+    /// An Emptier (`basic_fr` with `emptier`) sweeps its upstream objects.
+    EmptierSweep(usize),
     /// A shift window starts or ends.
     ShiftChange(usize),
     /// A linear availability calendar (B11) window starts or ends.
@@ -584,11 +595,14 @@ enum OperatorSource {
 struct SimConn {
     from: usize,
     to: usize,
-    /// The ordinal of this connection among the target's incoming connections.
+    /// The ordinal of this connection among the target's incoming *flow*
+    /// connections (0 for S connections, which have no ports).
     to_port: u32,
     /// The explicit `port` from the model, if any.
     declared_port: Option<u32>,
     strategy: Option<PortStrategy>,
+    /// A (flow/port routing) or S (center-port resource link).
+    kind: ConnectionKind,
 }
 
 /// One fixed point on a conveyor belt (B3): a photo eye or a station.
@@ -675,6 +689,9 @@ pub(crate) struct ObjectRt {
     belt_last_update: f64,
     #[serde(with = "infinite_time")]
     belt_tick_at: f64,
+    /// Earliest instant a rack item finishes its minimum dwell time (B2).
+    #[serde(default = "infinite_time::default", with = "infinite_time")]
+    dwell_at: f64,
     /// B3: photo eyes and stations, sorted by position.
     belt_stops: Vec<BeltStop>,
     /// B3: per-item flags of the stops already handled, aligned with
@@ -775,6 +792,7 @@ impl ObjectRt {
             belt_items: Vec::new(),
             belt_last_update: now,
             belt_tick_at: f64::INFINITY,
+            dwell_at: f64::INFINITY,
             belt_stops: Vec::new(),
             belt_handled: Vec::new(),
             join_inputs: 0,
@@ -1252,6 +1270,14 @@ struct Simulation<'m> {
     scripts: HashMap<String, CompiledScript>,
     /// Trigger location of the actions currently being applied (script errors).
     action_location: String,
+    /// Shaft group currently travelled by an elevator: a shared shaft admits
+    /// one cabin at a time (task-36).
+    shaft_owner: HashMap<String, usize>,
+    /// Depth of the lifecycle trigger currently running. A trigger fired from
+    /// inside another one is skipped so the engine stays re-entrant.
+    trigger_depth: u32,
+    /// A lifecycle trigger error, reported at the next event boundary.
+    trigger_error: Option<SimError>,
     /// Static definitions of every flow block, by global block index.
     flow_defs: Vec<FlowBlockMeta>,
     /// Transfer blocks that inject items into an object, by target object.
@@ -1286,6 +1312,9 @@ impl<'m> Simulation<'m> {
         let mut outputs = vec![Vec::new(); model.objects.len()];
         let mut inputs = vec![Vec::new(); model.objects.len()];
         let mut input_ports = vec![0u32; model.objects.len()];
+        // Every connection, including S links, in declaration order. Used for
+        // team/resource resolution, never for routing.
+        let mut all_outputs = vec![Vec::new(); model.objects.len()];
         for connection in &model.connections {
             let Some(&from) = by_name.get(&connection.from) else {
                 continue;
@@ -1293,15 +1322,32 @@ impl<'m> Simulation<'m> {
             let Some(&to) = by_name.get(&connection.to) else {
                 continue;
             };
+            let kind = connection.kind.unwrap_or_default();
+            let index = conns.len();
+            all_outputs[from].push(index);
+            if kind == ConnectionKind::S {
+                // S connections are center-port resource links (for example a
+                // processor linked to its dispatcher). They occupy no output
+                // port, add no input port and are never routed along.
+                conns.push(SimConn {
+                    from,
+                    to,
+                    to_port: 0,
+                    declared_port: connection.port,
+                    strategy: connection.strategy.clone(),
+                    kind,
+                });
+                continue;
+            }
             let to_port = input_ports[to];
             input_ports[to] += 1;
-            let index = conns.len();
             conns.push(SimConn {
                 from,
                 to,
                 to_port,
                 declared_port: connection.port,
                 strategy: connection.strategy.clone(),
+                kind,
             });
             outputs[from].push(index);
             inputs[to].push(index);
@@ -1329,7 +1375,9 @@ impl<'m> Simulation<'m> {
             {
                 objects[index].home = Some(target);
             }
-            for &conn in &outputs[index] {
+            // Resource teams may be expressed with an S link, so resolve them
+            // from every connection, not only from the flow ports.
+            for &conn in &all_outputs[index] {
                 let to = conns[conn].to;
                 let from_kind = object.kind;
                 let to_kind = model.objects[to].kind;
@@ -1374,6 +1422,9 @@ impl<'m> Simulation<'m> {
             process_flow,
             scripts,
             action_location: String::new(),
+            shaft_owner: HashMap::new(),
+            trigger_depth: 0,
+            trigger_error: None,
             flow_defs,
             flow_transfer_targets,
             flow_entry_blocks,
@@ -1440,6 +1491,10 @@ impl<'m> Simulation<'m> {
         // A3: a puller starts empty, so it must ask for work at t = 0.
         for index in 0..self.model.objects.len() {
             self.schedule_pull(index);
+        }
+        // task-36: an Emptier starts its sweep cycle.
+        for index in 0..self.model.objects.len() {
+            self.schedule_emptier_sweep(index);
         }
         // B5: fluid models integrate on a fixed step.
         if let Some(fluid) = self.fluid.as_ref() {
@@ -1723,6 +1778,9 @@ impl<'m> Simulation<'m> {
             }
             self.record_trace(event.time, event.seq, &event.kind);
             self.handle(event.kind)?;
+            if let Some(err) = self.trigger_error.take() {
+                return Err(err);
+            }
         }
         Ok(())
     }
@@ -1868,6 +1926,8 @@ impl<'m> Simulation<'m> {
             EventKind::MpDone(index, lane, token) => self.handle_mp_done(index, lane, token),
             EventKind::BeltTick(index) => self.handle_belt_tick(index),
             EventKind::BatchTimeout(index) => self.handle_batch_timeout(index),
+            EventKind::DwellDone(index) => self.handle_dwell_done(index),
+            EventKind::EmptierSweep(index) => self.handle_emptier_sweep(index),
             EventKind::ShiftChange(index) => self.handle_shift_change(index),
             EventKind::TimetableChange(index) => self.handle_timetable_change(index),
             EventKind::FlowCreate(block) => self.handle_flow_create(block),
@@ -1930,15 +1990,62 @@ impl<'m> Simulation<'m> {
         self.objects[index].kind
     }
 
+    /// Read one cell of a model-level global table (read-only).
+    fn table_cell(&self, name: &str, row: usize, column: &str) -> Option<Value> {
+        let cell = self.model.table(name)?.cell(row, column)?;
+        Some(match cell {
+            TableCell::Number(value) => Value::Number(*value),
+            TableCell::Bool(value) => Value::Bool(*value),
+            TableCell::Str(value) => Value::Str(value.clone()),
+        })
+    }
+
     fn set_state(&mut self, index: usize, state: State) {
+        let changed = self.objects[index].state != state;
         self.objects[index].set_state(self.now, state);
         self.reschedule_failure(index);
+        if changed {
+            self.fire_lifecycle_trigger(index, SimTrigger::OnStateChange);
+        }
     }
 
     fn set_phase(&mut self, index: usize, phase: Phase) {
         let now = self.now;
         self.objects[index].set_phase(now, phase);
         self.reschedule_failure(index);
+    }
+
+    /// Remove one item from an object's content and fire `OnContentChange`.
+    fn take_content(&mut self, index: usize, position: usize) -> Option<FlowItem> {
+        let now = self.now;
+        let item = self.objects[index].take_content(now, position)?;
+        self.fire_lifecycle_trigger(index, SimTrigger::OnContentChange);
+        Some(item)
+    }
+
+    /// Fire an `OnStateChange` / `OnContentChange` / `OnReset` trigger.
+    ///
+    /// These triggers fire very frequently, so they run with a synthetic item
+    /// (the actions can still use `object.<Name>.*` and `time`) and are
+    /// suppressed while another lifecycle trigger runs. Errors are parked in
+    /// `trigger_error` and reported at the next event boundary, which keeps
+    /// `set_state` infallible.
+    fn fire_lifecycle_trigger(&mut self, index: usize, trigger: SimTrigger) {
+        if self.trigger_depth > 0 || self.trigger_error.is_some() {
+            return;
+        }
+        let actions = self.trigger_actions(index, trigger);
+        if actions.is_empty() {
+            return;
+        }
+        self.trigger_depth += 1;
+        self.action_location = format!("{}.{}", self.objects[index].name, trigger.as_str());
+        let mut probe = FlowItem::probe(self.now);
+        let result = self.apply_actions(index, &mut probe, actions);
+        self.trigger_depth -= 1;
+        if let Err(err) = result {
+            self.trigger_error = Some(err);
+        }
     }
 
     /// Enter the blocked state with a statistics reason (A12).
@@ -2445,7 +2552,11 @@ impl<'m> Simulation<'m> {
             | ObjectParams::Elevator(_)
             | ObjectParams::Dispatcher(_)
             | ObjectParams::Resource(_) => false,
-            ObjectParams::BasicFr(_) => object.content.is_empty(),
+            ObjectParams::BasicFr(params) => {
+                // task-36: an Emptier never accepts pushed items; it pulls
+                // them out of its upstream objects on its own schedule.
+                params.emptier.is_none() && object.content.is_empty()
+            }
             ObjectParams::BasicTe(params) => (object.effective_content() as u32) < params.capacity,
             ObjectParams::FluidGenerator(_)
             | ObjectParams::FluidTank(_)
@@ -2541,11 +2652,15 @@ impl<'m> Simulation<'m> {
 
     fn route(&mut self, from: usize, item: &FlowItem) -> Result<Option<usize>, SimError> {
         // A3: a downstream object that pulls its input is never pushed into,
-        // otherwise the item would be delivered twice.
+        // otherwise the item would be delivered twice. S (resource) links are
+        // additionally excluded defensively: they must never carry a flow item.
         let outputs: Vec<usize> = self.outputs[from]
             .iter()
             .copied()
-            .filter(|&conn| !self.pull_enabled(self.conns[conn].to))
+            .filter(|&conn| {
+                self.conns[conn].kind == ConnectionKind::A
+                    && !self.pull_enabled(self.conns[conn].to)
+            })
             .collect();
         if outputs.is_empty() {
             return Ok(None);
@@ -2799,6 +2914,11 @@ impl<'m> Simulation<'m> {
                 self.schedule(now, EventKind::Flow(target));
             }
         }
+        // The object's content grew: fire `on_content_change`. Sinks do not
+        // hold content, so they are skipped.
+        if self.objects[target].kind != ObjectKind::Sink {
+            self.fire_lifecycle_trigger(target, SimTrigger::OnContentChange);
+        }
         self.trigger_entry_flow(target)?;
         self.notify_upstreams(target)?;
         Ok(true)
@@ -2964,7 +3084,7 @@ impl<'m> Simulation<'m> {
                         }
                     }
                     UpstreamSlot::Content(at) => {
-                        self.objects[from].take_content(now, at);
+                        self.take_content(from, at);
                         self.objects[from].acc.output += 1;
                         self.objects[from].acc.stay_sum += now - item.entry_time;
                         self.objects[from].acc.stay_count += 1;
@@ -3097,7 +3217,17 @@ impl<'m> Simulation<'m> {
         }
         match self.objects[from].kind {
             ObjectKind::Queue | ObjectKind::Rack | ObjectKind::Source => {
+                // A rack only offers items that finished their minimum dwell.
+                let min_dwell = match &self.model.objects[from].params {
+                    ObjectParams::Rack(params) => params.min_dwell.max(0.0),
+                    _ => 0.0,
+                };
                 for at in 0..self.objects[from].content.len() {
+                    if min_dwell > 0.0
+                        && self.now + EPS < self.objects[from].content[at].entry_time + min_dwell
+                    {
+                        continue;
+                    }
                     slots.push(UpstreamSlot::Content(at));
                 }
             }
@@ -3112,6 +3242,11 @@ impl<'m> Simulation<'m> {
 
     fn flow_queue(&mut self, index: usize) -> Result<(), SimError> {
         let params = queue_params_of(&self.model.objects[index]);
+        // B2: a rack can hold every item for a minimum dwell time.
+        let min_dwell = match &self.model.objects[index].params {
+            ObjectParams::Rack(params) => params.min_dwell.max(0.0),
+            _ => 0.0,
+        };
         loop {
             if self.objects[index].content.is_empty() {
                 self.objects[index].force_release = false;
@@ -3144,7 +3279,16 @@ impl<'m> Simulation<'m> {
                 return Ok(());
             }
             let position = self.pick_queue_position(index, &params.order);
-            let Some(item) = self.objects[index].take_content(self.now, position) else {
+            if min_dwell > 0.0
+                && let Some(next) = self.objects[index].content.get(position)
+                && self.now + EPS < next.entry_time + min_dwell
+            {
+                let ready_at = next.entry_time + min_dwell;
+                self.set_state(index, State::Blocked);
+                self.arm_rack_dwell(index, ready_at);
+                return Ok(());
+            }
+            let Some(item) = self.take_content(index, position) else {
                 return Ok(());
             };
             let Some(conn) = self.route(index, &item)? else {
@@ -3167,6 +3311,117 @@ impl<'m> Simulation<'m> {
         self.objects[index].note_content(self.now);
         self.objects[index].content.insert(at, item);
         self.set_state(index, State::Blocked);
+    }
+
+    // -----------------------------------------------------------------------
+    // Emptier (task-36)
+    // -----------------------------------------------------------------------
+
+    /// Emptier parameters of a `basic_fr` object.
+    fn emptier_params(&self, index: usize) -> Option<openflex_model::EmptierParams> {
+        match &self.model.objects[index].params {
+            ObjectParams::BasicFr(params) => params.emptier.clone(),
+            _ => None,
+        }
+    }
+
+    /// Schedule the next sweep of an Emptier.
+    fn schedule_emptier_sweep(&mut self, index: usize) {
+        let Some(params) = self.emptier_params(index) else {
+            return;
+        };
+        let interval = self.sample(&params.interval).max(EPS);
+        let at = self.now + interval;
+        if at < self.config.stop_time - EPS {
+            self.schedule(at, EventKind::EmptierSweep(index));
+        }
+    }
+
+    /// Move the items waiting in the upstream objects to this object's outputs
+    /// (or destroy them). The upstream objects are the connections entering the
+    /// Emptier; they cannot push into it because its `can_accept` is false.
+    fn handle_emptier_sweep(&mut self, index: usize) -> Result<(), SimError> {
+        let Some(params) = self.emptier_params(index) else {
+            return Ok(());
+        };
+        let max_items = params.max_items as usize;
+        let now = self.now;
+        let inputs = self.inputs[index].clone();
+        let mut moved = 0usize;
+        'sweep: for conn in inputs {
+            let from = self.conns[conn].from;
+            loop {
+                if max_items > 0 && moved >= max_items {
+                    break 'sweep;
+                }
+                let Some(slot) = self.pull_candidates(from).into_iter().next() else {
+                    break;
+                };
+                let item = match slot {
+                    UpstreamSlot::OutPending => self.objects[from].out_pending[0].clone(),
+                    UpstreamSlot::Content(at) => self.objects[from].content[at].clone(),
+                };
+                // Take the item out of the upstream object (fires its
+                // on_content_change) and charge its output statistics.
+                match slot {
+                    UpstreamSlot::OutPending => {
+                        self.objects[from].out_pending.remove(0);
+                        if !self.objects[from].out_pending_accounted {
+                            self.objects[from].acc.output += 1;
+                            self.objects[from].acc.stay_sum += now - item.entry_time;
+                            self.objects[from].acc.stay_count += 1;
+                        }
+                    }
+                    UpstreamSlot::Content(at) => {
+                        self.take_content(from, at);
+                        self.objects[from].acc.output += 1;
+                        self.objects[from].acc.stay_sum += now - item.entry_time;
+                        self.objects[from].acc.stay_count += 1;
+                    }
+                }
+                self.objects[index].acc.input += 1;
+                self.objects[index].acc.output += 1;
+                self.objects[index].acc.stay_sum += now - item.entry_time;
+                self.objects[index].acc.stay_count += 1;
+                moved += 1;
+                if params.destroy {
+                    continue;
+                }
+                let Some(out_conn) = self.route(index, &item)? else {
+                    // Nowhere to put it: put it back and stop this sweep.
+                    self.objects[from].push_content(now, item);
+                    break 'sweep;
+                };
+                if !self.deliver(index, out_conn, item.clone())? {
+                    self.objects[from].push_content(now, item);
+                    break 'sweep;
+                }
+                // The upstream object lost an item: let it settle.
+                self.schedule(now, EventKind::Flow(from));
+            }
+        }
+        self.notify_upstreams(index)?;
+        self.schedule_emptier_sweep(index);
+        Ok(())
+    }
+
+    /// A rack item finished its minimum dwell time: try to release again.
+    fn handle_dwell_done(&mut self, index: usize) -> Result<(), SimError> {
+        self.objects[index].dwell_at = f64::INFINITY;
+        self.flow(index)
+    }
+
+    /// Arm the dwell timer of a rack; it fires when the oldest releasable item
+    /// has waited `min_dwell` (B2).
+    fn arm_rack_dwell(&mut self, index: usize, ready_at: f64) {
+        if ready_at >= self.config.stop_time - EPS {
+            return;
+        }
+        if self.objects[index].dwell_at <= ready_at + EPS {
+            return;
+        }
+        self.objects[index].dwell_at = ready_at;
+        self.schedule(ready_at, EventKind::DwellDone(index));
     }
 
     /// Arm the batching timeout for a queue that is waiting for a full batch.
@@ -3291,7 +3546,7 @@ impl<'m> Simulation<'m> {
         if !self.ensure_operator(index, phase, &params)? {
             return Ok(());
         }
-        let Some(item) = self.objects[index].take_content(self.now, 0) else {
+        let Some(item) = self.take_content(index, 0) else {
             return Ok(());
         };
         self.objects[index].processing_item = Some(item);
@@ -3771,7 +4026,7 @@ impl<'m> Simulation<'m> {
                         let Some(&source) = self.by_name.get(&params.object) else {
                             break;
                         };
-                        let Some(item) = self.objects[source].take_content(now, 0) else {
+                        let Some(item) = self.take_content(source, 0) else {
                             // No item to pull yet: keep the token waiting and
                             // retry when the source receives something.
                             self.flow_add_token(block, token, None);
@@ -4561,6 +4816,7 @@ impl<'m> Simulation<'m> {
             self.objects[transporter].task_distance =
                 self.transport_estimate_distance(transporter, requester);
             self.objects[transporter].acc.input += 1;
+            self.claim_shaft(transporter);
             // A5: the operator is on its way; the destination counts it as an
             // in-transit item until it arrives.
             self.objects[requester].in_transit += 1;
@@ -4596,7 +4852,8 @@ impl<'m> Simulation<'m> {
             .iter()
             .copied()
             .find(|&executor| {
-                self.objects[executor].tasks < self.objects[executor].capacity as usize
+                self.objects[executor].tasks < self.elevator_effective_capacity(executor) as usize
+                    && self.shaft_available(executor)
             })
         {
             let Some(position) = self.pick_elevator_request(dispatcher, executor) else {
@@ -4608,6 +4865,7 @@ impl<'m> Simulation<'m> {
             self.objects[executor].tasks += 1;
             self.objects[executor].serving_requester = Some(requester);
             self.objects[executor].acc.input += 1;
+            self.claim_shaft(executor);
             let delta = self.objects[requester].z - self.objects[executor].z;
             self.objects[executor].elevator_direction = if delta > EPS {
                 1
@@ -4860,7 +5118,15 @@ impl<'m> Simulation<'m> {
             if !self.objects[transporter].on_shift {
                 continue;
             }
-            if self.objects[transporter].tasks >= self.objects[transporter].capacity as usize {
+            let capacity = if self.objects[transporter].kind == ObjectKind::Elevator {
+                self.elevator_effective_capacity(transporter)
+            } else {
+                self.objects[transporter].capacity
+            };
+            if self.objects[transporter].tasks >= capacity as usize {
+                continue;
+            }
+            if !self.shaft_available(transporter) {
                 continue;
             }
             if self.objects[transporter].charging {
@@ -4878,6 +5144,66 @@ impl<'m> Simulation<'m> {
     /// (its `home`, or the current position when no home is configured).
     fn transport_is_elevator(&self, transporter: usize) -> bool {
         self.objects[transporter].kind == ObjectKind::Elevator
+    }
+
+    fn elevator_params(&self, index: usize) -> Option<openflex_model::ElevatorParams> {
+        match &self.model.objects[index].params {
+            ObjectParams::Elevator(params) => Some(params.clone()),
+            _ => None,
+        }
+    }
+
+    /// Task-36: the cabin capacity, limited by `max_load` / `load_per_task`.
+    fn elevator_effective_capacity(&self, index: usize) -> u32 {
+        let capacity = self.objects[index].capacity.max(1);
+        let Some(params) = self.elevator_params(index) else {
+            return capacity;
+        };
+        if params.max_load <= 0.0 || params.load_per_task <= 0.0 {
+            return capacity;
+        }
+        let by_load = (params.max_load / params.load_per_task).floor().max(0.0) as u32;
+        capacity.min(by_load)
+    }
+
+    fn elevator_shaft(&self, index: usize) -> Option<String> {
+        self.elevator_params(index)?.shaft
+    }
+
+    /// Task-36: a shaft admits one cabin at a time.
+    fn shaft_available(&self, index: usize) -> bool {
+        let Some(shaft) = self.elevator_shaft(index) else {
+            return true;
+        };
+        self.shaft_owner
+            .get(&shaft)
+            .is_none_or(|&owner| owner == index)
+    }
+
+    fn claim_shaft(&mut self, index: usize) {
+        if let Some(shaft) = self.elevator_shaft(index) {
+            self.shaft_owner.insert(shaft, index);
+        }
+    }
+
+    fn release_shaft(&mut self, index: usize) {
+        if let Some(shaft) = self.elevator_shaft(index)
+            && self.shaft_owner.get(&shaft) == Some(&index)
+        {
+            self.shaft_owner.remove(&shaft);
+        }
+    }
+
+    fn elevator_door_open(&self, index: usize) -> f64 {
+        self.elevator_params(index)
+            .map(|params| params.door_open_time.max(0.0))
+            .unwrap_or(0.0)
+    }
+
+    fn elevator_door_close(&self, index: usize) -> f64 {
+        self.elevator_params(index)
+            .map(|params| params.door_close_time.max(0.0))
+            .unwrap_or(0.0)
     }
 
     fn transport_pickup_travel(&self, transporter: usize) -> f64 {
@@ -5046,8 +5372,10 @@ impl<'m> Simulation<'m> {
         }
         let dwell = self.transport_dwell(transporter);
         let unload = self.transport_unload_time(transporter);
+        // Task-36: the doors have to open before loading/unloading starts.
+        let door_open = self.elevator_door_open(transporter);
         self.schedule(
-            self.now + dwell + unload,
+            self.now + door_open + dwell + unload,
             EventKind::OperatorLoaded(transporter, requester),
         );
         Ok(())
@@ -5232,11 +5560,21 @@ impl<'m> Simulation<'m> {
                 return Ok(());
             }
         }
+        // Task-36: the doors must close before the cabin may travel again.
+        let door_close = self.elevator_door_close(transporter);
         if let Some(travel) = home_travel
             && travel > EPS
         {
             self.set_state(transporter, State::Busy);
-            self.schedule(self.now + travel, EventKind::TransportHome(transporter));
+            self.schedule(
+                self.now + door_close + travel,
+                EventKind::TransportHome(transporter),
+            );
+            return Ok(());
+        }
+        if door_close > EPS {
+            self.set_state(transporter, State::Busy);
+            self.schedule(self.now + door_close, EventKind::TransportHome(transporter));
             return Ok(());
         }
         self.finish_task(transporter)
@@ -5252,6 +5590,7 @@ impl<'m> Simulation<'m> {
 
     /// Mark one transporter task as complete and look for queued work.
     fn finish_task(&mut self, transporter: usize) -> Result<(), SimError> {
+        self.release_shaft(transporter);
         self.objects[transporter].tasks = self.objects[transporter].tasks.saturating_sub(1);
         self.objects[transporter].serving_requester = None;
         self.objects[transporter].acc.output += 1;
@@ -5385,7 +5724,7 @@ impl<'m> Simulation<'m> {
             .iter()
             .position(|lane| lane.item.is_none())
         {
-            let Some(item) = self.objects[index].take_content(self.now, 0) else {
+            let Some(item) = self.take_content(index, 0) else {
                 break;
             };
             let setup = self.sample(&params.setup_time).max(0.0);
@@ -5840,12 +6179,15 @@ impl<'m> Simulation<'m> {
         };
         if self.objects[index].pending_parts.is_empty() && !self.objects[index].content.is_empty() {
             let now = self.now;
-            let Some(container) = self.objects[index].take_content(now, 0) else {
+            let Some(container) = self.take_content(index, 0) else {
                 return Ok(());
             };
             let outputs = self.outputs[index].len();
             if outputs == 0 {
+                // Nothing to split into: put the container back and fire the
+                // content-change trigger for the restored content.
                 self.objects[index].push_content(now, container);
+                self.fire_lifecycle_trigger(index, SimTrigger::OnContentChange);
                 self.set_state(index, State::Blocked);
                 return Ok(());
             }
@@ -5988,7 +6330,7 @@ impl<'m> Simulation<'m> {
                 self.objects[index].split_cursor += 1;
             }
             let now = self.now;
-            self.objects[index].take_content(now, 0);
+            self.take_content(index, 0);
             self.objects[index].acc.output += 1;
             self.objects[index].acc.stay_sum += now - item.entry_time;
             self.objects[index].acc.stay_count += 1;
@@ -6010,7 +6352,7 @@ impl<'m> Simulation<'m> {
                 return Ok(());
             }
             let now = self.now;
-            self.objects[index].take_content(now, 0);
+            self.take_content(index, 0);
             self.objects[index].acc.output += 1;
             self.objects[index].acc.stay_sum += now - item.entry_time;
             self.objects[index].acc.stay_count += 1;
@@ -6425,7 +6767,7 @@ impl<'m> Simulation<'m> {
         if !self.can_accept(to, 0) {
             return Ok(());
         }
-        let Some(item) = self.objects[from].take_content(self.now, 0) else {
+        let Some(item) = self.take_content(from, 0) else {
             return Ok(());
         };
         let stay = self.now - item.entry_time;
@@ -6479,6 +6821,11 @@ impl<'m> Simulation<'m> {
             object.last_content_change = self.now;
             object.phase_start = self.now;
         }
+        // `on_reset` runs once per object after the warm-up boundary cleared
+        // the statistics.
+        for index in 0..self.objects.len() {
+            self.fire_lifecycle_trigger(index, SimTrigger::OnReset);
+        }
     }
 }
 
@@ -6507,6 +6854,8 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
         }
         EventKind::BeltTick(index) => (Some(*index), "belt_tick", None),
         EventKind::BatchTimeout(index) => (Some(*index), "batch_timeout", None),
+        EventKind::DwellDone(index) => (Some(*index), "dwell_done", None),
+        EventKind::EmptierSweep(index) => (Some(*index), "emptier_sweep", None),
         EventKind::ShiftChange(index) => (Some(*index), "shift_change", None),
         EventKind::TimetableChange(index) => (Some(*index), "timetable_change", None),
         EventKind::TransportPickup(transporter, requester) => (
@@ -6675,6 +7024,22 @@ impl EvalContext for ExprContext<'_, '_> {
                 .item
                 .and_then(|item| item.labels.get(rest).copied())
                 .map(Value::Number);
+        }
+        if let Some(rest) = path.strip_prefix("table.") {
+            // Read-only global table access:
+            //   `table.<Name>.<column>`      first row
+            //   `table.<Name>.<row>.<column>`
+            // The `table(name, row, column)` function resolves to the second
+            // form, so both spellings share one implementation.
+            let parts: Vec<&str> = rest.split('.').collect();
+            return match parts.as_slice() {
+                [name, column] => self.sim.table_cell(name, 0, column),
+                [name, row, column] => row
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|row| self.sim.table_cell(name, row, column)),
+                _ => None,
+            };
         }
         if let Some(rest) = path.strip_prefix("object.") {
             let (name, field) = rest.split_once('.')?;

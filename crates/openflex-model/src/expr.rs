@@ -135,6 +135,8 @@ pub const BUILTIN_VARIABLES: &[(&str, &str)] = &[
     ("object.<Name>.output", "number"),
     ("<Name>.content", "number"),
     ("<Name>.state", "string"),
+    ("table.<Name>.<column>", "any"),
+    ("table.<Name>.<row>.<column>", "any"),
 ];
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -416,6 +418,25 @@ fn eval_call(name: &str, args: &[Expr], ctx: &dyn EvalContext) -> Result<Value, 
                 text.push_str(&arg.eval(ctx)?.as_str());
             }
             Ok(Value::Str(text))
+        }
+        // Read-only global table lookup: `table("Rates", row, "column")`.
+        // The row is an arbitrary expression, so a label or an object field can
+        // select it. The context resolves the canonical path, which is also
+        // what the plain `table.<Name>.<row>.<column>` form uses.
+        "table" => {
+            if args.len() != 3 {
+                return Err(ExprError::Arity {
+                    name: "table".into(),
+                    expected: 3,
+                    found: args.len(),
+                });
+            }
+            let table = args[0].eval(ctx)?.as_str();
+            let row = args[1].eval(ctx)?.as_number()?;
+            let column = args[2].eval(ctx)?.as_str();
+            let row = if row < 0.0 { 0 } else { row as usize };
+            let path = format!("table.{table}.{row}.{column}");
+            ctx.lookup(&path).ok_or(ExprError::UnknownVariable(path))
         }
         _ => Err(ExprError::UnknownFunction(name.to_string())),
     }
