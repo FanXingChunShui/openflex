@@ -33,27 +33,27 @@ scripts/release.sh --version 0.22.0 --phase publish   # [3/5] sync 清单 → [4
 `--dry-run` 只打印、不改文件；`--phase publish` 忽略预检中的"工作区干净"要求（清单同步会改
 `packaging/`）。脚本**从不**替你 commit / tag / push。
 
-**一次真实的 dry-run**（`scripts/release.sh --version 0.28.0 --dry-run`，节选）：
+**一次真实的 dry-run**（`scripts/release.sh --version 0.29.0 --dry-run`，节选）：
 
 ```text
 [1/5] Preflight (branch, working tree, versions)
 [dry-run] would check: branch == main, working tree clean
-[2/5] Bump Cargo.toml (0.27.0 -> 0.28.0) and update Cargo.lock
-[dry-run] would set [workspace.package].version = "0.28.0" in Cargo.toml
+[2/5] Bump Cargo.toml (0.28.0 -> 0.29.0) and update Cargo.lock
+[dry-run] would set [workspace.package].version = "0.29.0" in Cargo.toml
 [dry-run] would run: CARGO_INCREMENTAL=0 cargo check --workspace   # updates Cargo.lock
 [3/5] Sync package-manager manifests (needs the release; deferred)
-[dry-run] would run after the tag exists: scripts/sync-package-manifests.sh --version 0.28.0
+[dry-run] would run after the tag exists: scripts/sync-package-manifests.sh --version 0.29.0
 [4/5] verify-packaging (needs synced manifests; deferred to --phase publish)
 [dry-run] would run after the release exists: CARGO_INCREMENTAL=0 scripts/verify-packaging.sh --skip-build
 [5/5] Next steps (commands are printed, never executed)
   git add Cargo.toml Cargo.lock packaging docs
-  git commit -m "Release v0.28.0: <one-line summary>"
-  git tag -a v0.28.0 -m "OpenFlex 0.28.0"
+  git commit -m "Release v0.29.0: <one-line summary>"
+  git tag -a v0.29.0 -m "OpenFlex 0.29.0"
   git push origin main
-  git push origin v0.28.0
-  scripts/release.sh --version 0.28.0 --phase publish
-  scripts/verify-ghcr.sh --tags 0.28.0,latest --expect-latest 0.28.0
-  OPENFLEX_REPO=FanXingChunShui/openflex scripts/verify-install.sh --version 0.28.0
+  git push origin v0.29.0
+  scripts/release.sh --version 0.29.0 --phase publish
+  scripts/verify-ghcr.sh --tags 0.29.0,latest --expect-latest 0.29.0
+  OPENFLEX_REPO=FanXingChunShui/openflex scripts/verify-install.sh --version 0.29.0
 ```
 
 **常见场景**：
@@ -430,7 +430,8 @@ ghcr.io/fanxingchunshui/openflex:latest
 | `0.25.0` | ✅ 可用（tag 发布后约 13 分钟出现） | `50981803af49` |
 | `0.26.0` | ✅ 可用（tag 发布后约 3 分钟出现） | `9c642a7bda78` |
 | `0.27.0` | ✅ 可用（tag 发布后约 10 分钟出现） | `237b9bf947dc` |
-| `0.28.0` | ✅ 可用（tag 发布后约 30 分钟出现；container run `43726461023` 推送后仍 in_progress） | `dea3c81c6a5f` |
+| `0.28.0` | ✅ 可用（tag 发布后约 30 分钟出现；container run `43726461023` 最终 success，33 分钟） | `dea3c81c6a5f` |
+| `0.29.0` | ⏳ tag 已发布，镜像构建中（本轮经验 25–33 分钟） | — |
 | `latest` | ✅ 指向 0.28.0 | `dea3c81c6a5f` |
 
 | 项 | 值 |

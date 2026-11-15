@@ -235,7 +235,7 @@ msiexec /i openflex-0.10.0-windows-x64.msi
 按用户安装（`perUser`），装到 `%LOCALAPPDATA%\OpenFlex\bin` 并自动加入用户 PATH，不需要管理员权限。
 卸载：设置 → 应用 → OpenFlex → 卸载，或 `msiexec /x openflex-0.10.0-windows-x64.msi`。
 
-### Docker / GHCR — 已发布到 0.28.0，`latest` 已同步
+### Docker / GHCR — 已发布到 0.28.0（0.29.0 随 tag 构建，本轮实测约 30 分钟）
 
 GHCR 镜像由 [`.github/workflows/container.yml`](../.github/workflows/container.yml) 在 tag 时
 构建并推送。**当前 registry 状态（2026-11-15 用 `scripts/verify-ghcr.sh` 核对）**：
@@ -261,6 +261,7 @@ GHCR 镜像由 [`.github/workflows/container.yml`](../.github/workflows/containe
 | `0.26.0` | 200 | linux/amd64, linux/arm64 | `9c642a7bda78` |
 | `0.27.0` | 200 | linux/amd64, linux/arm64 | `237b9bf947dc` |
 | `0.28.0` | 200 | linux/amd64, linux/arm64 | `dea3c81c6a5f` |
+| `0.29.0` | ⏳ 待推送 | — | 发布后约 17 分钟仍 404（本轮 v0.28.0 用了 33 分钟） |
 | `latest` | 200 | linux/amd64, linux/arm64 | `dea3c81c6a5f`（= 0.28.0） |
 
 ```sh
@@ -294,13 +295,14 @@ docker pull ghcr.io/fanxingchunshui/openflex@sha256:dea3c81c6a5f385f6b1d70c69a96
 
 （该 digest 是 v0.28.0 与 `latest` 共同指向的 OCI manifest list，2026-11-15 核对；用 `scripts/verify-ghcr.sh --tags 0.28.0,latest --expect-latest 0.28.0` 可复核。）
 
-> **container run 状态（2026-11-15 15:21Z 核对）**：推送 v0.28.0 的 run
-> [`43726461023`](https://github.com/FanXingChunShui/openflex/actions/runs/43726461023) 仍为
-> `in_progress`，停留在 step 8「Build and push multi-arch image」——但**镜像已经推送成功**（GHCR 各 tag 均 200，
-> `latest` 已前移），说明 run 卡在 push 之后的收尾（buildx 缓存导出 / arm64 后处理），
-> 而不是推送到失败。此时镜像可以正常拉取使用；若该 run 长时间（> 60 分钟）不结束，可在 Actions
-> 里取消并用 `workflow_dispatch`（tag 填 `v0.28.0`）重跑，或直接依赖 `scripts/verify-ghcr.sh` 的
-> 发布后校验（run 里的 step 9/10 只是同一件事的自动化版本）。
+> **container run 观察（2026-11-15）**：推送 v0.28.0 的 run
+> [`43726461023`](https://github.com/FanXingChunShui/openflex/actions/runs/43726461023) 最终
+> **completed / success**，14:49:36 → 15:22:38（33 分钟）；上一轮看到的 `in_progress`（step 8
+> 「Build and push multi-arch image」）只是正常的 arm64/QEMU 构建阶段，不是卡死——镜像在 run 结束前
+> 就已可拉取。推送 v0.29.0 的 run
+> [`43729706956`](https://github.com/FanXingChunShui/openflex/actions/runs/43729706956) 也是同样的
+> 形态（step 8 持续构建中）。经验值：**tag 到镜像可用约 25–33 分钟**；超过 60 分钟仍 `in_progress`
+> 才需要取消并用 `workflow_dispatch` 重跑。
 
 ### winget（Windows）— 清单已更新到 v0.12.0，尚未提交
 

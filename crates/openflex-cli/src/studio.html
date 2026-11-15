@@ -61,6 +61,14 @@
            display: none; background: #f1f5f9; }
   #axis-indicator { position: absolute; left: 10px; bottom: 34px; width: 76px; height: 76px;
                     pointer-events: none; z-index: 4; }
+  #webgl-labels { position: absolute; inset: 0; pointer-events: none; z-index: 3; display: none;
+                  overflow: hidden; }
+  .webgl-label { position: absolute; transform: translate(-50%, -100%); text-align: center;
+                 font: 600 11px system-ui, sans-serif; color: #0f172a; white-space: nowrap;
+                 background: rgba(248,250,252,.82); padding: 1px 4px; border-radius: 4px; }
+  .webgl-label span { display: block; font-size: 10px; font-weight: 400; color: #64748b; }
+  .webgl-label.selected { color: #b45309; border: 1px solid #f59e0b; }
+  .webgl-label.multi { color: #0369a1; border: 1px solid #0284c7; }
   #flow-canvas { display: block; width: 100%; height: 220px; background: #ffffff;
                  border: 1px solid #cbd5e1; border-radius: 6px; cursor: grab; touch-action: none; }
   #scene.dragging { cursor: grabbing; }
@@ -210,6 +218,7 @@
   <section class="view">
     <canvas id="scene" aria-label="3D model view" data-drag-object="1" data-group-drag="1" data-occlusion="1" data-box-select="1" data-marquee-3d="1" data-axis="1"></canvas>
     <canvas id="webgl" data-webgl="1" aria-label="WebGL 3D view"></canvas>
+    <div id="webgl-labels" data-webgl-labels="1"></div>
     <svg id="axis-indicator" data-axis="1" viewBox="0 0 76 76" aria-label="X Y Z axes">
       <line x1="12" y1="64" x2="58" y2="64" stroke="#dc2626" stroke-width="2"/>
       <line x1="12" y1="64" x2="12" y2="18" stroke="#16a34a" stroke-width="2"/>
@@ -343,6 +352,7 @@ const state = {
   marquee3d: null,
   gridVisible: true,
   renderMode: "canvas",
+  webglLabelNodes: new Map(),
   dragging: false,
   lastX: 0,
   lastY: 0,
@@ -2559,6 +2569,77 @@ function mat4LookAt(eye, center, up) {
   ];
 }
 
+function updateWebGLLabels(candidates, width, height) {
+  const container = $("webgl-labels");
+  if (!container) return;
+  if (!candidates || candidates.length === 0) {
+    container.style.display = "none";
+    return;
+  }
+  const placed = [];
+  const visible = [];
+  const sorted = [...candidates].sort((left, right) => left.y - right.y);
+  for (const candidate of sorted) {
+    let y = candidate.y;
+    let rect = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      rect = { left: candidate.x - 55, right: candidate.x + 55, top: y - 28, bottom: y + 4 };
+      if (rect.left < 0 || rect.right > width || rect.top < 0 || rect.bottom > height) {
+        rect = null;
+        break;
+      }
+      const overlap = placed.some(other =>
+        rect.left < other.right && rect.right > other.left
+        && rect.top < other.bottom && rect.bottom > other.top);
+      if (!overlap) break;
+      y -= 16;
+      rect = null;
+    }
+    if (!rect) continue;
+    placed.push(rect);
+    visible.push({ ...candidate, y });
+  }
+  const seen = new Set();
+  for (const label of visible) {
+    seen.add(label.name);
+    let node = state.webglLabelNodes.get(label.name);
+    if (!node) {
+      node = document.createElement("div");
+      node.className = "webgl-label";
+      node.dataset.objectLabel = label.name;
+      node.innerHTML = "<strong></strong><span></span>";
+      container.appendChild(node);
+      state.webglLabelNodes.set(label.name, node);
+    }
+    node.querySelector("strong").textContent = label.name;
+    node.querySelector("span").textContent = label.kind;
+    node.style.left = `${label.x.toFixed(1)}px`;
+    node.style.top = `${label.y.toFixed(1)}px`;
+    node.classList.toggle("selected", label.selected);
+    node.classList.toggle("multi", label.multi && !label.selected);
+    node.style.display = "block";
+  }
+  for (const [name, node] of state.webglLabelNodes) {
+    if (!seen.has(name)) {
+      node.remove();
+      state.webglLabelNodes.delete(name);
+    }
+  }
+  container.style.display = "block";
+}
+
+function projectWorld(matrix, point, width, height) {
+  const [x, y, z] = point;
+  const clipW = matrix[3] * x + matrix[7] * y + matrix[11] * z + matrix[15];
+  if (clipW <= 1e-6) return null;
+  const clipX = matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12];
+  const clipY = matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13];
+  return {
+    x: (clipX / clipW * 0.5 + 0.5) * width,
+    y: (1 - (clipY / clipW * 0.5 + 0.5)) * height,
+  };
+}
+
 function drawWebGL(now) {
   const gl = webglState.gl;
   const program = webglState.program;
@@ -2630,7 +2711,8 @@ function drawWebGL(now) {
         corners.push([x + dx * size / 2, y + dy * depth / 2, cz]);
       }
     }
-    boxes.push({ object, index, corners, center: [x, y, z + objectHeight / 2] });
+    const labelWorld = [x, y, z + objectHeight * 1.25];
+    boxes.push({ object, index, corners, center: [x, y, z + objectHeight / 2], labelWorld });
     const highlighted = object.name === selectedName;
     const isMulti = multi.has(index);
     const baseHex = object.kind.startsWith("fluid") ? "#bae6fd"
@@ -2687,8 +2769,7 @@ function drawWebGL(now) {
     const tip = [end[0], end[1], end[2]];
     const left = [end[0] - ux * arrow - uy * arrow * 0.55, end[1] - uy * arrow + ux * arrow * 0.55, end[2]];
     const right = [end[0] - ux * arrow + uy * arrow * 0.55, end[1] - uy * arrow - ux * arrow * 0.55, end[2]];
-    pushLine(tip, left, hexRgb("#475569"));
-    pushLine(tip, right, hexRgb("#475569"));
+    pushTriangle(tip, left, right, hexRgb("#475569"));
   }
 
   gl.useProgram(program);
@@ -2715,6 +2796,19 @@ function drawWebGL(now) {
   gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 0, 0);
   gl.drawArrays(gl.LINES, 0, lines.length / 3);
   gl.deleteBuffer(colorBuffer);
+  const labels = boxes.map(box => {
+    const point = projectWorld(matrix, box.labelWorld, webglCanvas.clientWidth, webglCanvas.clientHeight);
+    if (!point) return null;
+    return {
+      name: box.object.name,
+      kind: box.object.kind,
+      x: point.x,
+      y: point.y,
+      selected: box.object.name === selectedName,
+      multi: multi.has(box.index),
+    };
+  }).filter(Boolean);
+  updateWebGLLabels(labels, webglCanvas.clientWidth, webglCanvas.clientHeight);
 }
 
 function setRenderMode(mode) {
@@ -2725,6 +2819,8 @@ function setRenderMode(mode) {
   state.renderMode = mode;
   state.view2d = mode === "2d";
   webglCanvas.style.display = mode === "webgl" ? "block" : "none";
+  const labels = $("webgl-labels");
+  if (labels && mode !== "webgl") labels.style.display = "none";
   const buttons = [["view-webgl", "webgl"], ["view-canvas", "canvas"], ["view-2d", "2d"]];
   for (const [id, value] of buttons) {
     const button = $(id);

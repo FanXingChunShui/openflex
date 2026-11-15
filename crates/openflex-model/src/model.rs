@@ -2236,6 +2236,17 @@ impl Default for FluidTankParams {
     }
 }
 
+/// Valve opening curve (task-86).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ValveOpeningCurve {
+    /// Effective area proportional to the opening.
+    #[default]
+    Linear,
+    /// Equal-percentage characteristic (area grows geometrically).
+    EqualPercentage,
+}
+
 /// A fluid valve (`fluid_valve`): passes `ratio` of the incoming flow when open.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2252,6 +2263,12 @@ pub struct FluidValveParams {
     /// Inlet pressure that (re)opens the valve (Pa, hysteresis).
     #[serde(default)]
     pub pressure_open: Option<f64>,
+    /// task-86: valve opening in 0..1 (default 1 = fully open).
+    #[serde(default)]
+    pub opening: Option<f64>,
+    /// task-86: opening curve (`linear` or `equal_percentage`).
+    #[serde(default)]
+    pub open_curve: Option<ValveOpeningCurve>,
     /// Inlet pressure below which the valve closes (Pa, hysteresis).
     #[serde(default)]
     pub pressure_close: Option<f64>,
@@ -2267,6 +2284,8 @@ impl Default for FluidValveParams {
             pressure_threshold: None,
             pressure_open: None,
             pressure_close: None,
+            opening: None,
+            open_curve: None,
             triggers: Triggers::default(),
         }
     }
@@ -2292,6 +2311,20 @@ pub struct FluidPipeParams {
     /// Fluid temperature in Celsius (simplified viscosity correction).
     #[serde(default)]
     pub temperature: Option<f64>,
+    /// task-86: inner diameter (layout units). Together with `friction_factor`
+    /// and `density` it enables the Darcy-Weisbach flow law; without them the
+    /// `flow_rate` calibration is used unchanged.
+    #[serde(default)]
+    pub diameter: Option<f64>,
+    /// Darcy friction factor `f` (dimensionless).
+    #[serde(default)]
+    pub friction_factor: Option<f64>,
+    /// Fluid density at the reference temperature (kg per volume unit).
+    #[serde(default)]
+    pub density: Option<f64>,
+    /// Linear density/temperature coefficient (1/K, default 0.0002).
+    #[serde(default)]
+    pub temperature_coefficient: Option<f64>,
     #[serde(default)]
     pub triggers: Triggers,
 }
@@ -2304,6 +2337,10 @@ impl Default for FluidPipeParams {
             delay: None,
             flow_rate: None,
             temperature: None,
+            diameter: None,
+            friction_factor: None,
+            density: None,
+            temperature_coefficient: None,
             triggers: Triggers::default(),
         }
     }

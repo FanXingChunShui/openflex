@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.30.0 — 2026-11-15
+
+### Fluid
+
+- **Darcy 可选参数入模型**（零行为变化，安全网固定默认值）：`FluidPipeParams.diameter/friction_factor/density/
+  temperature_coefficient`、`FluidValveParams.opening/open_curve`（linear/equal_percentage）。
+- 新增 `core/tests/fluid_safety_net.rs`（3 项）：默认参数下 fluid-line 速率钉死（10/5/2.5/2.5）、两次运行逐位相等。
+- engine 侧 Darcy 分支待接线（已定位三处接入点并给出实现草案）。
+
+### Studio
+
+- **WebGL 文字标签**：DOM overlay 随相机投影显示对象名/kind；WebGL 回退路径与实体箭头（若完成）。
+
+### 验证
+
+- 470 个测试全绿（core 240、CLI 83、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.30.0 三平台产物发布并 SHA256 校验。
+
 ## v0.29.0 — 2026-11-15
 
 ### Studio
