@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.38.0 — 2026-11-16
+
+### Person
+
+- **目标格占用等待（最小版）**：Person 到达目标格时若被索引更小的 person 占用（tasks>0 且距离<0.5）→ 不进入、
+  trace `person_wait`、`now+0.5` 重试；小 id 先行打破相向死锁；测试验证等待后最终完成。
+- 保留 8 邻接 A* 与密度折减；非 Person 执行器不受影响。
+
+### Studio
+
+- **trace 回放**：`POST /api/trace {stop_time,max_events}` 返回 `simulate_traced` 事件；前端 `Load trace`、
+  按对象/时间过滤事件列表，拖动时间轴显示该时刻最近事件并高亮对应行。
+
+### 验证
+
+- 477 个测试全绿（core 245、CLI 84、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.38.0 三平台产物发布并 SHA256 校验。
+
 ## v0.37.0 — 2026-11-16
 
 ### AGV

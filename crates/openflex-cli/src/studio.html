@@ -2034,7 +2034,7 @@ async function loadTrace() {
     const payload = await api("/api/trace", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ max_events: 5000 }),
+      body: JSON.stringify({ max_events: 50000 }),
     });
     state.traceEvents = payload.events || [];
     state.traceInfo = payload;
