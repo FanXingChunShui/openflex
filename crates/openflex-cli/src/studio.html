@@ -2812,9 +2812,10 @@ function drawWebGL(now) {
 }
 
 function setRenderMode(mode) {
+  let fallback = false;
   if (mode === "webgl" && !webglState.gl) {
     mode = "canvas";
-    setStatus("WebGL is unavailable in this browser; using Canvas 3D", true);
+    fallback = true;
   }
   state.renderMode = mode;
   state.view2d = mode === "2d";
@@ -2829,7 +2830,11 @@ function setRenderMode(mode) {
   }
   $("view-2d").textContent = mode === "2d" ? "3D view" : "2D top view";
   if (mode !== "2d") state.last3dMode = mode;
-  setStatus(mode === "webgl" ? "WebGL 3D view" : mode === "canvas" ? "Canvas 3D view" : "top-down 2D view");
+  if (fallback) {
+    setStatus("WebGL is unavailable in this browser; using Canvas 3D", true);
+  } else {
+    setStatus(mode === "webgl" ? "WebGL 3D view" : mode === "canvas" ? "Canvas 3D view" : "top-down 2D view");
+  }
 }
 
 function snapValue(value) {
