@@ -282,6 +282,10 @@
     </div>
     <div class="row" id="animation-controls">
       <label class="muted">Animation speed <input id="speed" type="range" min="0" max="3" step="0.1" value="1"></label>
+      <div id="timeline-panel" data-timeline="1" hidden>
+        <label class="muted">Timeline <input id="timeline" type="range" min="0" max="1" step="0.01" value="0"></label>
+        <span id="timeline-label" class="muted">t=0.00</span>
+      </div>
       <button id="pause-animation" type="button">Pause</button>
     </div>
 
@@ -309,6 +313,7 @@
           </select>
         </label>
         <button id="export-png" type="button">Export PNG</button>
+        <button id="export-scene-png" type="button" data-webgl-export="1">Export scene PNG</button>
         <button id="export-svg" type="button">Export SVG</button>
         <button id="export-model-json" type="button">Export model JSON</button>
         <button id="export-csv" type="button">Export CSV</button>
@@ -353,6 +358,7 @@ const state = {
   gridVisible: true,
   renderMode: "canvas",
   webglLabelNodes: new Map(),
+  timelinePulse: null,
   dragging: false,
   lastX: 0,
   lastY: 0,
@@ -1920,6 +1926,7 @@ async function runModel() {
     return;
   }
   state.lastStep = 0;
+  state.timelinePulse = null;
   state.events = [];
   renderEventList();
   $("event-preview").textContent = "";
@@ -2074,6 +2081,18 @@ function drawTimeseriesChart() {
   ctx.font = "9px system-ui, sans-serif";
   ctx.fillText(`t=${maxT.toFixed(0)}`, width - right - 30, height - 6);
   ctx.fillText(maxY.toFixed(1), 4, top + 4);
+}
+
+function updateTimeline(report) {
+  const panel = $("timeline-panel");
+  if (!panel || !report || !report.stop_time) return;
+  const stop = Number(report.stop_time) || 1;
+  panel.hidden = false;
+  const slider = $("timeline");
+  slider.max = stop.toFixed(2);
+  slider.step = Math.max(0.01, stop / 1000).toFixed(2);
+  if (Number(slider.value) > stop) slider.value = stop.toFixed(2);
+  $("timeline-label").textContent = `t=${Number(slider.value).toFixed(2)}`;
 }
 
 function renderReport(report) {
@@ -2502,7 +2521,7 @@ function compileShader(gl, type, source) {
 
 function initWebGL() {
   if (!webglCanvas) return false;
-  const gl = webglCanvas.getContext("webgl", { antialias: true })
+  const gl = webglCanvas.getContext("webgl", { antialias: true, preserveDrawingBuffer: true })
     || webglCanvas.getContext("experimental-webgl");
   if (!gl) return false;
   try {
@@ -2572,6 +2591,13 @@ function mat4LookAt(eye, center, up) {
     -(z[0] * eye[0] + z[1] * eye[1] + z[2] * eye[2]),
     1,
   ];
+}
+
+function timelineSlot(index, count) {
+  if (state.timelinePulse == null || !state.report || !state.report.stop_time) return false;
+  const stop = Number(state.report.stop_time) || 1;
+  const slot = Math.floor((state.timelinePulse / stop) * count) % Math.max(1, count);
+  return index === slot;
 }
 
 function updateWebGLLabels(candidates, width, height) {
@@ -2737,7 +2763,8 @@ function drawWebGL(now) {
       : object.kind === "source" ? "#dcfce7"
       : object.kind === "sink" ? "#fee2e2"
       : object.kind === "processor" ? "#dbeafe" : "#e2e8f0";
-    const topHex = highlighted ? "#fef3c7" : isMulti ? "#baf3ff" : baseHex;
+    const pulse = timelineSlot(index, model.objects.length);
+    const topHex = highlighted ? "#fef3c7" : isMulti ? "#baf3ff" : pulse ? "#fde68a" : baseHex;
     const top = hexRgb(topHex);
     const side = hexRgb("#cbd5e1");
     const dark = hexRgb("#94a3b8");
@@ -2753,7 +2780,8 @@ function drawWebGL(now) {
       pushTriangle(corners[face[0]], corners[face[1]], corners[face[2]], color);
       pushTriangle(corners[face[0]], corners[face[2]], corners[face[3]], color);
     }
-    const edgeColor = highlighted ? hexRgb("#f59e0b") : isMulti ? hexRgb("#0284c7") : hexRgb("#334155");
+    const edgeColor = highlighted || pulse ? hexRgb("#f59e0b")
+      : isMulti ? hexRgb("#0284c7") : hexRgb("#334155");
     const edges = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
     for (const [a, b] of edges) pushLine(corners[a], corners[b], edgeColor);
     if (highlighted) {
@@ -3041,7 +3069,8 @@ function drawScene2d(now, width, height) {
       : item.object.kind === "processor" ? "#dbeafe" : "#e2e8f0";
     const left = item.point.x - item.width / 2;
     const top = item.point.y - item.height / 2;
-    ctx.fillStyle = selected ? "#fef3c7" : multi ? "#e0f2fe" : topShade;
+    const pulse = timelineSlot(item.index, objects.length);
+    ctx.fillStyle = selected ? "#fef3c7" : multi ? "#e0f2fe" : pulse ? "#fde68a" : topShade;
     ctx.strokeStyle = selected ? "#f59e0b" : multi ? "#0284c7" : "#334155";
     ctx.lineWidth = selected ? 2.2 : multi ? 1.6 : 1;
     ctx.fillRect(left, top, item.width, item.height);
@@ -3241,6 +3270,7 @@ function drawScene(now) {
       : box.object.kind === "processor" ? "#dbeafe" : "#e2e8f0";
     if (highlighted) topShade = "#fef3c7";
     else if (multi) topShade = "#e0f2fe";
+    else if (timelineSlot(box.index, model.objects.length)) topShade = "#fde68a";
     face([b0, b1, t1, t0], "#94a3b8");
     face([b1, b2, t2, t1], "#cbd5e1");
     face([t0, t1, t2, t3], topShade);
@@ -3306,6 +3336,21 @@ function downloadText(filename, text, type) {
   link.href = URL.createObjectURL(blob);
   link.click();
   URL.revokeObjectURL(link.href);
+}
+
+function exportScenePng() {
+  const useWebgl = state.renderMode === "webgl" && !state.view2d && webglState.gl;
+  if (useWebgl) drawWebGL(state.clock);
+  const canvas = useWebgl ? webglCanvas : scene;
+  try {
+    const link = document.createElement("a");
+    link.download = "openflex-scene.png";
+    link.href = canvas.toDataURL("image/png");
+    link.click();
+    setStatus(useWebgl ? "exported openflex-scene.png (WebGL)" : "exported openflex-scene.png (Canvas)");
+  } catch (error) {
+    setStatus(`could not export scene PNG: ${error.message}`, true);
+  }
 }
 
 function exportSvg() {
@@ -3758,6 +3803,7 @@ $("object-menu").addEventListener("click", event => {
 document.addEventListener("click", event => {
   if (!event.target.closest("#object-menu")) hideObjectMenu();
 });
+$("export-scene-png").addEventListener("click", exportScenePng);
 $("export-svg").addEventListener("click", exportSvg);
 $("export-model-json").addEventListener("click", exportModelJson);
 $("export-csv").addEventListener("click", exportCsv);
@@ -3813,6 +3859,14 @@ $("replication-metric").addEventListener("change", event => {
   drawReplicationChart(state.report || { objects: {} });
 });
 $("speed").addEventListener("input", event => { state.speed = Number(event.target.value); });
+$("timeline").addEventListener("input", event => {
+  const value = Number(event.target.value);
+  state.timelinePulse = value;
+  state.clock = value;
+  $("timeline-label").textContent = `t=${value.toFixed(2)}`;
+  drawScene(value);
+  if (state.renderMode === "webgl" && !state.view2d) drawWebGL(value);
+});
 $("pause-animation").addEventListener("click", event => {
   state.paused = !state.paused;
   event.target.textContent = state.paused ? "Play" : "Pause";

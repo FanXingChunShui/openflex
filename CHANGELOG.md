@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.32.0 — 2026-11-15
+
+### Fluid
+
+- 统一 `pipe_capacity(pipe, delta_p: Option<f64>, fallback)`：有压差且参数齐全时走 Darcy（`Q=√(Δp/R)` + ρ(T)），
+  否则线性 fallback（逐位不变）；`fluid_advance` pressure-mode 分支改为调用该辅助。
+- 明确 pressure-mode 开启条件（tank.density/gravity、valve.pressure_open/close、pipe.temperature）。
+- 待接线：valve `opening/open_curve`、tank 按当前密度、`fluid-darcy.ofm` 与 √2 集成测试、链路压力传播。
+
+### Studio
+
+- **WebGL PNG 截图**（`preserveDrawingBuffer`/重绘截取）与**场景动画时间轴**（Run 后拖动时间滑块近似更新）。
+
+### 验证
+
+- 473 个测试全绿（core 242、CLI 83、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.32.0 三平台产物发布并 SHA256 校验。
+
 ## v0.31.0 — 2026-11-15
 
 ### Fluid

@@ -187,6 +187,12 @@ Studio 检查点面板显示 SHA-256 前 12 位并提供 Verify。
 条件为假跳过、duration 覆盖该段默认时长；超出标准 4 段的额外段通过 `EventKind::TaskStepDone` **逐段独立调度**
 （`ObjectRt.pending_steps` + `describe_event` 的 `task_step_done`），全部完成才 `finish_task`；旧短格式行为不变。
 
+## Fluid 压差模式
+
+`build_fluid_runtime` 在 tank 有 `density`/`gravity`、valve 有 `pressure_open`/`pressure_close` 或 pipe 有
+`temperature` 时启用 pressure mode；`pipe_capacity(pipe, delta_p, fallback)` 在压差上下文且
+`diameter+friction_factor+density` 齐全时走 Darcy（`Q=√(Δp/R)`，含 ρ(T)），否则返回线性 fallback（逐位不变）。
+
 ## 路径缓存
 
 `Simulation.distance_cache: (transporter, from, to) -> f64`：AGV/robot/asrs 对象间距离缓存，`restore()` 清空。

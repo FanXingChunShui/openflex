@@ -5520,7 +5520,7 @@ impl<'m> Simulation<'m> {
                     // follows the Darcy-Weisbach law; otherwise the linear
                     // pressure-flow calibration is kept.
                     let linear = (k * delta * temperature_factor).min(rate);
-                    let capacity = darcy_flow(&params, delta).unwrap_or(linear);
+                    let capacity = pipe_capacity(&params, Some(delta), linear);
                     capacity * dt
                 }
                 _ => 0.0,
@@ -8478,6 +8478,22 @@ fn is_fluid_kind(kind: ObjectKind) -> bool {
 /// `ρ(T) = ρ0·(1 − β·T)` (`β` = `temperature_coefficient`, default 0.0002/K).
 /// Without the three parameters the caller falls back to the `flow_rate`
 /// calibration, so every existing model keeps its behaviour.
+/// task-92: capacity of a fluid pipe.
+///
+/// The Darcy law applies when the pipe declares `diameter`, `friction_factor`
+/// and `density` **and** a pressure difference is available; otherwise the
+/// caller's linear `flow_rate` fallback is returned unchanged.
+fn pipe_capacity(
+    pipe: &openflex_model::FluidPipeParams,
+    delta_p: Option<f64>,
+    fallback: f64,
+) -> f64 {
+    match delta_p {
+        Some(delta) => darcy_flow(pipe, delta).unwrap_or(fallback),
+        None => fallback,
+    }
+}
+
 fn darcy_flow(pipe: &openflex_model::FluidPipeParams, delta_p: f64) -> Option<f64> {
     let diameter = pipe.diameter?;
     let friction = pipe.friction_factor?;
@@ -9236,5 +9252,27 @@ mod tests {
         let warm_flow = darcy_flow(&warm, 1000.0).expect("darcy");
         assert!(warm_flow < low, "warm flow {warm_flow} vs cold {low}");
         assert!((warm_flow / low - (1.0f64 - 0.0002 * 80.0).sqrt()).abs() < 1e-9);
+    }
+
+    /// task-92: `pipe_capacity` falls back to the linear value when the pipe
+    /// has no Darcy parameters or no pressure difference is available.
+    #[test]
+    fn pipe_capacity_uses_darcy_only_when_possible() {
+        let darcy = openflex_model::FluidPipeParams {
+            diameter: Some(0.1),
+            friction_factor: Some(0.02),
+            density: Some(1000.0),
+            length: 10.0,
+            ..Default::default()
+        };
+        let linear = 7.5;
+        assert_eq!(pipe_capacity(&darcy, None, linear), linear);
+        let flow = pipe_capacity(&darcy, Some(1000.0), linear);
+        assert!(flow > 0.0 && flow != linear, "Darcy must differ: {flow}");
+        let plain = openflex_model::FluidPipeParams {
+            flow_rate: Some(5.0),
+            ..Default::default()
+        };
+        assert_eq!(pipe_capacity(&plain, Some(1000.0), linear), linear);
     }
 }
