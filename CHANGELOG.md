@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.28.0 — 2026-11-15
+
+### Studio
+
+- 检查点面板显示 SHA-256（前 12 位）并提供 **Verify**（服务端 `POST /api/verify-checkpoint` 用
+  `Checkpoint::from_json_verified` 校验，篡改返回 422）。
+- 3D/2D 左下角 **X/Y/Z 坐标轴**、**网格开关**（默认开）、右下角显示选中对象坐标 X/Y/Z。
+
+### 测试基础设施
+
+- 新增 `core/tests/task_sequence_timeline.rs`：锁定“旧短格式任务序列 = 无 task_sequence”逐位等价，
+  并记录含额外段时的当前行为快照（为后续事件链改造提供安全网）。
+- `docs/UNIMPLEMENTED.md` 明确标注任务序列“额外段在收尾阶段调度”为已知简化。
+
+### 验证
+
+- 468 个测试全绿（core 237、CLI 83、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.28.0 三平台产物发布并 SHA256 校验。
+
 ## v0.27.0 — 2026-11-15
 
 ### 检查点

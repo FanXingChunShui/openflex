@@ -89,9 +89,16 @@
                      border: 1px solid #f59e0b; color: #92400e; font-size: 11px; }
   .on-draw-badge { background: #fef3c7; color: #92400e; border-radius: 8px; padding: 0 5px;
                    font-size: 9px; text-transform: uppercase; letter-spacing: .02em; }
-  .checkpoint-row { display: grid; grid-template-columns: 46px 72px 1fr auto; gap: 6px; align-items: center;
+  .checkpoint-row { display: grid; grid-template-columns: 34px 58px 46px 86px auto auto 34px; gap: 5px; align-items: center;
                     padding: 3px 4px; border-bottom: 1px solid #e2e8f0; font-size: 11px; }
   .checkpoint-row button { padding: 2px 6px; font-size: 11px; }
+  .checkpoint-short { font-family: ui-monospace, monospace; color: #64748b; }
+  .checkpoint-badge.ok { color: #15803d; font-weight: 600; }
+  .checkpoint-badge.fail { color: #b91c1c; font-weight: 600; }
+  .coords { position: absolute; right: 10px; bottom: 10px; font-family: ui-monospace, monospace;
+            font-size: 11px; color: #475569; background: rgba(248,250,252,.9); padding: 2px 6px;
+            border-radius: 4px; }
+  .axes-label { font: 600 11px system-ui, sans-serif; }
   .table-editor { border-collapse: collapse; width: 100%; font-size: 11px; }
   .table-editor th, .table-editor td { border: 1px solid #cbd5e1; padding: 2px; }
   .table-editor input { padding: 2px 4px; font-size: 11px; }
@@ -197,13 +204,14 @@
   </aside>
 
   <section class="view">
-    <canvas id="scene" aria-label="3D model view" data-drag-object="1" data-group-drag="1" data-occlusion="1" data-box-select="1" data-marquee-3d="1"></canvas>
+    <canvas id="scene" aria-label="3D model view" data-drag-object="1" data-group-drag="1" data-occlusion="1" data-box-select="1" data-marquee-3d="1" data-axis="1"></canvas>
     <div class="layout-controls" data-layout-controls="1">
       <button type="button" data-layout-grid="1">Grid</button>
       <button type="button" data-layout-circle="1">Circle</button>
       <button type="button" data-layout-force="1">Force</button>
       <button id="view-2d" type="button" data-view-2d="1">2D top view</button>
       <button id="marquee-3d" type="button" data-marquee-3d="1">Marquee 3D</button>
+      <button id="grid-toggle" type="button" data-grid-toggle="1">Grid on</button>
       <label class="muted">Snap
         <select id="snap-grid" data-snap-grid="1">
           <option value="0">off</option>
@@ -224,6 +232,7 @@
       <button type="button" data-batch-duplicate="1">Duplicate selected</button>
       <button type="button" data-batch-delete="1">Delete selected</button>
     </div>
+    <div id="object-coords" class="coords" data-object-coords="1">X=0.00 Y=0.00 Z=0.00</div>
     <div class="hint" data-projection="perspective" data-depth-sort="1" data-focus-object="1" data-nudge="10">drag to rotate or move an object · wheel to zoom · double-click to focus · arrows nudge 10px (Shift 1px)</div>
   </section>
 
@@ -317,6 +326,7 @@ const state = {
   dragGuides: null,
   marqueeMode: false,
   marquee3d: null,
+  gridVisible: true,
   dragging: false,
   lastX: 0,
   lastY: 0,
@@ -849,6 +859,18 @@ function hasOnDraw(object) {
   return Boolean(object && object.triggers && object.triggers.on_draw);
 }
 
+function updateObjectCoords() {
+  const object = state.model && state.model.objects[state.selected];
+  const label = $("object-coords");
+  if (!label) return;
+  if (!object) {
+    label.textContent = "X=– Y=– Z=–";
+    return;
+  }
+  const pos = object.pos || [0, 0];
+  label.textContent = `X=${Number(pos[0]).toFixed(2)} Y=${Number(pos[1]).toFixed(2)} Z=${Number(object.z || 0).toFixed(2)}`;
+}
+
 function renderEditor() {
   const object = state.model && state.model.objects[state.selected];
   const editor = $("editor");
@@ -862,6 +884,7 @@ function renderEditor() {
   }
   state.originalName = object.name;
   state.originalObject = JSON.parse(JSON.stringify(object));
+  updateObjectCoords();
   const options = state.kinds.map(kind =>
     `<option value="${escapeText(kind.kind)}"${kind.kind === object.kind ? " selected" : ""}>${escapeText(kind.kind)}</option>`
   ).join("");
@@ -1197,15 +1220,47 @@ async function loadCheckpoints() {
         <span>#${entry.index}</span>
         <span>t=${Number(entry.now).toFixed(2)}</span>
         <span>${Math.round(Number(entry.size) / 1024)} KiB</span>
+        <span class="checkpoint-short" title="${escapeText(entry.sha256 || "")}">${escapeText(entry.sha256_short || "")}</span>
+        <button type="button" data-checkpoint-verify="1" data-file="${escapeText(entry.file)}" data-sha="${escapeText(entry.sha256 || "")}">Verify</button>
         <button type="button" data-restore-checkpoint="${escapeText(entry.file)}">Restore</button>
+        <span class="checkpoint-badge" data-checkpoint-badge="${escapeText(entry.file)}"></span>
       </div>`
     ).join("") + `<button id="refresh-checkpoints" type="button">Refresh checkpoints</button>`;
     container.querySelectorAll("[data-restore-checkpoint]").forEach(button => {
       button.addEventListener("click", () => resumeCheckpoint(button.dataset.restoreCheckpoint));
     });
+    container.querySelectorAll("[data-checkpoint-verify]").forEach(button => {
+      button.addEventListener("click", () => verifyCheckpoint(button.dataset.file, button.dataset.sha, button));
+    });
     $("refresh-checkpoints").addEventListener("click", loadCheckpoints);
   } catch (error) {
     container.innerHTML = `<p class="muted">Could not list checkpoints: ${escapeText(error.message)}</p>`;
+  }
+}
+
+async function verifyCheckpoint(file, sha256, button) {
+  setStatus(`verifying ${file}…`);
+  try {
+    const response = await api("/api/verify-checkpoint", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file, sha256 }),
+    });
+    const badge = document.querySelector(`[data-checkpoint-badge="${file}"]`);
+    if (badge) {
+      badge.textContent = "OK";
+      badge.className = "checkpoint-badge ok";
+    }
+    if (button) button.textContent = "Verified";
+    setStatus(`checkpoint ${file} verified (${response.sha256_short})`);
+  } catch (error) {
+    const badge = document.querySelector(`[data-checkpoint-badge="${file}"]`);
+    if (badge) {
+      badge.textContent = "FAIL";
+      badge.className = "checkpoint-badge fail";
+    }
+    if (button) button.textContent = "Failed";
+    setStatus(error.message, true);
   }
 }
 
@@ -2348,6 +2403,7 @@ function applyBatchPosition() {
     object.z = z;
   });
   renderAll();
+  updateObjectCoords();
   setStatus(`batch set ${indices.length} object(s) to pos (${x}, ${y}), z=${z} (unsaved)`);
 }
 
@@ -2374,6 +2430,59 @@ function snapValue(value) {
   return Math.round(value / state.snapGrid) * state.snapGrid;
 }
 
+function drawAxes2d(ctx, width, height) {
+  const origin = { x: 54, y: height - 44 };
+  const length = 34;
+  const axes = [
+    { label: "X", color: "#dc2626", dx: length, dy: 0 },
+    { label: "Y", color: "#16a34a", dx: 0, dy: -length },
+    { label: "Z", color: "#2563eb", dx: 10, dy: -10 },
+  ];
+  for (const axis of axes) {
+    ctx.strokeStyle = axis.color;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(origin.x, origin.y);
+    ctx.lineTo(origin.x + axis.dx, origin.y + axis.dy);
+    ctx.stroke();
+    ctx.fillStyle = axis.color;
+    ctx.font = "600 11px system-ui, sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText(axis.label, origin.x + axis.dx + 3, origin.y + axis.dy + (axis.label === "Z" ? 3 : -3));
+  }
+  ctx.fillStyle = "#475569";
+  ctx.beginPath();
+  ctx.arc(origin.x, origin.y, 2.2, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawAxes3d(ctx, projectPoint, origin, width, height) {
+  const anchor = { x: 54, y: height - 44 };
+  const axes = [
+    { label: "X", color: "#dc2626", point: projectPoint(origin[0] + 100, origin[1], 0) },
+    { label: "Y", color: "#16a34a", point: projectPoint(origin[0], origin[1] + 100, 0) },
+    { label: "Z", color: "#2563eb", point: projectPoint(origin[0], origin[1], 100) },
+  ];
+  const center = projectPoint(origin[0], origin[1], 0);
+  for (const axis of axes) {
+    let dx = axis.point.x - center.x;
+    let dy = axis.point.y - center.y;
+    const length = Math.max(1, Math.hypot(dx, dy));
+    dx = dx / length * 34;
+    dy = dy / length * 34;
+    ctx.strokeStyle = axis.color;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(anchor.x, anchor.y);
+    ctx.lineTo(anchor.x + dx, anchor.y + dy);
+    ctx.stroke();
+    ctx.fillStyle = axis.color;
+    ctx.font = "600 11px system-ui, sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText(axis.label, anchor.x + dx + 3, anchor.y + dy + 3);
+  }
+}
+
 function drawScene2d(now, width, height) {
   const ctx = scene.getContext("2d");
   const model = state.model;
@@ -2398,19 +2507,21 @@ function drawScene2d(now, width, height) {
   ctx.fillStyle = "#f8fafc";
   ctx.fillRect(0, 0, width, height);
   const grid = state.snapGrid || 50;
-  ctx.strokeStyle = "#e2e8f0";
-  ctx.lineWidth = 0.7;
-  const leftWorld = centerX - width / (2 * scale);
-  const rightWorld = centerX + width / (2 * scale);
-  const topWorld = centerY - height / (2 * scale);
-  const bottomWorld = centerY + height / (2 * scale);
-  for (let x = Math.ceil(leftWorld / grid) * grid; x <= rightWorld; x += grid) {
-    const p = project2d(x, centerY);
-    ctx.beginPath(); ctx.moveTo(p.x, 0); ctx.lineTo(p.x, height); ctx.stroke();
-  }
-  for (let y = Math.ceil(topWorld / grid) * grid; y <= bottomWorld; y += grid) {
-    const p = project2d(centerX, y);
-    ctx.beginPath(); ctx.moveTo(0, p.y); ctx.lineTo(width, p.y); ctx.stroke();
+  if (state.gridVisible) {
+    ctx.strokeStyle = "#e2e8f0";
+    ctx.lineWidth = 0.7;
+    const leftWorld = centerX - width / (2 * scale);
+    const rightWorld = centerX + width / (2 * scale);
+    const topWorld = centerY - height / (2 * scale);
+    const bottomWorld = centerY + height / (2 * scale);
+    for (let x = Math.ceil(leftWorld / grid) * grid; x <= rightWorld; x += grid) {
+      const p = project2d(x, centerY);
+      ctx.beginPath(); ctx.moveTo(p.x, 0); ctx.lineTo(p.x, height); ctx.stroke();
+    }
+    for (let y = Math.ceil(topWorld / grid) * grid; y <= bottomWorld; y += grid) {
+      const p = project2d(centerX, y);
+      ctx.beginPath(); ctx.moveTo(0, p.y); ctx.lineTo(width, p.y); ctx.stroke();
+    }
   }
   const objects = model.objects.map((object, index) => {
     const center = centers.get(object.name) || [0, 0];
@@ -2484,6 +2595,7 @@ function drawScene2d(now, width, height) {
     ctx.strokeRect(left, top, boxWidth, boxHeight);
     ctx.setLineDash([]);
   }
+  drawAxes2d(ctx, width, height);
 }
 
 function drawScene(now) {
@@ -2528,6 +2640,26 @@ function drawScene(now) {
   });
 
   const connectionLines = [];
+  if (state.gridVisible) {
+    const grid = state.snapGrid || 50;
+    ctx.strokeStyle = "#e2e8f0";
+    ctx.lineWidth = 0.6;
+    const fromX = Math.floor((minX - grid) / grid) * grid;
+    const toX = Math.ceil((maxX + grid) / grid) * grid;
+    const fromY = Math.floor((minY - grid) / grid) * grid;
+    const toY = Math.ceil((maxY + grid) / grid) * grid;
+    for (let gx = fromX; gx <= toX; gx += grid) {
+      const start = project(gx, fromY, 0, centerX, centerY, scale, span);
+      const end = project(gx, toY, 0, centerX, centerY, scale, span);
+      ctx.beginPath(); ctx.moveTo(start.x, start.y); ctx.lineTo(end.x, end.y); ctx.stroke();
+    }
+    for (let gy = fromY; gy <= toY; gy += grid) {
+      const start = project(fromX, gy, 0, centerX, centerY, scale, span);
+      const end = project(toX, gy, 0, centerX, centerY, scale, span);
+      ctx.beginPath(); ctx.moveTo(start.x, start.y); ctx.lineTo(end.x, end.y); ctx.stroke();
+    }
+  }
+
   ctx.strokeStyle = "#475569";
   ctx.lineWidth = 1.4;
   for (const connection of model.connections || []) {
@@ -2668,6 +2800,21 @@ function drawScene(now) {
     ctx.font = "10px system-ui, sans-serif";
     ctx.fillText(box.object.kind, label.x, labelY + 11);
   }
+  if (state.marquee3d) {
+    const left = Math.min(state.marquee3d.startX, state.marquee3d.x);
+    const top = Math.min(state.marquee3d.startY, state.marquee3d.y);
+    const boxWidth = Math.abs(state.marquee3d.x - state.marquee3d.startX);
+    const boxHeight = Math.abs(state.marquee3d.y - state.marquee3d.startY);
+    ctx.fillStyle = "rgba(2,132,199,.12)";
+    ctx.strokeStyle = "#0284c7";
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([5, 4]);
+    ctx.fillRect(left, top, boxWidth, boxHeight);
+    ctx.strokeRect(left, top, boxWidth, boxHeight);
+    ctx.setLineDash([]);
+  }
+  drawAxes3d(ctx, (x, y, z) => project(x, y, z, centerX, centerY, scale, span),
+    [centerX, centerY], width, height);
 }
 
 function downloadText(filename, text, type) {
@@ -2875,6 +3022,7 @@ scene.addEventListener("pointermove", event => {
     })) > 0.01;
     if ($("edit-pos-x")) $("edit-pos-x").value = object.pos[0].toFixed(2);
     if ($("edit-pos-y")) $("edit-pos-y").value = object.pos[1].toFixed(2);
+    updateObjectCoords();
     return;
   }
   if (!state.dragging) return;
@@ -3000,6 +3148,12 @@ $("marquee-3d").addEventListener("click", () => {
   setStatus(state.marqueeMode ? "3D marquee mode: drag empty space" : "3D marquee mode off");
 });
 $("apply-batch-pos").addEventListener("click", applyBatchPosition);
+$("grid-toggle").addEventListener("click", () => {
+  state.gridVisible = !state.gridVisible;
+  $("grid-toggle").textContent = state.gridVisible ? "Grid on" : "Grid off";
+  $("grid-toggle").classList.toggle("primary", state.gridVisible);
+  drawScene(state.clock);
+});
 $("snap-grid").addEventListener("change", event => {
   state.snapGrid = Number(event.target.value) || 0;
   setStatus(state.snapGrid ? `grid snap ${state.snapGrid}` : "grid snap off");

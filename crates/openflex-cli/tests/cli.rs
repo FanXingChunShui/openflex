@@ -2835,6 +2835,10 @@ fn studio_can_add_and_delete_objects_through_the_api() {
         "data-marquee-3d=\"1\"",
         "data-group-drag=\"1\"",
         "data-batch-edit=\"1\"",
+        "data-checkpoint-verify=\"1\"",
+        "data-axis=\"1\"",
+        "data-grid-toggle=\"1\"",
+        "data-object-coords=\"1\"",
         "function applyBatchPosition",
         "state.marquee3d",
         "data-snap-grid=\"1\"",
@@ -3725,6 +3729,10 @@ fn studio_global_table_editor_updates_the_model() {
         "data-marquee-3d=\"1\"",
         "data-group-drag=\"1\"",
         "data-batch-edit=\"1\"",
+        "data-checkpoint-verify=\"1\"",
+        "data-axis=\"1\"",
+        "data-grid-toggle=\"1\"",
+        "data-object-coords=\"1\"",
         "function applyBatchPosition",
         "state.marquee3d",
         "data-snap-grid=\"1\"",
@@ -4188,7 +4196,36 @@ fn studio_checkpoint_panel_lists_and_restores() {
         assert_eq!(entry["index"], index as u64);
         assert_eq!(entry["now"], 200.0);
         assert!(entry["size"].as_u64().unwrap_or_default() > 0);
+        assert_eq!(entry["sha256_short"].as_str().map(str::len), Some(12));
     }
+    let sha = entries[0]["sha256"].as_str().expect("sha256").to_string();
+    let verified = http_request(
+        &address,
+        "POST",
+        "/api/verify-checkpoint",
+        Some(&format!(
+            r#"{{"file":"checkpoint.rep0.json","sha256":"{sha}"}}"#
+        )),
+    );
+    assert!(
+        http_status(&verified).contains("200 OK"),
+        "verify: {}",
+        http_body(&verified)
+    );
+    assert_eq!(json(http_body(&verified))["verified"], true);
+    let tampered = http_request(
+        &address,
+        "POST",
+        "/api/verify-checkpoint",
+        Some(
+            r#"{"file":"checkpoint.rep0.json","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}"#,
+        ),
+    );
+    assert!(
+        http_status(&tampered).contains("422"),
+        "tampered: {tampered}"
+    );
+    assert_eq!(json(http_body(&tampered))["verified"], false);
 
     let restored = http_request(
         &address,

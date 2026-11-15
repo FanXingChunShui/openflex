@@ -504,6 +504,9 @@ fn handle_connection(
         ("POST", "/api/resume-checkpoint") => {
             resume_checkpoint_endpoint(&mut stream, state, &request.body)
         }
+        ("POST", "/api/verify-checkpoint") => {
+            verify_checkpoint_endpoint(&mut stream, state, &request.body)
+        }
         ("POST", "/api/pause") => {
             let runner = ensure_runner(state);
             match runner.pause() {
@@ -1770,6 +1773,8 @@ struct CheckpointEntry {
     warmup: f64,
     model_name: String,
     size: u64,
+    sha256: String,
+    sha256_short: String,
 }
 
 fn list_checkpoints_endpoint(stream: &mut TcpStream, state: &StudioState) -> std::io::Result<()> {
@@ -1793,6 +1798,7 @@ fn list_checkpoints_endpoint(stream: &mut TcpStream, state: &StudioState) -> std
             let Ok(checkpoint) = openflex_core::Checkpoint::from_json(&text) else {
                 continue;
             };
+            let sha256 = openflex_core::Checkpoint::sha256_of(&text);
             entries.push(CheckpointEntry {
                 index,
                 file: name.to_string(),
@@ -1800,6 +1806,8 @@ fn list_checkpoints_endpoint(stream: &mut TcpStream, state: &StudioState) -> std
                 warmup: checkpoint.warmup(),
                 model_name: checkpoint.model_name().to_string(),
                 size: entry.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+                sha256_short: sha256.chars().take(12).collect(),
+                sha256,
             });
         }
     }
@@ -1813,6 +1821,85 @@ fn list_checkpoints_endpoint(stream: &mut TcpStream, state: &StudioState) -> std
         })
         .to_string(),
     )
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct VerifyCheckpointRequest {
+    file: String,
+    #[serde(default)]
+    sha256: Option<String>,
+}
+
+fn verify_checkpoint_endpoint(
+    stream: &mut TcpStream,
+    state: &StudioState,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let request: VerifyCheckpointRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return write_json(
+                stream,
+                "400 Bad Request",
+                &serde_json::json!({ "ok": false, "error": format!("invalid verify request: {error}") })
+                    .to_string(),
+            );
+        }
+    };
+    let Some(name) = Path::new(&request.file)
+        .file_name()
+        .and_then(|name| name.to_str())
+    else {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": "invalid checkpoint file name" })
+                .to_string(),
+        );
+    };
+    let path = state.checkpoints.join(name);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => {
+            return write_json(
+                stream,
+                "404 Not Found",
+                &serde_json::json!({ "ok": false, "error": format!("could not read {}: {error}", path.display()) })
+                    .to_string(),
+            );
+        }
+    };
+    let actual = openflex_core::Checkpoint::sha256_of(&text);
+    let expected = request.sha256.as_deref();
+    match openflex_core::Checkpoint::from_json_verified(&text, expected) {
+        Ok(checkpoint) => write_json(
+            stream,
+            "200 OK",
+            &serde_json::json!({
+                "ok": true,
+                "verified": true,
+                "file": name,
+                "sha256": actual,
+                "sha256_short": actual.chars().take(12).collect::<String>(),
+                "now": checkpoint.now(),
+                "model_name": checkpoint.model_name(),
+            })
+            .to_string(),
+        ),
+        Err(error) => write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({
+                "ok": false,
+                "verified": false,
+                "file": name,
+                "sha256": actual,
+                "sha256_short": actual.chars().take(12).collect::<String>(),
+                "error": error.to_string(),
+            })
+            .to_string(),
+        ),
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
