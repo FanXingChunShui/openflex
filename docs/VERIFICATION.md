@@ -342,7 +342,7 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 | Homebrew 公式（v0.21.0 真实 sha256） | **已完成**（`ruby -c` 通过）；tap 待创建 | `packaging/homebrew/openflex.rb` |
 | Homebrew `brew audit` / `brew install --build-from-source` | **待环境** | 本机 Homebrew 非 Tier 1 配置，audit 被 SIGTERM；命令见 `packaging/homebrew/README.md` |
 | winget / scoop 清单（v0.21.0 URL/SHA256） | **已完成，待提交** | `packaging/winget/`、`packaging/scoop/openflex.json`；由 `sync-package-manifests.sh` 同步 |
-| GHCR 镜像发布与验证 | **0.10.0–0.20.0 + latest（=0.20.0）全部 200**（0.20.0 在发布约 17 分钟后出现）；0.21.0 随 tag 构建中 | `scripts/verify-ghcr.sh` 核对；docker 本地运行**待环境** |
+| GHCR 镜像发布与验证 | **0.10.0–0.21.0 + latest（=0.21.0）全部 200**（0.21.0 在发布约 19 分钟后出现） | `scripts/verify-ghcr.sh` 核对；docker 本地运行**待环境** |
 | container workflow 加固 | **已完成** | `timeout-minutes: 45`、`provenance: false`、推送后 registry API 复核、失败时打印 buildx/docker 诊断 |
 | GHCR registry 检查工具 | **已完成** | `scripts/verify-ghcr.sh`（无需 docker/token；支持 `--retry`/`--expect-latest`/`--json`） |
 | Windows / Linux / deb / rpm / MSI 真机安装 | **待环境** | 脚本与命令清单就绪，见安装矩阵第 5 节 |

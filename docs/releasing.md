@@ -356,7 +356,8 @@ ghcr.io/fanxingchunshui/openflex:latest
 | `0.18.0` | ✅ 可用（tag 发布后约 21 分钟出现） | `ecf8c03247cd` |
 | `0.19.0` | ✅ 可用（tag 发布后约 15 分钟出现） | `a0d9d534fe90` |
 | `0.20.0` | ✅ 可用（tag 发布后约 17 分钟出现） | `7655bd646dcf` |
-| `latest` | ✅ 指向 0.20.0 | `7655bd646dcf` |
+| `0.21.0` | ✅ 可用（tag 发布后约 19 分钟出现） | `826f4abbdba1` |
+| `latest` | ✅ 指向 0.21.0 | `826f4abbdba1` |
 
 | 项 | 值 |
 |---|---|
@@ -386,9 +387,9 @@ buildx 多架构（amd64 + arm64）推送 → `docker pull` 后再次 `--version
 发布后验证（有 Docker 的机器）：
 
 ```sh
-docker run --rm ghcr.io/fanxingchunshui/openflex:0.20.0 --version   # openflex 0.20.0
+docker run --rm ghcr.io/fanxingchunshui/openflex:0.21.0 --version   # openflex 0.21.0
 docker run --rm -v "$PWD/examples:/models:ro" \
-  ghcr.io/fanxingchunshui/openflex:0.20.0 run /models/golden/mm1.ofm --format json | head -c 200
+  ghcr.io/fanxingchunshui/openflex:0.21.0 run /models/golden/mm1.ofm --format json | head -c 200
 ```
 
 没有 Docker 时的替代检查（本仓库用的方法）：查询 registry 的 manifest 是否存在、是否为
