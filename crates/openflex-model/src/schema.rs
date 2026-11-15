@@ -34,12 +34,18 @@ fn definitions() -> Value {
         "conditional_port".into(),
         json!({
             "type": "object",
+            "description": "A routing/decision rule: an expression condition or a sandboxed rhai script condition (mutually exclusive).",
             "properties": {
                 "condition": { "$ref": "#/$defs/expression" },
+                "script_condition": { "type": "string", "minLength": 1 },
                 "port": { "type": "integer", "minimum": 0 }
             },
-            "required": ["condition", "port"],
-            "additionalProperties": false
+            "required": ["port"],
+            "additionalProperties": false,
+            "oneOf": [
+                { "required": ["condition"] },
+                { "required": ["script_condition"] }
+            ]
         }),
     );
     defs.insert("port_strategy".into(), port_strategy_schema());
@@ -350,6 +356,33 @@ fn definitions() -> Value {
         })),
     );
     defs.insert(
+        "agv_params".into(),
+        params_schema(json!({
+            "capacity": { "type": "integer", "minimum": 1, "default": 1 },
+            "speed": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
+            "load_time": { "$ref": "#/$defs/distribution" },
+            "unload_time": { "$ref": "#/$defs/distribution" },
+            "home": { "type": ["string", "null"] },
+            "network": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "from": { "type": "string" },
+                        "to": { "type": "string" },
+                        "distance": { "type": "number", "exclusiveMinimum": 0 }
+                    },
+                    "required": ["from", "to", "distance"],
+                    "additionalProperties": false
+                }
+            },
+            "battery_capacity": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+            "consumption_per_distance": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+            "charge_time": { "$ref": "#/$defs/distribution" },
+            "charger": { "type": ["string", "null"] }
+        })),
+    );
+    defs.insert(
         "elevator_params".into(),
         params_schema(json!({
             "capacity": { "type": "integer", "minimum": 1, "default": 1 },
@@ -409,10 +442,20 @@ fn definitions() -> Value {
         "fluid_valve_params".into(),
         params_schema(json!({
             "open": { "type": "boolean", "default": true },
-            "ratio": { "type": "number", "minimum": 0, "maximum": 1, "default": 1.0 }
+            "ratio": { "type": "number", "minimum": 0, "maximum": 1, "default": 1.0 },
+            "pressure_threshold": { "type": ["number", "null"], "minimum": 0 }
         })),
     );
     defs.insert("fluid_sink_params".into(), params_schema(json!({})));
+    defs.insert(
+        "fluid_pipe_params".into(),
+        params_schema(json!({
+            "length": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
+            "speed": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
+            "delay": { "type": ["number", "null"], "minimum": 0 },
+            "flow_rate": { "type": ["number", "null"], "exclusiveMinimum": 0 }
+        })),
+    );
     defs.insert(
         "queue_order".into(),
         json!({
@@ -478,7 +521,9 @@ fn definitions() -> Value {
                     "type": "array",
                     "items": { "$ref": "#/$defs/conditional_port" }
                 },
-                "object": { "type": "string" }
+                "object": { "type": "string" },
+                "on_entry": { "type": "boolean", "default": false },
+                "mode": { "enum": ["to_object", "from_object"], "default": "to_object" }
             },
             "required": ["id", "kind"],
             "additionalProperties": false
@@ -500,6 +545,10 @@ fn params_schema(properties: Value) -> Value {
         }),
     );
     map.insert("pull".into(), json!({ "$ref": "#/$defs/pull" }));
+    map.insert(
+        "process_flow".into(),
+        json!({ "type": ["object", "null"], "$ref": "#/$defs/process_flow" }),
+    );
     map.insert(
         "timetable".into(),
         json!({
@@ -584,6 +633,7 @@ fn object_schema() -> Value {
         "fluid_tank",
         "fluid_valve",
         "fluid_sink",
+        "fluid_pipe",
     ];
     let param_defs = [
         "source_params",
@@ -598,7 +648,7 @@ fn object_schema() -> Value {
         "split_params",
         "transporter_params",
         "transporter_params",
-        "transporter_params",
+        "agv_params",
         "elevator_params",
         "dispatcher_params",
         "resource_params",
@@ -609,6 +659,7 @@ fn object_schema() -> Value {
         "fluid_tank_params",
         "fluid_valve_params",
         "fluid_sink_params",
+        "fluid_pipe_params",
     ];
     let links: Vec<Value> = kinds
         .iter()
@@ -752,6 +803,16 @@ fn action_schema() -> Value {
                 "type": "object",
                 "properties": { "action": { "const": "release_item" } },
                 "required": ["action"],
+                "additionalProperties": false
+            },
+            {
+                "type": "object",
+                "description": "Run a sandboxed FlexScript (rhai) snippet; the engine API is documented in openflex-core::script.",
+                "properties": {
+                    "action": { "const": "script" },
+                    "source": { "type": "string", "minLength": 1 }
+                },
+                "required": ["action", "source"],
                 "additionalProperties": false
             }
         ]
@@ -1034,5 +1095,17 @@ mod tests {
         for field in ["first_failure_time", "count_time_in_states"] {
             assert!(failure.get(field).is_some(), "failure.{field}");
         }
+        let conditional = &schema["$defs"]["conditional_port"]["properties"];
+        assert!(conditional.get("script_condition").is_some());
+        assert!(conditional.get("condition").is_some());
+        let actions = schema["$defs"]["action"]["oneOf"]
+            .as_array()
+            .expect("action oneOf");
+        assert!(
+            actions.iter().any(|action| {
+                action["properties"]["action"]["const"].as_str() == Some("script")
+            }),
+            "action script variant"
+        );
     }
 }

@@ -182,6 +182,17 @@ token 是带 id/标签/创建时间的轻量实体，沿块流转；引擎新增
 `token_create/token_delay/token_assign/token_decision/token_sink`，检查点覆盖 token 队列与块统计。
 约束：流程图必须无环；decision 未命中条件走第一个出边；flow-only 模型允许空 `objects`；与对象模型可共存。
 
+对象级 `params.process_flow` 与模型级流程合并为一张全局 block 图：`create.on_entry` 在该对象每次收货时产 token；
+`transfer(to_object)` 把 token 转成 flow item 注入目标对象（继承标签/类型，目标满时挂起并在容量释放时重试），
+对象级 block 的报告 id 形如 `Queue1.Create1`；`from_object` 暂未实现。
+
+## FlexScript 脚本层（模型层已就绪）
+
+`rhai` 沙箱脚本：触发器动作 `{"action":"script","source":"..."}`、条件路由/流程决策的 `script_condition`。
+脚本可读 `time/item_type/item_id/label(name)`，调用 `set_label/set_item_type/send_message/release_item/log`，
+无文件/网络/时钟/随机 API，操作数与字符串长度受限。模型层已完成语法校验与 `core/src/script.rs` 运行时封装；
+**引擎执行集成尚未接线**（`apply_actions` 遇到 script 返回明确的未实现错误），下一批完成。
+
 ## Process Flow 等价模式
 
 同样的语义也可以用现有对象与触发器表达（无 token 运行时的场景）：

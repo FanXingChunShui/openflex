@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.9.0 — 2026-11-15
+
+### 对象与运行时
+
+- **对象级 Process Flow**：`params.process_flow` 与模型级流程合并；`create.on_entry` 收货产 token；`transfer(to_object)`
+  把 token 转成 flow item 注入目标对象（继承标签/类型、目标满时挂起重试）；对象级 block id 形如 `Queue1.Create1`。
+- **电梯召唤/方向优先**：优先级 → 同层 → 同向 → 最近楼层；方向持久。
+- **AGV 电池**：`battery_capacity` / `consumption_per_distance` / `charge_time` / `charger`；耗尽自动充电，充电中不派单。
+- **Fluid pipe / 压力阈值**：`fluid_pipe`（length/speed/delay/flow_rate 的纯延迟缓冲）；valve `pressure_threshold`（入口流量近似）。
+- 示例：`process-flow-transfer.ofm`、`agv-battery.ofm`、`fluid-pipe.ofm`、电梯召唤测试。
+
+### FlexScript 与 3D Studio
+
+- **rhai 沙箱脚本层**：`action: script` 与 `script_condition`，模型层语法校验、`core/src/script.rs` 运行时封装
+  （确定性 API、操作数/字符串上限）；引擎执行集成留到下一版。
+- **`openflex studio`**：本地 127.0.0.1 Web 编辑器——Canvas 3D 视图（旋转/缩放/流动动画）、对象参数编辑与保存、
+  Run 按钮（服务端运行 + 统计表/柱状图）；无 CDN、无新 Rust 依赖、2MB body 上限。
+
+### 验证
+
+- 310 个测试全绿（core 138、CLI 85、model 70、report 16）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.9.0 三平台产物发布并 SHA256 校验。
+
 ## v0.8.0 — 2026-11-15
 
 ### 任务执行器扩展（B6 最小族）

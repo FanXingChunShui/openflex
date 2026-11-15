@@ -123,6 +123,7 @@ pub enum ObjectKind {
     FluidTank,
     FluidValve,
     FluidSink,
+    FluidPipe,
 }
 
 impl ObjectKind {
@@ -151,6 +152,7 @@ impl ObjectKind {
             ObjectKind::FluidTank => "fluid_tank",
             ObjectKind::FluidValve => "fluid_valve",
             ObjectKind::FluidSink => "fluid_sink",
+            ObjectKind::FluidPipe => "fluid_pipe",
         }
     }
 
@@ -179,6 +181,7 @@ impl ObjectKind {
             "fluid_tank" => ObjectKind::FluidTank,
             "fluid_valve" => ObjectKind::FluidValve,
             "fluid_sink" => ObjectKind::FluidSink,
+            "fluid_pipe" => ObjectKind::FluidPipe,
             _ => return None,
         })
     }
@@ -209,6 +212,7 @@ impl ObjectKind {
             ObjectKind::FluidTank,
             ObjectKind::FluidValve,
             ObjectKind::FluidSink,
+            ObjectKind::FluidPipe,
         ]
     }
 }
@@ -330,7 +334,7 @@ pub enum ObjectParams {
     Split(SplitParams),
     Transporter(TransporterParams),
     Person(TransporterParams),
-    Agv(TransporterParams),
+    Agv(AgvParams),
     Elevator(ElevatorParams),
     Dispatcher(DispatcherParams),
     Resource(ResourceParams),
@@ -341,6 +345,7 @@ pub enum ObjectParams {
     FluidTank(FluidTankParams),
     FluidValve(FluidValveParams),
     FluidSink(FluidSinkParams),
+    FluidPipe(FluidPipeParams),
 }
 
 fn decode<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, String> {
@@ -373,6 +378,7 @@ impl ObjectParams {
             ObjectParams::FluidTank(_) => ObjectKind::FluidTank,
             ObjectParams::FluidValve(_) => ObjectKind::FluidValve,
             ObjectParams::FluidSink(_) => ObjectKind::FluidSink,
+            ObjectParams::FluidPipe(_) => ObjectKind::FluidPipe,
         }
     }
 
@@ -402,6 +408,7 @@ impl ObjectParams {
             ObjectParams::FluidTank(p) => &p.triggers,
             ObjectParams::FluidValve(p) => &p.triggers,
             ObjectParams::FluidSink(p) => &p.triggers,
+            ObjectParams::FluidPipe(p) => &p.triggers,
         }
     }
 
@@ -430,7 +437,8 @@ impl ObjectParams {
             ObjectParams::FluidGenerator(_)
             | ObjectParams::FluidTank(_)
             | ObjectParams::FluidValve(_)
-            | ObjectParams::FluidSink(_) => None,
+            | ObjectParams::FluidSink(_)
+            | ObjectParams::FluidPipe(_) => None,
         }
     }
 
@@ -459,7 +467,38 @@ impl ObjectParams {
             ObjectParams::FluidGenerator(_)
             | ObjectParams::FluidTank(_)
             | ObjectParams::FluidValve(_)
-            | ObjectParams::FluidSink(_) => None,
+            | ObjectParams::FluidSink(_)
+            | ObjectParams::FluidPipe(_) => None,
+        }
+    }
+
+    /// Object-level process flow (B7); fluid objects cannot own one.
+    pub fn process_flow(&self) -> Option<&ProcessFlow> {
+        match self {
+            ObjectParams::Source(p) => p.process_flow.as_ref(),
+            ObjectParams::Queue(p) => p.process_flow.as_ref(),
+            ObjectParams::Processor(p) => p.process_flow.as_ref(),
+            ObjectParams::MultiProcessor(p) => p.process_flow.as_ref(),
+            ObjectParams::Sink(p) => p.process_flow.as_ref(),
+            ObjectParams::Combiner(p) => p.process_flow.as_ref(),
+            ObjectParams::Separator(p) => p.process_flow.as_ref(),
+            ObjectParams::Conveyor(p) => p.process_flow.as_ref(),
+            ObjectParams::Merge(p) => p.process_flow.as_ref(),
+            ObjectParams::Split(p) => p.process_flow.as_ref(),
+            ObjectParams::Transporter(p) => p.process_flow.as_ref(),
+            ObjectParams::Person(p) => p.process_flow.as_ref(),
+            ObjectParams::Agv(p) => p.process_flow.as_ref(),
+            ObjectParams::Elevator(p) => p.process_flow.as_ref(),
+            ObjectParams::Dispatcher(p) => p.process_flow.as_ref(),
+            ObjectParams::Resource(p) => p.process_flow.as_ref(),
+            ObjectParams::Rack(p) => p.process_flow.as_ref(),
+            ObjectParams::BasicFr(p) => p.process_flow.as_ref(),
+            ObjectParams::BasicTe(p) => p.process_flow.as_ref(),
+            ObjectParams::FluidGenerator(_)
+            | ObjectParams::FluidTank(_)
+            | ObjectParams::FluidValve(_)
+            | ObjectParams::FluidSink(_)
+            | ObjectParams::FluidPipe(_) => None,
         }
     }
 
@@ -488,7 +527,8 @@ impl ObjectParams {
             ObjectParams::FluidGenerator(_)
             | ObjectParams::FluidTank(_)
             | ObjectParams::FluidValve(_)
-            | ObjectParams::FluidSink(_) => &[],
+            | ObjectParams::FluidSink(_)
+            | ObjectParams::FluidPipe(_) => &[],
         }
     }
 
@@ -518,6 +558,7 @@ impl ObjectParams {
             ObjectKind::FluidTank => ObjectParams::FluidTank(decode(value)?),
             ObjectKind::FluidValve => ObjectParams::FluidValve(decode(value)?),
             ObjectKind::FluidSink => ObjectParams::FluidSink(decode(value)?),
+            ObjectKind::FluidPipe => ObjectParams::FluidPipe(decode(value)?),
         })
     }
 }
@@ -549,6 +590,7 @@ impl Serialize for ObjectParams {
             ObjectParams::FluidTank(p) => p.serialize(serializer),
             ObjectParams::FluidValve(p) => p.serialize(serializer),
             ObjectParams::FluidSink(p) => p.serialize(serializer),
+            ObjectParams::FluidPipe(p) => p.serialize(serializer),
         }
     }
 }
@@ -692,6 +734,12 @@ pub struct SourceParams {
     /// `interarrival` and `arrival_schedule`.
     #[serde(default)]
     pub arrival_sequence: Option<Vec<SequenceRow>>,
+    /// Optional object-level process flow (B7). Its `create` blocks can run at
+    /// t = 0 or whenever this object receives an item (`on_entry`), and its
+    /// `transfer` blocks can inject tokens as flow items into other objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ProcessFlow>,
+
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
     #[serde(default)]
@@ -770,6 +818,7 @@ impl Default for SourceParams {
             arrival_sequence: None,
             item_type: 0,
             labels: BTreeMap::new(),
+            process_flow: None,
             timetable: None,
             pull: None,
             shifts: Vec::new(),
@@ -786,6 +835,7 @@ impl Default for QueueParams {
             batch_size: None,
             batch_max_wait: 0.0,
             shifts: Vec::new(),
+            process_flow: None,
             timetable: None,
             pull: None,
             triggers: Triggers::default(),
@@ -809,6 +859,7 @@ impl Default for ProcessorParams {
             failure: None,
             changeover_time: Distribution::default(),
             shifts: Vec::new(),
+            process_flow: None,
             timetable: None,
             pull: None,
             triggers: Triggers::default(),
@@ -826,6 +877,7 @@ impl Default for CombinerParams {
             setup_operator: None,
             process_operator: None,
             shifts: Vec::new(),
+            process_flow: None,
             timetable: None,
             pull: None,
             triggers: Triggers::default(),
@@ -843,6 +895,7 @@ impl Default for TransporterParams {
             home: None,
             network: Vec::new(),
             shifts: Vec::new(),
+            process_flow: None,
             timetable: None,
             pull: None,
             triggers: Triggers::default(),
@@ -856,6 +909,7 @@ impl Default for BasicTeParams {
             speed: 1.0,
             capacity: 1,
             shifts: Vec::new(),
+            process_flow: None,
             timetable: None,
             pull: None,
             triggers: Triggers::default(),
@@ -894,6 +948,12 @@ pub struct QueueParams {
     /// Maximum time the oldest item waits for a batch (0 = wait forever).
     #[serde(default)]
     pub batch_max_wait: f64,
+
+    /// Optional object-level process flow (B7). Its `create` blocks can run at
+    /// t = 0 or whenever this object receives an item (`on_entry`), and its
+    /// `transfer` blocks can inject tokens as flow items into other objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ProcessFlow>,
 
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
@@ -950,6 +1010,12 @@ pub struct ProcessorParams {
     /// Time spent waiting before the processor can accept a new item (changeover).
     #[serde(default)]
     pub changeover_time: Distribution,
+
+    /// Optional object-level process flow (B7). Its `create` blocks can run at
+    /// t = 0 or whenever this object receives an item (`on_entry`), and its
+    /// `transfer` blocks can inject tokens as flow items into other objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ProcessFlow>,
 
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
@@ -1017,6 +1083,12 @@ pub struct MultiProcessorParams {
     #[serde(default)]
     pub process_operator: Option<String>,
 
+    /// Optional object-level process flow (B7). Its `create` blocks can run at
+    /// t = 0 or whenever this object receives an item (`on_entry`), and its
+    /// `transfer` blocks can inject tokens as flow items into other objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ProcessFlow>,
+
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
     #[serde(default)]
@@ -1043,6 +1115,7 @@ impl Default for MultiProcessorParams {
             process_time: one_dist(),
             setup_operator: None,
             process_operator: None,
+            process_flow: None,
             timetable: None,
             pull: None,
             shifts: Vec::new(),
@@ -1054,6 +1127,12 @@ impl Default for MultiProcessorParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SinkParams {
+    /// Optional object-level process flow (B7). Its `create` blocks can run at
+    /// t = 0 or whenever this object receives an item (`on_entry`), and its
+    /// `transfer` blocks can inject tokens as flow items into other objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ProcessFlow>,
+
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
     #[serde(default)]
@@ -1107,6 +1186,12 @@ pub struct CombinerParams {
     #[serde(default)]
     pub process_operator: Option<String>,
 
+    /// Optional object-level process flow (B7). Its `create` blocks can run at
+    /// t = 0 or whenever this object receives an item (`on_entry`), and its
+    /// `transfer` blocks can inject tokens as flow items into other objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ProcessFlow>,
+
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
     #[serde(default)]
@@ -1152,6 +1237,12 @@ pub struct SeparatorParams {
     /// `unpack` (default) or `split`.
     #[serde(default)]
     pub separate_mode: SeparateMode,
+
+    /// Optional object-level process flow (B7). Its `create` blocks can run at
+    /// t = 0 or whenever this object receives an item (`on_entry`), and its
+    /// `transfer` blocks can inject tokens as flow items into other objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ProcessFlow>,
 
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
@@ -1219,6 +1310,12 @@ pub struct ConveyorParams {
     #[serde(default)]
     pub join_inputs: Option<u32>,
 
+    /// Optional object-level process flow (B7). Its `create` blocks can run at
+    /// t = 0 or whenever this object receives an item (`on_entry`), and its
+    /// `transfer` blocks can inject tokens as flow items into other objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ProcessFlow>,
+
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
     #[serde(default)]
@@ -1249,6 +1346,7 @@ impl Default for ConveyorParams {
             stations: Vec::new(),
             join_inputs: None,
             shifts: Vec::new(),
+            process_flow: None,
             timetable: None,
             pull: None,
             triggers: Triggers::default(),
@@ -1262,6 +1360,12 @@ pub struct MergeParams {
     /// Merge waits until all input ports have an item available.
     #[serde(default)]
     pub wait_for_all: bool,
+
+    /// Optional object-level process flow (B7). Its `create` blocks can run at
+    /// t = 0 or whenever this object receives an item (`on_entry`), and its
+    /// `transfer` blocks can inject tokens as flow items into other objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ProcessFlow>,
 
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
@@ -1287,6 +1391,12 @@ pub struct SplitParams {
     /// Send items to output ports in round-robin order (default) or by item type.
     #[serde(default)]
     pub by_item_type: bool,
+
+    /// Optional object-level process flow (B7). Its `create` blocks can run at
+    /// t = 0 or whenever this object receives an item (`on_entry`), and its
+    /// `transfer` blocks can inject tokens as flow items into other objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ProcessFlow>,
 
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
@@ -1339,6 +1449,12 @@ pub struct TransporterParams {
     #[serde(default)]
     pub network: Vec<NetworkEdge>,
 
+    /// Optional object-level process flow (B7). Its `create` blocks can run at
+    /// t = 0 or whenever this object receives an item (`on_entry`), and its
+    /// `transfer` blocks can inject tokens as flow items into other objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ProcessFlow>,
+
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
     #[serde(default)]
@@ -1357,6 +1473,69 @@ pub struct TransporterParams {
     pub shifts: Vec<Shift>,
 }
 
+/// An automated guided vehicle (B6): transporter semantics plus a battery.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgvParams {
+    #[serde(default = "one_u32")]
+    pub capacity: u32,
+    #[serde(default = "one_f64")]
+    pub speed: f64,
+    #[serde(default)]
+    pub load_time: Distribution,
+    #[serde(default)]
+    pub unload_time: Distribution,
+    #[serde(default)]
+    pub home: Option<String>,
+    #[serde(default)]
+    pub network: Vec<NetworkEdge>,
+    /// Battery capacity in distance units (None = unlimited).
+    #[serde(default)]
+    pub battery_capacity: Option<f64>,
+    /// Battery distance consumed per travel distance unit (default 1).
+    #[serde(default)]
+    pub consumption_per_distance: Option<f64>,
+    /// Recharge duration when the battery is empty (default constant 0).
+    #[serde(default)]
+    pub charge_time: Distribution,
+    /// Object where charging happens (default: `home`, else in place).
+    #[serde(default)]
+    pub charger: Option<String>,
+
+    #[serde(default)]
+    pub process_flow: Option<ProcessFlow>,
+    #[serde(default)]
+    pub timetable: Option<TimeTable>,
+    #[serde(default)]
+    pub pull: Option<PullParams>,
+    #[serde(default)]
+    pub triggers: Triggers,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shifts: Vec<Shift>,
+}
+
+impl Default for AgvParams {
+    fn default() -> Self {
+        Self {
+            capacity: 1,
+            speed: 1.0,
+            load_time: Distribution::default(),
+            unload_time: Distribution::default(),
+            home: None,
+            network: Vec::new(),
+            battery_capacity: None,
+            consumption_per_distance: None,
+            charge_time: Distribution::default(),
+            charger: None,
+            process_flow: None,
+            timetable: None,
+            pull: None,
+            triggers: Triggers::default(),
+            shifts: Vec::new(),
+        }
+    }
+}
+
 /// An elevator (B6): vertical task executer between object heights (`z`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1373,6 +1552,12 @@ pub struct ElevatorParams {
     /// Object the cabin returns to when idle (a floor reference).
     #[serde(default)]
     pub home: Option<String>,
+
+    /// Optional object-level process flow (B7). Its `create` blocks can run at
+    /// t = 0 or whenever this object receives an item (`on_entry`), and its
+    /// `transfer` blocks can inject tokens as flow items into other objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ProcessFlow>,
 
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
@@ -1399,6 +1584,7 @@ impl Default for ElevatorParams {
             speed: 1.0,
             stop_time: Distribution::default(),
             home: None,
+            process_flow: None,
             timetable: None,
             pull: None,
             triggers: Triggers::default(),
@@ -1414,6 +1600,12 @@ pub struct DispatcherParams {
     /// queued at once (0 = unlimited).
     #[serde(default)]
     pub max_tasks: u32,
+
+    /// Optional object-level process flow (B7). Its `create` blocks can run at
+    /// t = 0 or whenever this object receives an item (`on_entry`), and its
+    /// `transfer` blocks can inject tokens as flow items into other objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ProcessFlow>,
 
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
@@ -1442,6 +1634,12 @@ pub struct ResourceParams {
     #[serde(default)]
     pub downtimes: Vec<DowntimeWindow>,
 
+    /// Optional object-level process flow (B7). Its `create` blocks can run at
+    /// t = 0 or whenever this object receives an item (`on_entry`), and its
+    /// `transfer` blocks can inject tokens as flow items into other objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ProcessFlow>,
+
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
     #[serde(default)]
@@ -1466,6 +1664,7 @@ impl Default for ResourceParams {
             capacity: 1,
             downtimes: Vec::new(),
             shifts: Vec::new(),
+            process_flow: None,
             timetable: None,
             pull: None,
             triggers: Triggers::default(),
@@ -1569,6 +1768,12 @@ pub struct RackParams {
     #[serde(default)]
     pub depth: Option<u32>,
 
+    /// Optional object-level process flow (B7). Its `create` blocks can run at
+    /// t = 0 or whenever this object receives an item (`on_entry`), and its
+    /// `transfer` blocks can inject tokens as flow items into other objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ProcessFlow>,
+
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
     #[serde(default)]
@@ -1596,6 +1801,7 @@ impl Default for RackParams {
             channels: None,
             depth: None,
             shifts: Vec::new(),
+            process_flow: None,
             timetable: None,
             pull: None,
             triggers: Triggers::default(),
@@ -1606,6 +1812,12 @@ impl Default for RackParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct BasicFrParams {
+    /// Optional object-level process flow (B7). Its `create` blocks can run at
+    /// t = 0 or whenever this object receives an item (`on_entry`), and its
+    /// `transfer` blocks can inject tokens as flow items into other objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ProcessFlow>,
+
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
     #[serde(default)]
@@ -1631,6 +1843,12 @@ pub struct BasicTeParams {
     pub speed: f64,
     #[serde(default = "one_u32")]
     pub capacity: u32,
+
+    /// Optional object-level process flow (B7). Its `create` blocks can run at
+    /// t = 0 or whenever this object receives an item (`on_entry`), and its
+    /// `transfer` blocks can inject tokens as flow items into other objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_flow: Option<ProcessFlow>,
 
     /// Linear availability windows (B11): outside them the object is off
     /// shift. `None` means "always available".
@@ -1715,6 +1933,10 @@ pub struct FluidValveParams {
     /// Fraction of the incoming flow that passes through (0..1).
     #[serde(default = "one_f64")]
     pub ratio: f64,
+    /// Minimum incoming flow rate that opens the valve (simplified pressure
+    /// threshold: below it the valve stays closed for the step).
+    #[serde(default)]
+    pub pressure_threshold: Option<f64>,
     #[serde(default)]
     pub triggers: Triggers,
 }
@@ -1724,6 +1946,39 @@ impl Default for FluidValveParams {
         Self {
             open: true,
             ratio: 1.0,
+            pressure_threshold: None,
+            triggers: Triggers::default(),
+        }
+    }
+}
+
+/// A fluid pipe (`fluid_pipe`): transports volume with a pure delay.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FluidPipeParams {
+    /// Pipe length in layout units.
+    #[serde(default = "one_f64")]
+    pub length: f64,
+    /// Transport speed (length units per time unit).
+    #[serde(default = "one_f64")]
+    pub speed: f64,
+    /// Optional transport delay override (time units).
+    #[serde(default)]
+    pub delay: Option<f64>,
+    /// Optional maximum volume per time unit through the pipe.
+    #[serde(default)]
+    pub flow_rate: Option<f64>,
+    #[serde(default)]
+    pub triggers: Triggers,
+}
+
+impl Default for FluidPipeParams {
+    fn default() -> Self {
+        Self {
+            length: 1.0,
+            speed: 1.0,
+            delay: None,
+            flow_rate: None,
             triggers: Triggers::default(),
         }
     }
@@ -1784,11 +2039,111 @@ pub enum PortStrategy {
     Hold,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// One conditional routing rule: either an expression condition or a
+/// sandboxed script condition (mutually exclusive in the JSON form).
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConditionalPort {
+    /// Expression condition. When [`script_condition`](Self::script_condition)
+    /// is set this holds the placeholder `true` and the engine ignores it.
     pub condition: Expr,
+    /// Optional FlexScript (rhai) condition; mutually exclusive with an
+    /// explicit `condition` in the JSON form.
+    pub script_condition: Option<String>,
+    /// Output port used when the condition holds.
     pub port: u32,
+}
+
+impl ConditionalPort {
+    /// An expression-routed port.
+    pub fn with_condition(condition: Expr, port: u32) -> Self {
+        Self {
+            condition,
+            script_condition: None,
+            port,
+        }
+    }
+
+    /// A script-routed port.
+    pub fn with_script(source: impl Into<String>, port: u32) -> Self {
+        Self {
+            condition: Expr::Bool(true),
+            script_condition: Some(source.into()),
+            port,
+        }
+    }
+}
+
+impl Serialize for ConditionalPort {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // A script-only port must not serialise the internal `true`
+        // placeholder, otherwise the document would no longer parse.
+        let script_only = self.script_condition.is_some() && self.condition == Expr::Bool(true);
+        let fields = 1 + usize::from(!script_only) + usize::from(self.script_condition.is_some());
+        let mut map = serializer.serialize_map(Some(fields))?;
+        if !script_only {
+            map.serialize_entry("condition", &self.condition)?;
+        }
+        if let Some(script) = &self.script_condition {
+            map.serialize_entry("script_condition", script)?;
+        }
+        map.serialize_entry("port", &self.port)?;
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ConditionalPort {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let map = value
+            .as_object()
+            .ok_or_else(|| de::Error::custom("a conditional port must be a JSON object"))?;
+        for key in map.keys() {
+            if !matches!(key.as_str(), "condition" | "script_condition" | "port") {
+                return Err(de::Error::custom(format!(
+                    "conditional port has unknown key '{key}' (expected condition, script_condition, port)"
+                )));
+            }
+        }
+        let port = map
+            .get("port")
+            .ok_or_else(|| de::Error::custom("a conditional port needs a 'port' field"))?;
+        let port: u32 = serde_json::from_value(port.clone())
+            .map_err(|err| de::Error::custom(format!("conditional port 'port': {err}")))?;
+        let condition =
+            match map.get("condition") {
+                Some(value) => Some(serde_json::from_value::<Expr>(value.clone()).map_err(
+                    |err| de::Error::custom(format!("conditional port 'condition': {err}")),
+                )?),
+                None => None,
+            };
+        let script_condition = match map.get("script_condition") {
+            Some(value) => Some(
+                value
+                    .as_str()
+                    .ok_or_else(|| de::Error::custom("'script_condition' must be a string"))?
+                    .to_string(),
+            ),
+            None => None,
+        };
+        match (condition, script_condition) {
+            (None, None) => Err(de::Error::custom(
+                "a conditional port needs either 'condition' or 'script_condition'",
+            )),
+            (Some(_), Some(_)) => Err(de::Error::custom(
+                "conditional port 'condition' and 'script_condition' are mutually exclusive",
+            )),
+            (Some(condition), None) => Ok(ConditionalPort {
+                condition,
+                script_condition: None,
+                port,
+            }),
+            (None, Some(script)) => Ok(ConditionalPort {
+                condition: Expr::Bool(true),
+                script_condition: Some(script),
+                port,
+            }),
+        }
+    }
 }
 
 // Internally tagged enums cannot use `deny_unknown_fields` in serde, so the
@@ -1998,6 +2353,10 @@ pub struct FlowCreateParams {
     /// Labels carried by the tokens.
     #[serde(default)]
     pub labels: BTreeMap<String, f64>,
+    /// Object-level flows only: create this batch whenever the owning object
+    /// receives a flow item instead of using the arrival schedule.
+    #[serde(default)]
+    pub on_entry: bool,
 }
 
 impl Default for FlowCreateParams {
@@ -2009,6 +2368,7 @@ impl Default for FlowCreateParams {
             max_creations: None,
             item_type: 0,
             labels: BTreeMap::new(),
+            on_entry: false,
         }
     }
 }
@@ -2044,11 +2404,26 @@ pub struct FlowDecisionParams {
     pub conditions: Vec<ConditionalPort>,
 }
 
+/// Direction of a `transfer` block (B7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferMode {
+    /// Convert the token into a flow item and inject it into `object`.
+    #[default]
+    ToObject,
+    /// Take a flow item from `object` and continue as a token (not implemented
+    /// yet, rejected by validation).
+    FromObject,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FlowTransferParams {
     /// Object that should receive the token as a flow item.
     pub object: String,
+    /// Transfer direction (default: into the object).
+    #[serde(default)]
+    pub mode: TransferMode,
 }
 
 /// One directed connection between two flow blocks.

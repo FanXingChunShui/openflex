@@ -97,6 +97,15 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
             ));
         }
         issues.extend(validate_object(object));
+        if let crate::model::ObjectParams::Agv(params) = &object.params
+            && let Some(charger) = &params.charger
+            && model.object(charger).is_none()
+        {
+            issues.push(ValidationIssue::new(
+                format!("objects.{}.charger", object.name),
+                format!("unknown charger object '{charger}'"),
+            ));
+        }
     }
 
     // B3: a join conveyor declares how many upstream belts it merges.
@@ -192,7 +201,16 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
         }
     }
 
-    issues.extend(validate_process_flow(model));
+    issues.extend(validate_process_flow(
+        model,
+        model.process_flow.as_ref(),
+        None,
+    ));
+    for object in &model.objects {
+        if let Some(flow) = object.params.process_flow() {
+            issues.extend(validate_process_flow(model, Some(flow), Some(object)));
+        }
+    }
     issues.extend(validate_fluid(model));
 
     issues
@@ -288,6 +306,7 @@ fn validate_connection(
                         ));
                     }
                 }
+                validate_conditional_ports(conditions, &location, &mut issues);
             }
             PortStrategy::ByItemType | PortStrategy::ByLabel { .. } => {
                 if outputs == 0 {
@@ -705,6 +724,23 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
             distribution!("unload_time", &params.unload_time);
         }
         crate::model::ObjectParams::Agv(params) => {
+            if let Some(capacity) = params.battery_capacity
+                && (!capacity.is_finite() || capacity <= 0.0)
+            {
+                issues.push(ValidationIssue::new(
+                    location("battery_capacity"),
+                    "must be positive when present",
+                ));
+            }
+            if let Some(consumption) = params.consumption_per_distance
+                && (!consumption.is_finite() || consumption <= 0.0)
+            {
+                issues.push(ValidationIssue::new(
+                    location("consumption_per_distance"),
+                    "must be positive when present",
+                ));
+            }
+            distribution!("charge_time", &params.charge_time);
             if params.capacity == 0 {
                 issues.push(ValidationIssue::new(
                     location("capacity"),
@@ -791,6 +827,38 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
                     "must be between 0 and 1",
                 ));
             }
+            if let Some(threshold) = params.pressure_threshold
+                && (!threshold.is_finite() || threshold < 0.0)
+            {
+                issues.push(ValidationIssue::new(
+                    location("pressure_threshold"),
+                    "must be non-negative when present",
+                ));
+            }
+        }
+        crate::model::ObjectParams::FluidPipe(params) => {
+            if !params.length.is_finite() || params.length <= 0.0 {
+                issues.push(ValidationIssue::new(location("length"), "must be positive"));
+            }
+            if !params.speed.is_finite() || params.speed <= 0.0 {
+                issues.push(ValidationIssue::new(location("speed"), "must be positive"));
+            }
+            if let Some(delay) = params.delay
+                && (!delay.is_finite() || delay < 0.0)
+            {
+                issues.push(ValidationIssue::new(
+                    location("delay"),
+                    "must be non-negative when present",
+                ));
+            }
+            if let Some(rate) = params.flow_rate
+                && (!rate.is_finite() || rate <= 0.0)
+            {
+                issues.push(ValidationIssue::new(
+                    location("flow_rate"),
+                    "must be positive when present",
+                ));
+            }
         }
         crate::model::ObjectParams::FluidSink(_) => {}
         crate::model::ObjectParams::Sink(_)
@@ -800,6 +868,7 @@ fn validate_object(object: &Object) -> Vec<ValidationIssue> {
         | crate::model::ObjectParams::BasicFr(_) => {}
     }
 
+    issues.extend(validate_trigger_scripts(object));
     issues
 }
 
@@ -818,11 +887,96 @@ fn is_runtime_state(name: &str) -> bool {
     )
 }
 
-/// Validate the optional Process Flow graph (B7).
-fn validate_process_flow(model: &Model) -> Vec<ValidationIssue> {
+/// Shared rhai engine used only for the model-level syntax check.
+///
+/// The sandbox API (`set_label`, ...) lives in `openflex-core::script`; rhai
+/// resolves function calls at run time, so an empty engine still accepts those
+/// names and the model layer stays free of a core dependency.
+fn script_syntax_engine() -> &'static rhai::Engine {
+    static ENGINE: std::sync::OnceLock<rhai::Engine> = std::sync::OnceLock::new();
+    ENGINE.get_or_init(rhai::Engine::new)
+}
+
+fn validate_script_source(source: &str, location: &str, issues: &mut Vec<ValidationIssue>) {
+    if source.trim().is_empty() {
+        issues.push(ValidationIssue::new(
+            location,
+            "script source cannot be empty",
+        ));
+        return;
+    }
+    if let Err(error) = script_syntax_engine().compile(source) {
+        issues.push(ValidationIssue::new(
+            location,
+            format!("script does not compile: {error}"),
+        ));
+    }
+}
+
+/// Check every conditional routing/decision rule: a rule may use an expression
+/// condition or a script condition, but not both (the JSON parser rejects the
+/// combination; this catches programmatic construction too) and the script must
+/// compile.
+fn validate_conditional_ports(
+    conditions: &[crate::model::ConditionalPort],
+    location: &str,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    for (position, condition) in conditions.iter().enumerate() {
+        let at = format!("{location}.conditions[{position}]");
+        if let Some(script) = &condition.script_condition {
+            if condition.condition != crate::expr::Expr::Bool(true) {
+                issues.push(ValidationIssue::new(
+                    format!("{at}.condition"),
+                    "condition and script_condition are mutually exclusive",
+                ));
+            }
+            validate_script_source(script, &format!("{at}.script_condition"), issues);
+        }
+    }
+}
+
+/// Check `script` trigger actions: non-empty source and compilable syntax.
+fn validate_trigger_scripts(object: &Object) -> Vec<ValidationIssue> {
+    let mut issues = Vec::new();
+    let triggers = object.params.triggers();
+    let lists = [
+        ("on_create", &triggers.on_create),
+        ("on_entry", &triggers.on_entry),
+        ("on_exit", &triggers.on_exit),
+        ("on_receive", &triggers.on_receive),
+        ("on_message", &triggers.on_message),
+        ("on_breakdown", &triggers.on_breakdown),
+        ("on_repair", &triggers.on_repair),
+        ("on_photo_eye", &triggers.on_photo_eye),
+    ];
+    for (trigger, actions) in lists {
+        for (position, action) in actions.iter().enumerate() {
+            if let crate::action::Action::Script { source } = action {
+                validate_script_source(
+                    source,
+                    &format!(
+                        "objects.{}.triggers.{trigger}[{position}].source",
+                        object.name
+                    ),
+                    &mut issues,
+                );
+            }
+        }
+    }
+    issues
+}
+
+/// Validate a Process Flow graph (B7), either model-level (`owner = None`) or
+/// bound to one object.
+fn validate_process_flow(
+    model: &Model,
+    flow: Option<&crate::model::ProcessFlow>,
+    owner: Option<&Object>,
+) -> Vec<ValidationIssue> {
     use crate::model::FlowBlockKind;
 
-    let Some(flow) = &model.process_flow else {
+    let Some(flow) = flow else {
         return Vec::new();
     };
     let mut issues = Vec::new();
@@ -895,14 +1049,21 @@ fn validate_process_flow(model: &Model) -> Vec<ValidationIssue> {
                         err,
                     ));
                 }
-                let zero_interval = matches!(
-                    params.interarrival,
-                    crate::distribution::Distribution::Constant { value } if value <= 0.0
-                );
+                let zero_interval = !params.on_entry
+                    && matches!(
+                        params.interarrival,
+                        crate::distribution::Distribution::Constant { value } if value <= 0.0
+                    );
                 if zero_interval && params.max_creations.is_none() {
                     issues.push(ValidationIssue::new(
                         format!("{location}.interarrival"),
                         "a zero interval without max_creations would create tokens forever",
+                    ));
+                }
+                if params.on_entry && owner.is_none() {
+                    issues.push(ValidationIssue::new(
+                        &location,
+                        "on_entry create blocks need an object-level process flow",
                     ));
                 }
                 if outgoing[position].len() != 1 {
@@ -959,6 +1120,7 @@ fn validate_process_flow(model: &Model) -> Vec<ValidationIssue> {
                         ));
                     }
                 }
+                validate_conditional_ports(&params.conditions, &location, &mut issues);
             }
             FlowBlockKind::Sink => {
                 if !outgoing[position].is_empty() {
@@ -968,10 +1130,39 @@ fn validate_process_flow(model: &Model) -> Vec<ValidationIssue> {
                     ));
                 }
             }
-            FlowBlockKind::Transfer(_) => issues.push(ValidationIssue::new(
-                &location,
-                "transfer blocks are not implemented yet (B7 backlog)",
-            )),
+            FlowBlockKind::Transfer(params) => {
+                if matches!(params.mode, crate::model::TransferMode::FromObject) {
+                    issues.push(ValidationIssue::new(
+                        &location,
+                        "from_object transfers are not implemented yet (B7 backlog)",
+                    ));
+                }
+                match model.object(&params.object) {
+                    None => issues.push(ValidationIssue::new(
+                        &location,
+                        format!("transfer target '{}' is unknown", params.object),
+                    )),
+                    Some(target)
+                        if target.kind == ObjectKind::Source
+                            || matches!(
+                                target.kind,
+                                ObjectKind::FluidGenerator
+                                    | ObjectKind::FluidTank
+                                    | ObjectKind::FluidValve
+                                    | ObjectKind::FluidSink
+                            ) =>
+                    {
+                        issues.push(ValidationIssue::new(
+                            &location,
+                            format!(
+                                "transfer target '{}' cannot accept flow items",
+                                params.object
+                            ),
+                        ));
+                    }
+                    Some(_) => {}
+                }
+            }
         }
     }
 
@@ -992,14 +1183,20 @@ fn validate_process_flow(model: &Model) -> Vec<ValidationIssue> {
             "a process flow needs a create block to produce tokens",
         ));
     }
-    if !flow
+    let has_sink = flow
         .blocks
         .iter()
-        .any(|block| matches!(block.kind, FlowBlockKind::Sink))
-    {
+        .any(|block| matches!(block.kind, FlowBlockKind::Sink));
+    let has_transfer = flow.blocks.iter().any(|block| {
+        matches!(
+            &block.kind,
+            FlowBlockKind::Transfer(params) if params.mode == crate::model::TransferMode::ToObject
+        )
+    });
+    if !has_sink && !has_transfer {
         issues.push(ValidationIssue::new(
             "process_flow.blocks",
-            "a process flow needs a sink block to complete tokens",
+            "a process flow needs a sink or a transfer block to complete tokens",
         ));
     }
     issues
@@ -1046,6 +1243,7 @@ pub fn is_fluid_kind(kind: ObjectKind) -> bool {
             | ObjectKind::FluidTank
             | ObjectKind::FluidValve
             | ObjectKind::FluidSink
+            | ObjectKind::FluidPipe
     )
 }
 

@@ -837,14 +837,16 @@ impl Drop for ServerChild {
     }
 }
 
-fn http_get(address: &str, path: &str) -> String {
+fn http_request(address: &str, method: &str, path: &str, body: Option<&str>) -> String {
     let mut stream = TcpStream::connect(address).expect("could not connect to the server");
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("timeout");
+    let body = body.unwrap_or_default();
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
     )
     .expect("request");
     let mut response = String::new();
@@ -852,6 +854,66 @@ fn http_get(address: &str, path: &str) -> String {
         .read_to_string(&mut response)
         .expect("could not read the response");
     response
+}
+
+/// Send headers that claim a large body without actually sending it, so the
+/// server's header-only size check can be tested without a multi-megabyte write.
+fn http_oversized(address: &str, method: &str, path: &str, content_length: usize) -> String {
+    let mut stream = TcpStream::connect(address).expect("could not connect to the server");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n"
+    )
+    .expect("request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("could not read the response");
+    response
+}
+
+fn http_get(address: &str, path: &str) -> String {
+    http_request(address, "GET", path, None)
+}
+
+fn http_status(response: &str) -> &str {
+    response.lines().next().unwrap_or_default()
+}
+
+fn http_body(response: &str) -> &str {
+    response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap_or_default()
+}
+
+/// Start `openflex studio --port 0 --no-open` and return its address.
+fn start_studio(model: &Path) -> (ServerChild, String) {
+    let mut child = Command::new(BIN)
+        .args(["studio", &path_str(model), "--port", "0", "--no-open"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("could not start `openflex studio`");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let mut reader = BufReader::new(stderr);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .expect("could not read the studio address");
+    let server = ServerChild { child };
+    let url = line
+        .split_once("listening on ")
+        .map(|(_, rest)| rest.split_whitespace().next().unwrap_or_default())
+        .unwrap_or_else(|| panic!("no studio URL in {line:?}"));
+    let address = url
+        .strip_prefix("http://")
+        .unwrap_or_else(|| panic!("unexpected studio URL {url:?}"))
+        .to_string();
+    (server, address)
 }
 
 #[test]
@@ -2540,4 +2602,124 @@ fn experiment_and_report_rerender_support_flow_and_fluid() {
         stdout(&readback).contains("## Fluid"),
         "report --experiment --fluid did not render the fluid section"
     );
+}
+
+// ---------------------------------------------------------------------------
+// B8: openflex studio
+// ---------------------------------------------------------------------------
+
+#[test]
+fn studio_serves_the_ui_and_read_only_apis() {
+    let dir = TempDir::new("studio-ui");
+    let model = dir.write("demo.ofm", MODEL);
+    let (_server, address) = start_studio(&model);
+
+    let page = http_get(&address, "/");
+    assert!(http_status(&page).contains("200 OK"), "page: {page}");
+    let html = http_body(&page);
+    assert!(html.contains("<!DOCTYPE html>"));
+    assert!(html.contains("OpenFlex Studio"));
+    assert!(!html.contains("__MODEL_NAME__"));
+
+    let model_response = http_get(&address, "/api/model");
+    assert!(http_status(&model_response).contains("200 OK"));
+    let model = json(http_body(&model_response));
+    assert_eq!(model["name"], "demo");
+    assert_eq!(model["objects"].as_array().map(Vec::len), Some(4));
+
+    let objects = json(http_body(&http_get(&address, "/api/objects")));
+    assert!(
+        objects["objects"]
+            .as_array()
+            .is_some_and(|objects| objects.iter().any(|object| object["kind"] == "processor"))
+    );
+
+    let health = http_get(&address, "/health");
+    assert!(http_status(&health).contains("200 OK"));
+    assert_eq!(json(http_body(&health))["status"], "ok");
+}
+
+#[test]
+fn studio_run_endpoint_returns_a_report() {
+    let dir = TempDir::new("studio-run");
+    let model = dir.write("demo.ofm", MODEL);
+    let (_server, address) = start_studio(&model);
+
+    let response = http_request(&address, "POST", "/api/run", Some("{}"));
+    assert!(
+        http_status(&response).contains("200 OK"),
+        "response: {response}"
+    );
+    let report = json(http_body(&response));
+    assert_eq!(report["model"], "demo");
+    assert!(report["objects"]["Queue1"].is_object());
+    assert_eq!(report["stop_time"], 200.0);
+
+    let override_response =
+        http_request(&address, "POST", "/api/run", Some(r#"{"stop_time": 50}"#));
+    assert!(http_status(&override_response).contains("200 OK"));
+    let report = json(http_body(&override_response));
+    assert_eq!(report["stop_time"], 50.0);
+}
+
+#[test]
+fn studio_saves_valid_models_and_rejects_invalid_ones() {
+    let dir = TempDir::new("studio-save");
+    let model = dir.write("demo.ofm", MODEL);
+    let (mut server, address) = start_studio(&model);
+
+    let mut current = json(http_body(&http_get(&address, "/api/model")));
+    current["description"] = serde_json::json!("edited in studio");
+    let save = http_request(
+        &address,
+        "POST",
+        "/api/model",
+        Some(&serde_json::to_string(&current).expect("serialise")),
+    );
+    assert!(http_status(&save).contains("200 OK"), "save: {save}");
+    let saved = json(http_body(&http_get(&address, "/api/model")));
+    assert_eq!(saved["description"], "edited in studio");
+
+    let validate = openflex(&["validate", &path_str(&model)]);
+    assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
+    let text = fs::read_to_string(&model).expect("read saved model");
+    assert!(text.contains("edited in studio"));
+
+    // A model with a dangling connection must be rejected (422) and leave the
+    // file untouched.
+    let mut invalid = saved.clone();
+    invalid["connections"] = serde_json::json!([{ "from": "Source1", "to": "Nope" }]);
+    let reject = http_request(
+        &address,
+        "POST",
+        "/api/model",
+        Some(&serde_json::to_string(&invalid).expect("serialise")),
+    );
+    assert!(http_status(&reject).contains("422"), "reject: {reject}");
+    assert!(http_body(&reject).contains("invalid model"));
+    let validate = openflex(&["validate", &path_str(&model)]);
+    assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
+
+    let _ = server.child.kill();
+    let _ = server.child.wait();
+}
+
+#[test]
+fn studio_rejects_unknown_paths_and_oversized_bodies() {
+    let dir = TempDir::new("studio-guards");
+    let model = dir.write("demo.ofm", MODEL);
+    let (_server, address) = start_studio(&model);
+
+    let missing = http_get(&address, "/does-not-exist");
+    assert!(http_status(&missing).contains("404"), "missing: {missing}");
+
+    let oversized = http_oversized(&address, "POST", "/api/model", 2_200_000);
+    assert!(
+        http_status(&oversized).contains("413"),
+        "oversized: {}",
+        http_status(&oversized)
+    );
+
+    let bad_run = http_request(&address, "POST", "/api/run", Some("not json"));
+    assert!(http_status(&bad_run).contains("400"), "bad run: {bad_run}");
 }

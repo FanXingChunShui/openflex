@@ -138,15 +138,15 @@ fn invalid_flows_are_rejected() {
     let error = Model::from_json(&cycle).expect_err("cycle");
     assert!(error.to_string().contains("acyclic"), "{error}");
 
-    // Transfer blocks are documented as not implemented.
+    // Transfer blocks need an existing target object.
     let transfer = flow_model(
         r#"{"id":"C","kind":"create","max_creations":1},
            {"id":"T","kind":"transfer","object":"SomeQueue"},
            {"id":"S","kind":"sink"}"#,
         r#"{"from":"C","to":"T"},{"from":"T","to":"S"}"#,
     );
-    let error = Model::from_json(&transfer).expect_err("transfer");
-    assert!(error.to_string().contains("not implemented"), "{error}");
+    let error = Model::from_json(&transfer).expect_err("transfer target");
+    assert!(error.to_string().contains("unknown"), "{error}");
 
     // Decision ports must exist.
     let port = flow_model(
@@ -190,4 +190,122 @@ fn process_flow_and_objects_coexist() {
     let flow = report.process_flow.as_ref().expect("flow report");
     assert_eq!(flow.tokens_created, 3.0);
     assert_eq!(flow.tokens_completed, 3.0);
+}
+
+#[test]
+fn object_level_flow_transfers_tokens_as_items() {
+    let model = Model::from_json(include_str!(
+        "../../../examples/objects/process-flow-transfer.ofm"
+    ))
+    .expect("model");
+    let report = run_model(&model).expect("run");
+    // The five source items arrive normally, plus five transferred token items.
+    assert_eq!(report.objects["Sink1"].input_count.mean, 10.0);
+    let flow = report.process_flow.as_ref().expect("flow report");
+    assert_eq!(flow.tokens_created, 5.0);
+    assert_eq!(flow.tokens_completed, 5.0);
+    let block = |id: &str| {
+        flow.blocks
+            .iter()
+            .find(|block| block.id == id)
+            .unwrap_or_else(|| panic!("missing block {id}; have {:?}", flow.blocks))
+    };
+    assert_eq!(block("Queue1.Create1").output_count, 5.0);
+    assert_eq!(block("Queue1.Assign1").output_count, 5.0);
+    assert_eq!(block("Queue1.Transfer1").input_count, 5.0);
+    assert_eq!(block("Queue1.Transfer1").output_count, 5.0);
+    assert_eq!(report.replications[0].items_created, 10);
+}
+
+#[test]
+fn object_level_flow_trace_and_checkpoint() {
+    use openflex_core::{simulate_traced, simulate_with_checkpoint};
+    let model = Model::from_json(include_str!(
+        "../../../examples/objects/process-flow-transfer.ofm"
+    ))
+    .expect("model");
+    let config = SimConfig {
+        stop_time: 100.0,
+        warmup: 0.0,
+        seed: 1,
+    };
+    let (_, trace) = simulate_traced(&model, &config, 0).expect("traced run");
+    for label in ["token_create", "token_assign", "token_transfer"] {
+        let count = trace
+            .events
+            .iter()
+            .filter(|event| event.event == label)
+            .count();
+        assert_eq!(count, 5, "{label}");
+    }
+
+    let first = SimConfig {
+        stop_time: 25.0,
+        ..config
+    };
+    let (_, checkpoint) = simulate_with_checkpoint(&model, &first, 0, None).expect("save");
+    let (resumed, _) =
+        simulate_with_checkpoint(&model, &config, 0, Some(&checkpoint)).expect("resume");
+    let (direct, _) = simulate_with_checkpoint(&model, &config, 0, None).expect("direct");
+    assert_eq!(
+        resumed, direct,
+        "object-flow resume must match a direct run"
+    );
+}
+
+#[test]
+fn invalid_transfer_and_entry_flows_are_rejected() {
+    // A model-level on_entry create block has no owner.
+    let model_level = r#"{
+      "format": "openflex-model", "version": 1, "name": "bad-on-entry",
+      "objects": [],
+      "process_flow": {
+        "blocks": [
+          { "id": "C", "kind": "create", "on_entry": true, "max_creations": 1 },
+          { "id": "S", "kind": "sink" }
+        ],
+        "connections": [{ "from": "C", "to": "S" }]
+      }
+    }"#;
+    let error = Model::from_json(model_level).expect_err("on_entry without owner");
+    assert!(error.to_string().contains("object-level"), "{error}");
+
+    // from_object transfers are documented as not implemented.
+    let from_object = r#"{
+      "format": "openflex-model", "version": 1, "name": "bad-from-object",
+      "objects": [
+        { "name": "Q", "kind": "queue", "params": {} },
+        { "name": "K", "kind": "sink", "params": {} },
+        { "name": "S", "kind": "source", "params": {} }
+      ],
+      "connections": [{ "from": "S", "to": "Q" }, { "from": "Q", "to": "K" }],
+      "process_flow": {
+        "blocks": [
+          { "id": "C", "kind": "create", "max_creations": 1 },
+          { "id": "T", "kind": "transfer", "object": "Q", "mode": "from_object" }
+        ],
+        "connections": [{ "from": "C", "to": "T" }]
+      }
+    }"#;
+    let error = Model::from_json(from_object).expect_err("from_object");
+    assert!(error.to_string().contains("from_object"), "{error}");
+
+    // An unknown transfer target is rejected.
+    let unknown = r#"{
+      "format": "openflex-model", "version": 1, "name": "bad-target",
+      "objects": [
+        { "name": "S", "kind": "source", "params": {} },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [{ "from": "S", "to": "K" }],
+      "process_flow": {
+        "blocks": [
+          { "id": "C", "kind": "create", "max_creations": 1 },
+          { "id": "T", "kind": "transfer", "object": "Ghost" }
+        ],
+        "connections": [{ "from": "C", "to": "T" }]
+      }
+    }"#;
+    let error = Model::from_json(unknown).expect_err("unknown target");
+    assert!(error.to_string().contains("unknown"), "{error}");
 }

@@ -1,0 +1,31 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "process-flow-transfer",
+  "description": "Object-level flow (B7): every item entering Queue1 spawns a token that is transferred into Sink1 as an extra item",
+  "time_unit": "seconds",
+  "run": { "stop_time": 100.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "constant", "value": 10.0 },
+        "max_arrivals": 5, "first_arrival": 0.0 } },
+    { "name": "Queue1", "kind": "queue", "pos": [5, 0], "params": {
+        "process_flow": {
+          "blocks": [
+            { "id": "Create1", "kind": "create", "on_entry": true, "quantity": 1 },
+            { "id": "Assign1", "kind": "assign", "actions": [
+                { "action": "set_label", "name": "transfer_tag", "value": "1" } ] },
+            { "id": "Transfer1", "kind": "transfer", "object": "Sink1", "mode": "to_object" }
+          ],
+          "connections": [
+            { "from": "Create1", "to": "Assign1" },
+            { "from": "Assign1", "to": "Transfer1" }
+          ]
+        } } },
+    { "name": "Sink1", "kind": "sink", "pos": [10, 0], "params": {} }
+  ],
+  "connections": [
+    { "from": "Source1", "to": "Queue1" },
+    { "from": "Queue1", "to": "Sink1" }
+  ]
+}

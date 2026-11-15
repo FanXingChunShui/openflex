@@ -51,12 +51,17 @@
 //!   needs (see [`crate::checkpoint`]).
 //! * A transporter's `capacity` is interpreted as the number of operator tasks
 //!   it can serve concurrently (openflex v1 does not carry flow items). The
-//!   elevator uses the same convention.
+//!   elevator uses the same convention. Elevator dispatchers order pending
+//!   calls by priority, then same floor, then the current travel direction,
+//!   then the nearest floor; door dwell is the elevator's `stop_time`.
 //! * The elevator family only moves vertically (`z`); there is no door state
 //!   machine, overload detection, call/scheduling strategy or shaft collision.
 //!   Persons/AGVs move on the plane with straight lines or the optional
 //!   `network`, have no walking grid/A* or crowding, and AGV batteries are not
-//!   modelled (documented alias of the transporter).
+//!   modelled (documented alias of the transporter). AGVs with a
+//!   `battery_capacity` spend `consumption_per_distance` per task distance and
+//!   recharge for `charge_time` when empty; the `charger` object is only a
+//!   validated reference and charging happens in place.
 //! * Operators stay with a processor through a breakdown instead of being
 //!   released; the processor simply pauses.
 //! * A MultiProcessor requests its whole crew (`slots` operators) for a busy
@@ -75,11 +80,17 @@
 //!   (validation rejects them). Per-block statistics are reported in
 //!   `SimReport.process_flow` and token events are written to the trace log
 //!   (`token_create`/`token_delay`/`token_assign`/`token_decision`/`token_sink`).
+//!   Every discrete object can own a `params.process_flow`: its `create` blocks
+//!   run on the model calendar or, with `on_entry`, once per received item, and
+//!   `transfer` blocks (`to_object`) convert a token into a flow item injected
+//!   into another object. `from_object` transfer is not implemented yet.
 //!   The object-free equivalent of the same graph is shown in
 //!   `examples/objects/process-flow-equivalent.ofm`.
 //! * An item leaving an object runs that object's `on_exit` trigger before the
 //!   receiver's `on_entry`/`on_receive` logic (Processor included); the sink
 //!   still runs its own `on_exit` when it destroys the item.
+//! * `Action::Script` is rejected by the engine until the script runtime is
+//!   wired in (`SimError::Config`); the model layer compiles scripts already.
 //! * The fluid family (B5) is incompressible: there is no pressure, temperature,
 //!   density or pipe delay. Integration uses a fixed step (`Model.fluid_step`,
 //!   default 0.1) that only exists while fluid objects are present; only steps
@@ -88,7 +99,10 @@
 //!   its outgoing links (each capped by the link's `flow_rate`), a tank releases
 //!   at most `max_outflow` per step right after receiving, a closed valve
 //!   passes nothing, and volumes that cannot be forwarded are dropped (only
-//!   tank overflow is counted).
+//!   tank overflow is counted). A `fluid_pipe` adds a pure transport delay
+//!   (`length/speed` or `delay`) with an optional flow cap and no backpressure,
+//!   and a valve's `pressure_threshold` is approximated by the incoming flow
+//!   rate (below it the valve stays closed and the volume is dropped).
 //! * A fluid object never accepts flow items and cannot be connected to a
 //!   discrete object; the two sub-systems simply coexist in one model.
 //! * Repeating arrival schedules treat later passes' row times as offsets from
@@ -102,8 +116,8 @@ use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 
 use openflex_model::{
     Action, ArrivalStyle, CombinerMode, ConditionalPort, Distribution, DowntimeWindow, EvalContext,
-    FlowBlockKind, Model, NetworkEdge, Object, ObjectKind, ObjectParams, PortStrategy, PullParams,
-    QueueOrder, RackType, SeparateMode, SimTrigger, Value,
+    FlowBlockKind, Model, NetworkEdge, Object, ObjectKind, ObjectParams, PortStrategy, ProcessFlow,
+    PullParams, QueueOrder, RackType, SeparateMode, SimTrigger, TransferMode, Value,
 };
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
@@ -242,8 +256,19 @@ pub(crate) enum EventKind {
     FlowDelayDone(usize, u64),
     /// Fixed-step fluid integration tick (B5).
     FluidStep,
+    /// An AGV finished charging (B6 battery).
+    ChargeDone(usize),
     /// Warm-up boundary: reset the statistics accumulators.
     ResetStats,
+}
+
+/// Static description of one process-flow block (model or object level).
+#[derive(Debug, Clone)]
+struct FlowBlockMeta {
+    id: String,
+    kind: FlowBlockKind,
+    /// Object that owns an object-level flow.
+    owner: Option<usize>,
 }
 
 /// One token waiting inside a process-flow block.
@@ -318,6 +343,9 @@ pub(crate) struct FluidObjectRt {
     pub overflow: f64,
     /// Cumulative volume entering the object.
     pub inflow: f64,
+    /// Pipe transport delay buffer: (release time, volume) entries.
+    #[serde(default)]
+    pub buffer: Vec<(f64, f64)>,
 }
 
 impl FluidObjectRt {
@@ -329,6 +357,7 @@ impl FluidObjectRt {
             throughput: 0.0,
             overflow: 0.0,
             inflow: 0.0,
+            buffer: Vec::new(),
         }
     }
 }
@@ -632,6 +661,19 @@ pub(crate) struct ObjectRt {
     position: [f64; 2],
     /// Height (floor) used by the elevator family (B6).
     z: f64,
+    /// Last elevator travel direction (-1 / 0 / +1), used for call ordering.
+    #[serde(default)]
+    elevator_direction: i8,
+    /// AGV battery remaining distance (B6 battery), `None` = unlimited.
+    #[serde(default)]
+    battery: Option<f64>,
+    #[serde(default)]
+    charging: bool,
+    #[serde(default)]
+    charge_until: f64,
+    /// Distance accumulated by the current task (battery drain).
+    #[serde(default)]
+    task_distance: f64,
     capacity: u32,
     tasks: usize,
     /// Requester currently served by this transporter (A10 preemption).
@@ -706,6 +748,11 @@ impl ObjectRt {
             merge_slots: Vec::new(),
             position: object.pos,
             z: object.z,
+            elevator_direction: 0,
+            battery: None,
+            charging: false,
+            charge_until: 0.0,
+            task_distance: 0.0,
             capacity: 1,
             tasks: 0,
             serving_requester: None,
@@ -747,7 +794,10 @@ impl ObjectRt {
             }
             ObjectParams::Transporter(params) => runtime.capacity = params.capacity.max(1),
             ObjectParams::Person(_) => runtime.capacity = 1,
-            ObjectParams::Agv(params) => runtime.capacity = params.capacity.max(1),
+            ObjectParams::Agv(params) => {
+                runtime.capacity = params.capacity.max(1);
+                runtime.battery = params.battery_capacity;
+            }
             ObjectParams::Elevator(params) => runtime.capacity = params.capacity.max(1),
             ObjectParams::Combiner(params) => runtime.combine_mode = params.mode,
             ObjectParams::MultiProcessor(params) => {
@@ -1148,8 +1198,14 @@ struct Simulation<'m> {
     /// statistical window.
     stats_completed: u64,
     event_count: u64,
-    /// B7: the optional process-flow token runtime.
+    /// B7: the optional process-flow token runtime (model and object flows).
     process_flow: Option<FlowRuntime>,
+    /// Static definitions of every flow block, by global block index.
+    flow_defs: Vec<FlowBlockMeta>,
+    /// Transfer blocks that inject items into an object, by target object.
+    flow_transfer_targets: Vec<Vec<usize>>,
+    /// `on_entry` create blocks, by owning object.
+    flow_entry_blocks: Vec<Vec<usize>>,
     /// B5: the optional fluid sub-system.
     fluid: Option<FluidRuntime>,
     /// B12: recorded events when tracing is enabled.
@@ -1233,36 +1289,10 @@ impl<'m> Simulation<'m> {
             }
         }
 
-        // B7: resolve the process-flow graph once.
-        let process_flow = model.process_flow.as_ref().map(|flow| {
-            let index: HashMap<&str, usize> = flow
-                .blocks
-                .iter()
-                .enumerate()
-                .map(|(position, block)| (block.id.as_str(), position))
-                .collect();
-            let mut connections = Vec::new();
-            let mut outgoing = vec![Vec::new(); flow.blocks.len()];
-            for connection in &flow.connections {
-                let (Some(&from), Some(&to)) = (
-                    index.get(connection.from.as_str()),
-                    index.get(connection.to.as_str()),
-                ) else {
-                    continue;
-                };
-                let port = connection.port.unwrap_or(outgoing[from].len() as u32);
-                outgoing[from].push(connections.len());
-                connections.push(FlowConnRt { to, port });
-            }
-            FlowRuntime {
-                blocks: vec![FlowBlockRt::default(); flow.blocks.len()],
-                connections,
-                outgoing,
-                next_token_id: 0,
-                tokens_created: 0,
-                tokens_completed: 0,
-            }
-        });
+        // B7: resolve model-level and object-level process flows into one
+        // global block graph (events identify blocks by their global index).
+        let (process_flow, flow_defs, flow_transfer_targets, flow_entry_blocks) =
+            build_process_flows(model, &by_name);
 
         let fluid = build_fluid_runtime(model);
 
@@ -1286,6 +1316,9 @@ impl<'m> Simulation<'m> {
             stats_completed: 0,
             event_count: 0,
             process_flow,
+            flow_defs,
+            flow_transfer_targets,
+            flow_entry_blocks,
             fluid,
             trace: if trace {
                 Some(TraceLog::default())
@@ -1743,10 +1776,8 @@ impl<'m> Simulation<'m> {
         self.stats_created = checkpoint.stats_created;
         self.stats_completed = checkpoint.stats_completed;
         self.event_count = checkpoint.event_count;
-        if let (Some(saved), Some(current)) = (
-            checkpoint.process_flow.as_ref(),
-            self.model.process_flow.as_ref(),
-        ) && saved.blocks.len() != current.blocks.len()
+        if let Some(saved) = checkpoint.process_flow.as_ref()
+            && saved.blocks.len() != self.flow_defs.len()
         {
             return Err(SimError::Config(
                 "checkpoint process-flow block count does not match the model".into(),
@@ -1784,6 +1815,7 @@ impl<'m> Simulation<'m> {
             EventKind::FlowAdvance(block) => self.handle_flow_advance(block),
             EventKind::FlowDelayDone(block, token) => self.handle_flow_delay_done(block, token),
             EventKind::FluidStep => self.handle_fluid_step(),
+            EventKind::ChargeDone(executor) => self.handle_charge_done(executor),
             EventKind::TransportPickup(transporter, requester) => {
                 self.handle_transport_pickup(transporter, requester)
             }
@@ -2355,7 +2387,8 @@ impl<'m> Simulation<'m> {
             ObjectParams::FluidGenerator(_)
             | ObjectParams::FluidTank(_)
             | ObjectParams::FluidValve(_)
-            | ObjectParams::FluidSink(_) => false,
+            | ObjectParams::FluidSink(_)
+            | ObjectParams::FluidPipe(_) => false,
         }
     }
 
@@ -2568,13 +2601,28 @@ impl<'m> Simulation<'m> {
             return Ok(false);
         }
         let mut item = item;
-        let kind = self.objects[target].kind;
         // The item now leaves the upstream object: its OnExit trigger runs
         // before the receiving object's OnEntry/OnReceive logic (A10-on_exit).
         let exit_actions = self.trigger_actions(from, SimTrigger::OnExit);
         if !exit_actions.is_empty() {
             self.apply_actions(from, &mut item, exit_actions)?;
         }
+        self.receive_item(target, to_port, item)
+    }
+
+    /// Receive an item at the target object: entry triggers, capacity already
+    /// checked, content/out-pending bookkeeping and the follow-up flow event.
+    /// Used by normal connections and by process-flow `transfer` blocks.
+    fn receive_item(
+        &mut self,
+        target: usize,
+        to_port: u32,
+        mut item: FlowItem,
+    ) -> Result<bool, SimError> {
+        if !self.can_accept(target, to_port) {
+            return Ok(false);
+        }
+        let kind = self.objects[target].kind;
         // Trigger the receiving object's OnEntry/OnReceive logic.
         let actions = self.trigger_actions(target, SimTrigger::OnEntry);
         if !actions.is_empty() {
@@ -2678,6 +2726,7 @@ impl<'m> Simulation<'m> {
                 self.schedule(now, EventKind::Flow(target));
             }
         }
+        self.trigger_entry_flow(target)?;
         self.notify_upstreams(target)?;
         Ok(true)
     }
@@ -2695,6 +2744,15 @@ impl<'m> Simulation<'m> {
         }
         // A3: items became available here, so pulling neighbours may proceed.
         self.notify_pullers(index);
+        // B7: transfer blocks waiting to inject an item into this object.
+        let blocks = self
+            .flow_transfer_targets
+            .get(index)
+            .cloned()
+            .unwrap_or_default();
+        for block in blocks {
+            self.flow_schedule_advance(block);
+        }
         Ok(())
     }
 
@@ -3356,20 +3414,16 @@ impl<'m> Simulation<'m> {
     }
 
     fn flow_block_kind(&self, block: usize) -> Option<FlowBlockKind> {
-        self.model
-            .process_flow
-            .as_ref()?
-            .blocks
-            .get(block)
-            .map(|definition| definition.kind.clone())
+        self.flow_defs.get(block).map(|meta| meta.kind.clone())
     }
 
     fn flow_block_name(&self, block: usize) -> String {
-        self.model
-            .process_flow
-            .as_ref()
-            .and_then(|flow| flow.blocks.get(block))
-            .map(|definition| definition.id.clone())
+        self.flow_defs
+            .get(block)
+            .map(|meta| match meta.owner {
+                Some(owner) => format!("{}.{}", self.objects[owner].name, meta.id),
+                None => meta.id.clone(),
+            })
             .unwrap_or_default()
     }
 
@@ -3435,6 +3489,9 @@ impl<'m> Simulation<'m> {
             .as_ref()
             .and_then(|flow| flow.blocks.get(block))
             .map_or(0, |state| state.creations);
+        if params.on_entry {
+            return Ok(());
+        }
         if let Some(max) = params.max_creations
             && creations >= max
         {
@@ -3472,12 +3529,31 @@ impl<'m> Simulation<'m> {
             return Ok(());
         }
         let quantity = params.quantity.max(1);
-        let item_type = params.item_type;
-        let labels = params.labels.clone();
+        self.spawn_flow_tokens(block, quantity, params.item_type, &params.labels);
+        if let Some(state) = self
+            .process_flow
+            .as_mut()
+            .and_then(|flow| flow.blocks.get_mut(block))
+        {
+            state.creations += 1;
+        }
+        self.flow_schedule_advance(block);
+        self.schedule_flow_create(block)
+    }
+
+    /// Create `quantity` tokens at `block` (shared by scheduled and
+    /// entry-triggered create blocks).
+    fn spawn_flow_tokens(
+        &mut self,
+        block: usize,
+        quantity: u32,
+        item_type: u32,
+        labels: &BTreeMap<String, f64>,
+    ) {
         for _ in 0..quantity {
             let token_id = {
                 let Some(flow) = self.process_flow.as_mut() else {
-                    return Ok(());
+                    return;
                 };
                 flow.next_token_id += 1;
                 flow.tokens_created += 1;
@@ -3494,15 +3570,25 @@ impl<'m> Simulation<'m> {
             self.flow_add_token(block, token, None);
             self.record_token_trace("token_create", block, token_id);
         }
-        if let Some(state) = self
-            .process_flow
-            .as_mut()
-            .and_then(|flow| flow.blocks.get_mut(block))
-        {
-            state.creations += 1;
+    }
+
+    /// B7: run the `on_entry` create blocks of an object that just received an
+    /// item.
+    fn trigger_entry_flow(&mut self, target: usize) -> Result<(), SimError> {
+        let blocks = self
+            .flow_entry_blocks
+            .get(target)
+            .cloned()
+            .unwrap_or_default();
+        for block in blocks {
+            let Some(FlowBlockKind::Create(params)) = self.flow_block_kind(block) else {
+                continue;
+            };
+            let quantity = params.quantity.max(1);
+            self.spawn_flow_tokens(block, quantity, params.item_type, &params.labels);
+            self.flow_schedule_advance(block);
         }
-        self.flow_schedule_advance(block);
-        self.schedule_flow_create(block)
+        Ok(())
     }
 
     fn handle_flow_advance(&mut self, block: usize) -> Result<(), SimError> {
@@ -3592,7 +3678,50 @@ impl<'m> Simulation<'m> {
                     }
                     self.record_token_trace("token_sink", block, token.id);
                 }
-                FlowBlockKind::Transfer(_) => break,
+                FlowBlockKind::Transfer(params) => {
+                    if params.mode != TransferMode::ToObject {
+                        break;
+                    }
+                    let Some(&target) = self.by_name.get(&params.object) else {
+                        break;
+                    };
+                    if !self.can_accept(target, 0) {
+                        // Keep the token in the block; `notify_upstreams`
+                        // wakes it when the target frees capacity.
+                        break;
+                    }
+                    let Some(entry) = self.flow_take_token(block, index) else {
+                        break;
+                    };
+                    let token = entry.token;
+                    let stay = now - token.entry_time;
+                    if let Some(state) = self
+                        .process_flow
+                        .as_mut()
+                        .and_then(|flow| flow.blocks.get_mut(block))
+                    {
+                        state.output += 1;
+                        state.stay_sum += stay;
+                        state.stay_count += 1;
+                    }
+                    self.items_created += 1;
+                    self.stats_created += 1;
+                    let item = FlowItem {
+                        id: self.items_created,
+                        item_type: token.item_type,
+                        labels: token.labels.clone(),
+                        created: now,
+                        entry_time: now,
+                    };
+                    self.record_token_trace("token_transfer", block, token.id);
+                    if !self.receive_item(target, 0, item)? {
+                        self.flow_add_token(block, token, None);
+                        break;
+                    }
+                    if let Some(flow) = self.process_flow.as_mut() {
+                        flow.tokens_completed += 1;
+                    }
+                }
             }
         }
         Ok(())
@@ -3767,16 +3896,22 @@ impl<'m> Simulation<'m> {
     /// Build the reported Process Flow statistics of this replication.
     fn flow_replication(&self, elapsed: f64) -> Option<ReplicationFlow> {
         let flow = self.process_flow.as_ref()?;
-        let definitions = self.model.process_flow.as_ref()?;
         let denom = elapsed.max(1e-12);
         let blocks = flow
             .blocks
             .iter()
             .enumerate()
             .map(|(position, state)| {
-                let definition = definitions.blocks.get(position);
+                let definition = self.flow_defs.get(position);
                 ReplicationFlowBlock {
-                    id: definition.map(|block| block.id.clone()).unwrap_or_default(),
+                    id: definition
+                        .map(|block| match block.owner {
+                            Some(owner) => {
+                                format!("{}.{}", self.objects[owner].name, block.id)
+                            }
+                            None => block.id.clone(),
+                        })
+                        .unwrap_or_default(),
                     kind: definition
                         .map(|block| flow_block_kind_name(&block.kind).to_string())
                         .unwrap_or_default(),
@@ -3895,7 +4030,12 @@ impl<'m> Simulation<'m> {
                         _ => continue,
                     };
                     let entering = influx[position];
-                    let offered = if params.open {
+                    let incoming_rate = if dt > EPS { entering / dt } else { 0.0 };
+                    let open = params.open
+                        && params
+                            .pressure_threshold
+                            .is_none_or(|threshold| incoming_rate >= threshold);
+                    let offered = if open {
                         entering * params.ratio.clamp(0.0, 1.0)
                     } else {
                         0.0
@@ -3906,6 +4046,48 @@ impl<'m> Simulation<'m> {
                         let state = &mut fluid.state[position];
                         state.inflow += entering;
                         state.throughput += sent;
+                    }
+                }
+                ObjectKind::FluidPipe => {
+                    let params = match &self.model.objects[model_indices[position]].params {
+                        ObjectParams::FluidPipe(params) => params.clone(),
+                        _ => continue,
+                    };
+                    let delay = params
+                        .delay
+                        .unwrap_or_else(|| params.length / params.speed.max(EPS))
+                        .max(0.0);
+                    // Release the volume whose travel time has elapsed.
+                    let mut released = 0.0;
+                    let mut remaining: Vec<(f64, f64)> = Vec::new();
+                    if let Some(fluid) = self.fluid.as_mut() {
+                        for (arrival, volume) in fluid.state[position].buffer.drain(..) {
+                            if arrival <= now + EPS {
+                                released += volume;
+                            } else {
+                                remaining.push((arrival, volume));
+                            }
+                        }
+                        fluid.state[position].buffer = remaining;
+                    }
+                    let sent =
+                        distribute_fluid(&links, &outgoing[position], released, dt, &mut influx);
+                    // Accept new volume into the pipe, capped by flow_rate.
+                    let entering = influx[position];
+                    let capacity = params
+                        .flow_rate
+                        .map(|rate| rate * dt)
+                        .unwrap_or(f64::INFINITY);
+                    let accepted = entering.min(capacity);
+                    if let Some(fluid) = self.fluid.as_mut() {
+                        let state = &mut fluid.state[position];
+                        state.inflow += accepted;
+                        state.throughput += sent;
+                        if accepted > 0.0 {
+                            state.buffer.push((now + delay, accepted));
+                        }
+                        state.level = state.buffer.iter().map(|(_, volume)| volume).sum();
+                        state.level_max = state.level_max.max(state.level);
                     }
                 }
                 ObjectKind::FluidSink => {
@@ -4088,6 +4270,15 @@ impl<'m> Simulation<'m> {
         if !self.objects[dispatcher].on_shift {
             return Ok(());
         }
+        // B6: a dispatcher that only owns elevators uses floor-aware call
+        // ordering (same floor, then same direction, then nearest floor).
+        let elevator_only = !self.transporters[dispatcher].is_empty()
+            && self.transporters[dispatcher]
+                .iter()
+                .all(|&executor| self.objects[executor].kind == ObjectKind::Elevator);
+        if elevator_only {
+            return self.dispatch_elevator(dispatcher);
+        }
         while let Some(position) = self.pick_request(dispatcher) {
             let requester = self.objects[dispatcher].requests[position];
             let Some(transporter) = self.pick_transporter(dispatcher, requester) else {
@@ -4101,6 +4292,8 @@ impl<'m> Simulation<'m> {
             self.objects[dispatcher].requests.remove(position);
             self.objects[transporter].tasks += 1;
             self.objects[transporter].serving_requester = Some(requester);
+            self.objects[transporter].task_distance =
+                self.transport_estimate_distance(transporter, requester);
             self.objects[transporter].acc.input += 1;
             // A5: the operator is on its way; the destination counts it as an
             // in-transit item until it arrives.
@@ -4128,6 +4321,86 @@ impl<'m> Simulation<'m> {
         let busy = !self.objects[dispatcher].requests.is_empty();
         self.set_state(dispatcher, if busy { State::Blocked } else { State::Idle });
         Ok(())
+    }
+
+    /// B6: dispatch queued operator tasks to the elevators, preferring calls on
+    /// the current floor, then the current direction, then the nearest floor.
+    fn dispatch_elevator(&mut self, dispatcher: usize) -> Result<(), SimError> {
+        while let Some(executor) = self.transporters[dispatcher]
+            .iter()
+            .copied()
+            .find(|&executor| {
+                self.objects[executor].tasks < self.objects[executor].capacity as usize
+            })
+        {
+            let Some(position) = self.pick_elevator_request(dispatcher, executor) else {
+                break;
+            };
+            let requester = self.objects[dispatcher].requests[position];
+            self.objects[dispatcher].requests.remove(position);
+            let pickup_travel = self.transport_pickup_travel(executor);
+            self.objects[executor].tasks += 1;
+            self.objects[executor].serving_requester = Some(requester);
+            self.objects[executor].acc.input += 1;
+            let delta = self.objects[requester].z - self.objects[executor].z;
+            self.objects[executor].elevator_direction = if delta > EPS {
+                1
+            } else if delta < -EPS {
+                -1
+            } else {
+                0
+            };
+            self.objects[requester].in_transit += 1;
+            self.set_state(executor, State::Busy);
+            self.schedule(
+                self.now + pickup_travel,
+                EventKind::TransportPickup(executor, requester),
+            );
+        }
+        let stale: Vec<usize> = self.objects[dispatcher]
+            .requests
+            .iter()
+            .copied()
+            .filter(|&requester| !self.objects[requester].requesting_operator)
+            .collect();
+        if !stale.is_empty() {
+            self.objects[dispatcher]
+                .requests
+                .retain(|requester| !stale.contains(requester));
+        }
+        let busy = !self.objects[dispatcher].requests.is_empty();
+        self.set_state(dispatcher, if busy { State::Blocked } else { State::Idle });
+        Ok(())
+    }
+
+    fn pick_elevator_request(&self, dispatcher: usize, executor: usize) -> Option<usize> {
+        let current_floor = self.objects[executor].z;
+        let direction = self.objects[executor].elevator_direction;
+        let mut best: Option<(usize, u32, bool, bool, f64)> = None;
+        for (position, &requester) in self.objects[dispatcher].requests.iter().enumerate() {
+            if !self.objects[requester].requesting_operator {
+                continue;
+            }
+            let priority = self.request_priority(requester);
+            let floor = self.objects[requester].z;
+            let delta = floor - current_floor;
+            let same_floor = delta.abs() <= EPS;
+            let same_direction = direction != 0 && !same_floor && (delta > 0.0) == (direction > 0);
+            let score = (priority, same_floor, same_direction, -delta.abs());
+            let better = match best {
+                None => true,
+                Some((_, best_priority, best_floor, best_direction, best_distance)) => {
+                    score.0 > best_priority
+                        || (score.0 == best_priority
+                            && (score.1, score.2, score.3)
+                                > (best_floor, best_direction, best_distance))
+                }
+            };
+            if better {
+                best = Some((position, priority, same_floor, same_direction, -delta.abs()));
+            }
+        }
+        best.map(|(position, _, _, _, _)| position)
     }
 
     /// Position of the pending request with the highest operator priority
@@ -4232,6 +4505,89 @@ impl<'m> Simulation<'m> {
 
     /// Pick an idle transporter for a request, with the travel time to the
     /// requesting object (euclidean distance / speed).
+    /// B6 battery: consume the distance of the finished task and start a
+    /// recharge when the pack is empty.
+    fn drain_agv_battery(&mut self, transporter: usize) -> Result<(), SimError> {
+        if self.objects[transporter].kind != ObjectKind::Agv {
+            return Ok(());
+        }
+        let Some(capacity) = self.agv_battery_capacity(transporter) else {
+            return Ok(());
+        };
+        let consumption = self.agv_consumption(transporter);
+        let distance = std::mem::take(&mut self.objects[transporter].task_distance);
+        let battery = self.objects[transporter].battery.unwrap_or(capacity);
+        let remaining = (battery - consumption * distance).max(0.0);
+        self.objects[transporter].battery = Some(remaining);
+        if remaining <= EPS {
+            self.start_charging(transporter)?;
+        }
+        Ok(())
+    }
+
+    fn agv_battery_capacity(&self, transporter: usize) -> Option<f64> {
+        match &self.model.objects[transporter].params {
+            ObjectParams::Agv(params) => params.battery_capacity,
+            _ => None,
+        }
+    }
+
+    fn agv_consumption(&self, transporter: usize) -> f64 {
+        match &self.model.objects[transporter].params {
+            ObjectParams::Agv(params) => params.consumption_per_distance.unwrap_or(1.0).max(EPS),
+            _ => 1.0,
+        }
+    }
+
+    fn start_charging(&mut self, transporter: usize) -> Result<(), SimError> {
+        if self.objects[transporter].charging {
+            return Ok(());
+        }
+        let Some(capacity) = self.agv_battery_capacity(transporter) else {
+            return Ok(());
+        };
+        let distribution = match &self.model.objects[transporter].params {
+            ObjectParams::Agv(params) => params.charge_time.clone(),
+            _ => Distribution::Constant { value: 0.0 },
+        };
+        let charge = self.sample(&distribution).max(0.0);
+        self.objects[transporter].charging = true;
+        self.objects[transporter].charge_until = self.now + charge;
+        self.record_object_trace("agv_charge", transporter);
+        if charge <= EPS {
+            self.objects[transporter].battery = Some(capacity);
+            self.objects[transporter].charging = false;
+        } else {
+            self.schedule(self.now + charge, EventKind::ChargeDone(transporter));
+        }
+        Ok(())
+    }
+
+    fn handle_charge_done(&mut self, transporter: usize) -> Result<(), SimError> {
+        if let Some(capacity) = self.agv_battery_capacity(transporter) {
+            self.objects[transporter].battery = Some(capacity);
+        }
+        self.objects[transporter].charging = false;
+        self.objects[transporter].charge_until = 0.0;
+        if let Some(dispatcher) = self.objects[transporter].assigned_dispatcher {
+            self.dispatch(dispatcher)?;
+        }
+        Ok(())
+    }
+
+    fn record_object_trace(&mut self, label: &str, index: usize) {
+        if self.trace.is_none() {
+            return;
+        }
+        let name = self.objects[index].name.clone();
+        let time = self.now;
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        if let Some(log) = self.trace.as_mut() {
+            log.push(TraceEvent::new(time, seq, label, name));
+        }
+    }
+
     fn pick_transporter(&self, dispatcher: usize, requester: usize) -> Option<usize> {
         let mut best: Option<(usize, f64)> = None;
         for &transporter in &self.transporters[dispatcher] {
@@ -4239,6 +4595,9 @@ impl<'m> Simulation<'m> {
                 continue;
             }
             if self.objects[transporter].tasks >= self.objects[transporter].capacity as usize {
+                continue;
+            }
+            if self.objects[transporter].charging {
                 continue;
             }
             let travel = self.transport_estimate_travel(transporter, requester);
@@ -4281,9 +4640,10 @@ impl<'m> Simulation<'m> {
 
     fn transport_load_time(&mut self, transporter: usize) -> f64 {
         let distribution = match &self.model.objects[transporter].params {
-            ObjectParams::Transporter(params)
-            | ObjectParams::Person(params)
-            | ObjectParams::Agv(params) => params.load_time.clone(),
+            ObjectParams::Transporter(params) | ObjectParams::Person(params) => {
+                params.load_time.clone()
+            }
+            ObjectParams::Agv(params) => params.load_time.clone(),
             _ => Distribution::Constant { value: 0.0 },
         };
         self.sample(&distribution).max(0.0)
@@ -4291,9 +4651,10 @@ impl<'m> Simulation<'m> {
 
     fn transport_unload_time(&mut self, transporter: usize) -> f64 {
         let distribution = match &self.model.objects[transporter].params {
-            ObjectParams::Transporter(params)
-            | ObjectParams::Person(params)
-            | ObjectParams::Agv(params) => params.unload_time.clone(),
+            ObjectParams::Transporter(params) | ObjectParams::Person(params) => {
+                params.unload_time.clone()
+            }
+            ObjectParams::Agv(params) => params.unload_time.clone(),
             _ => Distribution::Constant { value: 0.0 },
         };
         self.sample(&distribution).max(0.0)
@@ -4346,9 +4707,10 @@ impl<'m> Simulation<'m> {
             return (self.objects[from].z - self.objects[to].z).abs();
         }
         let edges: Vec<NetworkEdge> = match &self.model.objects[transporter].params {
-            ObjectParams::Transporter(params)
-            | ObjectParams::Person(params)
-            | ObjectParams::Agv(params) => params.network.clone(),
+            ObjectParams::Transporter(params) | ObjectParams::Person(params) => {
+                params.network.clone()
+            }
+            ObjectParams::Agv(params) => params.network.clone(),
             _ => Vec::new(),
         };
         if !edges.is_empty()
@@ -4362,9 +4724,10 @@ impl<'m> Simulation<'m> {
 
     fn transport_speed(&self, transporter: usize) -> f64 {
         match &self.model.objects[transporter].params {
-            ObjectParams::Transporter(params)
-            | ObjectParams::Person(params)
-            | ObjectParams::Agv(params) => params.speed.max(EPS),
+            ObjectParams::Transporter(params) | ObjectParams::Person(params) => {
+                params.speed.max(EPS)
+            }
+            ObjectParams::Agv(params) => params.speed.max(EPS),
             ObjectParams::Elevator(params) => params.speed.max(EPS),
             _ => 1.0,
         }
@@ -4391,6 +4754,18 @@ impl<'m> Simulation<'m> {
     fn transport_estimate_travel(&self, transporter: usize, requester: usize) -> f64 {
         self.transport_pickup_travel(transporter)
             + self.transport_leg_travel(transporter, requester)
+    }
+
+    /// Full task travel distance (pickup + delivery + return) for battery drain.
+    fn transport_estimate_distance(&self, transporter: usize, requester: usize) -> f64 {
+        let speed = self.transport_speed(transporter);
+        let pickup = self.transport_pickup_travel(transporter) * speed;
+        let leg = self.transport_leg_travel(transporter, requester) * speed;
+        let home = match self.objects[transporter].home {
+            Some(home) => self.transport_object_distance(transporter, requester, home),
+            None => 0.0,
+        };
+        pickup + leg + home
     }
 
     fn handle_operator_loaded(
@@ -4443,6 +4818,7 @@ impl<'m> Simulation<'m> {
         self.objects[transporter].tasks = self.objects[transporter].tasks.saturating_sub(1);
         self.objects[transporter].serving_requester = None;
         self.objects[transporter].acc.output += 1;
+        self.drain_agv_battery(transporter)?;
         self.set_state(transporter, State::Idle);
         if let Some(dispatcher) = self.objects[transporter].assigned_dispatcher {
             self.dispatch(dispatcher)?;
@@ -5424,6 +5800,11 @@ impl<'m> Simulation<'m> {
                     // Removing an item outside the normal flow is only safe at
                     // receive time; the item is simply dropped here.
                 }
+                Action::Script { .. } => {
+                    return Err(SimError::Config(
+                        "script actions are not executed by the engine yet".into(),
+                    ));
+                }
                 Action::ReleaseItem => {
                     // A4: clear the hold and retry the delivery in the same
                     // instant, exactly like `sendToPort` after `releaseitem`.
@@ -5479,6 +5860,7 @@ impl<'m> Simulation<'m> {
             fluid.last_time = self.now;
             for state in &mut fluid.state {
                 state.level_integral = 0.0;
+                state.level = state.buffer.iter().map(|(_, volume)| volume).sum();
                 state.level_max = state.level;
                 state.throughput = 0.0;
                 state.overflow = 0.0;
@@ -5551,6 +5933,11 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
             (None, "flow_delay_done", Some(("block", *block as f64)))
         }
         EventKind::FluidStep => (None, "fluid_step", None),
+        EventKind::ChargeDone(executor) => (
+            Some(*executor),
+            "agv_charged",
+            Some(("executor", *executor as f64)),
+        ),
         EventKind::ResetStats => (None, "reset_stats", None),
     }
 }
@@ -5725,6 +6112,7 @@ fn is_fluid_kind(kind: ObjectKind) -> bool {
             | ObjectKind::FluidTank
             | ObjectKind::FluidValve
             | ObjectKind::FluidSink
+            | ObjectKind::FluidPipe
     )
 }
 
@@ -5734,6 +6122,7 @@ fn fluid_kind_name(kind: ObjectKind) -> &'static str {
         ObjectKind::FluidTank => "fluid_tank",
         ObjectKind::FluidValve => "fluid_valve",
         ObjectKind::FluidSink => "fluid_sink",
+        ObjectKind::FluidPipe => "fluid_pipe",
         _ => "fluid",
     }
 }
@@ -5781,6 +6170,89 @@ fn distribute_fluid(
         sent += amount;
     }
     sent
+}
+
+/// Resolve the model-level and object-level process flows into one graph (B7).
+#[allow(clippy::type_complexity)]
+fn build_process_flows(
+    model: &Model,
+    by_name: &HashMap<String, usize>,
+) -> (
+    Option<FlowRuntime>,
+    Vec<FlowBlockMeta>,
+    Vec<Vec<usize>>,
+    Vec<Vec<usize>>,
+) {
+    let mut defs: Vec<FlowBlockMeta> = Vec::new();
+    let mut connections: Vec<FlowConnRt> = Vec::new();
+    let mut outgoing: Vec<Vec<usize>> = Vec::new();
+    let mut transfer_targets: Vec<Vec<usize>> = vec![Vec::new(); model.objects.len()];
+    let mut entry_blocks: Vec<Vec<usize>> = vec![Vec::new(); model.objects.len()];
+
+    let mut add_flow = |flow: &ProcessFlow, owner: Option<usize>| {
+        let base = defs.len();
+        let index: HashMap<&str, usize> = flow
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(position, block)| (block.id.as_str(), base + position))
+            .collect();
+        for (position, block) in flow.blocks.iter().enumerate() {
+            let global = base + position;
+            defs.push(FlowBlockMeta {
+                id: block.id.clone(),
+                kind: block.kind.clone(),
+                owner,
+            });
+            outgoing.push(Vec::new());
+            match &block.kind {
+                FlowBlockKind::Transfer(params) if params.mode == TransferMode::ToObject => {
+                    if let Some(&target) = by_name.get(params.object.as_str()) {
+                        transfer_targets[target].push(global);
+                    }
+                }
+                FlowBlockKind::Create(params) if params.on_entry => {
+                    if let Some(owner) = owner {
+                        entry_blocks[owner].push(global);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for connection in &flow.connections {
+            let (Some(&from), Some(&to)) = (
+                index.get(connection.from.as_str()),
+                index.get(connection.to.as_str()),
+            ) else {
+                continue;
+            };
+            let port = connection.port.unwrap_or(outgoing[from].len() as u32);
+            outgoing[from].push(connections.len());
+            connections.push(FlowConnRt { to, port });
+        }
+    };
+
+    if let Some(flow) = model.process_flow.as_ref() {
+        add_flow(flow, None);
+    }
+    for (index, object) in model.objects.iter().enumerate() {
+        if let Some(flow) = object.params.process_flow() {
+            add_flow(flow, Some(index));
+        }
+    }
+
+    if defs.is_empty() {
+        return (None, defs, transfer_targets, entry_blocks);
+    }
+    let runtime = FlowRuntime {
+        blocks: vec![FlowBlockRt::default(); defs.len()],
+        connections,
+        outgoing,
+        next_token_id: 0,
+        tokens_created: 0,
+        tokens_completed: 0,
+    };
+    (Some(runtime), defs, transfer_targets, entry_blocks)
 }
 
 /// Resolve the fluid sub-graph once at start-up (B5).

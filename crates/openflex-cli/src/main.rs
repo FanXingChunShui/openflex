@@ -31,6 +31,7 @@ mod optimize;
 mod progress;
 mod schema;
 mod serve;
+mod studio;
 mod templates;
 
 use std::ffi::OsString;
@@ -277,6 +278,17 @@ enum Command {
         /// Write the search result here instead of standard output.
         #[arg(long, short = 'o', value_name = "FILE")]
         output: Option<PathBuf>,
+    },
+    /// Open a local web studio: 3D view, object editor and run button.
+    Studio {
+        /// Path to the model file to edit and run.
+        model: PathBuf,
+        /// TCP port to bind (0 picks a free port).
+        #[arg(long, default_value_t = 0)]
+        port: u16,
+        /// Do not open a browser window.
+        #[arg(long)]
+        no_open: bool,
     },
     /// Serve a minimal read-only HTTP API on 127.0.0.1 (`/health`, `/objects`).
     Serve {
@@ -841,6 +853,12 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                 progress,
             },
         ),
+        Command::Studio {
+            model,
+            port,
+            no_open,
+        } => studio::serve(&model, port, !no_open, quiet)
+            .map_err(|error| Failure::runtime(anyhow!(error))),
         Command::Serve { port } => {
             serve::serve(port, quiet).map_err(|error| Failure::runtime(anyhow!(error)))
         }

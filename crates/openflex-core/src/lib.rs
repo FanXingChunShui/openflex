@@ -23,6 +23,7 @@ pub mod checkpoint;
 pub mod conveyor;
 pub mod engine;
 pub mod error;
+pub mod script;
 pub mod shifts;
 pub mod stats;
 pub mod trace;
@@ -33,6 +34,10 @@ pub use engine::{
     simulate_with_checkpoint_traced,
 };
 pub use error::SimError;
+pub use script::{
+    CompiledScript, ScriptContext, ScriptEngine, ScriptError, ScriptMessage, ScriptOutcome,
+    compile as compile_script,
+};
 pub use stats::{
     Aggregate, FlowBlockReport, FlowReport, FluidObjectReport, FluidReport, LittleCheck,
     LittleEntry, ObjectAggregate, ObjectStats, ReplicationFlow, ReplicationFlowBlock,

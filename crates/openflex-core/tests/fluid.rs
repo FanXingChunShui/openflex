@@ -178,3 +178,76 @@ fn invalid_fluid_models_are_rejected() {
     );
     assert!(Model::from_json(&bad_step).is_err(), "negative step");
 }
+
+#[test]
+fn fluid_pipe_buffers_and_delays_volume() {
+    let model =
+        Model::from_json(include_str!("../../../examples/objects/fluid-pipe.ofm")).expect("model");
+    let report = run_model(&model).expect("run");
+    let fluid = report.fluid.as_ref().expect("fluid report");
+    let pipe = block(fluid, "Pipe1");
+    // 10 volume units per second stay in transit for 5 seconds.
+    assert_near(pipe.level_max, 50.0, 0.5, "pipe in-transit volume");
+    assert_near(pipe.level_avg, 47.9, 1.0, "pipe average volume");
+    assert_near(pipe.throughput, 9.15, 0.05, "pipe throughput");
+    let sink = block(fluid, "Sink1");
+    assert_near(sink.throughput, 9.15, 0.05, "sink throughput after delay");
+    let tank = block(fluid, "Tank1");
+    assert_near(tank.throughput, 10.0, 0.05, "tank outflow");
+    assert_near(fluid.total_inflow, 10.0, 0.05, "total inflow");
+}
+
+#[test]
+fn valve_pressure_threshold_closes_the_line() {
+    let json = include_str!("../../../examples/objects/fluid-pipe.ofm").replace(
+        "\"pressure_threshold\": 5.0",
+        "\"pressure_threshold\": 15.0",
+    );
+    let model = Model::from_json(&json).expect("model");
+    let report = run_model(&model).expect("run");
+    let fluid = report.fluid.as_ref().expect("fluid report");
+    // The incoming 10/s is below the 15/s threshold, so the valve stays shut
+    // and the pipe fills up instead of forwarding.
+    assert_near(block(fluid, "Sink1").throughput, 0.0, 1e-9, "closed sink");
+    assert_near(block(fluid, "Valve1").throughput, 0.0, 1e-9, "closed valve");
+    // No backpressure is modelled: the pipe keeps its 5s in-transit volume and
+    // the closed valve simply drops what reaches it.
+    assert_near(
+        block(fluid, "Pipe1").level_max,
+        50.0,
+        0.5,
+        "pipe stays pressurised",
+    );
+}
+
+#[test]
+fn invalid_pipe_and_threshold_params_are_rejected() {
+    let bad_pipe = r#"{
+      "format": "openflex-model", "version": 1, "name": "bad-pipe",
+      "objects": [
+        { "name": "G", "kind": "fluid_generator", "params": {} },
+        { "name": "P", "kind": "fluid_pipe", "params": { "length": 0.0 } },
+        { "name": "S", "kind": "fluid_sink", "params": {} }
+      ],
+      "connections": [
+        { "from": "G", "to": "P" }, { "from": "P", "to": "S" }
+      ]
+    }"#;
+    assert!(Model::from_json(bad_pipe).is_err(), "zero length");
+
+    let bad_threshold = r#"{
+      "format": "openflex-model", "version": 1, "name": "bad-threshold",
+      "objects": [
+        { "name": "G", "kind": "fluid_generator", "params": {} },
+        { "name": "V", "kind": "fluid_valve", "params": { "pressure_threshold": -1.0 } },
+        { "name": "S", "kind": "fluid_sink", "params": {} }
+      ],
+      "connections": [
+        { "from": "G", "to": "V" }, { "from": "V", "to": "S" }
+      ]
+    }"#;
+    assert!(
+        Model::from_json(bad_threshold).is_err(),
+        "negative threshold"
+    );
+}

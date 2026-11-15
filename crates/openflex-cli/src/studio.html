@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenFlex Studio — __MODEL_NAME__</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; font: 14px/1.4 system-ui, -apple-system, sans-serif; color: #0f172a;
+         background: #e2e8f0; display: flex; flex-direction: column; overflow: hidden; }
+  header { display: flex; align-items: center; gap: 14px; padding: 10px 16px;
+           background: #0f172a; color: #f8fafc; }
+  header h1 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: .2px; }
+  header .file { color: #94a3b8; font-size: 12px; }
+  #status { margin-left: auto; font-size: 12px; color: #cbd5e1; max-width: 45vw; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; }
+  main { flex: 1; display: grid; grid-template-columns: 320px minmax(0, 1fr) 360px;
+         gap: 1px; background: #cbd5e1; min-height: 0; }
+  aside, section { background: #f8fafc; min-height: 0; overflow: auto; }
+  aside { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  section.view { position: relative; overflow: hidden; background: #f1f5f9; }
+  section.report { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+  h2 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: #475569; }
+  .row { display: flex; gap: 8px; }
+  button { font: inherit; padding: 5px 12px; border-radius: 6px; border: 1px solid #334155;
+           background: #ffffff; cursor: pointer; }
+  button:hover { background: #e2e8f0; }
+  button.primary { background: #1d4ed8; border-color: #1d4ed8; color: white; }
+  button.primary:hover { background: #2563eb; }
+  #object-list { display: flex; flex-direction: column; gap: 4px; }
+  .object-button { text-align: left; display: flex; justify-content: space-between; gap: 8px; }
+  .object-button.active { background: #dbeafe; border-color: #1d4ed8; }
+  .object-button .kind { color: #64748b; font-size: 12px; }
+  #editor { display: flex; flex-direction: column; gap: 8px; }
+  #editor label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: #475569; }
+  input, select, textarea { font: inherit; padding: 4px 6px; border: 1px solid #94a3b8;
+                            border-radius: 5px; background: white; color: #0f172a; }
+  textarea { min-height: 150px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+             font-size: 12px; }
+  .muted { color: #64748b; font-size: 12px; }
+  #scene { display: block; width: 100%; height: 100%; cursor: grab; }
+  #scene.dragging { cursor: grabbing; }
+  .hint { position: absolute; left: 12px; bottom: 10px; font-size: 12px; color: #64748b;
+          background: rgba(248,250,252,.85); padding: 2px 6px; border-radius: 5px; }
+  #report table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  #report th, #report td { border-bottom: 1px solid #cbd5e1; padding: 3px 4px; text-align: right; }
+  #report th:first-child, #report td:first-child { text-align: left; }
+  #chart { width: 100%; height: 150px; background: white; border: 1px solid #cbd5e1;
+           border-radius: 6px; }
+  .error { color: #b91c1c; }
+  .ok { color: #15803d; }
+</style>
+</head>
+<body>
+<header>
+  <h1>OpenFlex Studio</h1>
+  <span class="file">__MODEL_FILE__</span>
+  <span id="status">loading…</span>
+</header>
+<main>
+  <aside>
+    <div class="row">
+      <button id="reload" type="button">Reload</button>
+      <button id="run" class="primary" type="button">Run</button>
+    </div>
+    <h2>Objects</h2>
+    <div id="object-list"><p class="muted">loading…</p></div>
+    <h2>Edit object</h2>
+    <div id="editor"><p class="muted">Select an object to edit its name, kind and parameters.</p></div>
+  </aside>
+  <section class="view">
+    <canvas id="scene" aria-label="3D model view"></canvas>
+    <div class="hint">drag to rotate · wheel to zoom</div>
+  </section>
+  <section class="report">
+    <h2>Report</h2>
+    <div id="report"><p class="muted">Press Run to simulate the model.</p></div>
+    <canvas id="chart" aria-label="Throughput chart"></canvas>
+  </section>
+</main>
+<script>
+"use strict";
+const state = {
+  model: null,
+  kinds: [],
+  selected: 0,
+  yaw: 45,
+  pitch: 30,
+  zoom: 1,
+  dragging: false,
+  lastX: 0,
+  lastY: 0,
+  report: null,
+  statusTimer: null,
+};
+
+const $ = id => document.getElementById(id);
+const scene = $("scene");
+const chart = $("chart");
+
+function setStatus(text, isError = false) {
+  const status = $("status");
+  status.textContent = text;
+  status.className = isError ? "error" : "";
+  clearTimeout(state.statusTimer);
+  if (!isError) {
+    state.statusTimer = setTimeout(() => { status.textContent = ""; }, 5000);
+  }
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, options);
+  const text = await response.text();
+  let data;
+  try { data = JSON.parse(text); } catch (_) { data = { raw: text }; }
+  if (!response.ok) {
+    throw new Error(data.error || data.raw || `${response.status} ${response.statusText}`);
+  }
+  return data;
+}
+
+function escapeText(text) {
+  return String(text).replace(/[&<>"']/g, ch => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  })[ch]);
+}
+
+async function loadAll() {
+  setStatus("loading model…");
+  try {
+    const [model, catalog] = await Promise.all([api("/api/model"), api("/api/objects")]);
+    state.model = model;
+    state.kinds = catalog.objects || [];
+    state.selected = Math.min(state.selected, Math.max(0, model.objects.length - 1));
+    renderObjectList();
+    renderEditor();
+    setStatus("model loaded");
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+function renderObjectList() {
+  const list = $("object-list");
+  if (!state.model || state.model.objects.length === 0) {
+    list.innerHTML = '<p class="muted">The model has no objects.</p>';
+    return;
+  }
+  list.innerHTML = "";
+  state.model.objects.forEach((object, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "object-button" + (index === state.selected ? " active" : "");
+    button.innerHTML = `<span>${escapeText(object.name)}</span><span class="kind">${escapeText(object.kind)}</span>`;
+    button.addEventListener("click", () => {
+      state.selected = index;
+      renderObjectList();
+      renderEditor();
+    });
+    list.appendChild(button);
+  });
+}
+
+function renderEditor() {
+  const editor = $("editor");
+  const object = state.model && state.model.objects[state.selected];
+  if (!object) {
+    editor.innerHTML = '<p class="muted">Select an object to edit.</p>';
+    return;
+  }
+  const options = state.kinds.map(kind =>
+    `<option value="${escapeText(kind.kind)}"${kind.kind === object.kind ? " selected" : ""}>${escapeText(kind.kind)}</option>`
+  ).join("");
+  const params = JSON.stringify(object.params || {}, null, 2);
+  editor.innerHTML = `
+    <label>Name <input id="edit-name" value="${escapeText(object.name)}"></label>
+    <label>Kind <select id="edit-kind">${options}</select></label>
+    <label>Key parameters (JSON) <textarea id="edit-params" spellcheck="false">${escapeText(params)}</textarea></label>
+    <div class="row">
+      <button id="save-object" class="primary" type="button">Save model</button>
+      <button id="revert-object" type="button">Revert</button>
+    </div>
+    <p class="muted">Saving validates the whole model on the server and writes the .ofm file.</p>`;
+  $("save-object").addEventListener("click", saveObject);
+  $("revert-object").addEventListener("click", renderEditor);
+}
+
+async function saveObject() {
+  const object = state.model.objects[state.selected];
+  const oldName = object.name;
+  let params;
+  try {
+    params = JSON.parse($("edit-params").value || "{}");
+  } catch (error) {
+    setStatus(`parameters are not valid JSON: ${error.message}`, true);
+    return;
+  }
+  const next = {
+    ...object,
+    name: $("edit-name").value.trim(),
+    kind: $("edit-kind").value,
+    params,
+  };
+  if (!next.name) {
+    setStatus("the object name cannot be empty", true);
+    return;
+  }
+  const model = state.model;
+  model.objects[state.selected] = next;
+  if (oldName !== next.name) {
+    for (const connection of model.connections || []) {
+      if (connection.from === oldName) connection.from = next.name;
+      if (connection.to === oldName) connection.to = next.name;
+    }
+  }
+  setStatus("saving…");
+  try {
+    const response = await api("/api/model", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(model),
+    });
+    setStatus(`saved ${response.objects} objects`);
+    await loadAll();
+  } catch (error) {
+    setStatus(error.message, true);
+    await loadAll();
+  }
+}
+
+async function runModel() {
+  setStatus("running…");
+  try {
+    const report = await api("/api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    state.report = report;
+    renderReport(report);
+    setStatus(`run finished at t=${Number(report.stop_time).toFixed(2)}`);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+function renderReport(report) {
+  const rows = Object.entries(report.objects || {}).map(([name, stats]) => {
+    const cell = value => Number(value || 0).toFixed(2);
+    return `<tr><td>${escapeText(name)}</td><td>${cell(stats.throughput.mean)}</td>
+      <td>${cell(stats.avg_stay_time.mean)}</td><td>${cell(stats.avg_content.mean)}</td>
+      <td>${(Number(stats.utilization.mean || 0) * 100).toFixed(1)}%</td></tr>`;
+  }).join("");
+  $("report").innerHTML = `
+    <table>
+      <thead><tr><th>Object</th><th>Throughput</th><th>Avg stay</th><th>Avg WIP</th><th>Util</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5" class="muted">no object statistics</td></tr>'}</tbody>
+    </table>`;
+  drawChart(report);
+}
+
+function drawChart(report) {
+  const entries = Object.entries(report.objects || {}).map(([name, stats]) => ({
+    name, value: Number(stats.throughput.mean || 0),
+  }));
+  const width = chart.clientWidth || 300;
+  const height = chart.clientHeight || 150;
+  const ratio = window.devicePixelRatio || 1;
+  chart.width = Math.max(1, Math.round(width * ratio));
+  chart.height = Math.max(1, Math.round(height * ratio));
+  const ctx = chart.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  if (entries.length === 0) return;
+  const max = Math.max(...entries.map(entry => entry.value), 1e-9);
+  const gap = 8;
+  const barWidth = Math.max(6, (width - gap * (entries.length + 1)) / entries.length);
+  ctx.font = "10px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  entries.forEach((entry, index) => {
+    const x = gap + index * (barWidth + gap);
+    const barHeight = (height - 34) * (entry.value / max);
+    ctx.fillStyle = "#1d4ed8";
+    ctx.fillRect(x, height - 18 - barHeight, barWidth, barHeight);
+    ctx.fillStyle = "#334155";
+    ctx.fillText(entry.name.slice(0, 10), x + barWidth / 2, height - 5);
+  });
+}
+
+function modelCenters(model) {
+  const objects = model.objects || [];
+  const positions = objects.map(object => object.pos || [0, 0]);
+  const distinct = positions.some(position =>
+    position[0] !== positions[0][0] || position[1] !== positions[0][1]);
+  const centers = new Map();
+  if (distinct) {
+    objects.forEach((object, index) => centers.set(object.name, positions[index]));
+  } else {
+    const columns = Math.max(1, Math.ceil(Math.sqrt(objects.length)));
+    objects.forEach((object, index) => {
+      centers.set(object.name, [(index % columns) * 220, Math.floor(index / columns) * 180]);
+    });
+  }
+  return centers;
+}
+
+function project(x, y, z, centerX, centerY, scale) {
+  const yaw = state.yaw * Math.PI / 180;
+  const pitch = state.pitch * Math.PI / 180;
+  const rx = x - centerX;
+  const ry = y - centerY;
+  const xr = rx * Math.cos(yaw) - ry * Math.sin(yaw);
+  const yr = rx * Math.sin(yaw) + ry * Math.cos(yaw);
+  return {
+    x: scene.clientWidth / 2 + xr * scale,
+    y: scene.clientHeight / 2 + (yr * Math.sin(pitch) - z * Math.cos(pitch)) * scale,
+  };
+}
+
+function drawScene(now) {
+  const width = scene.clientWidth;
+  const height = scene.clientHeight;
+  const ratio = window.devicePixelRatio || 1;
+  if (scene.width !== Math.round(width * ratio) || scene.height !== Math.round(height * ratio)) {
+    scene.width = Math.round(width * ratio);
+    scene.height = Math.round(height * ratio);
+  }
+  const ctx = scene.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  const model = state.model;
+  if (!model || !model.objects || model.objects.length === 0) return;
+
+  const centers = modelCenters(model);
+  const positions = [...centers.values()];
+  const minX = Math.min(...positions.map(position => position[0]));
+  const maxX = Math.max(...positions.map(position => position[0]));
+  const minY = Math.min(...positions.map(position => position[1]));
+  const maxY = Math.max(...positions.map(position => position[1]));
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+  const span = Math.max(maxX - minX, maxY - minY, 100);
+  const unit = span * 0.055;
+  const scale = Math.min(width, height) * 0.32 / span * state.zoom;
+  const heightFactor = Number((model.metadata && model.metadata.height) || 1);
+
+  const boxes = model.objects.map((object, index) => {
+    const center = centers.get(object.name) || [0, 0];
+    const size = unit * (object.kind === "conveyor" ? 2.0 : 1.3);
+    const depth = unit * (object.kind === "conveyor" ? 0.7 : 1.0);
+    const height = unit * 0.9 * Math.max(0.2, Number((object.params && object.params.height) || heightFactor));
+    return { object, center, size, depth, height, index };
+  });
+
+  // Connections first, so boxes sit on top of them.
+  ctx.strokeStyle = "#475569";
+  ctx.lineWidth = 1.4;
+  for (const connection of model.connections || []) {
+    const from = boxes.find(box => box.object.name === connection.from);
+    const to = boxes.find(box => box.object.name === connection.to);
+    if (!from || !to) continue;
+    const start = project(from.center[0], from.center[1], from.height * 0.5, centerX, centerY, scale);
+    const end = project(to.center[0], to.center[1], to.height * 0.5, centerX, centerY, scale);
+    ctx.beginPath();
+    ctx.moveTo(start.x, start.y);
+    ctx.lineTo(end.x, end.y);
+    ctx.stroke();
+    const angle = Math.atan2(end.y - start.y, end.x - start.x);
+    ctx.beginPath();
+    ctx.moveTo(end.x, end.y);
+    ctx.lineTo(end.x - 7 * Math.cos(angle - 0.4), end.y - 7 * Math.sin(angle - 0.4));
+    ctx.lineTo(end.x - 7 * Math.cos(angle + 0.4), end.y - 7 * Math.sin(angle + 0.4));
+    ctx.closePath();
+    ctx.fillStyle = "#475569";
+    ctx.fill();
+  }
+
+  // Animation: one marker per connection.
+  const progress = (now || 0) / 1600;
+  (model.connections || []).forEach((connection, index) => {
+    const from = boxes.find(box => box.object.name === connection.from);
+    const to = boxes.find(box => box.object.name === connection.to);
+    if (!from || !to) return;
+    const t = (progress + index * 0.17) % 1;
+    const x = from.center[0] + (to.center[0] - from.center[0]) * t;
+    const y = from.center[1] + (to.center[1] - from.center[1]) * t;
+    const point = project(x, y, unit * 0.45, centerX, centerY, scale);
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, 3.2, 0, Math.PI * 2);
+    ctx.fillStyle = "#f59e0b";
+    ctx.fill();
+  });
+
+  // Painter's algorithm: farther boxes first.
+  const projected = boxes.map(box => {
+    const corners = [];
+    const footprint = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+    for (const z of [0, box.height]) {
+      for (const [dx, dy] of footprint) {
+        corners.push(project(
+          box.center[0] + dx * box.size / 2,
+          box.center[1] + dy * box.depth / 2,
+          z, centerX, centerY, scale));
+      }
+    }
+    const centerPoint = project(box.center[0], box.center[1], 0, centerX, centerY, scale);
+    return { ...box, corners, centerPoint };
+  }).sort((left, right) => left.centerPoint.y - right.centerPoint.y);
+
+  for (const box of projected) {
+    const [b0, b1, b2, b3, t0, t1, t2, t3] = box.corners;
+    const face = (points, fill) => {
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      points.slice(1).forEach(point => ctx.lineTo(point.x, point.y));
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.strokeStyle = "#334155";
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+    };
+    const topShade = box.object.kind.startsWith("fluid") ? "#bae6fd"
+      : box.object.kind === "source" ? "#dcfce7"
+      : box.object.kind === "sink" ? "#fee2e2"
+      : box.object.kind === "processor" ? "#dbeafe" : "#e2e8f0";
+    face([b0, b1, t1, t0], "#94a3b8");
+    face([b1, b2, t2, t1], "#cbd5e1");
+    face([t0, t1, t2, t3], topShade);
+    const label = project(box.center[0], box.center[1], box.height * 1.15, centerX, centerY, scale);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#0f172a";
+    ctx.font = "600 11px system-ui, sans-serif";
+    ctx.fillText(box.object.name, label.x, label.y);
+    ctx.fillStyle = "#64748b";
+    ctx.font = "10px system-ui, sans-serif";
+    ctx.fillText(box.object.kind, label.x, label.y + 11);
+  }
+}
+
+function animationFrame(now) {
+  drawScene(now);
+  requestAnimationFrame(animationFrame);
+}
+
+scene.addEventListener("pointerdown", event => {
+  state.dragging = true;
+  state.lastX = event.clientX;
+  state.lastY = event.clientY;
+  scene.classList.add("dragging");
+  scene.setPointerCapture(event.pointerId);
+});
+scene.addEventListener("pointermove", event => {
+  if (!state.dragging) return;
+  const dx = event.clientX - state.lastX;
+  const dy = event.clientY - state.lastY;
+  state.lastX = event.clientX;
+  state.lastY = event.clientY;
+  state.yaw = (state.yaw + dx * 0.45) % 360;
+  state.pitch = Math.max(5, Math.min(80, state.pitch - dy * 0.3));
+});
+const stopDrag = () => { state.dragging = false; scene.classList.remove("dragging"); };
+scene.addEventListener("pointerup", stopDrag);
+scene.addEventListener("pointercancel", stopDrag);
+scene.addEventListener("wheel", event => {
+  event.preventDefault();
+  state.zoom = Math.max(0.3, Math.min(4, state.zoom * Math.exp(-event.deltaY * 0.001)));
+}, { passive: false });
+
+$("reload").addEventListener("click", loadAll);
+$("run").addEventListener("click", runModel);
+window.addEventListener("resize", () => { drawChart(state.report || { objects: {} }); });
+
+loadAll();
+requestAnimationFrame(animationFrame);
+</script>
+</body>
+</html>

@@ -92,6 +92,10 @@ pub fn describe_kind(kind: ObjectKind) -> (&'static str, &'static str) {
             "open: boolean, default true\nratio: 0..1, default 1",
         ),
         ObjectKind::FluidSink => ("Absorbs every fluid volume it receives.", ""),
+        ObjectKind::FluidPipe => (
+            "Transports fluid volume with a fixed travel delay.",
+            "length / speed: travel time (default 1 / 1)\ndelay: optional delay override\nflow_rate: optional volume per time unit cap",
+        ),
         ObjectKind::BasicTe => (
             "A generic task executer.",
             "speed: distance per time unit, default 1\ncapacity: integer, default 1",

@@ -30,7 +30,7 @@
 | Time Table | `params.timetable` | ✅ | `{windows:[{start,end}]}`，与 shifts 取交集 |
 | BasicFR / BasicTE | `basic_fr` / `basic_te` | ✅ | 通用固定资源与执行器 |
 | MultiProcessor | `multiprocessor` | ✅ | 多槽并行加工，每槽 setup/process，操作员按忙碌期申请 |
-| Fluid（流体） | `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_sink` | 🟡 | 最小族：固定步长、液位/溢出/吞吐、连接 flow_rate 限幅；无 pipe/压力/温度 |
+| Fluid（流体） | `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_pipe` / `fluid_sink` | 🟡 | 固定步长、液位/溢出/吞吐、pipe 延迟、valve 压力阈值（入口流量近似）；无压力/温度/密度 |
 | People / A* 行走 | — | ⛔ | 未实现 |
 | AGV / 交通控制 | — | ⛔ | 未实现 |
 | Elevator / 电梯 | — | ⛔ | 未实现 |
@@ -54,7 +54,8 @@
 | Send To Port：By Label | `by_label` | ✅ | |
 | FlexScript / C++ 逻辑 | 表达式语言 + 动作 | 🟡 | 无任意脚本；支持变量、算术、比较、条件与少量函数；Processor 抢占见操作员参数 |
 | 全局表（Global Table） | — | ⛔ | 可用标签/参数覆盖模拟 |
-| Process Flow（流程图块） | `model.process_flow` | 🟡 | 最小子集：create/delay/assign/decision/sink，token 统计与 trace；对象级绑定、transfer、块容量/触发器未实现 |
+| Process Flow（流程图块） | `model.process_flow` / `params.process_flow` | 🟡 | 模型级+对象级 create/delay/assign/decision/sink/transfer(to_object)；from_object、块容量未实现 |
+| FlexScript 脚本 | `action: script` / `script_condition` | 🟡 | rhai 沙箱（模型层与运行时封装就绪，引擎执行待接线） |
 
 ## 运行与统计
 

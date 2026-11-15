@@ -36,6 +36,15 @@ pub enum Action {
     /// Release an item the object is currently holding (A4, the counterpart of
     /// `send_to_port: -1` / [`crate::model::PortStrategy::Hold`]).
     ReleaseItem,
+    /// Run a sandboxed FlexScript (rhai) snippet (D2 script layer).
+    ///
+    /// The script is compiled once when the model is loaded (the model layer
+    /// only performs a syntax check) and executed by the engine with the
+    /// documented sandbox API: `time`, `item_type`, `item_id`, `label(name)`,
+    /// `set_label(name, value)`, `set_item_type(value)`,
+    /// `send_message(target, delay)`, `release_item()` and `log(message)`.
+    /// File, network, clock and random APIs are not registered.
+    Script { source: String },
 }
 
 impl<'de> Deserialize<'de> for Action {
@@ -90,9 +99,15 @@ impl<'de> Deserialize<'de> for Action {
                 check_keys(&map, &name, &[]).map_err(de::Error::custom)?;
                 Action::ReleaseItem
             }
+            "script" => {
+                check_keys(&map, &name, &["source"]).map_err(de::Error::custom)?;
+                Action::Script {
+                    source: field(&mut map, "source", &name).map_err(de::Error::custom)?,
+                }
+            }
             other => {
                 return Err(de::Error::custom(format!(
-                    "unknown action '{other}' (expected one of: set_label, set_item_type, increment_label, send_message, destroy_item, release_item)"
+                    "unknown action '{other}' (expected one of: set_label, set_item_type, increment_label, send_message, destroy_item, release_item, script)"
                 )));
             }
         };
