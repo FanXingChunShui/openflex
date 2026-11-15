@@ -19,6 +19,12 @@
 //! `/api/step` (checkpoint state). When the engine gains a native pause/resume
 //! API this endpoint can be replaced without changing the page contract.
 //! - `POST /api/experiment` — run scenario/override experiments
+//! - `POST /api/table` — edit a global table cell/row through the model API
+//!
+//! Run control currently segments through checkpoints. When the core
+//! `SimulationHandle` (step_until/pause/resume) lands, the page's `runLoop`
+//! can call a native handle endpoint without changing the UI contract; the
+//! wiring point is marked with `TODO(simulation-handle)`.
 //! - `GET /health` — liveness probe
 //!
 //! Safety guards: the socket is bound to loopback only, request bodies are
@@ -46,17 +52,211 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAX_SCENARIOS: usize = 20;
 const MAX_REPLICATIONS: u32 = 100;
 
-#[derive(Debug, Clone)]
-struct StepState {
-    checkpoint: openflex_core::Checkpoint,
-    time: f64,
-    seed: u64,
-    warmup: f64,
+/// One reply from the native simulation worker.
+#[derive(Debug, serde::Serialize)]
+struct RunnerReply {
+    report: openflex_core::SimReport,
+    state: openflex_core::SimulationState,
+}
+
+enum RunnerCommand {
+    Step {
+        until: f64,
+        reply: std::sync::mpsc::Sender<Result<RunnerReply, String>>,
+    },
+    Pause {
+        reply: std::sync::mpsc::Sender<Result<RunnerReply, String>>,
+    },
+    Resume {
+        reply: std::sync::mpsc::Sender<Result<RunnerReply, String>>,
+    },
+    Reset {
+        reply: std::sync::mpsc::Sender<Result<RunnerReply, String>>,
+    },
+    Shutdown,
+}
+
+/// Owns a `SimulationHandle` on a worker thread.
+///
+/// A handle borrows its model, so it cannot live next to the model in the same
+/// struct. The worker thread owns both and the HTTP layer talks to it through a
+/// channel; this keeps the engine alive between requests (true native pause /
+/// resume) without unsafe self-references.
+struct NativeRunner {
+    sender: std::sync::mpsc::Sender<RunnerCommand>,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+
+impl NativeRunner {
+    fn new(model: Model) -> Self {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let join = std::thread::spawn(move || run_worker(model, receiver));
+        Self {
+            sender,
+            join: Some(join),
+        }
+    }
+
+    fn request(
+        &self,
+        command: impl FnOnce(std::sync::mpsc::Sender<Result<RunnerReply, String>>) -> RunnerCommand,
+    ) -> Result<RunnerReply, String> {
+        let (reply, received) = std::sync::mpsc::channel();
+        self.sender
+            .send(command(reply))
+            .map_err(|_| "the simulation worker stopped".to_string())?;
+        received
+            .recv()
+            .map_err(|_| "the simulation worker stopped".to_string())?
+    }
+
+    fn step(&self, until: f64) -> Result<RunnerReply, String> {
+        self.request(|reply| RunnerCommand::Step { until, reply })
+    }
+
+    fn pause(&self) -> Result<RunnerReply, String> {
+        self.request(|reply| RunnerCommand::Pause { reply })
+    }
+
+    fn resume(&self) -> Result<RunnerReply, String> {
+        self.request(|reply| RunnerCommand::Resume { reply })
+    }
+
+    fn reset(&self) -> Result<RunnerReply, String> {
+        self.request(|reply| RunnerCommand::Reset { reply })
+    }
+}
+
+impl Drop for NativeRunner {
+    fn drop(&mut self) {
+        let _ = self.sender.send(RunnerCommand::Shutdown);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+fn run_worker(model: Model, receiver: std::sync::mpsc::Receiver<RunnerCommand>) {
+    let config = openflex_core::SimConfig::from_run_settings(
+        &model.run,
+        openflex_core::derive_seed(model.run.seed, 0),
+    );
+    let mut handle: Option<openflex_core::SimulationHandle<'_>> = None;
+    while let Ok(command) = receiver.recv() {
+        match command {
+            RunnerCommand::Step { until, reply } => {
+                if until > model.run.stop_time + f64::EPSILON {
+                    let _ = reply.send(Err(format!(
+                        "step target {until} exceeds stop_time {}",
+                        model.run.stop_time
+                    )));
+                    continue;
+                }
+                if handle.is_none() {
+                    match openflex_core::SimulationHandle::new(&model, &config, 0) {
+                        Ok(created) => handle = Some(created),
+                        Err(error) => {
+                            let _ = reply.send(Err(error.to_string()));
+                            continue;
+                        }
+                    }
+                }
+                let Some(simulation) = handle.as_mut() else {
+                    let _ = reply.send(Err("simulation handle is missing".into()));
+                    continue;
+                };
+                if let Err(error) = simulation.step_until(until) {
+                    let _ = reply.send(Err(error.to_string()));
+                    continue;
+                }
+                let mut report_model = model.clone();
+                report_model.run.stop_time = until;
+                report_model.run.replications = 1;
+                let report = openflex_core::SimReport::from_replications(
+                    &report_model,
+                    vec![simulation.result()],
+                );
+                let _ = reply.send(Ok(RunnerReply {
+                    report,
+                    state: simulation.state(),
+                }));
+            }
+            RunnerCommand::Pause { reply } => {
+                if handle.is_none() {
+                    match openflex_core::SimulationHandle::new(&model, &config, 0) {
+                        Ok(created) => handle = Some(created),
+                        Err(error) => {
+                            let _ = reply.send(Err(error.to_string()));
+                            continue;
+                        }
+                    }
+                }
+                let simulation = handle.as_mut().expect("handle was just created");
+                if let Err(error) = simulation.pause() {
+                    let _ = reply.send(Err(error.to_string()));
+                    continue;
+                }
+                let mut report_model = model.clone();
+                report_model.run.stop_time = simulation.now();
+                report_model.run.replications = 1;
+                let report = openflex_core::SimReport::from_replications(
+                    &report_model,
+                    vec![simulation.result()],
+                );
+                let _ = reply.send(Ok(RunnerReply {
+                    report,
+                    state: simulation.state(),
+                }));
+            }
+            RunnerCommand::Resume { reply } => {
+                let Some(simulation) = handle.as_mut() else {
+                    let _ = reply.send(Err("nothing has been started yet".into()));
+                    continue;
+                };
+                if let Err(error) = simulation.resume() {
+                    let _ = reply.send(Err(error.to_string()));
+                    continue;
+                }
+                let mut report_model = model.clone();
+                report_model.run.stop_time = simulation.now();
+                report_model.run.replications = 1;
+                let report = openflex_core::SimReport::from_replications(
+                    &report_model,
+                    vec![simulation.result()],
+                );
+                let _ = reply.send(Ok(RunnerReply {
+                    report,
+                    state: simulation.state(),
+                }));
+            }
+            RunnerCommand::Reset { reply } => {
+                handle = None;
+                let _ = reply.send(Ok(RunnerReply {
+                    report: openflex_core::SimReport::from_replications(&model, Vec::new()),
+                    state: openflex_core::SimulationState {
+                        now: 0.0,
+                        paused: false,
+                        items_created: 0,
+                        items_completed: 0,
+                        objects: std::collections::BTreeMap::new(),
+                    },
+                }));
+            }
+            RunnerCommand::Shutdown => break,
+        }
+    }
+}
+
+fn ensure_runner(state: &mut StudioState) -> &NativeRunner {
+    if state.runner.is_none() {
+        state.runner = Some(NativeRunner::new(state.model.clone()));
+    }
+    state.runner.as_ref().expect("runner was just created")
 }
 
 struct StudioState {
     model: Model,
-    step: Option<StepState>,
+    runner: Option<NativeRunner>,
 }
 
 /// Serve the studio until the process is killed.
@@ -65,7 +265,10 @@ pub fn serve(model_path: &Path, port: u16, open: bool, quiet: bool) -> Result<()
         .map_err(|error| format!("could not read model {}: {error}", model_path.display()))?;
     let model = Model::from_json(&text)
         .map_err(|error| format!("invalid model {}: {error}", model_path.display()))?;
-    let mut state = StudioState { model, step: None };
+    let mut state = StudioState {
+        model,
+        runner: None,
+    };
     let listener = TcpListener::bind(("127.0.0.1", port))
         .map_err(|error| format!("could not bind 127.0.0.1:{port}: {error}"))?;
     let address = listener
@@ -162,8 +365,50 @@ fn handle_connection(
         ("POST", "/api/model/objects") => add_object(&mut stream, state, model_path, &request.body),
         ("POST", "/api/run") => run_model_endpoint(&mut stream, state, &request.body),
         ("POST", "/api/step") => step_endpoint(&mut stream, state, &request.body),
+        ("POST", "/api/pause") => {
+            let runner = ensure_runner(state);
+            match runner.pause() {
+                Ok(reply) => write_json(
+                    &mut stream,
+                    "200 OK",
+                    &serde_json::json!({
+                        "ok": true,
+                        "report": reply.report,
+                        "state": reply.state,
+                    })
+                    .to_string(),
+                ),
+                Err(error) => write_json(
+                    &mut stream,
+                    "422 Unprocessable Entity",
+                    &serde_json::json!({ "ok": false, "error": error }).to_string(),
+                ),
+            }
+        }
+        ("POST", "/api/resume") => {
+            let runner = ensure_runner(state);
+            match runner.resume() {
+                Ok(reply) => write_json(
+                    &mut stream,
+                    "200 OK",
+                    &serde_json::json!({
+                        "ok": true,
+                        "report": reply.report,
+                        "state": reply.state,
+                    })
+                    .to_string(),
+                ),
+                Err(error) => write_json(
+                    &mut stream,
+                    "422 Unprocessable Entity",
+                    &serde_json::json!({ "ok": false, "error": error }).to_string(),
+                ),
+            }
+        }
         ("POST", "/api/reset") => {
-            state.step = None;
+            if let Some(runner) = state.runner.as_ref() {
+                let _ = runner.reset();
+            }
             write_json(
                 &mut stream,
                 "200 OK",
@@ -176,6 +421,7 @@ fn handle_connection(
         ("POST", "/api/timeseries") => {
             timeseries_endpoint(&mut stream, &state.model, &request.body)
         }
+        ("POST", "/api/table") => table_endpoint(&mut stream, state, model_path, &request.body),
         (method, path) if method == "POST" && path.starts_with("/api/model/objects/") => {
             if let Some(old) = path
                 .strip_prefix("/api/model/objects/")
@@ -273,7 +519,7 @@ fn save_model(
         );
     }
     state.model = new_model;
-    state.step = None;
+    state.runner = None;
     write_json(
         stream,
         "200 OK",
@@ -313,7 +559,7 @@ fn run_model_endpoint(
             }
         }
     };
-    state.step = None;
+    state.runner = None;
     let mut run_model = state.model.clone();
     if let Some(stop_time) = overrides.stop_time {
         if stop_time <= 0.0 || stop_time <= run_model.run.warmup {
@@ -412,10 +658,9 @@ fn step_endpoint(
     }
     let seed = openflex_core::derive_seed(state.model.run.seed, 0);
     let warmup = state.model.run.warmup;
-    let last_time = state.step.as_ref().map(|step| step.time).unwrap_or(0.0);
 
     // An object breakpoint is resolved with one traced pass over the requested
-    // window; the report itself is then produced by the checkpoint path.
+    // window; the native handle then steps to the event time.
     let mut target = request.until;
     let mut breakpoint = serde_json::Value::Null;
     if let Some(object) = request
@@ -433,11 +678,10 @@ fn step_endpoint(
             Ok((_, trace)) => {
                 if let Some(event) = trace.events.iter().find(|event| {
                     event.object == object
-                        && event.time > last_time + 1e-9
                         && event.time > warmup + 1e-9
                         && event.time <= request.until + 1e-9
                 }) {
-                    target = event.time.max(last_time + 1e-6).min(request.until);
+                    target = event.time.min(request.until);
                     breakpoint = serde_json::json!({
                         "object": event.object,
                         "time": event.time,
@@ -449,38 +693,18 @@ fn step_endpoint(
         }
     }
 
-    let config = openflex_core::SimConfig {
-        stop_time: target,
-        warmup,
-        seed,
+    let runner = ensure_runner(state);
+    let reply = match runner.step(target) {
+        Ok(reply) => reply,
+        Err(error) => {
+            return write_json(
+                stream,
+                "422 Unprocessable Entity",
+                &serde_json::json!({ "ok": false, "error": error }).to_string(),
+            );
+        }
     };
-    let previous = state
-        .step
-        .as_ref()
-        .filter(|step| {
-            step.seed == seed && (step.warmup - warmup).abs() <= f64::EPSILON && target >= step.time
-        })
-        .map(|step| step.checkpoint.clone());
-    let (result, checkpoint) = match openflex_core::simulate_with_checkpoint(
-        &state.model,
-        &config,
-        0,
-        previous.as_ref(),
-    ) {
-        Ok(result) => result,
-        Err(error) => return write_sim_error(stream, error),
-    };
-    state.step = Some(StepState {
-        checkpoint,
-        time: target,
-        seed,
-        warmup,
-    });
-
-    let mut report_model = state.model.clone();
-    report_model.run.stop_time = target;
-    report_model.run.replications = 1;
-    let report = openflex_core::SimReport::from_replications(&report_model, vec![result]);
+    let report = reply.report;
     let text = serde_json::json!({
         "report": report,
         "stepped_to": target,
@@ -902,7 +1126,7 @@ fn persist_model(
         );
     }
     state.model = new_model;
-    state.step = None;
+    state.runner = None;
     let mut response = serde_json::json!({ "ok": true, "model": state.model });
     if let (Some(target), Some(source)) = (response.as_object_mut(), extra.as_object()) {
         for (key, value) in source {
@@ -1270,6 +1494,133 @@ fn timeseries_endpoint(stream: &mut TcpStream, model: &Model, body: &[u8]) -> st
         "series": rows,
     });
     write_json(stream, "200 OK", &payload.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct TableRequest {
+    table: String,
+    action: String,
+    #[serde(default)]
+    row: Option<usize>,
+    #[serde(default)]
+    column: Option<usize>,
+    #[serde(default)]
+    value: Option<serde_json::Value>,
+    #[serde(default)]
+    values: Option<Vec<serde_json::Value>>,
+}
+
+/// Edit a global table through the model's editing API and persist it.
+fn table_endpoint(
+    stream: &mut TcpStream,
+    state: &mut StudioState,
+    model_path: &Path,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let request: TableRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return write_json(
+                stream,
+                "400 Bad Request",
+                &serde_json::json!({ "ok": false, "error": format!("invalid table request: {error}") })
+                    .to_string(),
+            );
+        }
+    };
+    let mut model = state.model.clone();
+    let result = match request.action.as_str() {
+        "set_cell" => {
+            let (Some(row), Some(column)) = (request.row, request.column) else {
+                return write_json(
+                    stream,
+                    "422 Unprocessable Entity",
+                    &serde_json::json!({ "ok": false, "error": "set_cell needs row and column" })
+                        .to_string(),
+                );
+            };
+            let value = request.value.unwrap_or(serde_json::Value::Null);
+            match serde_json::from_value::<openflex_model::TableCell>(value) {
+                Ok(value) => model
+                    .set_table_cell(&request.table, row, column, value)
+                    .map_err(|error| error.to_string()),
+                Err(error) => Err(format!("invalid cell value: {error}")),
+            }
+        }
+        "insert_row" => {
+            let Some(table) = model.table_mut(&request.table) else {
+                return write_json(
+                    stream,
+                    "404 Not Found",
+                    &serde_json::json!({ "ok": false, "error": format!("unknown global table '{}'", request.table) })
+                        .to_string(),
+                );
+            };
+            let width = table.width();
+            let cells = match request.values {
+                Some(values) => values
+                    .into_iter()
+                    .map(|value| {
+                        serde_json::from_value::<openflex_model::TableCell>(value)
+                            .map_err(|error| format!("invalid cell value: {error}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>(),
+                None => Ok((0..width)
+                    .map(|_| openflex_model::TableCell::Number(0.0))
+                    .collect()),
+            };
+            match cells {
+                Ok(cells) => table.insert_row(cells),
+                Err(error) => Err(error),
+            }
+        }
+        "remove_row" => {
+            let Some(row) = request.row else {
+                return write_json(
+                    stream,
+                    "422 Unprocessable Entity",
+                    &serde_json::json!({ "ok": false, "error": "remove_row needs row" })
+                        .to_string(),
+                );
+            };
+            let Some(table) = model.table_mut(&request.table) else {
+                return write_json(
+                    stream,
+                    "404 Not Found",
+                    &serde_json::json!({ "ok": false, "error": format!("unknown global table '{}'", request.table) })
+                        .to_string(),
+                );
+            };
+            if table.remove_row(row).is_some() {
+                Ok(())
+            } else {
+                Err(format!("row {row} is out of range"))
+            }
+        }
+        other => Err(format!("unknown table action '{other}'")),
+    };
+    if let Err(error) = result {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": error }).to_string(),
+        );
+    }
+    if let Err(error) = model.validate() {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": format!("invalid model after table edit: {error}") })
+                .to_string(),
+        );
+    }
+    persist_model(
+        stream,
+        state,
+        model_path,
+        model,
+        serde_json::json!({ "table": request.table }),
+    )
 }
 
 /// Read one HTTP request with strict header/body limits.

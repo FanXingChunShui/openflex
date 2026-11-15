@@ -1,0 +1,11 @@
+# 示例：从 FlexSim（或任何外部仿真器）导出并清洗后的三列格式。
+# 数值来自公开的 M/M/1 解析解，仅用于演示格式与对照流程，不是 FlexSim 运行结果。
+# 用法：scripts/compare-flexsim.sh --report /tmp/of-report/report.json --csv <本文件>
+object,metric,value
+Proc1,utilization,0.80
+Queue1,avg_content,3.2
+Queue1,avg_stay_time,16.0
+Proc1,avg_stay_time,4.0
+Proc1,throughput,0.20
+Proc1,input_count,9336
+Sink1,input_count,9335

@@ -1881,6 +1881,19 @@ pub struct RackParams {
     #[serde(default)]
     pub pick_policy: RackPickPolicy,
 
+    /// Number of bays per aisle (task-47). When set, every stored item gets an
+    /// explicit (level, aisle, bay) address and the pick takes walking time.
+    #[serde(default)]
+    pub bays: Option<u32>,
+
+    /// Walking time per bay on the pick trip (0 = instant, the default).
+    #[serde(default)]
+    pub travel_time_per_bay: f64,
+
+    /// Walking time per aisle on the pick trip (0 = instant, the default).
+    #[serde(default)]
+    pub aisle_time: f64,
+
     /// Minimum time an item stays in the rack before it may be released
     /// (0 = release as soon as the downstream object accepts).
     #[serde(default)]
@@ -1921,6 +1934,9 @@ impl Default for RackParams {
             min_dwell: 0.0,
             aisles: None,
             pick_policy: RackPickPolicy::Fifo,
+            bays: None,
+            travel_time_per_bay: 0.0,
+            aisle_time: 0.0,
             shifts: Vec::new(),
             process_flow: None,
             timetable: None,

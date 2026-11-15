@@ -70,6 +70,9 @@
                        border-radius: 6px; }
   #timeseries-chart { width: 100%; height: 160px; background: white; border: 1px solid #cbd5e1;
                       border-radius: 6px; }
+  .table-editor { border-collapse: collapse; width: 100%; font-size: 11px; }
+  .table-editor th, .table-editor td { border: 1px solid #cbd5e1; padding: 2px; }
+  .table-editor input { padding: 2px 4px; font-size: 11px; }
   .context-menu { position: fixed; z-index: 20; display: flex; flex-direction: column; gap: 2px;
                   background: #ffffff; border: 1px solid #94a3b8; border-radius: 6px;
                   padding: 4px; box-shadow: 0 6px 18px rgba(15,23,42,.18); min-width: 130px; }
@@ -125,6 +128,9 @@
       <button id="revert-object" type="button">Revert</button>
       <button id="delete-object" class="danger" type="button">Delete</button>
     </div>
+
+    <h2>Global tables</h2>
+    <div id="global-tables" data-table-editor="1"><p class="muted">loading…</p></div>
 
     <h2>Process flow</h2>
     <div id="flow-editor">
@@ -255,6 +261,7 @@ const state = {
   runToken: 0,
   contextObject: 0,
   timeseries: null,
+  selectedTable: null,
   scenarios: [{ name: "baseline", overrides: "" }],
 };
 
@@ -501,6 +508,7 @@ function renderAll() {
   renderAddKinds();
   renderObjectList();
   renderEditor();
+  renderGlobalTables();
   renderFlow();
   $("edit-process-flow").value = JSON.stringify(state.model.process_flow ?? null, null, 2);
   updateHistoryButtons();
@@ -1019,6 +1027,122 @@ function renderFlowCanvas() {
   }
 }
 
+function renderGlobalTables() {
+  const container = $("global-tables");
+  const tables = state.model && state.model.global_tables ? state.model.global_tables : {};
+  const names = Object.keys(tables);
+  if (names.length === 0) {
+    container.innerHTML = `<p class="muted">This model has no global tables.</p>
+      <button id="add-table" type="button">Add table</button>`;
+    $("add-table").addEventListener("click", addGlobalTable);
+    return;
+  }
+  if (!state.selectedTable || !tables[state.selectedTable]) state.selectedTable = names[0];
+  const table = tables[state.selectedTable];
+  const selector = names.map(name =>
+    `<option value="${escapeText(name)}"${name === state.selectedTable ? " selected" : ""}>${escapeText(name)}</option>`
+  ).join("");
+  const header = (table.columns || []).map(column => `<th>${escapeText(column)}</th>`).join("");
+  const rows = (table.rows || []).map((row, rowIndex) => {
+    const cells = (table.columns || []).map((_, columnIndex) => {
+      const value = row[columnIndex] == null ? "" : row[columnIndex];
+      return `<td><input data-table-cell="1" data-table-row="${rowIndex}" data-table-column="${columnIndex}"
+        value="${escapeText(String(value))}"></td>`;
+    }).join("");
+    return `<tr>${cells}<td><button data-table-remove-row="${rowIndex}" type="button" title="Remove row">×</button></td></tr>`;
+  }).join("");
+  container.innerHTML = `
+    <div class="row">
+      <select id="table-select">${selector}</select>
+      <button id="add-table-row" type="button">Add row</button>
+      <button id="save-table" class="primary" type="button">Save table</button>
+    </div>
+    <table class="table-editor">
+      <thead><tr>${header}<th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <button id="add-table" type="button">Add table</button>`;
+  $("table-select").addEventListener("change", event => {
+    state.selectedTable = event.target.value;
+    renderGlobalTables();
+  });
+  $("add-table-row").addEventListener("click", () => tableAction({ action: "insert_row" }));
+  $("save-table").addEventListener("click", saveGlobalTable);
+  $("add-table").addEventListener("click", addGlobalTable);
+  container.querySelectorAll("[data-table-cell]").forEach(input => {
+    input.addEventListener("change", () => {
+      const text = input.value;
+      let value;
+      if (text === "true" || text === "false") value = text === "true";
+      else if (text !== "" && Number.isFinite(Number(text))) value = Number(text);
+      else value = text;
+      tableAction({
+        action: "set_cell",
+        row: Number(input.dataset.tableRow),
+        column: Number(input.dataset.tableColumn),
+        value,
+      });
+    });
+  });
+  container.querySelectorAll("[data-table-remove-row]").forEach(button => {
+    button.addEventListener("click", () =>
+      tableAction({ action: "remove_row", row: Number(button.dataset.tableRemoveRow) }));
+  });
+}
+
+async function tableAction(action) {
+  if (!state.selectedTable) return;
+  setStatus(`updating table ${state.selectedTable}…`);
+  try {
+    const response = await api("/api/table", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ table: state.selectedTable, ...action }),
+    });
+    state.model = response.model;
+    renderGlobalTables();
+    setStatus(`table ${state.selectedTable} updated`);
+  } catch (error) {
+    setStatus(error.message, true);
+    await loadAll();
+  }
+}
+
+async function saveGlobalTable() {
+  setStatus("saving global tables…");
+  try {
+    const response = await api("/api/model", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(state.model),
+    });
+    setStatus(`saved (${response.objects} objects)`);
+    clearHistory();
+    await loadAll();
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+async function addGlobalTable() {
+  const name = window.prompt("Global table name", "Table1");
+  if (!name || !name.trim()) return;
+  if (state.model.global_tables && state.model.global_tables[name.trim()]) {
+    setStatus(`a table named '${name.trim()}' already exists`, true);
+    return;
+  }
+  const columnsText = window.prompt("Columns (comma separated)", "column1") || "column1";
+  const columns = columnsText.split(",").map(column => column.trim()).filter(Boolean);
+  if (columns.length === 0) {
+    setStatus("a table needs at least one column", true);
+    return;
+  }
+  if (!state.model.global_tables) state.model.global_tables = {};
+  state.model.global_tables[name.trim()] = { columns, rows: [] };
+  state.selectedTable = name.trim();
+  await saveGlobalTable();
+}
+
 function renderFlow() {
   const flow = state.model.process_flow;
   const list = $("block-list");
@@ -1391,6 +1515,8 @@ async function stepRequest(until, objectName) {
   });
 }
 
+// Run control uses the core SimulationHandle through /api/step, /api/pause and
+// /api/resume; the loop only decides how far to advance each visible segment.
 async function runLoop(token) {
   const stop = Number(state.model.run.stop_time);
   const warmup = Number(state.model.run.warmup || 0);
@@ -1458,10 +1584,19 @@ async function runModel() {
   await runLoop(state.runToken);
 }
 
-function pauseRun() {
+async function pauseRun() {
   if (state.runState !== "running") return;
   state.runPaused = true;
   setRunState("Pausing…");
+  try {
+    await api("/api/pause", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+  } catch (error) {
+    setStatus(error.message, true);
+  }
 }
 
 function stopRun() {
@@ -1479,6 +1614,17 @@ function stopRun() {
 
 async function resumeRun() {
   if (state.runState !== "paused" && state.runState !== "stopped") return;
+  if (state.runState === "paused") {
+    try {
+      await api("/api/resume", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+    } catch (error) {
+      // A reset/stopped handle has nothing to resume; the step loop recreates it.
+    }
+  }
   state.runPaused = false;
   state.runState = "running";
   state.runToken += 1;

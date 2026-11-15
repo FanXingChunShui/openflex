@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.17.0 — 2026-11-15
+
+### 运行控制与对象
+
+- **原生 `SimulationHandle`**：`step_until/pause/resume/snapshot/restore/state/result`，增量推进不重建引擎；
+  pause/resume 触发 OnStop/OnResume；多次 step 与一次性运行结果完全相等。
+- **Rack 真实货位**：`bays` + `travel_time_per_bay`/`aisle_time`，入架分配 (level,aisle,bay)，
+  取货计入行走时间；容量 levels×aisles×bays。
+- **Studio**：Pause/Resume 接原生句柄（替换 checkpoint 分段近似）；Global Table 编辑器（单元格/行/新表，保存校验）。
+
+### 工程
+
+- CI 新增 **bench job**（10k 对象 validate <2s / run <5s，超限阻塞）。
+- 清单同步 v0.16.0、真机矩阵 v0.16.0、GHCR 0.16.0 已发布（latest 指向 0.16.0）。
+- FlexSim 导出 CSV 指引（Statistics/Experimenter/自定义）与示例数据（7/7 在 ±5%）。
+
+### 验证
+
+- 415 个测试全绿（core 189、model 109、CLI 77、report 16）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.17.0 三平台产物发布并 SHA256 校验。
+
 ## v0.16.0 — 2026-11-15
 
 ### 对象与运行时

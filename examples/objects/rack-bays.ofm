@@ -1,0 +1,21 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "rack-bays",
+  "time_unit": "seconds",
+  "description": "Rack with explicit level/aisle/bay addresses and pick walking time (1 s per bay, 0.5 s per aisle)",
+  "run": {"stop_time": 200.0, "warmup": 0.0, "seed": 1, "replications": 1},
+  "objects": [
+    {"name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+      "interarrival": {"distribution": "constant", "value": 20.0}, "first_arrival": 0.0}},
+    {"name": "Rack1", "kind": "rack", "pos": [5, 0], "params": {
+      "capacity": 12, "levels": 2, "aisles": 2, "bays": 3,
+      "travel_time_per_bay": 1.0, "aisle_time": 0.5,
+      "pick_policy": "level_order"}},
+    {"name": "Sink1", "kind": "sink", "pos": [10, 0], "params": {}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Rack1"},
+    {"from": "Rack1", "to": "Sink1"}
+  ]
+}

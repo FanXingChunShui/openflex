@@ -203,6 +203,7 @@ for file in \
   "$ROOT_DIR/docs/verification/wasm.md" \
   "$ROOT_DIR/docs/verification/performance.md" \
   "$ROOT_DIR/docs/verification/flexsim-result-template.csv" \
+  "$ROOT_DIR/docs/verification/flexsim-export-example.csv" \
   "$ROOT_DIR/docs/book.toml" \
   "$ROOT_DIR/docs/SUMMARY.md"; do
   if [ -f "$file" ]; then

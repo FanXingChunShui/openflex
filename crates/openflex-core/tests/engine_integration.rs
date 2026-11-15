@@ -644,3 +644,43 @@ fn task_sequence_standard_legs_match_the_default() {
         "the standard sequence must match the default behaviour"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Rack bays and pick walking time (task-47)
+// ---------------------------------------------------------------------------
+
+/// With bays the picker walks to the item: the bay index adds walking time to
+/// the stay, while a rack without bays releases instantly.
+#[test]
+fn rack_bay_walking_time_delays_picks() {
+    let template = |bay_params: &str| {
+        format!(
+            r#"{{
+      "format": "openflex-model", "version": 1, "name": "rack-bays",
+      "run": {{ "stop_time": 200.0, "warmup": 0.0, "seed": 1, "replications": 1 }},
+      "objects": [
+        {{ "name": "S", "kind": "source", "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 10.0 }}, "first_arrival": 0.0 }} }},
+        {{ "name": "R", "kind": "rack", "params": {{
+            "capacity": 100, "levels": 1, "aisles": 1{bay_params} }} }},
+        {{ "name": "K", "kind": "sink", "params": {{}} }}
+      ],
+      "connections": [ {{ "from": "S", "to": "R" }}, {{ "from": "R", "to": "K" }} ]
+    }}"#
+        )
+    };
+    // Bays are assigned 0, 1, 2, 0, … so the average walk is one time unit.
+    let with_bays = run(&template(r#", "bays": 3, "travel_time_per_bay": 1.0"#));
+    let without_bays = run(&template(""));
+    assert_eq!(input(&with_bays, "K"), 20.0);
+    assert_eq!(input(&without_bays, "K"), 20.0);
+    assert!(
+        (with_bays.objects["R"].avg_stay_time.mean - 1.0).abs() < 0.15,
+        "average bay walk must be one time unit: {}",
+        with_bays.objects["R"].avg_stay_time.mean
+    );
+    assert!(
+        without_bays.objects["R"].avg_stay_time.mean < 1e-9,
+        "no bays means no walking"
+    );
+}

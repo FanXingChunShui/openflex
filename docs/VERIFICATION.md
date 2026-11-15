@@ -94,19 +94,23 @@ pwsh、docker，registry 检查默认关闭；清单已同步到 v0.13.0）。
 
 ## 6. 性能基线
 
-在 2026-11 的 macOS 15.8.1 x86_64 机器上，release 构建（**v0.14.0**）：
+在 2026-11 的 macOS 15.8.1 x86_64 机器上，release 构建（**v0.16.0**）：
 
 | 场景 | 规模 | 用时 / 吞吐 |
 |---|---|---|
-| M/M/1 长仿真（`bench_mm1`） | 120,318 事件 | 0.069 s → **1.75M events/s**、291,311 items/s |
+| M/M/1 长仿真（`bench_mm1`） | 120,318 事件 | 0.079 s → **1.52M events/s**、252,802 items/s |
 | 多复现 | 5 × 48000 时间单位 | < 0.2 s |
-| 大模型 1k 对象 | 1,500 事件 | validate 0.02 s / run 0.02 s → 64,142 events/s |
-| 大模型 10k 对象 | 15,000 事件 | validate 0.08 s / run 0.20 s → 74,689 events/s |
-| 大模型 100k 对象 | 150,000 事件 | validate **0.75 s** / run **2.61 s** → 57,505 events/s，峰值 385 MB |
+| 大模型 1k 对象 | 1,500 事件 | validate 0.02 s / run 0.02 s → 60,799 events/s |
+| 大模型 10k 对象 | 15,000 事件 | validate 0.14 s / run 0.40 s → 37,266 events/s |
+| 大模型 100k 对象 | 150,000 事件 | validate **0.78 s** / run **2.58 s** → 58,200 events/s，峰值 392 MB |
 
-**规模结论**：10× 对象带来 9.4×（validate）/13×（run）时间，**接近线性**。
-相比 v0.11.0 的 85.12 s / 271.56 s，10 万对象快约 **100×**（v0.12 起索引化生效），
-一次 run 从 4.5 分钟降到 2.6 秒。
+**规模结论**：10× 对象带来约 6–10× 时间，**接近线性**（v0.16 相比 v0.11 的
+85.12 s / 271.56 s 快约 **100×**，一次 run 从 4.5 分钟降到 2.6 秒）。
+
+**CI 性能门槛（`bench` job）**：每个 PR 跑 10k 对象基准，
+**validate < 2 s、run < 5 s** 为硬门槛（本机基线 0.14 s / 0.40 s，留 12–14× 余量），
+超限直接失败；结果写进 job summary 并作为 artifact 保留。理由与调整方法见
+[performance.md](verification/performance.md) §4.1。
 
 **Profiling（macOS `sample` + `atos`，2026-11-15）**：
 
@@ -129,6 +133,7 @@ pwsh、docker，registry 检查默认关闭；清单已同步到 v0.13.0）。
 | `deny` | cargo-deny | 是 | `deny.toml`：许可白名单（MIT / Apache-2.0 / BSD / ISC / Unicode-3.0 …）、禁止 yanked、禁止未知 registry |
 | `audit` | cargo-audit | 否（informational） | RustSec 漏洞报告打印并上传 artifact（保留 30 天）；`continue-on-error` |
 | `coverage` | cargo llvm-cov | **是（60% 行覆盖）** | 生成 `lcov.info` 与 summary，并用 `--fail-under-lines 60` 卡门槛；v0.10.0 基线 77.91% |
+| `bench` | bench-large-model.sh（10k 对象） | **是（validate < 2 s、run < 5 s）** | 每个 PR 跑一次；结果写 job summary + artifact；见 [performance.md](verification/performance.md) §4.1 |
 | `fuzz` | cargo-fuzz（nightly） | 否（optional） | 模型 JSON 解析与表达式解析各 **180 秒** libFuzzer |
 | `test-arm64` | cargo test | **是（必跑）** | GitHub 原生 `ubuntu-24.04-arm` runner 上跑一遍测试（此前是 optional） |
 | `wasm` | cargo check/build（wasm32） | 是 | `openflex-core` 在 `wasm32-unknown-unknown` 上 check + release build，上传 rlib；CLI 不做 wasm 支持声明（见 [verification/wasm.md](verification/wasm.md)） |
@@ -276,19 +281,19 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 ## 最近一次验收记录
 
 - 日期：2026-11-15
-- 版本：**0.14.0**（release 已发布，11 个产物）
+- 版本：**0.16.0**（release 已发布，11 个产物）
 - `cargo test --workspace`：**未在本轮重跑**——工作区有并行开发（Cargo.toml / fluid 等），
   全量测试由 CI 的 `test` / `golden` / `test-arm64` job 覆盖；覆盖率基线在干净检出上测（见下）。
 - `cargo llvm-cov` 行覆盖率基线（干净 v0.10.0 检出）：**77.91%**（函数 75.75% / 区域 76.33%；
   v0.12.0 未重测）
-- `scripts/sync-package-manifests.sh --version 0.14.0`：**5 个文件更新成功**
+- `scripts/sync-package-manifests.sh --version 0.16.0`：**5 个文件更新成功**
   （homebrew version + 3 sha256、winget 三件套、scoop version/url/hash/extract_dir），
   `--check` 复核通过
 - `bash scripts/verify-packaging.sh`：**102 通过 / 0 失败 / 3 跳过**（本机无 pwsh、docker，registry 默认关闭；检查包括：
   含 12 个 shell 脚本的 bash -n 与 shellcheck、workflow/dependabot/winget YAML、
   deny.toml 与 fuzz/Cargo.toml 的 TOML 解析、wasm32 检查、新工具的 `--help` 与 dry-run，
   以及 winget/scoop/homebrew 清单版本与 sha256 的一致性检查、bench/sync/verify-ghcr 脚本与文档站配置检查）
-- `scripts/verify-install.sh --version 0.14.0`（真实 GitHub Release）：**PASS**，20 项
+- `scripts/verify-install.sh --version 0.16.0`（真实 GitHub Release）：**PASS**，20 项
 - `cargo check` + `cargo build -p openflex-core --target wasm32-unknown-unknown`：**通过**
 - `mdbook build docs`（mdBook 0.5.4）：**成功**，11 个顶层页面 + 4 个 verification 页面（约 3.7 MB），
   `index.html` = 「OpenFlex 文档」；生成物已删除（见第 10 节）
@@ -312,17 +317,20 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 | v0.12.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS（2026-11-15），见 [install-matrix](verification/install-matrix.md) |
 | v0.13.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS（2026-11-15），见 [install-matrix](verification/install-matrix.md) |
 | v0.14.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS（2026-11-15），见 [install-matrix](verification/install-matrix.md) |
-| Homebrew 公式（v0.14.0 真实 sha256） | **已完成**（`ruby -c` 通过）；tap 待创建 | `packaging/homebrew/openflex.rb` |
+| v0.16.0 安装验证（macOS，GitHub Release） | **已实跑** | 20 项 PASS（2026-11-15），见 [install-matrix](verification/install-matrix.md) |
+| Homebrew 公式（v0.16.0 真实 sha256） | **已完成**（`ruby -c` 通过）；tap 待创建 | `packaging/homebrew/openflex.rb` |
 | Homebrew `brew audit` / `brew install --build-from-source` | **待环境** | 本机 Homebrew 非 Tier 1 配置，audit 被 SIGTERM；命令见 `packaging/homebrew/README.md` |
-| winget / scoop 清单（v0.14.0 URL/SHA256） | **已完成，待提交** | `packaging/winget/`、`packaging/scoop/openflex.json`；由 `sync-package-manifests.sh` 同步 |
-| GHCR 镜像发布与验证 | **已发布**：0.10.0–0.14.0 + latest（=0.14.0）全部 200 | `scripts/verify-ghcr.sh` 核对；docker 本地运行**待环境** |
+| winget / scoop 清单（v0.16.0 URL/SHA256） | **已完成，待提交** | `packaging/winget/`、`packaging/scoop/openflex.json`；由 `sync-package-manifests.sh` 同步 |
+| GHCR 镜像发布与验证 | **0.10.0–0.16.0 + latest（=0.16.0）全部 200**（0.16.0 在发布约 25 分钟后出现） | `scripts/verify-ghcr.sh` 核对；docker 本地运行**待环境** |
 | container workflow 加固 | **已完成** | `timeout-minutes: 45`、`provenance: false`、推送后 registry API 复核、失败时打印 buildx/docker 诊断 |
 | GHCR registry 检查工具 | **已完成** | `scripts/verify-ghcr.sh`（无需 docker/token；支持 `--retry`/`--expect-latest`/`--json`） |
 | Windows / Linux / deb / rpm / MSI 真机安装 | **待环境** | 脚本与命令清单就绪，见安装矩阵第 5 节 |
 | 签名/公证（macOS/Windows/GPG） | **CI 已配置，待证书**（2026-11-15 复核） | release.yml 5 处签名步骤 `if: env.X != ''`；三套脚本 dry-run 通过 |
 | 10 万对象性能基准（v0.11.0） | **已实跑** | validate 85.12 s / run 271.56 s / 552 events/s / 峰值 397 MB，见 [performance.md](verification/performance.md) |
 | 文档站（mdBook） | **已构建验证**（mdBook 0.5.4） | 11+4 页面，`index.html`=「OpenFlex 文档」；配置见第 10 节 |
-| 包管理器清单同步到 v0.14.0 | **已完成** | `sync-package-manifests.sh --version 0.14.0`；`--check` 通过 |
+| 包管理器清单同步到 v0.16.0 | **已完成** | `sync-package-manifests.sh --version 0.16.0`；`--check` 通过 |
+| CI 性能门槛（`bench` job，10k 对象） | **已实跑**（本机等价命令 + 负向测试） | validate < 2 s、run < 5 s；本机 0.14 s / 0.40 s；见 [performance.md](verification/performance.md) §4.1 |
+| FlexSim 导出 CSV 步骤 + 示例数据 | **已完成** | [flexsim-comparison.md](verification/flexsim-comparison.md) §4.5 + [flexsim-export-example.csv](verification/flexsim-export-example.csv)（净室声明保留） |
 | 10 万对象 profiling（macOS `sample` + `atos`） | **已实跑** | validate：serde/serde_ignored 70.8%；run：flow/notify ≈72%、参数 clone ≈6%；见 [performance.md](verification/performance.md) §5 |
 | v0.14.0 性能复核（100k 对象） | **已实跑** | validate 0.75 s / run 2.61 s / 57.5k events/s（比 v0.11.0 快约 100×） |
 | 真实 FlexSim 对照 | **待外部数据** | 工具与模板就绪；未运行 FlexSim |

@@ -13,7 +13,7 @@
 #   FanXingChunShui.OpenFlex.installer.yaml    (安装器与 SHA256)
 #   FanXingChunShui.OpenFlex.locale.en-US.yaml (展示信息)
 PackageIdentifier: FanXingChunShui.OpenFlex
-PackageVersion: 0.14.0
+PackageVersion: 0.16.0
 DefaultLocale: en-US
 ManifestType: version
 ManifestVersion: 1.6.0

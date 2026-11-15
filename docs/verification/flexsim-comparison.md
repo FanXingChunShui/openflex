@@ -245,7 +245,89 @@ Proc1,throughput,0.20
 - [ ] 文件是 UTF-8，表头是 `object,metric,value`
 - [ ] 附上 `shasum -a 256 <csv>` 与 FlexSim 版本、复现次数、种子策略
 
-### 4.5 常见导出错误
+### 4.5 如何从 FlexSim 导出对象指标 CSV
+
+> **净室声明**：我们没有运行 FlexSim，也没有它的安装或文档副本。下面是最通用的
+> “从仿真结果里取对象指标”流程，基于公开文档与常见 UI 惯例；**具体菜单名以你使用的
+> FlexSim 版本为准**。如果你只能提供 Excel，也完全可以——按 4.2 的三列格式另存为 CSV 即可。
+
+**方式 A：单次仿真的 Statistics 面板（适合小模型、快速核对）**
+
+1. 用与 `.ofm` 相同的 Stop Time / Warmup 跑一次仿真。
+2. 打开对象的统计视图（通常在 Statistics → 选中对象 → 查看 utilization / content /
+   stay time / input / output 等字段）。
+3. 逐对象记录需要的指标。字段名可能和 OpenFlex 不同，**以数值含义对应**：
+   `utilization` ↔ 利用率、`avg_content` ↔ 平均在制品、`avg_stay_time` ↔ 平均停留时间、
+   `input_count` / `output_count` ↔ 输入/输出计数。
+4. 写进 4.2 的三列 CSV；对象名用 OpenFlex 的名字（见 4.3 映射表）。
+
+**方式 B：Experimenter 导出（推荐，含多次复现的均值）**
+
+1. 在 Experimenter 里建一个 Scenario（参数 + Stop Time + Warmup），
+   Replications 设为 ≥ 5，与 OpenFlex 的 `run.replications` 对应。
+2. 跑完后打开结果表（Performance Measures / 每个对象的统计）。
+3. 用结果表的导出功能（通常是 Export → CSV/Excel，或右键 “Export Table”）导出。
+4. 把宽表转成三列（见下面的转换脚本），只保留 `object,metric,value`。
+
+**方式 C：自定义统计 / 脚本导出（高级）**
+
+如果模型里用了自定义统计或脚本，直接把需要的量写成 CSV 三列即可；
+不要在 CSV 里混入图表、合并单元格或标题行。
+
+**宽表 → 三列（awk，示例）**
+
+FlexSim 导出的宽表通常长这样（列名随版本变化）：
+
+```csv
+Object,Utilization,AvgContent,AvgStayTime,Input,Output
+Processor1,0.81,0.02,4.02,9336,9335
+Queue1,0.00,2.91,15.10,9336,9336
+```
+
+转成对照工具要的格式：
+
+```sh
+awk -F, 'NR==1 { next }
+  { printf "%s,utilization,%s\n%s,avg_content,%s\n%s,avg_stay_time,%s\n%s,input_count,%s\n%s,output_count,%s\n",
+      $1,$2, $1,$3, $1,$4, $1,$5, $1,$6 }' flexsim-export.csv > flexsim.csv
+```
+
+或者用 python（可读性更好）：
+
+```python
+import csv
+with open("flexsim-export.csv", newline="") as source, open("flexsim.csv", "w", newline="") as target:
+    reader = csv.DictReader(source)
+    writer = csv.writer(target)
+    writer.writerow(["object", "metric", "value"])
+    for row in reader:
+        for metric, column in [
+            ("utilization", "Utilization"),
+            ("avg_content", "AvgContent"),
+            ("avg_stay_time", "AvgStayTime"),
+            ("input_count", "Input"),
+            ("output_count", "Output"),
+        ]:
+            if row.get(column):
+                writer.writerow([row["Object"], metric, row[column]])
+```
+
+**导出后自检**（与 4.4 合并使用）
+
+- 每个对象至少 1 行，指标名与 OpenFlex 报告字段一致（`utilization`、`avg_content` 等）。
+- 数值是**复现均值**，不是某一次复现；百分比要么 `0.81` 要么 `81%`，不要混。
+- 三列 CSV 里不要有合计行、空行（空行会被忽略，`#` 注释行也会被忽略）。
+
+**示例数据**：`docs/verification/flexsim-export-example.csv` 是一份“可直接喂给
+`compare-flexsim.sh`”的三列示例（数值来自公开 M/M/1 解析解，**不是** FlexSim 运行结果），
+用来说明格式与对照流程：
+
+```sh
+scripts/compare-flexsim.sh --report /tmp/of-report/report.json \
+  --csv docs/verification/flexsim-export-example.csv --tolerance 0.05
+```
+
+### 4.6 常见导出错误
 
 | 现象 | 原因 | 处理 |
 |---|---|---|

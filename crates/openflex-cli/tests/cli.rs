@@ -2813,6 +2813,12 @@ fn studio_can_add_and_delete_objects_through_the_api() {
         "id=\"load-timeseries\"",
         "id=\"timeseries-interval\"",
         "id=\"timeseries-object\"",
+        "id=\"global-tables\"",
+        "data-table-editor",
+        "data-table-cell",
+        "id=\"add-table-row\"",
+        "id=\"save-table\"",
+        "id=\"add-table\"",
         "id=\"flow-canvas\"",
         "flow-node",
         "draggable",
@@ -3646,4 +3652,144 @@ fn studio_timeseries_endpoint_returns_samples() {
         Some(r#"{"interval":0}"#),
     );
     assert!(http_status(&invalid).contains("422"), "invalid: {invalid}");
+}
+
+#[test]
+fn studio_global_table_editor_updates_the_model() {
+    let dir = TempDir::new("studio-tables");
+    let model = dir.write("demo.ofm", MODEL);
+    let (_server, address) = start_studio(&model);
+
+    let html = http_body(&http_get(&address, "/")).to_string();
+    for marker in [
+        "id=\"global-tables\"",
+        "data-table-editor",
+        "data-table-cell",
+        "id=\"add-table-row\"",
+    ] {
+        assert!(
+            html.contains(marker),
+            "missing table editor marker {marker}"
+        );
+    }
+
+    let mut current = json(http_body(&http_get(&address, "/api/model")));
+    current["global_tables"] = serde_json::json!({
+        "Arrivals": {
+            "columns": ["time", "quantity"],
+            "rows": [[0, 1], [2, 1]]
+        }
+    });
+    let save = http_request(
+        &address,
+        "POST",
+        "/api/model",
+        Some(&serde_json::to_string(&current).expect("serialise")),
+    );
+    assert!(
+        http_status(&save).contains("200 OK"),
+        "setup: {}",
+        http_body(&save)
+    );
+
+    let set = http_request(
+        &address,
+        "POST",
+        "/api/table",
+        Some(r#"{"table":"Arrivals","action":"set_cell","row":0,"column":1,"value":5}"#),
+    );
+    assert!(
+        http_status(&set).contains("200 OK"),
+        "set cell: {}",
+        http_body(&set)
+    );
+    let set = json(http_body(&set));
+    assert_eq!(set["model"]["global_tables"]["Arrivals"]["rows"][0][1], 5.0);
+    let validate = openflex(&["validate", &path_str(&model)]);
+    assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
+
+    let insert = http_request(
+        &address,
+        "POST",
+        "/api/table",
+        Some(r#"{"table":"Arrivals","action":"insert_row","values":[4,2]}"#),
+    );
+    assert!(
+        http_status(&insert).contains("200 OK"),
+        "insert row: {}",
+        http_body(&insert)
+    );
+    let insert = json(http_body(&insert));
+    assert_eq!(
+        insert["model"]["global_tables"]["Arrivals"]["rows"]
+            .as_array()
+            .map(Vec::len),
+        Some(3)
+    );
+
+    let remove = http_request(
+        &address,
+        "POST",
+        "/api/table",
+        Some(r#"{"table":"Arrivals","action":"remove_row","row":2}"#),
+    );
+    assert!(
+        http_status(&remove).contains("200 OK"),
+        "remove row: {}",
+        http_body(&remove)
+    );
+    let remove = json(http_body(&remove));
+    assert_eq!(
+        remove["model"]["global_tables"]["Arrivals"]["rows"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+    let text = fs::read_to_string(&model).expect("read model");
+    assert!(text.contains("\"time\"") && text.contains("\"quantity\""));
+    let validate = openflex(&["validate", &path_str(&model)]);
+    assert_eq!(code(&validate), 0, "stderr: {}", stderr(&validate));
+}
+
+#[test]
+fn studio_native_handle_pause_and_resume() {
+    let dir = TempDir::new("studio-pause");
+    let model = dir.write("demo.ofm", MODEL);
+    let (_server, address) = start_studio(&model);
+
+    let step = http_request(&address, "POST", "/api/step", Some(r#"{"until":80}"#));
+    assert!(
+        http_status(&step).contains("200 OK"),
+        "step: {}",
+        http_body(&step)
+    );
+    let step = json(http_body(&step));
+    assert_eq!(step["stepped_to"], 80.0);
+
+    let paused = http_request(&address, "POST", "/api/pause", Some("{}"));
+    assert!(
+        http_status(&paused).contains("200 OK"),
+        "pause: {}",
+        http_body(&paused)
+    );
+    let paused = json(http_body(&paused));
+    assert_eq!(paused["state"]["paused"], true);
+    assert_eq!(paused["state"]["now"], 80.0);
+
+    let resumed = http_request(&address, "POST", "/api/resume", Some("{}"));
+    assert!(
+        http_status(&resumed).contains("200 OK"),
+        "resume: {}",
+        http_body(&resumed)
+    );
+    assert_eq!(json(http_body(&resumed))["state"]["paused"], false);
+
+    let step = http_request(&address, "POST", "/api/step", Some(r#"{"until":200}"#));
+    assert!(http_status(&step).contains("200 OK"));
+    let step = json(http_body(&step));
+    let direct = http_request(&address, "POST", "/api/run", Some(r#"{"stop_time":200}"#));
+    assert_eq!(step["report"], json(http_body(&direct)));
+
+    let reset = http_request(&address, "POST", "/api/reset", Some("{}"));
+    assert!(http_status(&reset).contains("200 OK"));
 }

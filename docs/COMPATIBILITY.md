@@ -25,7 +25,7 @@
 | Transporter / TaskExecuter | `transporter` | 🟡 | 速度、装载/卸载时间、`network` 最短路、`home` 取货、两段任务；`capacity`=并发任务数（不搬运 flow item）；无多段自定义任务序列 |
 | Dispatcher | `dispatcher` | 🟡 | 派发操作员/运输任务，支持优先级与抢占、电梯召唤（优先级→同层→同向→最近） |
 | Operator / Resource | `resource` | ✅ | 资源池容量与停机窗口 |
-| Rack | `rack` | 🟡 | 四类 + `min_dwell` + `aisles`/`pick_policy`（level_order/nearest/fifo）按层取货；无真实货位寻址 |
+| Rack | `rack` | 🟡 | 四类 + `min_dwell` + `aisles`/`bays`/`pick_policy` 货位分配与取货行走时间；无空位查表/并发取货 |
 | 班次 / 计划停机 | `params.shifts` | ✅ | `[{start, duration, repeat_every}]`，停机进入 off_shift、暂停处理、恢复后继续 |
 | Time Table | `params.timetable` | ✅ | `{windows:[{start,end}]}`，与 shifts 取交集 |
 | BasicFR / BasicTE | `basic_fr` / `basic_te` | ✅ | 通用固定资源与执行器；`basic_fr.emptier` 周期清空上游（等价 FlexSim Emptier，可 destroy） |
@@ -66,7 +66,7 @@
 | 停止时间 | `run.stop_time` | ✅ | |
 | 预热（warm-up） | `run.warmup` | ✅ | 统计窗从 warm-up 起 |
 | 随机种子 / 复现 | `run.seed` / `run.replications` | ✅ | SplitMix64 派生，可复现 |
-| 运行/暂停/步进 | studio Run | 🟡 | CLI 批量运行 + Studio 运行/动画播放；无逐事件步进/断点 |
+| 运行/暂停/步进 | `SimulationHandle` + studio | 🟡 | 原生句柄 step_until/pause/resume/state/snapshot；Studio Pause/Resume/Step；无逐事件步进 |
 | 对象统计（状态占比、吞吐、WIP） | 报告 | ✅ | idle/busy/blocked/down/off_shift；时间加权 content；停留时间 |
 | 班次 / 计划可用性 | `shifts` | ✅ | 见上表“班次” |
 | 停留时间 | 报告 | ✅ | 平均停留时间 |
@@ -74,7 +74,7 @@
 | 置信区间 | 报告 | ✅ | 正态近似 `1.96·se` |
 | OptQuest 优化 | `openflex optimize` | 🟡 | grid/random/genetic、多目标加权/自定义权重、Pareto 前沿；无贝叶斯/约束优化 |
 | Dashboard / 图表 | 报告 + Studio 柱状图 | 🟡 | Studio 有吞吐柱状图；无完整 Dashboard/模板 |
-| 3D 视图 / 模型树 / GUI | `openflex studio` | 🟡 | Web Studio：Canvas 3D、字段表单、增删/重命名/复制对象、模型树、Process Flow 拖拽画布、撤销、步进/断点/Pause-Resume、Experimenter、Dashboard+CSV+时间序列；无 GPU 渲染 |
+| 3D 视图 / 模型树 / GUI | `openflex studio` | 🟡 | Web Studio：Canvas 3D、字段表单、模型树（重命名/复制/删除）、Process Flow 拖拽画布、撤销、原生 pause/step/resume、Experimenter、Dashboard+CSV+时间序列、Global Table 编辑器；无 GPU 渲染 |
 | 导出 Excel / 数据库 | CSV / JSON / xlsx | ✅ | `run --xlsx` 输出 Summary/Objects/Replications 三个 sheet |
 
 ## 文件与集成

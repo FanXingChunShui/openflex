@@ -202,6 +202,82 @@ jobs:
           retention-days: 30
 
   # ---------------------------------------------------------------------------
+  # Performance floor: a 10k-object model must stay fast. Budgets are
+  # deliberately loose (validate 2.0 s, run 5.0 s) against the local v0.16.0
+  # baseline (0.14 s / 0.40 s): shared CI runners are noisy, and this gate is
+  # meant to catch an order-of-magnitude regression (an O(n^2) sneaking back
+  # into validate or the event loop), not a 20% wobble. It blocks the PR; if a
+  # runner-noise failure is ever observed, raise the budget here and note why
+  # in docs/verification/performance.md instead of deleting the job.
+  # ---------------------------------------------------------------------------
+  bench:
+    name: bench (10k objects)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --locked -p openflex-cli
+
+      - name: Run the 10k-object benchmark
+        run: |
+          set -euo pipefail
+          bash scripts/bench-large-model.sh --objects 10000 \
+            --json bench.json --markdown bench-row.md
+          cat bench-row.md
+
+      - name: Enforce the performance floor
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import sys
+
+          LIMITS = {"validate": 2.0, "run": 5.0}
+          with open("bench.json", encoding="utf-8") as handle:
+              data = json.load(handle)
+          failures = []
+          lines = ["| phase | seconds | budget | status |", "|---|---|---|---|"]
+          for phase, limit in LIMITS.items():
+              seconds = data[phase]["seconds"]
+              ok = seconds <= limit
+              lines.append(
+                  "| %s | %.2f | %.1f | %s |"
+                  % (phase, seconds, limit, "ok" if ok else "**TOO SLOW**")
+              )
+              if not ok:
+                  failures.append(phase)
+          report = "\n".join(lines)
+          print(report)
+          with open("/tmp/bench-summary.md", "w", encoding="utf-8") as handle:
+              handle.write("### Large-model benchmark (10k objects)\n\n" + report + "\n")
+          if failures:
+              print(
+                  "::error::benchmark budget exceeded for: %s" % ", ".join(failures),
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          PY
+
+      - name: Append the benchmark table to the job summary
+        if: always()
+        run: |
+          if [ -f /tmp/bench-summary.md ]; then cat /tmp/bench-summary.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload the benchmark result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-10k
+          path: |
+            bench.json
+            bench-row.md
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
   # 180-second fuzz run. Needs a nightly toolchain and libFuzzer, so it is still
   # allowed to fail without blocking: the point is to surface crashes, not to
   # gate a PR on a stochastic process. 3 minutes per target is long enough to

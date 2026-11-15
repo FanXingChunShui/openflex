@@ -13,7 +13,7 @@
 | 3 | **AGV 交通控制** | transporter alias + 电池；✅ 取货段途中耗尽就地停车充电并 `TransportResume` 续跑、同节点占用等待（0.5 步重试）；示例 agv-traffic/agv-battery | 无单向路网边/路网节点图、无充电桩容量/排队、无完整死锁避免、不搬运 flow item | L |
 | 4 | **电梯门控** | 门开/关时间、超载折算、井道互斥、召唤/方向 | 无独立门态统计/对向调度/多轿厢群控 | S |
 | 5 | **Conveyor 曲线与完整合流** | 直线带、PhotoEye/Station/Join（入口轮转）；✅ 可选 `curve: {radius, angle}`，按弧长计入行程时间（速度不变） | 无 3D 转弯几何/多段曲线/斜坡、无 Join 的 slug/gap 精细策略、无 Merge Controller、无电机/转盘/Transfers、PhotoEye 无遮挡持续状态/计数 | L |
-| 6 | **Rack 货位精细放置** | 四类 + `min_dwell` + `aisles`/`pick_policy` 按层取货 | 无真实货位寻址（level/aisle/bay 坐标与行走时间）、无按 SKU/批次策略 | M |
+| 6 | **Rack 货位精细放置** | (level,aisle,bay) 分配 + 行走时间 + pick_policy | 无空位查表/并发取货、无 SKU/批次策略 | S |
 | 7 | **MultiProcessor 完整语义** | 多槽并行、每槽 setup/process、整批 crew 申请 | 无每槽独立操作员/故障、无槽位选择策略（优先级/最短队列） | M |
 | 8 | **缺失对象** | Emptier（经 basic_fr.emptier） | Robot/Crane/ASRSvehicle、Conveyor 电机/转盘、Fluid 泵/混合器、Escalator 等 | L–XL |
 | 9 | **全局表（Global Table）** | schema/校验/访问器 + 表达式 `table(...)` 只读访问 | 写入/表驱动参数更新未支持 | S |
@@ -35,7 +35,7 @@
 
 | # | 功能 | 现状 | 缺口 | 工作量 |
 |---|---|---|---|---|
-| 18 | **交互式运行控制** | Studio 时间步进/对象断点/Reset、动画播放 | 无逐事件单步/trace 回放/实时时钟速度 | S |
+| 18 | **交互式运行控制** | 原生 `SimulationHandle` step/pause/resume/state + Studio 控件 | 无逐事件单步/trace 回放/实时时钟速度 | S |
 | 19 | **检查点多复现/续跑 trace** | 单复现快照；trace 不随续跑 | 多复现检查点、续跑段 trace、无限定时器以 null 存取的完整语义 | S–M |
 | 20 | **统计高级方法** | t 区间/Little 检查、`run --timeseries` 区间平均 content 序列 | 无批均值法/方差缩减/自相关处理；时间序列为区间平均而非瞬时点 | M |
 | 21 | **Experimenter UI** | CLI `experiment` + Studio Experimenter（场景×复现对比表） | 无场景对比图表/参数选择器 | S |
@@ -69,7 +69,7 @@
 | 34 | **包管理器/容器发布** | Homebrew/winget/scoop 模板、GHCR workflow 就绪 | 未发布 tap/镜像/清单；Docker 未实际 build | S–M |
 | 35 | **真实 FlexSim 对照** | `compare-flexsim.sh` 双报告模式 + 模板 | 无真实 FlexSim 运行数据（净室边界；需外部提供） | — |
 | 36 | **性能规模** | M/M/1 约 1.75M events/s；**100k 对象 validate 0.75s / run 2.61s**（v0.14.0，较 v0.11.0 约 100×） | 仍可优化 serde_ignored（~50% validate）与 notify 广播；无 CI 性能门槛 | M |
-| 37 | **CI 质量门槛** | deny/audit/coverage（60% 行覆盖硬门槛）/fuzz 180s/arm64 必跑 | dependabot Actions PR 未合并 | S |
+| 37 | **CI 质量门槛** | deny/audit/coverage 60%/fuzz 180s/arm64/bench（10k 门槛） | dependabot Actions PR 未合并 | S |
 
 ## 7. 文档与本地化
 
