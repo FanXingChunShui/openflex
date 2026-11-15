@@ -328,7 +328,12 @@
       <label class="muted">from <input id="trace-from" type="number" step="any" value="0"></label>
       <label class="muted">to <input id="trace-to" type="number" step="any" value="0"></label>
     </div>
-    <div id="trace-list" data-trace-list="1"></div>
+    <div id="trace-list" data-trace-list="1" data-virtual-list="1"></div>
+    <div class="row" id="trace-pagination" data-virtual-list="1">
+      <button id="trace-prev" type="button">Prev page</button>
+      <span id="trace-page" class="muted">0 / 0</span>
+      <button id="trace-next" type="button">Next page</button>
+    </div>
     <div class="row" id="breakpoint-controls">
       <label class="muted">Breakpoint object <input id="breakpoint-object" placeholder="e.g. Processor1"></label>
       <span id="step-info" class="muted"></span>
@@ -388,6 +393,7 @@
           <button id="compare-b" type="button" data-compare-load="1">Load report B</button>
           <button id="compare-current" type="button">Use current report as B</button>
           <button id="compare-run" class="primary" type="button">Compare</button>
+          <button id="compare-export" type="button" data-compare-export="1">Export comparison CSV</button>
         </div>
         <input id="compare-a-file" type="file" accept="application/json,.json" hidden>
         <input id="compare-b-file" type="file" accept="application/json,.json" hidden>
@@ -431,6 +437,8 @@ const state = {
   heatmapMetric: "utilization",
   traceEvents: [],
   traceInfo: null,
+  tracePage: 0,
+  compareRows: [],
   compareA: null,
   compareB: null,
   compareAName: "A",
@@ -2009,15 +2017,22 @@ function renderTraceList() {
   if (!list) return;
   if (!state.traceEvents || state.traceEvents.length === 0) {
     list.innerHTML = '<p class="muted">Load a trace to replay events.</p>';
+    $("trace-page").textContent = "0 / 0";
+    $("trace-prev").disabled = true;
+    $("trace-next").disabled = true;
     return;
   }
   const object = $("trace-object").value;
   const from = Number($("trace-from").value) || 0;
   const to = Number($("trace-to").value) || Number.MAX_SAFE_INTEGER;
   const filtered = state.traceEvents
-    .filter(event => (!object || event.object === object) && event.time >= from && event.time <= to)
-    .slice(0, 500);
-  list.innerHTML = filtered.map(event =>
+    .filter(event => (!object || event.object === object) && event.time >= from && event.time <= to);
+  const pageSize = 100;
+  const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  state.tracePage = Math.min(Math.max(0, state.tracePage), pages - 1);
+  const startIndex = state.tracePage * pageSize;
+  const visible = filtered.slice(startIndex, startIndex + pageSize);
+  list.innerHTML = visible.map(event =>
     `<div class="trace-row" data-trace-time="${event.time}">
       <span>t=${Number(event.time).toFixed(3)}</span>
       <span>${escapeText(event.event || "")}</span>
@@ -2025,6 +2040,9 @@ function renderTraceList() {
       <span>${escapeText(traceDetail(event))}</span>
     </div>`
   ).join("") || '<p class="muted">No trace events match the filter.</p>';
+  $("trace-page").textContent = `${state.tracePage + 1} / ${pages} (${filtered.length} events)`;
+  $("trace-prev").disabled = state.tracePage === 0;
+  $("trace-next").disabled = state.tracePage >= pages - 1;
 }
 
 function showTraceAt(value) {
@@ -2061,6 +2079,7 @@ async function loadTrace() {
     });
     state.traceEvents = payload.events || [];
     state.traceInfo = payload;
+    state.tracePage = 0;
     $("trace-from").value = 0;
     $("trace-to").value = Number(payload.stop_time || 0).toFixed(2);
     populateTraceObjects();
@@ -3674,7 +3693,7 @@ function renderCompare() {
     ["output", "output_count.mean"],
     ["utilization", "utilization.mean"],
   ];
-  const rows = [];
+  const entries = [];
   for (const name of names) {
     for (const [label, path] of metrics) {
       const a = compareMetric(state.compareA, name, path);
@@ -3685,14 +3704,39 @@ function renderCompare() {
       const delta = bValue - aValue;
       const pct = Math.abs(aValue) > 1e-12 ? (delta / Math.abs(aValue)) * 100 : null;
       const cls = Math.abs(delta) < 1e-12 ? "neutral" : delta > 0 ? "positive" : "negative";
-      rows.push(`<tr><td>${escapeText(name)}</td><td>${label}</td>
-        <td>${aValue.toFixed(3)}</td><td>${bValue.toFixed(3)}</td>
-        <td class="${cls}">${delta >= 0 ? "+" : ""}${delta.toFixed(3)}</td>
-        <td class="${cls}">${pct == null ? "n/a" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}</td></tr>`);
+      entries.push({ name, label, a: aValue, b: bValue, delta, pct, cls });
     }
   }
+  state.compareRows = entries;
   labels.textContent = `A: ${state.compareAName} · B: ${state.compareBName}`;
-  container.innerHTML = `<table><thead><tr><th>Object</th><th>Metric</th><th>A</th><th>B</th><th>Δ</th><th>Δ%</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="6" class="muted">no matching objects</td></tr>'}</tbody></table>`;
+  container.innerHTML = `<table><thead><tr><th>Object</th><th>Metric</th><th>A</th><th>B</th><th>Δ</th><th>Δ%</th></tr></thead><tbody>${entries.map(entry => `<tr><td>${escapeText(entry.name)}</td><td>${entry.label}</td>
+        <td>${entry.a.toFixed(3)}</td><td>${entry.b.toFixed(3)}</td>
+        <td class="${entry.cls}">${entry.delta >= 0 ? "+" : ""}${entry.delta.toFixed(3)}</td>
+        <td class="${entry.cls}">${entry.pct == null ? "n/a" : `${entry.pct >= 0 ? "+" : ""}${entry.pct.toFixed(1)}%`}</td></tr>`).join("") || '<tr><td colspan="6" class="muted">no matching objects</td></tr>'}</tbody></table>`;
+}
+
+function exportCompareCsv() {
+  if (!state.compareRows || state.compareRows.length === 0) {
+    setStatus("compare two reports before exporting", true);
+    return;
+  }
+  const escapeCell = value => {
+    const text = String(value == null ? "" : value);
+    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const lines = ["object,metric,a,b,delta,delta_percent"];
+  for (const row of state.compareRows) {
+    lines.push([
+      row.name,
+      row.label,
+      row.a.toFixed(6),
+      row.b.toFixed(6),
+      row.delta.toFixed(6),
+      row.pct == null ? "" : row.pct.toFixed(4),
+    ].map(escapeCell).join(","));
+  }
+  downloadText("openflex-comparison.csv", lines.join("\n"), "text/csv;charset=utf-8");
+  setStatus("exported openflex-comparison.csv");
 }
 
 async function loadCompareFile(file, side) {
@@ -4343,6 +4387,7 @@ $("compare-current").addEventListener("click", () => {
   state.compareBName = "current report";
   renderCompare();
 });
+$("compare-export").addEventListener("click", exportCompareCsv);
 $("compare-run").addEventListener("click", () => {
   if (!state.compareA || !state.compareB) {
     setStatus("load report A and report B (or use current) first", true);
@@ -4362,9 +4407,11 @@ $("import-layout-file").addEventListener("change", async event => {
 });
 $("export-events").addEventListener("click", exportEventsCsv);
 $("load-trace").addEventListener("click", loadTrace);
-$("trace-object").addEventListener("change", renderTraceList);
-$("trace-from").addEventListener("input", renderTraceList);
-$("trace-to").addEventListener("input", renderTraceList);
+$("trace-object").addEventListener("change", () => { state.tracePage = 0; renderTraceList(); });
+$("trace-from").addEventListener("input", () => { state.tracePage = 0; renderTraceList(); });
+$("trace-to").addEventListener("input", () => { state.tracePage = 0; renderTraceList(); });
+$("trace-prev").addEventListener("click", () => { state.tracePage -= 1; renderTraceList(); });
+$("trace-next").addEventListener("click", () => { state.tracePage += 1; renderTraceList(); });
 $("export-checkpoints").addEventListener("click", exportCheckpointsJson);
 $("export-scene-png").addEventListener("click", exportScenePng);
 document.querySelectorAll("[data-view-preset]").forEach(button => {

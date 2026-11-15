@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.40.0 — 2026-11-16
+
+### Studio
+
+- **trace 列表分页**：每页 100 条 + Prev/Next/页码（`N / M (total events)`），避免 50000 事件卡顿；
+  时间轴 nearest 事件在当前页内高亮。
+- **对比 CSV 导出**：Compare 面板 `Export comparison CSV`（object,metric,a,b,delta,delta_percent）。
+
+### Person（评估，未实现）
+
+- 逐格移动前置能力评估：需新增 `grid_path()`（A* 返回格子序列）+ `PersonStep` 事件 + 默认关闭开关，
+  约 120–150 行；已记录到 UNIMPLEMENTED，下一轮先做 `grid_path` + 单测。
+
+### 验证
+
+- 478 个测试全绿（core 246、CLI 84、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.40.0 三平台产物发布并 SHA256 校验。
+
 ## v0.39.0 — 2026-11-16
 
 ### Person
