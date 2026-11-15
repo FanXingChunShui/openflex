@@ -181,6 +181,7 @@
     </div>
 
     <h2>Checkpoints</h2>
+    <div class="row"><button id="export-checkpoints" type="button" data-export-checkpoints="1">Export checkpoints JSON</button></div>
     <div id="checkpoints" data-checkpoint-panel="1"><p class="muted">loading…</p></div>
 
     <h2>Global tables</h2>
@@ -235,6 +236,10 @@
       <button id="marquee-3d" type="button" data-marquee-3d="1">Marquee 3D</button>
       <button id="view-webgl" type="button" data-view-webgl="1">3D WebGL</button>
       <button id="view-canvas" type="button" data-view-canvas="1">3D Canvas</button>
+      <button type="button" data-view-preset="iso">Iso</button>
+      <button type="button" data-view-preset="top">Top</button>
+      <button type="button" data-view-preset="front">Front</button>
+      <button type="button" data-view-preset="side">Side</button>
       <button id="grid-toggle" type="button" data-grid-toggle="1">Grid on</button>
       <label class="muted">Snap
         <select id="snap-grid" data-snap-grid="1">
@@ -273,6 +278,7 @@
     <div class="row" id="event-controls">
       <button id="step-event" type="button">Step event</button>
       <button id="next-event" type="button">Preview next event</button>
+      <button id="export-events" type="button" data-export-events="1">Export events CSV</button>
       <span id="event-preview" class="muted"></span>
     </div>
     <div id="event-list" data-event-list="1"></div>
@@ -359,6 +365,7 @@ const state = {
   renderMode: "canvas",
   webglLabelNodes: new Map(),
   timelinePulse: null,
+  checkpoints: null,
   dragging: false,
   lastX: 0,
   lastY: 0,
@@ -1243,6 +1250,7 @@ async function loadCheckpoints() {
   const container = $("checkpoints");
   try {
     const payload = await api("/api/checkpoints");
+    state.checkpoints = payload;
     const entries = payload.checkpoints || [];
     if (entries.length === 0) {
       container.innerHTML = `<p class="muted">No checkpoints in ${escapeText(payload.directory || "")}.</p>`;
@@ -3339,6 +3347,51 @@ function downloadText(filename, text, type) {
   URL.revokeObjectURL(link.href);
 }
 
+function exportEventsCsv() {
+  if (!state.events || state.events.length === 0) {
+    setStatus("no events have been stepped yet", true);
+    return;
+  }
+  const escapeCell = value => {
+    const text = String(value == null ? "" : value);
+    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const rows = ["time,seq,kind,object,detail"];
+  for (const event of state.events) {
+    rows.push([
+      event.time,
+      event.seq,
+      event.kind,
+      event.object || "",
+      event.detail || "",
+    ].map(escapeCell).join(","));
+  }
+  downloadText("openflex-events.csv", rows.join("\n"), "text/csv;charset=utf-8");
+  setStatus(`exported ${state.events.length} event(s) to openflex-events.csv`);
+}
+
+function exportCheckpointsJson() {
+  const payload = state.checkpoints || { checkpoints: [] };
+  downloadText("openflex-checkpoints.json", JSON.stringify(payload, null, 2), "application/json;charset=utf-8");
+  setStatus(`exported ${(payload.checkpoints || []).length} checkpoint(s) to openflex-checkpoints.json`);
+}
+
+function setViewPreset(name) {
+  const presets = {
+    iso: { yaw: 45, pitch: 30, zoom: 1 },
+    top: { yaw: 0, pitch: 80, zoom: 1 },
+    front: { yaw: 0, pitch: 5, zoom: 1 },
+    side: { yaw: 90, pitch: 5, zoom: 1 },
+  };
+  const preset = presets[name];
+  if (!preset) return;
+  state.yaw = preset.yaw;
+  state.pitch = preset.pitch;
+  state.zoom = preset.zoom;
+  if (state.view2d) setRenderMode(state.last3dMode || "canvas");
+  setStatus(`camera preset: ${name}`);
+}
+
 function exportScenePng() {
   const useWebgl = state.renderMode === "webgl" && !state.view2d && webglState.gl;
   if (useWebgl) drawWebGL(state.clock);
@@ -3804,7 +3857,12 @@ $("object-menu").addEventListener("click", event => {
 document.addEventListener("click", event => {
   if (!event.target.closest("#object-menu")) hideObjectMenu();
 });
+$("export-events").addEventListener("click", exportEventsCsv);
+$("export-checkpoints").addEventListener("click", exportCheckpointsJson);
 $("export-scene-png").addEventListener("click", exportScenePng);
+document.querySelectorAll("[data-view-preset]").forEach(button => {
+  button.addEventListener("click", () => setViewPreset(button.dataset.viewPreset));
+});
 $("export-svg").addEventListener("click", exportSvg);
 $("export-model-json").addEventListener("click", exportModelJson);
 $("export-csv").addEventListener("click", exportCsv);

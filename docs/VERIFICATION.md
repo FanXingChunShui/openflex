@@ -104,7 +104,8 @@ pwsh、docker，registry 检查默认关闭；清单已同步到 v0.13.0）。
 | 大模型 100k 对象 | 150,000 事件 | validate **0.87 s** / run **2.70 s** → 约 55,643 events/s，峰值 391 MB |
 
 > v0.31（load 16–21）与 v0.32（load 5.3）都在高负载下测得，数值比 v0.30.0 在 load 3.2 时（0.75 s / 2.29 s）
-> 高约 10–18%；属于负载噪声还是真实回归需低负载复测，详见 [performance.md](verification/performance.md)。
+> 高约 10–18%；**后续 10k 复测（load 5.3，67,032 events/s）与 v0.30.0（75,366 events/s）持平，
+> 已确认为测量噪声、不是代码回归**。详见 [performance.md](verification/performance.md)。
 
 **规模结论**：10× 对象带来约 9–11× 时间，**接近线性**；v0.25.0 相比 v0.11.0 的
 85.12 s / 271.56 s 快约 **115×**（一次 run 从 4.5 分钟降到 2.3 秒）。
