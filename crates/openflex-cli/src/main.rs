@@ -133,7 +133,10 @@ enum Command {
         /// Sampling interval for --timeseries (model time units).
         #[arg(long, default_value_t = 1.0)]
         interval: f64,
-        /// Save the final simulation snapshot as JSON (single replication; cannot be combined with --parallel > 1; may be combined with --trace).
+        /// Compute batch-means confidence intervals with N batches (default 10).
+        #[arg(long, value_name = "BATCHES", num_args = 0..=1, default_missing_value = "10")]
+        batch_means: Option<u32>,
+        /// Save the final simulation snapshot as JSON (single replication; cannot be combined with --parallel > 1; may be combined with --trace; bulk per-replication checkpoints are not implemented yet).
         #[arg(long, value_name = "FILE")]
         save_checkpoint: Option<PathBuf>,
         /// Resume from a checkpoint written by --save-checkpoint (single replication; cannot be combined with --parallel > 1, several --seed values, --trace or --set).
@@ -192,6 +195,9 @@ enum Command {
         /// Add the fluid section when the saved report contains one.
         #[arg(long)]
         fluid: bool,
+        /// Add batch-means confidence intervals with N batches (default 10).
+        #[arg(long, value_name = "BATCHES", num_args = 0..=1, default_missing_value = "10")]
+        batch_means: Option<u32>,
     },
     /// Compare two saved reports object by object (A/B scenario analysis).
     Compare {
@@ -664,6 +670,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             trace,
             timeseries,
             interval,
+            batch_means,
             save_checkpoint,
             resume,
             flow,
@@ -735,6 +742,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                         report_dir: report_dir.as_deref(),
                         xlsx: xlsx.as_deref(),
                         sections: Sections { flow, fluid },
+                        batch_means,
                         quiet,
                     },
                     progress,
@@ -754,6 +762,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                     report_dir: report_dir.as_deref(),
                     xlsx: xlsx.as_deref(),
                     sections: Sections { flow, fluid },
+                    batch_means,
                     quiet,
                 },
             )
@@ -785,14 +794,20 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             output,
             flow,
             fluid,
+            batch_means,
         } => {
             let text = match (path, experiment) {
                 (Some(path), None) => {
                     let sim = report::read_report(&path)
                         .map_err(|error| Failure::from(error).with_path(&path))?;
-                    report::render_sim_with_sections(&sim, format.into(), flow, fluid)?
+                    report::render_sim_with_options(&sim, format.into(), flow, fluid, batch_means)?
                 }
                 (None, Some(directory)) => {
+                    if batch_means.is_some() {
+                        return Err(Failure::usage(anyhow!(
+                            "--batch-means is only supported for a single saved report, not an experiment directory"
+                        )));
+                    }
                     let experiment = report::read_experiment(&directory)
                         .map_err(|error| Failure::from(error).with_path(&directory))?;
                     report::render_experiment_with_sections(
@@ -1302,6 +1317,7 @@ struct RunOutput<'a> {
     report_dir: Option<&'a Path>,
     xlsx: Option<&'a Path>,
     sections: Sections,
+    batch_means: Option<u32>,
     quiet: bool,
 }
 
@@ -1319,19 +1335,41 @@ fn finish_run(report: &SimReport, output: &RunOutput<'_>) -> Result<(), Failure>
             "note: the model has no fluid objects; nothing to add to the report",
         );
     }
-    let text = report::render_sim_with_sections(
+    let batch = match output.batch_means {
+        Some(batches) => {
+            if batches < 2 {
+                return Err(Failure::usage(anyhow!(
+                    "--batch-means needs at least 2 batches"
+                )));
+            }
+            if (report.replications.len() as u32) < batches {
+                return Err(Failure::usage(anyhow!(
+                    "--batch-means {batches} needs at least {batches} replications (the run has {})",
+                    report.replications.len()
+                )));
+            }
+            Some(
+                report::batch_means(report, batches)
+                    .map_err(|error| Failure::usage(anyhow!(error)))?,
+            )
+        }
+        None => None,
+    };
+    let text = report::render_sim_with_options(
         report,
         output.format.into(),
         output.sections.flow,
         output.sections.fluid,
+        output.batch_means,
     )?;
     emit(&text, None, output.quiet)?;
     if let Some(directory) = output.report_dir {
-        let files = report::write_reports_with_sections(
+        let files = report::write_reports_with_options(
             report,
             directory,
             output.sections.flow,
             output.sections.fluid,
+            batch.as_ref(),
         )?;
         note(
             output.quiet,

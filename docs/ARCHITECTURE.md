@@ -70,7 +70,7 @@ OpenFlex 的目标是：用 Rust 实现一个与 FlexSim 核心建模语义一�
 | Split | 按 `by_item_type` 选端口，或轮询输出端口 |
 | Transporter / Dispatcher | Processor 通过 `process_operator` 向 Dispatcher 请求操作员；任务拆两段：home→取货（`network` 双向最短路或欧氏距离）→ load → 送达 → unload → 加工 → 空车回 home；`network` 缺失时回退欧氏；容量 = 可并发的任务数 |
 | Person / AGV | `person`（capacity 固定 1，平面行走，network 或欧氏）、`agv`（transporter alias）；与 Dispatcher 的优先级/抢占/容量机制共用 |
-| Robot / Crane / ASRS / Escalator | robot 3D 欧氏（含 z）、crane max(垂直,水平)、asrs_vehicle 走 network；escalator 复用 conveyor 皮带 |
+| Robot / Crane / ASRS / Escalator | robot 有 grid 时 8 邻接绕障（无则 3D 欧氏）、crane max(垂直,水平)、asrs_vehicle/AGV 走 network 最短路；escalator 复用 conveyor 皮带 |
 | Elevator | 垂直运输（|Δz|）+ 门开/关时间、`max_load`/`load_per_task` 折算有效载客、`shaft` 井道互斥（同一时刻一台轿厢在途）；`capacity` 为并发任务数，`z` 为楼层 |
 | Resource | 计数型资源池（`capacity`、`downtimes`）；占用期间 Processor 处于 `Blocked`，停机窗口内不发放 |
 | 全部对象 | 可选 `shifts`（`start`/`duration`/`repeat_every`）与 `timetable`（窗口列表）：窗口外进入 `OffShift`、暂停加工并拒绝进件，恢复后补足剩余加工时间 |
@@ -163,6 +163,11 @@ FlexSim 的公开帮助没有定义下面几项行为，但任何离散事件引
    不重置已完成的 setup。
 7. **统计窗口**：`warmup` 之前的计数与时间加权量在 warmup 时刻清零；`created/completed` 只统计
    warmup 之后创建的项。
+
+## Conveyor 分段
+
+`ConveyorParams.segments: [{length, speed, angle?}]` 非空时按段累加行程时间 `Σ(length/speed)`，
+皮带用等效速度（总长/总时间）驱动单速模型；`angle` 仅在 `curve.radius` 存在时折算弧长。空数组保持旧行为。
 
 ## Emptier（basic_fr）
 
@@ -264,7 +269,7 @@ valve 用 `pressure_open/pressure_close` 滞回自动启闭（trace `fluid_valve
   `simulate_until`/`resume_from_checkpoint` 触发），OnDraw 仅 schema/校验。生命周期触发器使用合成 item，`trigger_depth` 防递归。
 - 运行控制：`SimulationHandle`（`new/step_until/step_event/next_event/pause/resume/snapshot/restore/state/result`）
   在同一个引擎实例上增量推进，`step_event` 每次恰好处理一个事件并返回 `EventPreview{time,seq,kind,object}`；
-  pause/resume 触发 OnStop/OnResume；`simulate_until`/`resume_from_checkpoint` 是 checkpoint 路径。旧 `simulate`/
+  pause/resume 触发 OnStop/OnResume；`EventPreview` 含 `detail`（name=value）；`simulate_until`/`resume_from_checkpoint` 是 checkpoint 路径。旧 `simulate`/
   `simulate_with_checkpoint` 不触发这两个触发器。
 - 任务序列：`DispatcherParams.task_sequence`（travel/load/unload）把超出标准两段式的部分折算为额外时间，经 `TransportSettle` 结算。
 - 模型迁移：`migrate_json` 校验版本并提供 v1→v2 钩子；CLI `openflex migrate` 可规范化输出（字段级迁移待 v2）。

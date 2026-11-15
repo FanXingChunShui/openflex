@@ -2818,6 +2818,7 @@ fn studio_can_add_and_delete_objects_through_the_api() {
         "id=\"next-event\"",
         "id=\"event-list\"",
         "data-event-list",
+        "data-event-detail",
         "data-table-editor",
         "data-table-cell",
         "id=\"add-table-row\"",
@@ -3671,6 +3672,7 @@ fn studio_global_table_editor_updates_the_model() {
         "id=\"next-event\"",
         "id=\"event-list\"",
         "data-event-list",
+        "data-event-detail",
         "data-table-editor",
         "data-table-cell",
         "id=\"add-table-row\"",
@@ -3856,4 +3858,95 @@ fn studio_step_event_uses_the_native_handle() {
         json(http_body(&direct)),
         "stepping every event (then advancing to stop) must equal one direct run"
     );
+}
+
+#[test]
+fn run_batch_means_appear_in_reports() {
+    let dir = TempDir::new("batch-means");
+    let model = dir.write("demo.ofm", MODEL);
+
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "10",
+        "--batch-means",
+        "5",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let result = json(&stdout(&output));
+    let batch = &result["batch_means"];
+    assert_eq!(batch["batches"], 5);
+    assert_eq!(batch["samples"], 10);
+    let created = &batch["items_created"];
+    let per_batch = created["per_batch"].as_array().expect("per_batch");
+    assert_eq!(per_batch.len(), 5);
+    let mean = created["mean"].as_f64().expect("mean");
+    let expected = per_batch
+        .iter()
+        .map(|value| value.as_f64().unwrap_or_default())
+        .sum::<f64>()
+        / 5.0;
+    assert!((mean - expected).abs() < 1e-9);
+    assert!(created["variance"].as_f64().unwrap_or_default() >= 0.0);
+    assert!(created["ci95"].as_f64().unwrap_or_default() >= 0.0);
+
+    // The bare flag defaults to ten batches.
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "10",
+        "--batch-means",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert_eq!(json(&stdout(&output))["batch_means"]["batches"], 10);
+
+    let table = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "10",
+        "--batch-means",
+        "5",
+        "--format",
+        "table",
+        "--quiet",
+    ]);
+    let table = stdout(&table);
+    assert!(
+        table.contains("Batch means (5 batches over 10 replications)"),
+        "{table}"
+    );
+    assert!(table.contains("Batch variance"));
+
+    let markdown = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "10",
+        "--batch-means",
+        "5",
+        "--format",
+        "markdown",
+        "--quiet",
+    ]);
+    assert!(stdout(&markdown).contains("## Batch means"));
+
+    let too_few = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "3",
+        "--batch-means",
+        "5",
+        "--quiet",
+    ]);
+    assert_eq!(code(&too_few), 2, "stderr: {}", stderr(&too_few));
 }

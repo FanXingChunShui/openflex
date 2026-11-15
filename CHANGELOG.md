@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.19.0 — 2026-11-15
+
+### 对象与路径
+
+- **Conveyor 分段**：`segments: [{length, speed, angle?}]` 按段累加行程时间（10@1 + 10@2 = 15），空数组保持旧行为。
+- **AGV/robot 路径规划**：AGV/ASRS 走 network 最短路（支持有向边）；robot 有 grid 时 8 邻接绕障（无则 3D 欧氏）。
+- **EventPreview.detail**：`step_event`/`next_event` 返回 `name=value` 细节，Studio 事件列表展示。
+
+### 统计
+
+- **批均值**：`run --batch-means [N]` 与 `report --batch-means`，系统级 Items created/completed/in system 的
+  每批均值、批间方差与 t 区间（table/markdown/json 并列复现 CI）；batches≥2 且 ≤复现数。
+
+### 验证
+
+- 430 个测试全绿（core 191、CLI 79、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.19.0 三平台产物发布并 SHA256 校验。
+
 ## v0.18.0 — 2026-11-15
 
 ### 逐事件单步

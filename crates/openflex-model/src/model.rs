@@ -1371,6 +1371,21 @@ pub struct ConveyorCurve {
     pub angle: f64,
 }
 
+/// One segment of a multi-speed conveyor (task-53).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConveyorSegment {
+    /// Straight length of the segment.
+    pub length: f64,
+    /// Belt speed on this segment.
+    #[serde(default = "one_f64")]
+    pub speed: f64,
+    /// Turn angle in degrees at the end of the segment. It only adds arc length
+    /// when the conveyor also declares `curve.radius`.
+    #[serde(default)]
+    pub angle: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConveyorParams {
@@ -1400,6 +1415,11 @@ pub struct ConveyorParams {
     /// length adds travel distance at the same speed.
     #[serde(default)]
     pub curve: Option<ConveyorCurve>,
+
+    /// Multi-speed belt (task-53): when non-empty it replaces `length`/`speed`
+    /// and the travel time is the sum of `length / speed` over the segments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub segments: Vec<ConveyorSegment>,
 
     /// Optional object-level process flow (B7). Its `create` blocks can run at
     /// t = 0 or whenever this object receives an item (`on_entry`), and its
@@ -1437,6 +1457,7 @@ impl Default for ConveyorParams {
             stations: Vec::new(),
             join_inputs: None,
             curve: None,
+            segments: Vec::new(),
             shifts: Vec::new(),
             process_flow: None,
             timetable: None,

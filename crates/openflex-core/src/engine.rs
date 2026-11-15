@@ -848,9 +848,36 @@ impl ObjectRt {
                 let curve = params
                     .curve
                     .map_or(0.0, |curve| curve.radius * curve.angle.to_radians());
+                // task-53: a segmented belt replaces length/speed. The travel
+                // time is the sum of `length / speed` over the segments, which
+                // the single-speed belt model represents with the equivalent
+                // speed `total_length / total_time`.
+                let (belt_length, belt_speed) = if params.segments.is_empty() {
+                    (params.length + curve.max(0.0), params.speed)
+                } else {
+                    let mut total_length = 0.0;
+                    let mut total_time = 0.0;
+                    for segment in &params.segments {
+                        let arc = match params.curve.as_ref() {
+                            Some(curve) if segment.angle.abs() > 0.0 => {
+                                curve.radius * segment.angle.to_radians().abs()
+                            }
+                            _ => 0.0,
+                        };
+                        let length = segment.length.max(0.0) + arc;
+                        total_length += length;
+                        total_time += length / segment.speed.max(EPS);
+                    }
+                    let speed = if total_time > 0.0 {
+                        total_length / total_time
+                    } else {
+                        params.speed
+                    };
+                    (total_length, speed)
+                };
                 runtime.belt = Some(Belt::new(
-                    params.length + curve.max(0.0),
-                    params.speed,
+                    belt_length,
+                    belt_speed,
                     params.item_spacing,
                     params.accumulating,
                 ));
@@ -1309,6 +1336,9 @@ pub struct EventPreview {
     pub kind: String,
     /// Name of the object the event belongs to, if any.
     pub object: Option<String>,
+    /// Optional extra detail such as `generation=3` or `token=2` (task-53).
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 /// A live simulation that can be advanced incrementally (task-47).
@@ -2138,12 +2168,13 @@ impl<'m> Simulation<'m> {
         if next.time >= horizon - EPS {
             return None;
         }
-        let (index, kind, _) = describe_event(&next.kind);
+        let (index, kind, detail) = describe_event(&next.kind);
         Some(EventPreview {
             time: next.time,
             seq: next.seq,
             kind: kind.to_string(),
             object: index.map(|index| self.objects[index].name.clone()),
+            detail: detail.map(|(name, value)| format!("{name}={value}")),
         })
     }
 
@@ -2159,12 +2190,13 @@ impl<'m> Simulation<'m> {
         if next.time >= horizon - EPS {
             return Ok(None);
         }
-        let (object, kind, _) = describe_event(&next.kind);
+        let (object, kind, detail) = describe_event(&next.kind);
         let preview = EventPreview {
             time: next.time,
             seq: next.seq,
             kind: kind.to_string(),
             object: object.map(|index| self.objects[index].name.clone()),
+            detail: detail.map(|(name, value)| format!("{name}={value}")),
         };
         let Some(Reverse(event)) = self.events.pop() else {
             return Ok(None);
@@ -5946,11 +5978,19 @@ impl<'m> Simulation<'m> {
             return (self.objects[from].z - self.objects[to].z).abs();
         }
         match self.objects[transporter].kind {
-            // task-50: a robot moves in three dimensions.
+            // task-50/53: a robot plans on the walking grid (8 neighbours,
+            // obstacles) and adds the height difference; without a grid it
+            // falls back to the straight 3D line.
             ObjectKind::Robot => {
+                let dz = (self.objects[to].z - self.objects[from].z).abs();
+                if let Some(grid) = self.model.grid.as_ref()
+                    && let Some(flat) =
+                        grid_distance(grid, self.objects[from].position, self.objects[to].position)
+                {
+                    return flat + dz;
+                }
                 let dx = self.objects[to].position[0] - self.objects[from].position[0];
                 let dy = self.objects[to].position[1] - self.objects[from].position[1];
-                let dz = self.objects[to].z - self.objects[from].z;
                 return (dx * dx + dy * dy + dz * dz).sqrt();
             }
             // task-50: a gantry crane travels vertically and horizontally at

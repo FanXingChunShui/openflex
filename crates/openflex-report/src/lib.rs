@@ -22,12 +22,14 @@ use std::path::{Path, PathBuf};
 
 use openflex_core::{Aggregate, SimReport};
 
+mod batch;
 mod compare;
 mod experiment;
 pub mod i18n;
 mod sim;
 mod xlsx;
 
+pub use batch::{BatchMeans, BatchMeansSummary, batch_means};
 pub use compare::{Comparison, MetricComparison, ObjectComparison, ReportRef, compare_reports};
 pub use experiment::{
     ExperimentReport, ScenarioReport, sanitize, write_experiment_reports,
@@ -35,9 +37,11 @@ pub use experiment::{
 };
 pub use sim::{
     REPLICATIONS_CSV, REPORT_CSV, REPORT_JSON, REPORT_MARKDOWN, to_csv, to_csv_with_flow,
-    to_csv_with_sections, to_json, to_markdown, to_markdown_with_flow, to_markdown_with_sections,
-    to_replications_csv, to_table, to_table_with_flow, to_table_with_sections, write_reports,
-    write_reports_with_flow, write_reports_with_sections,
+    to_csv_with_sections, to_json, to_json_with_batch_means, to_markdown,
+    to_markdown_with_batch_means, to_markdown_with_flow, to_markdown_with_sections,
+    to_replications_csv, to_table, to_table_with_batch_means, to_table_with_flow,
+    to_table_with_sections, write_reports, write_reports_with_flow, write_reports_with_options,
+    write_reports_with_sections,
 };
 pub use xlsx::write_xlsx;
 
@@ -69,6 +73,8 @@ pub enum ReportError {
         path: String,
         source: std::io::Error,
     },
+    #[error("batch means: {0}")]
+    BatchMeans(String),
     #[error("could not build the Excel workbook: {0}")]
     Xlsx(#[from] rust_xlsxwriter::XlsxError),
     #[error("could not write {path}: {source}")]
@@ -113,11 +119,33 @@ pub fn render_sim_with_sections(
     include_flow: bool,
     include_fluid: bool,
 ) -> Result<String, ReportError> {
+    render_sim_with_options(report, format, include_flow, include_fluid, None)
+}
+
+/// Render one simulation report with all optional sections.
+///
+/// `batch_batches` requests a batch-means summary with that many batches; the
+/// replication count must be at least as large.
+pub fn render_sim_with_options(
+    report: &SimReport,
+    format: Format,
+    include_flow: bool,
+    include_fluid: bool,
+    batch_batches: Option<u32>,
+) -> Result<String, ReportError> {
+    let batch = match batch_batches {
+        Some(batches) => Some(batch_means(report, batches)?),
+        None => None,
+    };
     Ok(match format {
-        Format::Table => to_table_with_sections(report, include_flow, include_fluid),
-        Format::Json => to_json(report)?,
+        Format::Table => {
+            to_table_with_batch_means(report, include_flow, include_fluid, batch.as_ref())
+        }
+        Format::Json => to_json_with_batch_means(report, batch.as_ref())?,
         Format::Csv => to_csv_with_sections(report, include_flow, include_fluid),
-        Format::Markdown => to_markdown_with_sections(report, include_flow, include_fluid),
+        Format::Markdown => {
+            to_markdown_with_batch_means(report, include_flow, include_fluid, batch.as_ref())
+        }
     })
 }
 

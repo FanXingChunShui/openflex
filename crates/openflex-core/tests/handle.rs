@@ -277,3 +277,36 @@ fn step_event_matches_a_single_run_on_a_complex_model() {
     }
     assert_eq!(stepped, direct, "the full result must match");
 }
+
+/// task-53: event previews carry the event detail when the engine has one.
+#[test]
+fn event_preview_exposes_details() {
+    let model = model(
+        r#"{
+      "format": "openflex-model", "version": 1, "name": "handle-detail",
+      "run": { "stop_time": 300.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+      "objects": [
+        { "name": "S", "kind": "source", "params": {
+            "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+        { "name": "P", "kind": "processor", "params": {
+            "process_time": { "distribution": "constant", "value": 4.0 },
+            "failure": {
+              "mtbf": { "distribution": "constant", "value": 50.0 },
+              "mttr": { "distribution": "constant", "value": 10.0 } } } },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [ { "from": "S", "to": "P" }, { "from": "P", "to": "K" } ]
+    }"#,
+    );
+    let config = config(300.0);
+    let mut handle = SimulationHandle::new(&model, &config, 0).expect("handle");
+    let mut saw_detail = false;
+    while let Some(preview) = handle.next_event() {
+        if let Some(detail) = &preview.detail {
+            assert!(detail.contains('='), "detail format: {detail}");
+            saw_detail = true;
+        }
+        handle.step_event().expect("step");
+    }
+    assert!(saw_detail, "at least one event must carry a detail");
+}

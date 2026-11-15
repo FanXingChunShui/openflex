@@ -1,0 +1,23 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "conveyor-segments",
+  "time_unit": "seconds",
+  "description": "A two-speed belt: 10 units at speed 1 plus 10 units at speed 2 take 15 time units in total",
+  "run": {"stop_time": 400.0, "warmup": 0.0, "seed": 1, "replications": 1},
+  "objects": [
+    {"name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+      "interarrival": {"distribution": "constant", "value": 50.0}, "first_arrival": 0.0}},
+    {"name": "Conveyor1", "kind": "conveyor", "pos": [5, 0], "params": {
+      "accumulating": true, "item_spacing": 1.0, "max_content": 100,
+      "segments": [
+        {"length": 10.0, "speed": 1.0},
+        {"length": 10.0, "speed": 2.0}
+      ]}},
+    {"name": "Sink1", "kind": "sink", "pos": [15, 0], "params": {}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Conveyor1"},
+    {"from": "Conveyor1", "to": "Sink1"}
+  ]
+}

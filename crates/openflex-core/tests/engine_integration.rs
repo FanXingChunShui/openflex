@@ -786,3 +786,104 @@ fn escalator_transports_like_a_conveyor() {
         report.objects["E"].avg_stay_time.mean
     );
 }
+
+// ---------------------------------------------------------------------------
+// task-53: segmented conveyor
+// ---------------------------------------------------------------------------
+
+/// A two-segment belt (10 at speed 1, 10 at speed 2) takes 15 time units, not
+/// the 10 or 20 a single-speed belt of either length would take.
+#[test]
+fn conveyor_segments_add_up_the_travel_time() {
+    let report = run(r#"{
+      "format": "openflex-model", "version": 1, "name": "conveyor-segments",
+      "run": { "stop_time": 400.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+      "objects": [
+        { "name": "S", "kind": "source", "params": {
+            "interarrival": { "distribution": "constant", "value": 50.0 }, "first_arrival": 0.0 } },
+        { "name": "C", "kind": "conveyor", "params": {
+            "accumulating": true, "max_content": 100, "item_spacing": 1.0,
+            "segments": [
+              { "length": 10.0, "speed": 1.0 },
+              { "length": 10.0, "speed": 2.0 } ] } },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [ { "from": "S", "to": "C" }, { "from": "C", "to": "K" } ]
+    }"#);
+    assert_eq!(input(&report, "K"), 8.0);
+    assert!(
+        (report.objects["C"].avg_stay_time.mean - 15.0).abs() < 1e-9,
+        "segment travel time: {}",
+        report.objects["C"].avg_stay_time.mean
+    );
+}
+
+/// Without segments the old `length`/`speed` behaviour is unchanged.
+#[test]
+fn conveyor_without_segments_keeps_length_over_speed() {
+    let report = run(r#"{
+      "format": "openflex-model", "version": 1, "name": "conveyor-plain",
+      "run": { "stop_time": 400.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+      "objects": [
+        { "name": "S", "kind": "source", "params": {
+            "interarrival": { "distribution": "constant", "value": 50.0 }, "first_arrival": 0.0 } },
+        { "name": "C", "kind": "conveyor", "params": {
+            "length": 20.0, "speed": 4.0, "max_content": 100 } },
+        { "name": "K", "kind": "sink", "params": {} }
+      ],
+      "connections": [ { "from": "S", "to": "C" }, { "from": "C", "to": "K" } ]
+    }"#);
+    assert!(
+        (report.objects["C"].avg_stay_time.mean - 5.0).abs() < 1e-9,
+        "plain belt: {}",
+        report.objects["C"].avg_stay_time.mean
+    );
+}
+
+// ---------------------------------------------------------------------------
+// task-53: robot grid path planning
+// ---------------------------------------------------------------------------
+
+/// A wall between the robot and the processor forces a detour, so the leg is
+/// longer than the straight line.
+#[test]
+fn robot_detours_around_grid_obstacles() {
+    let template = |grid: &str| {
+        format!(
+            r#"{{
+      "format": "openflex-model", "version": 1, "name": "robot-astar",
+      "run": {{ "stop_time": 400.0, "warmup": 0.0, "seed": 1, "replications": 1 }},
+      "grid": {grid},
+      "objects": [
+        {{ "name": "S", "kind": "source", "pos": [4, 0], "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 20.0 }}, "first_arrival": 0.0 }} }},
+        {{ "name": "P", "kind": "processor", "pos": [4, 0], "params": {{
+            "process_time": {{ "distribution": "constant", "value": 4.0 }},
+            "process_operator": "Dispatcher1" }} }},
+        {{ "name": "K", "kind": "sink", "params": {{}} }},
+        {{ "name": "Dispatcher1", "kind": "dispatcher", "pos": [0, 0], "params": {{}} }},
+        {{ "name": "Robot1", "kind": "robot", "pos": [0, 0], "params": {{
+            "capacity": 1, "speed": 1.0, "home": "Dispatcher1" }} }}
+      ],
+      "connections": [
+        {{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }},
+        {{ "from": "Dispatcher1", "to": "Robot1" }}
+      ]
+    }}"#
+        )
+    };
+    let open = run(&template(
+        r#"{ "width": 6, "height": 6, "cell_size": 1.0 }"#,
+    ));
+    let walled = run(&template(
+        r#"{ "width": 6, "height": 6, "cell_size": 1.0,
+             "obstacles": [[2, 0], [2, 1], [2, 2], [2, 3]] }"#,
+    ));
+    assert!(out(&open, "P") > 0.0);
+    assert!(
+        out(&walled, "P") < out(&open, "P"),
+        "the detour must cost time: {} vs {}",
+        out(&walled, "P"),
+        out(&open, "P"),
+    );
+}

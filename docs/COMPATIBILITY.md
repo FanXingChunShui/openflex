@@ -19,7 +19,7 @@
 | Sink | `sink` | ✅ | 吞吐与停留时间统计 |
 | Combiner | `combiner` | ✅ | pack / join / batch（setup+process）；容器先到、等待组件数 |
 | Separator | `separator` | ✅ | `separate_mode: unpack`（qty+1 件）/ `split`（qty 件）；0 = 容器内全部组件 |
-| Conveyor | `conveyor` | ✅ | 速度、长度、间距、累积/非累积、容量、`curve{radius,angle}` 弧长；`photo_eyes`/`stations`/`join_inputs`；无多段曲线 |
+| Conveyor | `conveyor` | ✅ | 速度/长度/间距/容量、`curve` 弧长、`segments` 分段变速；`photo_eyes`/`stations`/`join_inputs`；无逐段变速物理仿真 |
 | Merge | `merge` | ✅ | 多输入合流；可选等待全部输入 |
 | Split | `split` | ✅ | 轮询或按 item type 分流 |
 | Transporter / TaskExecuter | `transporter` | 🟡 | 速度、装载/卸载时间、`network` 最短路、`home` 取货、两段任务；`capacity`=并发任务数（不搬运 flow item）；无多段自定义任务序列 |
@@ -29,7 +29,7 @@
 | 班次 / 计划停机 | `params.shifts` | ✅ | `[{start, duration, repeat_every}]`，停机进入 off_shift、暂停处理、恢复后继续 |
 | Time Table | `params.timetable` | ✅ | `{windows:[{start,end}]}`，与 shifts 取交集 |
 | BasicFR / BasicTE | `basic_fr` / `basic_te` | ✅ | 通用固定资源与执行器；`basic_fr.emptier` 周期清空上游（等价 FlexSim Emptier） |
-| Robot / Crane / ASRS | `robot` / `crane` / `asrs_vehicle` | 🟡 | 任务执行器变体：robot 3D 欧氏、crane max(垂直,水平)、ASRS 走 network；共用 TransporterParams |
+| Robot / Crane / ASRS | `robot` / `crane` / `asrs_vehicle` | 🟡 | 执行器变体：robot grid 8 邻接绕障、crane max(垂直,水平)、ASRS/AGV network 最短路；共用 TransporterParams |
 | Escalator | `escalator` | 🟡 | 复用 conveyor 皮带语义（人员输送）；无独立密度/碰撞 |
 | MultiProcessor | `multiprocessor` | ✅ | 多槽并行加工，每槽 setup/process，操作员按忙碌期申请 |
 | Fluid（流体） | `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_pipe` / `fluid_sink` | 🟡 | 固定步长、液位/溢出/吞吐、pipe 延迟与背压、压力场（p=ρgh + Δp 驱动流量）、valve 压力滞回自动重开、pipe 温度黏度修正；无多相/可压缩/泵阀曲线 |
@@ -68,7 +68,7 @@
 | 停止时间 | `run.stop_time` | ✅ | |
 | 预热（warm-up） | `run.warmup` | ✅ | 统计窗从 warm-up 起 |
 | 随机种子 / 复现 | `run.seed` / `run.replications` | ✅ | SplitMix64 派生，可复现 |
-| 运行/暂停/步进 | `SimulationHandle` + studio | ✅ | step_until/pause/resume/state/snapshot + **逐事件 step_event/next_event**（EventPreview）；Studio Step Event/事件列表 |
+| 运行/暂停/步进 | `SimulationHandle` + studio | ✅ | step_until/pause/resume/state/snapshot + 逐事件 step_event/next_event（EventPreview 含 detail）；Studio Step Event/事件列表 |
 | 对象统计（状态占比、吞吐、WIP） | 报告 | ✅ | idle/busy/blocked/down/off_shift；时间加权 content；停留时间 |
 | 班次 / 计划可用性 | `shifts` | ✅ | 见上表“班次” |
 | 停留时间 | 报告 | ✅ | 平均停留时间 |

@@ -99,6 +99,8 @@ fn english(key: &str) -> &'static str {
              openflex optimize basic.ofm --param Proc1.process_time.mean=2..6 --algorithm genetic --objective throughput,wip --weight throughput=0.7,wip=0.3 --pareto\n  \
              openflex migrate basic.ofm --out migrated.ofm\n  \
              openflex run basic.ofm --timeseries series.csv --interval 10\n  \
+             openflex run basic.ofm --replications 10 --batch-means 5\n  \
+             openflex report report.json --batch-means 5\n  \
              openflex layout basic.ofm --dimension 3d --html preview.html --animate 10\n  \
              openflex run basic.ofm --flow --format markdown\n  \
              openflex run basic.ofm --fluid\n  \
@@ -171,6 +173,8 @@ fn english(key: &str) -> &'static str {
         "level_avg" => "Avg level",
         "level_max" => "Max level",
         "overflow" => "Overflow",
+        "batch_means" => "Batch means",
+        "batch_variance" => "Batch variance",
         _ => "",
     }
 }
@@ -203,6 +207,8 @@ fn chinese(key: &str) -> &'static str {
              openflex optimize basic.ofm --param Proc1.process_time.mean=2..6 --algorithm genetic --objective throughput,wip --weight throughput=0.7,wip=0.3 --pareto\n  \
              openflex migrate basic.ofm --out migrated.ofm\n  \
              openflex run basic.ofm --timeseries series.csv --interval 10\n  \
+             openflex run basic.ofm --replications 10 --batch-means 5\n  \
+             openflex report report.json --batch-means 5\n  \
              openflex layout basic.ofm --dimension 3d --html preview.html --animate 10\n  \
              openflex run basic.ofm --flow --format markdown\n  \
              openflex run basic.ofm --fluid\n  \
@@ -275,6 +281,8 @@ fn chinese(key: &str) -> &'static str {
         "level_avg" => "平均液位",
         "level_max" => "最高液位",
         "overflow" => "溢出",
+        "batch_means" => "批均值",
+        "batch_variance" => "批间方差",
         _ => "",
     }
 }
@@ -399,6 +407,8 @@ mod tests {
             "level_avg",
             "level_max",
             "overflow",
+            "batch_means",
+            "batch_variance",
         ];
         for key in keys {
             assert!(!english(key).is_empty(), "missing English key {key}");

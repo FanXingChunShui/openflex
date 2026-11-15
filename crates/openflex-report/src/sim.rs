@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use openflex_core::{Aggregate, ObjectAggregate, SimReport};
 
 use crate::{
-    ReportError, fmt_ci, fmt_count, fmt_percent, fmt_rate, fmt_time, i18n, in_system,
-    reproduce_command, write_file,
+    BatchMeansSummary, ReportError, fmt_ci, fmt_count, fmt_percent, fmt_rate, fmt_time, i18n,
+    in_system, reproduce_command, write_file,
 };
 
 pub const REPORT_JSON: &str = "report.json";
@@ -29,6 +29,42 @@ pub fn to_json(report: &SimReport) -> Result<String, ReportError> {
     Ok(text)
 }
 
+/// Pretty JSON with an optional `batch_means` summary object.
+pub fn to_json_with_batch_means(
+    report: &SimReport,
+    batch_means: Option<&BatchMeansSummary>,
+) -> Result<String, ReportError> {
+    let Some(batch) = batch_means else {
+        return to_json(report);
+    };
+    let mut value = serde_json::to_value(report)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("batch_means".into(), batch_json(batch));
+    }
+    let mut text = serde_json::to_string_pretty(&value)?;
+    text.push('\n');
+    Ok(text)
+}
+
+fn batch_json(batch: &BatchMeansSummary) -> serde_json::Value {
+    let metric = |value: &crate::BatchMeans| {
+        serde_json::json!({
+            "per_batch": value.per_batch,
+            "mean": value.mean,
+            "variance": value.variance,
+            "ci95": value.ci95,
+            "samples": value.samples,
+        })
+    };
+    serde_json::json!({
+        "batches": batch.batches,
+        "samples": batch.samples,
+        "items_created": metric(&batch.items_created),
+        "items_completed": metric(&batch.items_completed),
+        "items_in_system": metric(&batch.items_in_system),
+    })
+}
+
 /// Fixed-width terminal table of the key metrics.
 ///
 /// The labels follow `OPENFLEX_LANG`; the numbers and their formatting do not,
@@ -40,6 +76,20 @@ pub fn to_table(report: &SimReport) -> String {
 /// Table including the process-flow section when `include_flow` is set.
 pub fn to_table_with_flow(report: &SimReport, include_flow: bool) -> String {
     to_table_with_sections(report, include_flow, false)
+}
+
+/// Table with optional process-flow, fluid and batch-means sections.
+pub fn to_table_with_batch_means(
+    report: &SimReport,
+    include_flow: bool,
+    include_fluid: bool,
+    batch_means: Option<&BatchMeansSummary>,
+) -> String {
+    let mut out = to_table_with_sections(report, include_flow, include_fluid);
+    if let Some(batch) = batch_means {
+        out.push_str(&batch_table(batch));
+    }
+    out
 }
 
 /// Table with optional process-flow and fluid sections.
@@ -226,6 +276,20 @@ pub fn to_markdown(report: &SimReport) -> String {
 /// Markdown including the process-flow section when `include_flow` is set.
 pub fn to_markdown_with_flow(report: &SimReport, include_flow: bool) -> String {
     to_markdown_with_sections(report, include_flow, false)
+}
+
+/// Markdown with optional process-flow, fluid and batch-means sections.
+pub fn to_markdown_with_batch_means(
+    report: &SimReport,
+    include_flow: bool,
+    include_fluid: bool,
+    batch_means: Option<&BatchMeansSummary>,
+) -> String {
+    let mut out = to_markdown_with_sections(report, include_flow, include_fluid);
+    if let Some(batch) = batch_means {
+        out.push_str(&batch_markdown(batch));
+    }
+    out
 }
 
 /// Markdown with optional process-flow and fluid sections.
@@ -573,6 +637,71 @@ pub(crate) fn fluid_markdown(report: &SimReport) -> String {
     out
 }
 
+/// Batch-means table section.
+fn batch_table(batch: &BatchMeansSummary) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "\n{} ({} batches over {} replications)",
+        i18n::t("batch_means"),
+        batch.batches,
+        batch.samples
+    );
+    let _ = writeln!(
+        out,
+        "{:<24} {:>12} {:>14} {:>12}",
+        i18n::t("metric"),
+        i18n::t("mean"),
+        i18n::t("batch_variance"),
+        "95% CI"
+    );
+    let _ = writeln!(out, "{}", "-".repeat(WIDTH));
+    for (label, value) in [
+        (i18n::t("items_created"), &batch.items_created),
+        (i18n::t("items_completed"), &batch.items_completed),
+        (i18n::t("items_in_system"), &batch.items_in_system),
+    ] {
+        let _ = writeln!(
+            out,
+            "{:<24} {:>12.3} {:>14.3} {:>12.3}",
+            label, value.mean, value.variance, value.ci95
+        );
+    }
+    out
+}
+
+/// Batch-means Markdown section.
+fn batch_markdown(batch: &BatchMeansSummary) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "\n## {}\n\n{} batches over {} replications.\n",
+        i18n::t("batch_means"),
+        batch.batches,
+        batch.samples
+    );
+    let _ = writeln!(
+        out,
+        "| {} | {} | {} | 95% CI |",
+        i18n::t("metric"),
+        i18n::t("mean"),
+        i18n::t("batch_variance")
+    );
+    let _ = writeln!(out, "|---|---:|---:|---:|");
+    for (label, value) in [
+        (i18n::t("items_created"), &batch.items_created),
+        (i18n::t("items_completed"), &batch.items_completed),
+        (i18n::t("items_in_system"), &batch.items_in_system),
+    ] {
+        let _ = writeln!(
+            out,
+            "| {} | {:.3} | {:.3} | {:.3} |",
+            label, value.mean, value.variance, value.ci95
+        );
+    }
+    out
+}
+
 /// Write `report.json`, `report.csv` and `report.md` into `directory`, plus
 /// `replications.csv` when the report has more than one replication.
 pub fn write_reports(report: &SimReport, directory: &Path) -> Result<Vec<PathBuf>, ReportError> {
@@ -597,10 +726,22 @@ pub fn write_reports_with_sections(
     include_flow: bool,
     include_fluid: bool,
 ) -> Result<Vec<PathBuf>, ReportError> {
+    write_reports_with_options(report, directory, include_flow, include_fluid, None)
+}
+
+/// Like [`write_reports_with_sections`], with optional batch means in the
+/// archived JSON and Markdown files.
+pub fn write_reports_with_options(
+    report: &SimReport,
+    directory: &Path,
+    include_flow: bool,
+    include_fluid: bool,
+    batch_means: Option<&BatchMeansSummary>,
+) -> Result<Vec<PathBuf>, ReportError> {
     let mut written = Vec::new();
 
     let json_path = directory.join(REPORT_JSON);
-    write_file(&json_path, &to_json(report)?)?;
+    write_file(&json_path, &to_json_with_batch_means(report, batch_means)?)?;
     written.push(json_path);
 
     let csv_path = directory.join(REPORT_CSV);
@@ -613,7 +754,7 @@ pub fn write_reports_with_sections(
     let markdown_path = directory.join(REPORT_MARKDOWN);
     write_file(
         &markdown_path,
-        &to_markdown_with_sections(report, include_flow, include_fluid),
+        &to_markdown_with_batch_means(report, include_flow, include_fluid, batch_means),
     )?;
     written.push(markdown_path);
 

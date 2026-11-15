@@ -72,7 +72,7 @@
                       border-radius: 6px; }
   #event-list { display: flex; flex-direction: column; gap: 2px; max-height: 150px; overflow: auto;
                 font-size: 11px; }
-  .event-row { display: grid; grid-template-columns: 64px 90px 1fr; gap: 6px; padding: 2px 4px;
+  .event-row { display: grid; grid-template-columns: 64px 90px 1fr 1fr; gap: 6px; padding: 2px 4px;
                border-radius: 4px; color: #334155; }
   .event-row.current { background: #fef3c7; font-weight: 600; }
   .table-editor { border-collapse: collapse; width: 100%; font-size: 11px; }
@@ -1578,7 +1578,7 @@ function renderEventList() {
   const list = $("event-list");
   const rows = state.events.slice(-50).map((event, index, all) => {
     const current = index === all.length - 1 ? " current" : "";
-    return `<div class="event-row${current}"><span>t=${Number(event.time).toFixed(3)}</span><span>${escapeText(event.kind)}</span><span>${escapeText(event.object || "simulation")}</span></div>`;
+    return `<div class="event-row${current}"><span>t=${Number(event.time).toFixed(3)}</span><span>${escapeText(event.kind)}</span><span>${escapeText(event.object || "simulation")}</span><span data-event-detail="1">${escapeText(event.detail || "")}</span></div>`;
   }).join("");
   list.innerHTML = rows || '<p class="muted">No events stepped yet.</p>';
 }
