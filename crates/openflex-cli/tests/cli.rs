@@ -2847,6 +2847,10 @@ fn studio_can_add_and_delete_objects_through_the_api() {
         "data-webgl-export=\"1\"",
         "data-timeline=\"1\"",
         "data-export-events=\"1\"",
+        "data-trace-load=\"1\"",
+        "data-trace-list=\"1\"",
+        "function loadTrace",
+        "function showTraceAt",
         "data-export-checkpoints=\"1\"",
         "data-export-layout=\"1\"",
         "data-import-layout=\"1\"",
@@ -3777,6 +3781,10 @@ fn studio_global_table_editor_updates_the_model() {
         "data-webgl-export=\"1\"",
         "data-timeline=\"1\"",
         "data-export-events=\"1\"",
+        "data-trace-load=\"1\"",
+        "data-trace-list=\"1\"",
+        "function loadTrace",
+        "function showTraceAt",
         "data-export-checkpoints=\"1\"",
         "data-export-layout=\"1\"",
         "data-import-layout=\"1\"",
@@ -4329,4 +4337,29 @@ fn studio_checkpoint_panel_lists_and_restores() {
         Some(r#"{"file":"nope.json"}"#),
     );
     assert!(http_status(&missing).contains("404"), "missing: {missing}");
+}
+
+#[test]
+fn studio_trace_endpoint_returns_events() {
+    let dir = TempDir::new("studio-trace");
+    let model = dir.write("demo.ofm", MODEL);
+    let (_server, address) = start_studio(&model);
+
+    let response = http_request(&address, "POST", "/api/trace", Some(r#"{"max_events":5}"#));
+    assert!(
+        http_status(&response).contains("200 OK"),
+        "trace: {}",
+        http_body(&response)
+    );
+    let payload = json(http_body(&response));
+    assert_eq!(payload["count"], 5);
+    assert_eq!(payload["truncated"], true);
+    assert!(payload["total"].as_u64().unwrap_or_default() > 5);
+    let events = payload["events"].as_array().expect("events");
+    assert_eq!(events.len(), 5);
+    for event in events {
+        assert!(event["time"].is_f64());
+        assert!(event["event"].is_string());
+        assert!(event["object"].is_string());
+    }
 }

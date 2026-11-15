@@ -91,6 +91,20 @@ scripts/bench-large-model.sh --objects 100000 --generate-only /tmp/bench-100k
 > v0.36.0 测量时 load 从 16.8 涨到 31.8（多任务并行编译），100k 得到 1.73 s / 4.31 s、34,835 events/s——
 > 负载越高数据越差的趋势非常明确，**同样不作基线**。
 
+**待测清单（v0.33–v0.37 的 100k 正式基线）**：截至 2026-11-16 03:53 UTC，本机 load average 为
+**16.1 / 12.9 / 12.3**（1/5/15 分钟），仍远高于可测阈值（< 3），因此这几版只有高负载记录、没有可比基线。
+满足条件后按下面命令补测并更新 §3 表格（3 次取中位数）：
+
+```sh
+uptime                                    # 确认 load < 3
+scripts/bench-large-model.sh --objects 100000 --markdown /tmp/bench-v100k.md
+scripts/bench-large-model.sh --objects 100000
+scripts/bench-large-model.sh --objects 100000
+```
+
+补测后需要更新：本文 §3 的表格与历史对比表、§4.1 的 CI 余量、§7 的记录表，
+以及 `docs/VERIFICATION.md` §6 的性能基线表。
+
 > v0.29.0 的 100k 指标是 4 次复测的稳定值（0.76/2.28、0.78/2.39 等）；首测因系统 load ≈ 6 明显偏高，
 > 已在结论里保留该数据作为"测量噪声"的实例。
 

@@ -6584,6 +6584,27 @@ impl<'m> Simulation<'m> {
                 return Ok(());
             }
         }
+        // task-109: two people cannot stand on the same cell. The lower object
+        // index has priority; the other one waits one tick and retries, which
+        // also breaks head-on deadlocks.
+        if self.objects[transporter].kind == ObjectKind::Person {
+            let target = self.objects[requester].position;
+            let occupied_by_smaller = self.objects.iter().enumerate().any(|(index, object)| {
+                index != transporter
+                    && index < transporter
+                    && object.kind == ObjectKind::Person
+                    && object.tasks > 0
+                    && distance(object.position, target) < 0.5
+            });
+            if occupied_by_smaller {
+                self.record_object_trace("person_wait", transporter);
+                self.schedule(
+                    self.now + 0.5,
+                    EventKind::TransportArrive(transporter, requester),
+                );
+                return Ok(());
+            }
+        }
         self.objects[transporter].position = self.objects[requester].position;
         self.objects[transporter].z = self.objects[requester].z;
         let leg_distance =
@@ -9407,5 +9428,57 @@ mod tests {
         assert_eq!(sim.charger_in_use.get(&charger).copied(), Some(1));
         assert_eq!(sim.charger_queue.get(&charger).map(VecDeque::len), Some(0));
         assert!(sim.objects[second].charge_until.is_finite(), "now charging");
+    }
+
+    /// task-109: a person whose target cell is taken by a lower-index person
+    /// waits a tick instead of stacking on the same cell.
+    #[test]
+    fn person_waits_for_an_occupied_cell() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "person-wait",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "P", "kind": "processor", "pos": [5, 0], "params": {} },
+            { "name": "D", "kind": "dispatcher", "pos": [0, 0], "params": {} },
+            { "name": "E0", "kind": "person", "pos": [0, 0], "params": {} },
+            { "name": "E1", "kind": "person", "pos": [0, 0], "params": {} },
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let processor = sim.by_name["P"];
+        let first = sim.by_name["E0"];
+        let second = sim.by_name["E1"];
+        assert!(first < second, "the model order defines the priority");
+
+        // The first person already stands on the cell.
+        sim.objects[first].position = [5.0, 0.0];
+        sim.objects[first].tasks = 1;
+        sim.objects[second].position = [0.0, 0.0];
+        sim.objects[second].tasks = 1;
+
+        sim.handle_transport_arrive(second, processor)
+            .expect("arrive");
+        assert_eq!(
+            sim.objects[second].position,
+            [0.0, 0.0],
+            "the waiting person must not enter the occupied cell"
+        );
+
+        // Once the cell is free the same person arrives normally.
+        sim.objects[first].tasks = 0;
+        sim.handle_transport_arrive(second, processor)
+            .expect("arrive");
+        assert_eq!(sim.objects[second].position, [5.0, 0.0]);
     }
 }

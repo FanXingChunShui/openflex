@@ -563,6 +563,7 @@ fn handle_connection(
         ("POST", "/api/timeseries") => {
             timeseries_endpoint(&mut stream, &state.model, &request.body)
         }
+        ("POST", "/api/trace") => trace_endpoint(&mut stream, &state.model, &request.body),
         ("POST", "/api/table") => table_endpoint(&mut stream, state, model_path, &request.body),
         (method, path) if method == "POST" && path.starts_with("/api/model/objects/") => {
             if let Some(old) = path
@@ -2045,6 +2046,64 @@ fn step_event_endpoint(stream: &mut TcpStream, state: &mut StudioState) -> std::
             &serde_json::json!({ "ok": false, "error": error }).to_string(),
         ),
     }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct TraceRequest {
+    #[serde(default)]
+    stop_time: Option<f64>,
+    #[serde(default)]
+    max_events: Option<usize>,
+}
+
+/// Trace every event up to `stop_time` for the timeline replay.
+fn trace_endpoint(stream: &mut TcpStream, model: &Model, body: &[u8]) -> std::io::Result<()> {
+    let request: TraceRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return write_json(
+                stream,
+                "400 Bad Request",
+                &serde_json::json!({ "ok": false, "error": format!("invalid trace request: {error}") })
+                    .to_string(),
+            );
+        }
+    };
+    let stop = request.stop_time.unwrap_or(model.run.stop_time);
+    if !stop.is_finite() || stop <= model.run.warmup {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": "stop_time must be greater than warm-up" })
+                .to_string(),
+        );
+    }
+    let limit = request.max_events.unwrap_or(5_000).clamp(1, 50_000);
+    let config = openflex_core::SimConfig {
+        stop_time: stop,
+        warmup: model.run.warmup,
+        seed: openflex_core::derive_seed(model.run.seed, 0),
+    };
+    let (_, log) = match openflex_core::simulate_traced(model, &config, 0) {
+        Ok(result) => result,
+        Err(error) => return write_sim_error(stream, error),
+    };
+    let total = log.events.len();
+    let truncated = total > limit || log.truncated;
+    let events: Vec<_> = log.events.into_iter().take(limit).collect();
+    write_json(
+        stream,
+        "200 OK",
+        &serde_json::json!({
+            "stop_time": stop,
+            "warmup": model.run.warmup,
+            "count": events.len(),
+            "total": total,
+            "truncated": truncated,
+            "events": events,
+        })
+        .to_string(),
+    )
 }
 
 /// Read one HTTP request with strict header/body limits.

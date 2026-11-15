@@ -99,6 +99,12 @@
                        border-radius: 6px; }
   #timeseries-chart { width: 100%; height: 160px; background: white; border: 1px solid #cbd5e1;
                       border-radius: 6px; }
+  #trace-list { display: flex; flex-direction: column; gap: 1px; max-height: 140px; overflow: auto;
+                font-size: 11px; }
+  .trace-row { display: grid; grid-template-columns: 64px 76px 1fr 1fr; gap: 6px; padding: 1px 4px;
+               color: #334155; border-radius: 3px; }
+  .trace-row.current { background: #dbeafe; font-weight: 600; }
+  #timeline-event { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #event-list { display: flex; flex-direction: column; gap: 2px; max-height: 150px; overflow: auto;
                 font-size: 11px; }
   .event-row { display: grid; grid-template-columns: 64px 90px 1fr 1fr; gap: 6px; padding: 2px 4px;
@@ -307,9 +313,16 @@
       <button id="step-event" type="button">Step event</button>
       <button id="next-event" type="button">Preview next event</button>
       <button id="export-events" type="button" data-export-events="1">Export events CSV</button>
+      <button id="load-trace" type="button" data-trace-load="1">Load trace</button>
       <span id="event-preview" class="muted"></span>
     </div>
     <div id="event-list" data-event-list="1"></div>
+    <div class="row" id="trace-controls">
+      <label class="muted">Trace object <select id="trace-object"><option value="">all</option></select></label>
+      <label class="muted">from <input id="trace-from" type="number" step="any" value="0"></label>
+      <label class="muted">to <input id="trace-to" type="number" step="any" value="0"></label>
+    </div>
+    <div id="trace-list" data-trace-list="1"></div>
     <div class="row" id="breakpoint-controls">
       <label class="muted">Breakpoint object <input id="breakpoint-object" placeholder="e.g. Processor1"></label>
       <span id="step-info" class="muted"></span>
@@ -319,6 +332,7 @@
       <div id="timeline-panel" data-timeline="1" hidden>
         <label class="muted">Timeline <input id="timeline" type="range" min="0" max="1" step="0.01" value="0"></label>
         <span id="timeline-label" class="muted">t=0.00</span>
+        <span id="timeline-event" class="muted" data-timeline-event="1"></span>
       </div>
       <button id="pause-animation" type="button">Pause</button>
     </div>
@@ -396,6 +410,8 @@ const state = {
   webglLabelNodes: new Map(),
   timelinePulse: null,
   heatmapMetric: "utilization",
+  traceEvents: [],
+  traceInfo: null,
   checkpoints: null,
   dragging: false,
   lastX: 0,
@@ -1946,6 +1962,90 @@ async function previewNextEvent(silent) {
     }
   } catch (error) {
     if (!silent) setStatus(error.message, true);
+  }
+}
+
+function traceDetail(event) {
+  if (event.message) return event.message;
+  if (event.data && Object.keys(event.data).length > 0) {
+    return Object.entries(event.data).map(([key, value]) => `${key}=${value}`).join(" ");
+  }
+  return "";
+}
+
+function populateTraceObjects() {
+  const select = $("trace-object");
+  if (!select) return;
+  const objects = [...new Set(state.traceEvents.map(event => event.object).filter(Boolean))].sort();
+  select.innerHTML = '<option value="">all</option>'
+    + objects.map(name => `<option value="${escapeText(name)}">${escapeText(name)}</option>`).join("");
+}
+
+function renderTraceList() {
+  const list = $("trace-list");
+  if (!list) return;
+  if (!state.traceEvents || state.traceEvents.length === 0) {
+    list.innerHTML = '<p class="muted">Load a trace to replay events.</p>';
+    return;
+  }
+  const object = $("trace-object").value;
+  const from = Number($("trace-from").value) || 0;
+  const to = Number($("trace-to").value) || Number.MAX_SAFE_INTEGER;
+  const filtered = state.traceEvents
+    .filter(event => (!object || event.object === object) && event.time >= from && event.time <= to)
+    .slice(0, 500);
+  list.innerHTML = filtered.map(event =>
+    `<div class="trace-row" data-trace-time="${event.time}">
+      <span>t=${Number(event.time).toFixed(3)}</span>
+      <span>${escapeText(event.event || "")}</span>
+      <span>${escapeText(event.object || "")}</span>
+      <span>${escapeText(traceDetail(event))}</span>
+    </div>`
+  ).join("") || '<p class="muted">No trace events match the filter.</p>';
+}
+
+function showTraceAt(value) {
+  const label = $("timeline-event");
+  if (!label) return;
+  if (!state.traceEvents || state.traceEvents.length === 0) {
+    label.textContent = "load trace for event replay";
+    return;
+  }
+  let current = null;
+  for (const event of state.traceEvents) {
+    if (event.time > value + 1e-9) break;
+    current = event;
+  }
+  if (!current) {
+    label.textContent = "no trace event yet";
+    return;
+  }
+  label.textContent = `nearest: ${current.event} ${current.object} t=${Number(current.time).toFixed(3)}`;
+  document.querySelectorAll(".trace-row").forEach(row => {
+    const time = Number(row.dataset.traceTime);
+    row.classList.toggle("current", Math.abs(time - current.time) < 1e-9);
+  });
+}
+
+async function loadTrace() {
+  if (!state.model) return;
+  setStatus("loading trace…");
+  try {
+    const payload = await api("/api/trace", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ max_events: 5000 }),
+    });
+    state.traceEvents = payload.events || [];
+    state.traceInfo = payload;
+    $("trace-from").value = 0;
+    $("trace-to").value = Number(payload.stop_time || 0).toFixed(2);
+    populateTraceObjects();
+    renderTraceList();
+    showTraceAt(Number($("timeline").value || 0));
+    setStatus(`loaded ${payload.count} trace event(s)${payload.truncated ? " (truncated)" : ""}`);
+  } catch (error) {
+    setStatus(error.message, true);
   }
 }
 
@@ -4142,6 +4242,10 @@ $("import-layout-file").addEventListener("change", async event => {
   event.target.value = "";
 });
 $("export-events").addEventListener("click", exportEventsCsv);
+$("load-trace").addEventListener("click", loadTrace);
+$("trace-object").addEventListener("change", renderTraceList);
+$("trace-from").addEventListener("input", renderTraceList);
+$("trace-to").addEventListener("input", renderTraceList);
 $("export-checkpoints").addEventListener("click", exportCheckpointsJson);
 $("export-scene-png").addEventListener("click", exportScenePng);
 document.querySelectorAll("[data-view-preset]").forEach(button => {
@@ -4207,6 +4311,7 @@ $("timeline").addEventListener("input", event => {
   state.timelinePulse = value;
   state.clock = value;
   $("timeline-label").textContent = `t=${value.toFixed(2)}`;
+  showTraceAt(value);
   drawScene(value);
   if (state.renderMode === "webgl" && !state.view2d) drawWebGL(value);
 });
@@ -4223,6 +4328,7 @@ window.addEventListener("keydown", event => {
 });
 
 renderEventList();
+renderTraceList();
 renderScenarioList();
 if (!initWebGL()) state.renderMode = "canvas";
 setRenderMode(state.renderMode);
