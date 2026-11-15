@@ -356,3 +356,23 @@ fn manifest_records_sha256() {
     }
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// task-77: a checkpoint can be parsed with its manifest checksum enforced.
+#[test]
+fn checkpoint_verifies_its_checksum() {
+    let dir = temp_dir("verify");
+    let run = run_model_with_checkpoints_retained(&model(1), &dir, 50.0, None).expect("run");
+    let entry = &run.manifest.entries[0];
+    let text = fs::read_to_string(dir.join(&entry.file)).expect("read");
+    let expected = entry.sha256.as_deref().expect("checksum");
+    assert_eq!(Checkpoint::sha256_of(&text), expected);
+
+    // Correct checksum parses, a wrong one is rejected.
+    Checkpoint::from_json_verified(&text, Some(expected)).expect("verified");
+    let error =
+        Checkpoint::from_json_verified(&text, Some(&"0".repeat(64))).expect_err("must fail");
+    assert!(error.to_string().contains("checksum"), "{error}");
+    // `None` keeps the plain parse behaviour.
+    Checkpoint::from_json_verified(&text, None).expect("unchecked");
+    let _ = fs::remove_dir_all(&dir);
+}

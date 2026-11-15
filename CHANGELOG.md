@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.27.0 — 2026-11-15
+
+### 检查点
+
+- **校验和验证入口**：`Checkpoint::from_json_verified(text, expected_sha256)`（大小写不敏感，不匹配返回明确错误，
+  `None` 等价原解析）+ `Checkpoint::sha256_of(text)`，与 manifest 的 SHA-256 对接。
+
+### Studio
+
+- **3D 框选**（Marquee 3D 开关或 Shift/Ctrl+空白拖框，按屏幕包围盒中心命中）、**多选整体拖拽**（按相同增量移动、
+  吸附作用于锚点）、**批量编辑**（X/Y/Z 统一设置，入 undo 栈）。
+
+### 验证
+
+- 466 个测试全绿（core 235、CLI 83、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.27.0 三平台产物发布并 SHA256 校验。
+
 ## v0.26.0 — 2026-11-15
 
 ### 检查点完整性

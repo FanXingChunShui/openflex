@@ -111,6 +111,26 @@ impl Checkpoint {
     }
 
     /// Parse a checkpoint and validate its format version.
+    /// task-77: parse a checkpoint and, when `expected_sha256` is given,
+    /// verify the SHA-256 of `text` against it first (the value a manifest
+    /// entry records). A mismatch is reported as a configuration error.
+    pub fn from_json_verified(text: &str, expected_sha256: Option<&str>) -> Result<Self, SimError> {
+        if let Some(expected) = expected_sha256 {
+            let actual = crate::sha256::hex(text.as_bytes());
+            if !actual.eq_ignore_ascii_case(expected) {
+                return Err(SimError::Config(format!(
+                    "checkpoint checksum mismatch: expected {expected}, got {actual}"
+                )));
+            }
+        }
+        Self::from_json(text)
+    }
+
+    /// task-77: SHA-256 of this checkpoint's JSON text (hex).
+    pub fn sha256_of(text: &str) -> String {
+        crate::sha256::hex(text.as_bytes())
+    }
+
     pub fn from_json(text: &str) -> Result<Self, SimError> {
         let checkpoint: Checkpoint = serde_json::from_str(text)
             .map_err(|error| SimError::Config(format!("invalid checkpoint JSON: {error}")))?;

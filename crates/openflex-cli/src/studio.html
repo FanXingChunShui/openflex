@@ -148,6 +148,15 @@
     </details>
     <div class="row" id="object-actions" hidden>
       <button id="save-object" class="primary" type="button">Save model</button>
+      <div id="batch-edit" data-batch-edit="1" hidden>
+        <h3>Batch edit <span id="batch-edit-count" class="muted"></span></h3>
+        <div class="row">
+          <label>X <input id="batch-x" type="number" step="any" value="0"></label>
+          <label>Y <input id="batch-y" type="number" step="any" value="0"></label>
+          <label>Z <input id="batch-z" type="number" step="any" value="0"></label>
+        </div>
+        <button id="apply-batch-pos" type="button">Apply position/Z</button>
+      </div>
       <button id="revert-object" type="button">Revert</button>
       <button id="delete-object" class="danger" type="button">Delete</button>
     </div>
@@ -188,12 +197,13 @@
   </aside>
 
   <section class="view">
-    <canvas id="scene" aria-label="3D model view" data-drag-object="1" data-occlusion="1" data-box-select="1"></canvas>
+    <canvas id="scene" aria-label="3D model view" data-drag-object="1" data-group-drag="1" data-occlusion="1" data-box-select="1" data-marquee-3d="1"></canvas>
     <div class="layout-controls" data-layout-controls="1">
       <button type="button" data-layout-grid="1">Grid</button>
       <button type="button" data-layout-circle="1">Circle</button>
       <button type="button" data-layout-force="1">Force</button>
       <button id="view-2d" type="button" data-view-2d="1">2D top view</button>
+      <button id="marquee-3d" type="button" data-marquee-3d="1">Marquee 3D</button>
       <label class="muted">Snap
         <select id="snap-grid" data-snap-grid="1">
           <option value="0">off</option>
@@ -305,6 +315,8 @@ const state = {
   view2d: false,
   snapGrid: 10,
   dragGuides: null,
+  marqueeMode: false,
+  marquee3d: null,
   dragging: false,
   lastX: 0,
   lastY: 0,
@@ -2241,6 +2253,10 @@ function updateSelectionUi() {
   const count = state.multiSelection.size;
   const label = $("selection-count");
   if (label) label.textContent = count > 0 ? `${count} selected` : "all objects";
+  const panel = $("batch-edit");
+  if (panel) panel.hidden = count === 0;
+  const batchCount = $("batch-edit-count");
+  if (batchCount) batchCount.textContent = count > 0 ? `(${count} objects)` : "";
 }
 
 function clearMultiSelection() {
@@ -2316,6 +2332,23 @@ function nudgeSelected(dx, dy, snap = true) {
   if ($("edit-pos-x")) $("edit-pos-x").value = object.pos[0];
   if ($("edit-pos-y")) $("edit-pos-y").value = object.pos[1];
   setStatus(`nudged ${object.name} to ${object.pos[0]}, ${object.pos[1]} (unsaved)`);
+}
+
+function applyBatchPosition() {
+  const indices = [...state.multiSelection];
+  if (indices.length === 0) return;
+  rememberNow();
+  const x = Number($("batch-x").value) || 0;
+  const y = Number($("batch-y").value) || 0;
+  const z = Number($("batch-z").value) || 0;
+  indices.forEach(index => {
+    const object = state.model.objects[index];
+    if (!object) return;
+    object.pos = [x, y];
+    object.z = z;
+  });
+  renderAll();
+  setStatus(`batch set ${indices.length} object(s) to pos (${x}, ${y}), z=${z} (unsaved)`);
 }
 
 function project(x, y, z, centerX, centerY, scale, span) {
@@ -2738,6 +2771,9 @@ scene.addEventListener("pointerdown", event => {
     const point = is2d ? { factor: 1 } : project(center[0], center[1], 0,
       state.sceneInfo.centerX, state.sceneInfo.centerY,
       state.sceneInfo.scale, state.sceneInfo.span);
+    const groupIndices = state.multiSelection.size > 0 && state.multiSelection.has(hit.index)
+      ? [...state.multiSelection]
+      : [hit.index];
     state.dragObject = {
       index: hit.index,
       mode: is2d ? "2d" : "3d",
@@ -2745,6 +2781,10 @@ scene.addEventListener("pointerdown", event => {
       startY: y,
       factor: point.factor,
       original: [...(state.model.objects[hit.index].pos || [0, 0])],
+      group: groupIndices.map(index => ({
+        index,
+        original: [...(state.model.objects[index].pos || [0, 0])],
+      })),
       snapshot: snapshot(),
       moved: false,
     };
@@ -2770,6 +2810,18 @@ scene.addEventListener("pointerdown", event => {
     event.preventDefault();
     return;
   }
+  if (state.marqueeMode || event.shiftKey || event.ctrlKey || event.metaKey) {
+    const additive = event.ctrlKey || event.metaKey || event.shiftKey;
+    state.marquee3d = { startX: x, startY: y, x, y, additive };
+    if (!additive) {
+      state.multiSelection.clear();
+      updateSelectionUi();
+      renderObjectList();
+    }
+    scene.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    return;
+  }
   state.dragging = true;
   state.lastX = event.clientX;
   state.lastY = event.clientY;
@@ -2780,6 +2832,11 @@ scene.addEventListener("pointermove", event => {
   const rect = scene.getBoundingClientRect();
   const x = event.clientX - rect.left;
   const y = event.clientY - rect.top;
+  if (state.marquee3d) {
+    state.marquee3d.x = x;
+    state.marquee3d.y = y;
+    return;
+  }
   if (state.boxSelect) {
     state.boxSelect.x = x;
     state.boxSelect.y = y;
@@ -2802,11 +2859,20 @@ scene.addEventListener("pointermove", event => {
       xWorld = snapValue(xWorld);
       yWorld = snapValue(yWorld);
     }
+    const dx = xWorld - drag.original[0];
+    const dy = yWorld - drag.original[1];
+    for (const member of drag.group) {
+      const object = state.model.objects[member.index];
+      if (!object) continue;
+      object.pos = [member.original[0] + dx, member.original[1] + dy];
+    }
     const object = state.model.objects[drag.index];
     if (!object) return;
-    object.pos = [xWorld, yWorld];
     state.dragGuides = state.snapGrid ? { x: xWorld, y: yWorld } : null;
-    drag.moved = Math.hypot(object.pos[0] - drag.original[0], object.pos[1] - drag.original[1]) > 0.01;
+    drag.moved = Math.max(...drag.group.map(member => {
+      const current = state.model.objects[member.index];
+      return current ? Math.hypot(current.pos[0] - member.original[0], current.pos[1] - member.original[1]) : 0;
+    })) > 0.01;
     if ($("edit-pos-x")) $("edit-pos-x").value = object.pos[0].toFixed(2);
     if ($("edit-pos-y")) $("edit-pos-y").value = object.pos[1].toFixed(2);
     return;
@@ -2820,6 +2886,27 @@ scene.addEventListener("pointermove", event => {
   state.pitch = Math.max(5, Math.min(80, state.pitch - dy * 0.3));
 });
 const stopDrag = () => {
+  if (state.marquee3d) {
+    const marquee = state.marquee3d;
+    state.marquee3d = null;
+    const left = Math.min(marquee.startX, marquee.x);
+    const right = Math.max(marquee.startX, marquee.x);
+    const top = Math.min(marquee.startY, marquee.y);
+    const bottom = Math.max(marquee.startY, marquee.y);
+    const found = (state.hitboxes || []).filter(hit => {
+      const centerX = (hit.left + hit.right) / 2;
+      const centerY = (hit.top + hit.bottom) / 2;
+      return centerX >= left && centerX <= right && centerY >= top && centerY <= bottom;
+    });
+    if (!marquee.additive) state.multiSelection.clear();
+    found.forEach(hit => state.multiSelection.add(hit.index));
+    if (found.length > 0) state.selected = found[found.length - 1].index;
+    updateSelectionUi();
+    renderObjectList();
+    renderEditor();
+    setStatus(found.length > 0 ? `selected ${state.multiSelection.size} object(s)` : "selection cleared");
+    return;
+  }
   if (state.boxSelect) {
     const box = state.boxSelect;
     state.boxSelect = null;
@@ -2907,6 +2994,12 @@ document.addEventListener("keydown", event => {
 });
 
 $("view-2d").addEventListener("click", toggleView2d);
+$("marquee-3d").addEventListener("click", () => {
+  state.marqueeMode = !state.marqueeMode;
+  $("marquee-3d").classList.toggle("primary", state.marqueeMode);
+  setStatus(state.marqueeMode ? "3D marquee mode: drag empty space" : "3D marquee mode off");
+});
+$("apply-batch-pos").addEventListener("click", applyBatchPosition);
 $("snap-grid").addEventListener("change", event => {
   state.snapGrid = Number(event.target.value) || 0;
   setStatus(state.snapGrid ? `grid snap ${state.snapGrid}` : "grid snap off");
