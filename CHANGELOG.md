@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.29.0 — 2026-11-15
+
+### Studio
+
+- **WebGL 3D 渲染（最小版）**：新增 WebGL canvas（`data-webgl`），手写 shader 绘制对象盒体与连接线，
+  透视相机与现有 yaw/pitch/zoom 一致；视图切换 3D (WebGL) / 3D (Canvas) / 2D，WebGL 不可用时自动回退并提示。
+- 交互保持旋转/缩放/拖拽/双击聚焦/多选高亮。
+
+### 发布
+
+- GHCR 0.28.0 已确认发布（`dea3c81c6a5f`，发布后约 30 分钟），latest 前移；container run 仍卡在 push 后的
+  收尾步骤（镜像已可拉取），文档记录处理建议。
+
+### 验证
+
+- 468 个测试全绿（core 237、CLI 83、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.29.0 三平台产物发布并 SHA256 校验。
+
 ## v0.28.0 — 2026-11-15
 
 ### Studio
