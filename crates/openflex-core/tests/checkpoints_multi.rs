@@ -324,3 +324,20 @@ fn parallel_checkpoint_worker_counts() {
         let _ = fs::remove_dir_all(&dir);
     }
 }
+
+/// task-68: the manifest history is bounded to the newest 50 runs.
+#[test]
+fn manifest_history_is_bounded() {
+    let dir = temp_dir("history");
+    for _ in 0..55 {
+        run_model_with_checkpoints_retained(&model(1), &dir, 5.0, None).expect("run");
+    }
+    let text = fs::read_to_string(dir.join("manifest.json")).expect("read");
+    let manifest: CheckpointManifest = serde_json::from_str(&text).expect("parse");
+    assert_eq!(
+        manifest.history.len(),
+        50,
+        "history keeps the newest 50 runs"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

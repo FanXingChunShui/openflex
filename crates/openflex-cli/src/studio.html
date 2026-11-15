@@ -180,7 +180,7 @@
   </aside>
 
   <section class="view">
-    <canvas id="scene" aria-label="3D model view" data-drag-object="1"></canvas>
+    <canvas id="scene" aria-label="3D model view" data-drag-object="1" data-occlusion="1"></canvas>
     <div class="layout-controls" data-layout-controls="1">
       <button type="button" data-layout-grid="1">Grid</button>
       <button type="button" data-layout-circle="1">Circle</button>
@@ -238,6 +238,8 @@
           </select>
         </label>
         <button id="export-png" type="button">Export PNG</button>
+        <button id="export-svg" type="button">Export SVG</button>
+        <button id="export-model-json" type="button">Export model JSON</button>
         <button id="export-csv" type="button">Export CSV</button>
       </div>
       <canvas id="replication-chart" aria-label="Per-replication scatter"></canvas>
@@ -268,6 +270,7 @@ const state = {
   focusName: null,
   hitboxes: [],
   sceneInfo: null,
+  sceneExport: null,
   dragObject: null,
   dragging: false,
   lastX: 0,
@@ -2183,6 +2186,7 @@ function drawScene(now) {
     return { object, center, size, depth, height, index };
   });
 
+  const connectionLines = [];
   ctx.strokeStyle = "#475569";
   ctx.lineWidth = 1.4;
   for (const connection of model.connections || []) {
@@ -2191,6 +2195,7 @@ function drawScene(now) {
     if (!from || !to) continue;
     const start = project(from.center[0], from.center[1], from.height * 0.5, centerX, centerY, scale, span);
     const end = project(to.center[0], to.center[1], to.height * 0.5, centerX, centerY, scale, span);
+    connectionLines.push({ x1: start.x, y1: start.y, x2: end.x, y2: end.y });
     ctx.beginPath();
     ctx.moveTo(start.x, start.y);
     ctx.lineTo(end.x, end.y);
@@ -2232,19 +2237,29 @@ function drawScene(now) {
       }
     }
     const centerPoint = project(box.center[0], box.center[1], 0, centerX, centerY, scale, span);
-    return { ...box, corners, centerPoint };
+    const xs = corners.map(corner => corner.x);
+    const ys = corners.map(corner => corner.y);
+    const screenBox = {
+      left: Math.min(...xs),
+      right: Math.max(...xs),
+      top: Math.min(...ys),
+      bottom: Math.max(...ys),
+    };
+    return { ...box, corners, centerPoint, screenBox };
   }).sort((left, right) => right.centerPoint.depth - left.centerPoint.depth);
 
-  // Hit boxes for double-click focusing (screen-space bounding boxes).
-  state.hitboxes = projected.map(box => {
-    const xs = box.corners.map(corner => corner.x);
-    const ys = box.corners.map(corner => corner.y);
-    const left = Math.min(...xs);
-    const right = Math.max(...xs);
-    const top = Math.min(...ys);
-    const bottom = Math.max(...ys);
-    return { name: box.object.name, index: box.index, left, right, top, bottom };
-  });
+  state.hitboxes = projected.map(box => ({
+    name: box.object.name,
+    index: box.index,
+    ...box.screenBox,
+  }));
+  state.sceneExport = {
+    width,
+    height,
+    boxes: projected,
+    lines: connectionLines,
+    labels: [],
+  };
 
   const selectedName = state.model.objects[state.selected] && state.model.objects[state.selected].name;
   for (const box of projected) {
@@ -2269,15 +2284,100 @@ function drawScene(now) {
     face([b0, b1, t1, t0], "#94a3b8");
     face([b1, b2, t2, t1], "#cbd5e1");
     face([t0, t1, t2, t3], topShade);
+  }
+
+  // Labels are a separate pass so nearer boxes can hide them and labels do
+  // not overlap each other.
+  const labelRects = [];
+  for (const box of projected) {
     const label = project(box.center[0], box.center[1], box.height * 1.15, centerX, centerY, scale, span);
+    const occluded = projected.some(other =>
+      other !== box
+      && other.centerPoint.depth < box.centerPoint.depth - 1e-6
+      && label.x >= other.screenBox.left && label.x <= other.screenBox.right
+      && label.y >= other.screenBox.top && label.y <= other.screenBox.bottom);
+    if (occluded) continue;
+    let labelY = label.y;
+    let rect = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      rect = { left: label.x - 42, right: label.x + 42, top: labelY - 12, bottom: labelY + 22 };
+      const overlaps = labelRects.some(other =>
+        rect.left < other.right && rect.right > other.left
+        && rect.top < other.bottom && rect.bottom > other.top);
+      if (!overlaps) break;
+      labelY -= 22;
+      rect = null;
+    }
+    if (!rect) continue;
+    labelRects.push(rect);
+    state.sceneExport.labels.push({
+      name: box.object.name,
+      kind: box.object.kind,
+      x: label.x,
+      y: labelY,
+    });
     ctx.textAlign = "center";
     ctx.fillStyle = "#0f172a";
     ctx.font = "600 11px system-ui, sans-serif";
-    ctx.fillText(box.object.name, label.x, label.y);
+    ctx.fillText(box.object.name, label.x, labelY);
     ctx.fillStyle = "#64748b";
     ctx.font = "10px system-ui, sans-serif";
-    ctx.fillText(box.object.kind, label.x, label.y + 11);
+    ctx.fillText(box.object.kind, label.x, labelY + 11);
   }
+}
+
+function downloadText(filename, text, type) {
+  const blob = new Blob([text], { type });
+  const link = document.createElement("a");
+  link.download = filename;
+  link.href = URL.createObjectURL(blob);
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+function exportSvg() {
+  const data = state.sceneExport;
+  if (!data || data.boxes.length === 0) {
+    setStatus("run or render the scene before exporting SVG", true);
+    return;
+  }
+  const selectedName = state.model.objects[state.selected] && state.model.objects[state.selected].name;
+  const escape = escapeText;
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${data.width}" height="${data.height}" viewBox="0 0 ${data.width} ${data.height}">`;
+  svg += `<rect width="100%" height="100%" fill="#f1f5f9"/>`;
+  for (const line of data.lines) {
+    svg += `<line x1="${line.x1.toFixed(2)}" y1="${line.y1.toFixed(2)}" x2="${line.x2.toFixed(2)}" y2="${line.y2.toFixed(2)}" stroke="#475569" stroke-width="1.4"/>`;
+  }
+  for (const box of data.boxes) {
+    const [b0, b1, b2, b3, t0, t1, t2, t3] = box.corners;
+    const highlighted = box.object.name === selectedName;
+    const stroke = highlighted ? "#f59e0b" : "#334155";
+    const width = highlighted ? 2.2 : 0.8;
+    const points = points => points.map(point => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ");
+    const topShade = box.object.kind.startsWith("fluid") ? "#bae6fd"
+      : box.object.kind === "source" ? "#dcfce7"
+      : box.object.kind === "sink" ? "#fee2e2"
+      : box.object.kind === "processor" ? "#dbeafe" : "#e2e8f0";
+    svg += `<polygon points="${points([b0, b1, t1, t0])}" fill="#94a3b8" stroke="${stroke}" stroke-width="${width}"/>`;
+    svg += `<polygon points="${points([b1, b2, t2, t1])}" fill="#cbd5e1" stroke="${stroke}" stroke-width="${width}"/>`;
+    svg += `<polygon points="${points([t0, t1, t2, t3])}" fill="${highlighted ? "#fef3c7" : topShade}" stroke="${stroke}" stroke-width="${width}"/>`;
+  }
+  for (const label of data.labels) {
+    svg += `<text x="${label.x.toFixed(2)}" y="${label.y.toFixed(2)}" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#0f172a">${escape(label.name)}</text>`;
+    svg += `<text x="${label.x.toFixed(2)}" y="${(label.y + 11).toFixed(2)}" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" fill="#64748b">${escape(label.kind)}</text>`;
+  }
+  svg += "</svg>";
+  downloadText("openflex-scene.svg", svg, "image/svg+xml;charset=utf-8");
+  setStatus("exported openflex-scene.svg");
+}
+
+function exportModelJson() {
+  if (!state.model) {
+    setStatus("model is not loaded yet", true);
+    return;
+  }
+  downloadText("openflex-model.json", JSON.stringify(state.model, null, 2), "application/json;charset=utf-8");
+  setStatus("exported openflex-model.json (unsaved in-memory model)");
 }
 
 function animationFrame(now) {
@@ -2512,6 +2612,8 @@ $("object-menu").addEventListener("click", event => {
 document.addEventListener("click", event => {
   if (!event.target.closest("#object-menu")) hideObjectMenu();
 });
+$("export-svg").addEventListener("click", exportSvg);
+$("export-model-json").addEventListener("click", exportModelJson);
 $("export-csv").addEventListener("click", exportCsv);
 $("load-timeseries").addEventListener("click", loadTimeSeries);
 $("timeseries-object").addEventListener("change", drawTimeseriesChart);

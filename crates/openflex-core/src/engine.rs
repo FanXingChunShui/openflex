@@ -269,6 +269,8 @@ pub(crate) enum EventKind {
     RackPick(usize),
     /// task-65: a preempted request becomes eligible again after a delay.
     PreemptRetry(usize, usize),
+    /// task-68: one extra leg of a dispatcher task sequence finished.
+    TaskStepDone(usize),
     /// A shift window starts or ends.
     ShiftChange(usize),
     /// A linear availability calendar (B11) window starts or ends.
@@ -709,6 +711,9 @@ pub(crate) struct ObjectRt {
     /// task-65: how often this object's request was preempted.
     #[serde(default)]
     preempt_retries: u32,
+    /// task-68: durations of the extra task-sequence legs still to run.
+    #[serde(default)]
+    pending_steps: Vec<f64>,
     /// task-65: model time of the last preemption (a request is not preempted
     /// twice at the same instant, which would otherwise loop forever).
     #[serde(default = "negative_one")]
@@ -821,6 +826,7 @@ impl ObjectRt {
             last_picked_level: None,
             rack_pick: None,
             preempt_retries: 0,
+            pending_steps: Vec::new(),
             preempt_epoch: -1.0,
             rack_slots: 0,
             belt_stops: Vec::new(),
@@ -1586,6 +1592,12 @@ pub fn run_model_with_checkpoints_retained(
         stop_time,
         replications,
     });
+    // task-68: keep the history bounded (newest entries survive).
+    const HISTORY_LIMIT: usize = 50;
+    if history.len() > HISTORY_LIMIT {
+        let excess = history.len() - HISTORY_LIMIT;
+        history.drain(0..excess);
+    }
     let manifest = CheckpointManifest {
         format_version: 1,
         model: model.name.clone(),
@@ -2901,6 +2913,7 @@ impl<'m> Simulation<'m> {
             EventKind::PreemptRetry(dispatcher, requester) => {
                 self.handle_preempt_retry(dispatcher, requester)
             }
+            EventKind::TaskStepDone(transporter) => self.handle_task_step_done(transporter),
             EventKind::ShiftChange(index) => self.handle_shift_change(index),
             EventKind::TimetableChange(index) => self.handle_timetable_change(index),
             EventKind::FlowCreate(block) => self.handle_flow_create(block),
@@ -6763,26 +6776,27 @@ impl<'m> Simulation<'m> {
         self.settle_task(transporter)
     }
 
-    /// task-44/62: extra time the dispatcher's `task_sequence` adds to one task.
-    ///
-    /// The engine always performs the standard sequence (travel to the pickup
-    /// point, travel to the requester, load, unload, travel home). The model
-    /// sequence is evaluated step by step:
-    ///
-    /// * a step whose `condition` is false is skipped,
-    /// * a step with an explicit `duration` costs that sampled time instead of
-    ///   the default for its kind,
-    /// * the extra time is `sum(steps) - baseline`.
-    fn task_sequence_extra(&mut self, transporter: usize) -> f64 {
+    /// task-44: settle the task sequence before the task counts as finished.
+    fn settle_task(&mut self, transporter: usize) -> Result<(), SimError> {
+        // task-68: every extra leg of the task sequence is its own event.
+        let steps = self.task_sequence_steps(transporter);
+        self.objects[transporter].pending_steps = steps;
+        self.schedule_pending_step(transporter)
+    }
+
+    /// task-68: durations of the task-sequence legs beyond the standard ones
+    /// (two travel legs, one load, one unload). Skipped steps and steps with a
+    /// false condition contribute nothing.
+    fn task_sequence_steps(&mut self, transporter: usize) -> Vec<f64> {
         let Some(dispatcher) = self.objects[transporter].assigned_dispatcher else {
-            return 0.0;
+            return Vec::new();
         };
         let sequence = match &self.model.objects[dispatcher].params {
             ObjectParams::Dispatcher(params) => params.task_sequence.clone(),
             _ => Vec::new(),
         };
         if sequence.is_empty() {
-            return 0.0;
+            return Vec::new();
         }
         let trip = match self.objects[transporter].serving_requester {
             Some(requester) => {
@@ -6793,8 +6807,10 @@ impl<'m> Simulation<'m> {
         };
         let load = self.transport_load_time(transporter);
         let unload = self.transport_unload_time(transporter);
-        let baseline = 2.0 * trip + load + unload;
-        let mut total = 0.0;
+        let mut base_travels = 2u32;
+        let mut base_loads = 1u32;
+        let mut base_unloads = 1u32;
+        let mut steps = Vec::new();
         for step in &sequence {
             if let Some(condition) = step.condition() {
                 let context = ExprContext::new(self, None);
@@ -6811,23 +6827,46 @@ impl<'m> Simulation<'m> {
                 TaskStepKind::Load => load,
                 TaskStepKind::Unload => unload,
             };
-            total += match step.duration() {
+            let duration = match step.duration() {
                 Some(distribution) => self.sample(distribution).max(0.0),
                 None => default,
             };
+            let baseline = match step.kind() {
+                TaskStepKind::Travel => &mut base_travels,
+                TaskStepKind::Load => &mut base_loads,
+                TaskStepKind::Unload => &mut base_unloads,
+            };
+            if *baseline > 0 {
+                *baseline -= 1;
+                continue;
+            }
+            steps.push(duration);
         }
-        (total - baseline).max(0.0)
+        steps
     }
 
-    /// task-44: settle the task sequence before the task counts as finished.
-    fn settle_task(&mut self, transporter: usize) -> Result<(), SimError> {
-        let extra = self.task_sequence_extra(transporter);
-        if extra > EPS && self.now + extra < self.config.stop_time - EPS {
+    /// task-68: arm the next extra task-sequence leg (or finish the task).
+    fn schedule_pending_step(&mut self, transporter: usize) -> Result<(), SimError> {
+        let Some(&duration) = self.objects[transporter].pending_steps.first() else {
+            return self.finish_task(transporter);
+        };
+        let at = self.now + duration;
+        if at < self.config.stop_time - EPS {
             self.set_state(transporter, State::Busy);
-            self.schedule(self.now + extra, EventKind::TransportSettle(transporter));
-            return Ok(());
+            self.schedule(at, EventKind::TaskStepDone(transporter));
+            Ok(())
+        } else {
+            self.objects[transporter].pending_steps.clear();
+            self.finish_task(transporter)
         }
-        self.finish_task(transporter)
+    }
+
+    /// task-68: one extra task-sequence leg elapsed.
+    fn handle_task_step_done(&mut self, transporter: usize) -> Result<(), SimError> {
+        if !self.objects[transporter].pending_steps.is_empty() {
+            self.objects[transporter].pending_steps.remove(0);
+        }
+        self.schedule_pending_step(transporter)
     }
 
     /// Mark one transporter task as complete and look for queued work.
@@ -8100,6 +8139,7 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
         EventKind::EmptierSweep(index) => (Some(*index), "emptier_sweep", None),
         EventKind::TransportSettle(transporter) => (Some(*transporter), "transport_settle", None),
         EventKind::RackPick(index) => (Some(*index), "rack_pick", None),
+        EventKind::TaskStepDone(transporter) => (Some(*transporter), "task_step_done", None),
         EventKind::PreemptRetry(dispatcher, requester) => (
             Some(*dispatcher),
             "preempt_retry",

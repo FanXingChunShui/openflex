@@ -310,3 +310,50 @@ fn event_preview_exposes_details() {
     }
     assert!(saw_detail, "at least one event must carry a detail");
 }
+
+/// task-68: extra task-sequence legs are individual events that `step_event`
+/// previews one by one.
+#[test]
+fn task_sequence_legs_are_individual_events() {
+    let model = model(
+        r#"{
+      "format": "openflex-model", "version": 1, "name": "handle-steps",
+      "run": { "stop_time": 300.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+      "objects": [
+        { "name": "S", "kind": "source", "pos": [10, 0], "params": {
+            "interarrival": { "distribution": "constant", "value": 20.0 }, "first_arrival": 0.0 } },
+        { "name": "P", "kind": "processor", "pos": [10, 0], "params": {
+            "process_time": { "distribution": "constant", "value": 4.0 },
+            "process_operator": "Dispatcher1" } },
+        { "name": "K", "kind": "sink", "params": {} },
+        { "name": "Dispatcher1", "kind": "dispatcher", "pos": [0, 0], "params": {
+            "task_sequence": ["travel", "travel", "load", "unload",
+              { "kind": "travel", "duration": { "distribution": "constant", "value": 10.0 } },
+              { "kind": "load", "duration": { "distribution": "constant", "value": 5.0 } }] } },
+        { "name": "E", "kind": "transporter", "pos": [0, 0], "params": {
+            "capacity": 1, "speed": 1.0, "home": "Dispatcher1" } }
+      ],
+      "connections": [
+        { "from": "S", "to": "P" }, { "from": "P", "to": "K" },
+        { "from": "Dispatcher1", "to": "E" }
+      ]
+    }"#,
+    );
+    let config = config(300.0);
+    let serial = simulate(&model, &config, 0).expect("serial");
+
+    let mut handle = SimulationHandle::new(&model, &config, 0).expect("handle");
+    let mut step_events = 0usize;
+    while let Some(preview) = handle.next_event() {
+        if preview.kind == "task_step_done" {
+            step_events += 1;
+        }
+        handle.step_event().expect("step");
+    }
+    handle.step_until(300.0).expect("finish");
+    assert!(
+        step_events >= 2,
+        "each extra leg must be its own event, saw {step_events}"
+    );
+    assert_eq!(handle.result(), serial, "the model result must not change");
+}

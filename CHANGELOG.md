@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.24.0 — 2026-11-15
+
+### 调度与检查点
+
+- **任务序列中途事件化**：超出标准 4 段的额外段通过 `EventKind::TaskStepDone` 逐段独立调度
+  （`pending_steps`，`describe_event` 加 `task_step_done`，可用 step_event 预览）；旧短格式行为逐位不变。
+- **manifest history 上限**：合并时滚动保留最近 50 条。
+
+### Studio
+
+- 3D 深度遮挡（画家算法 + 屏幕包围盒）+ 标签避让（被近处对象遮挡时隐藏、标签冲突上移）；
+  新增 **Export SVG**（当前视图静态矢量）与 **Export model JSON**（内存模型，未保存也可导出）。
+
+### 验证
+
+- 460 个测试全绿（core 229、CLI 83、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.24.0 三平台产物发布并 SHA256 校验。
+
 ## v0.23.0 — 2026-11-15
 
 ### 运行与调度
