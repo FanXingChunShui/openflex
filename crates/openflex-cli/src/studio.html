@@ -37,6 +37,11 @@
                                   gap: 8px; }
   .object-button.active, .block-button.active { background: #dbeafe; border-color: #1d4ed8; }
   .object-button.multi { box-shadow: inset 3px 0 0 #0284c7; border-color: #0284c7; }
+  .object-button.invalid { border-color: #dc2626; box-shadow: inset 3px 0 0 #dc2626; }
+  .validation-badge { color: #dc2626; font-weight: 700; }
+  .validate-ok { color: #15803d; font-size: 11px; }
+  .validate-errors { font-size: 11px; color: #b91c1c; max-height: 130px; overflow: auto; }
+  .validate-error { border-left: 3px solid #dc2626; padding: 1px 5px; margin: 2px 0; }
   .object-button .kind, .block-button .kind { color: #64748b; font-size: 12px; }
   #editor, #param-form, #block-editor, #block-form { display: flex; flex-direction: column; gap: 8px; }
   #editor label, #block-editor label, .field-group label { display: flex; flex-direction: column;
@@ -181,6 +186,8 @@
     </div>
     <input id="object-search" type="search" placeholder="Filter objects by name or kind…" aria-label="Filter objects">
     <div id="object-list" data-object-tree="1" data-multi-select="1"><p class="muted">loading…</p></div>
+    <div class="row"><button id="validate-model" type="button" data-validate-run="1">Validate model</button></div>
+    <div id="validate-panel" data-validate-panel="1"></div>
 
     <h2>Edit object</h2>
     <div id="editor"><p class="muted">Select an object to edit its name, kind and parameters.</p></div>
@@ -442,6 +449,8 @@ const state = {
   compareRows: [],
   compareA: null,
   compareB: null,
+  validationErrors: null,
+  validationOk: true,
   compareAName: "A",
   compareBName: "B",
   checkpoints: null,
@@ -700,6 +709,9 @@ async function loadAll() {
     state.model = model;
     state.kinds = catalog.objects || [];
     state.selected = Math.min(state.selected, Math.max(0, model.objects.length - 1));
+    state.validationErrors = null;
+    state.validationOk = true;
+    renderValidationPanel();
     state.lastStep = 0;
     state.runState = "stopped";
     state.runPaused = false;
@@ -801,6 +813,57 @@ async function contextDelete() {
   await deleteObject();
 }
 
+function objectHasValidationError(object) {
+  const errors = state.validationErrors || [];
+  if (errors.length === 0) return false;
+  const escaped = object.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const matcher = new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`);
+  return errors.some(issue => {
+    const text = `${issue.location || ""} ${issue.message || ""}`;
+    return text.includes(`objects.${object.name}`) || matcher.test(text);
+  });
+}
+
+function renderValidationPanel() {
+  const panel = $("validate-panel");
+  if (!panel) return;
+  if (state.validationErrors == null) {
+    panel.innerHTML = '<p class="muted">Not validated yet.</p>';
+    return;
+  }
+  if (state.validationOk) {
+    panel.innerHTML = '<p class="validate-ok">✓ Model is valid</p>';
+    return;
+  }
+  const errors = state.validationErrors || [];
+  panel.innerHTML = `<div class="validate-errors"><b>${errors.length} error(s)</b>${
+    errors.map(issue => `<div class="validate-error"><b>${escapeText(issue.location || "model")}</b>: ${escapeText(issue.message || "")}</div>`).join("")
+  }</div>`;
+}
+
+async function validateModel() {
+  setStatus("validating model…");
+  try {
+    const response = await api("/api/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(state.model),
+    });
+    state.validationOk = Boolean(response.ok);
+    state.validationErrors = response.errors || [];
+    renderValidationPanel();
+    renderObjectList();
+    setStatus(response.ok
+      ? "model is valid"
+      : `model has ${state.validationErrors.length} validation error(s)`, !response.ok);
+  } catch (error) {
+    state.validationErrors = [{ location: "model", message: error.message }];
+    state.validationOk = false;
+    renderValidationPanel();
+    setStatus(error.message, true);
+  }
+}
+
 function renderObjectList() {
   const list = $("object-list");
   if (!state.model || state.model.objects.length === 0) {
@@ -837,11 +900,14 @@ function renderObjectList() {
     entries.forEach(({ object, index }) => {
       const button = document.createElement("button");
       button.type = "button";
+      const invalid = objectHasValidationError(object);
       button.className = "object-button"
         + (index === state.selected ? " active" : "")
-        + (state.multiSelection.has(index) ? " multi" : "");
+        + (state.multiSelection.has(index) ? " multi" : "")
+        + (invalid ? " invalid" : "");
       const onDrawBadge = hasOnDraw(object) ? ' <span class="on-draw-badge" data-on-draw-badge="1">on_draw</span>' : "";
-      button.innerHTML = `<span>${escapeText(object.name)}</span><span>${onDrawBadge}<span class="kind">${escapeText(object.kind)}</span></span>`;
+      const invalidBadge = invalid ? ' <span class="validation-badge" data-validation-error="1">!</span>' : "";
+      button.innerHTML = `<span>${escapeText(object.name)}</span><span>${onDrawBadge}${invalidBadge}<span class="kind">${escapeText(object.kind)}</span></span>`;
       button.addEventListener("click", event => {
         commitEdit();
         if (event.ctrlKey || event.metaKey) {
@@ -1827,6 +1893,9 @@ async function resetStudio() {
       headers: { "Content-Type": "application/json" },
       body: "{}",
     });
+    state.validationErrors = null;
+    state.validationOk = true;
+    renderValidationPanel();
     state.lastStep = 0;
     state.runState = "stopped";
     state.runPaused = false;
@@ -4328,6 +4397,7 @@ $("heatmap-metric").addEventListener("change", event => {
   if (state.renderMode === "webgl" && !state.view2d) drawWebGL(state.clock);
 });
 $("reset-view").addEventListener("click", resetViewState);
+$("validate-model").addEventListener("click", validateModel);
 $("grid-toggle").addEventListener("click", () => {
   state.gridVisible = !state.gridVisible;
   $("grid-toggle").textContent = state.gridVisible ? "Grid on" : "Grid off";

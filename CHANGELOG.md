@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.42.0 — 2026-11-16
+
+### Studio
+
+- **模型校验面板**：`Validate model` 调用 `/api/validate`，显示通过/错误列表；模型树对报错对象加红色标记。
+
+### Person（准备）
+
+- `TransporterParams.grid_step: Option<bool>`（默认 None，零行为变化），为逐格移动接线准备；
+  `grid_path()` 已就绪，引擎侧 `PersonStep` 事件/路径队列待下一批（已拆 A/B 两步）。
+
+### 发布文档
+
+- 补记 GHCR 0.40.0（`e72290052fa5`，32 分钟）与 0.41.0（`f03dc8595851`，19 分钟）；0.40 run success。
+- 性能待测清单扩到 v0.33–v0.41（跨 10 小时无 load<3 窗口）。
+
+### 验证
+
+- 481 个测试全绿（core 247、CLI 84、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.42.0 三平台产物发布并 SHA256 校验。
+
 ## v0.41.0 — 2026-11-16
 
 ### Person

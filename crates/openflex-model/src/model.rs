@@ -970,6 +970,7 @@ impl Default for TransporterParams {
             load_time: Distribution::default(),
             unload_time: Distribution::default(),
             home: None,
+            grid_step: None,
             network: Vec::new(),
             shifts: Vec::new(),
             process_flow: None,
@@ -1560,6 +1561,10 @@ pub struct TransporterParams {
     /// Object the transporter returns to when idle.
     #[serde(default)]
     pub home: Option<String>,
+    /// task-121: move people cell by cell on the model grid (`true`) instead of
+    /// one straight travel leg. `None`/`false` keeps the historical behaviour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid_step: Option<bool>,
     /// Optional road network (B4). Legs between the home object and the
     /// requesting object use the shortest path over these edges; without a
     /// network the straight-line distance is used.

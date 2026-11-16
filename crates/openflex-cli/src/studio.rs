@@ -564,6 +564,7 @@ fn handle_connection(
             timeseries_endpoint(&mut stream, &state.model, &request.body)
         }
         ("POST", "/api/trace") => trace_endpoint(&mut stream, &state.model, &request.body),
+        ("POST", "/api/validate") => validate_endpoint(&mut stream, state, &request.body),
         ("POST", "/api/table") => table_endpoint(&mut stream, state, model_path, &request.body),
         (method, path) if method == "POST" && path.starts_with("/api/model/objects/") => {
             if let Some(old) = path
@@ -2054,6 +2055,77 @@ struct TraceRequest {
     stop_time: Option<f64>,
     #[serde(default)]
     max_events: Option<usize>,
+}
+
+/// Validate the in-memory model, or a model posted in the request body.
+fn validate_endpoint(
+    stream: &mut TcpStream,
+    state: &StudioState,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let model = if body.iter().all(u8::is_ascii_whitespace) {
+        state.model.clone()
+    } else {
+        match std::str::from_utf8(body).map_err(|error| error.to_string()) {
+            Ok(text) => match serde_json::from_str::<Model>(text) {
+                Ok(model) => model,
+                Err(error) => {
+                    return write_json(
+                        stream,
+                        "422 Unprocessable Entity",
+                        &serde_json::json!({
+                            "ok": false,
+                            "error": format!("invalid model JSON: {error}"),
+                            "errors": [],
+                        })
+                        .to_string(),
+                    );
+                }
+            },
+            Err(error) => {
+                return write_json(
+                    stream,
+                    "400 Bad Request",
+                    &serde_json::json!({ "ok": false, "error": format!("body is not UTF-8: {error}") })
+                        .to_string(),
+                );
+            }
+        }
+    };
+    let errors = match model.validate() {
+        Ok(()) => Vec::new(),
+        Err(openflex_model::ModelError::Invalid(issues)) => issues
+            .into_iter()
+            .map(|issue| {
+                serde_json::json!({
+                    "location": issue.location,
+                    "message": issue.message,
+                })
+            })
+            .collect(),
+        Err(error) => {
+            return write_json(
+                stream,
+                "422 Unprocessable Entity",
+                &serde_json::json!({
+                    "ok": false,
+                    "error": error.to_string(),
+                    "errors": [],
+                })
+                .to_string(),
+            );
+        }
+    };
+    write_json(
+        stream,
+        "200 OK",
+        &serde_json::json!({
+            "ok": errors.is_empty(),
+            "count": errors.len(),
+            "errors": errors,
+        })
+        .to_string(),
+    )
 }
 
 /// Trace every event up to `stop_time` for the timeline replay.

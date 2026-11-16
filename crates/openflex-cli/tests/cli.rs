@@ -2854,6 +2854,10 @@ fn studio_can_add_and_delete_objects_through_the_api() {
         "data-compare-export=\"1\"",
         "data-view-persist=\"1\"",
         "data-reset-view=\"1\"",
+        "data-validate-panel=\"1\"",
+        "data-validate-run=\"1\"",
+        "function validateModel",
+        "function objectHasValidationError",
         "function persistViewState",
         "function restoreViewState",
         "function resetViewState",
@@ -3800,6 +3804,10 @@ fn studio_global_table_editor_updates_the_model() {
         "data-compare-export=\"1\"",
         "data-view-persist=\"1\"",
         "data-reset-view=\"1\"",
+        "data-validate-panel=\"1\"",
+        "data-validate-run=\"1\"",
+        "function validateModel",
+        "function objectHasValidationError",
         "function persistViewState",
         "function restoreViewState",
         "function resetViewState",
@@ -4386,4 +4394,44 @@ fn studio_trace_endpoint_returns_events() {
         assert!(event["event"].is_string());
         assert!(event["object"].is_string());
     }
+}
+
+#[test]
+fn studio_validate_endpoint_reports_model_errors() {
+    let dir = TempDir::new("studio-validate");
+    let model = dir.write("demo.ofm", MODEL);
+    let (_server, address) = start_studio(&model);
+
+    let valid = http_request(&address, "POST", "/api/validate", Some(MODEL));
+    assert!(
+        http_status(&valid).contains("200 OK"),
+        "valid: {}",
+        http_body(&valid)
+    );
+    let valid = json(http_body(&valid));
+    assert_eq!(valid["ok"], true);
+    assert_eq!(valid["count"], 0);
+
+    let mut broken: serde_json::Value = serde_json::from_str(MODEL).expect("fixture");
+    broken["connections"][0]["to"] = serde_json::json!("MissingSink");
+    let broken = http_request(
+        &address,
+        "POST",
+        "/api/validate",
+        Some(&serde_json::to_string(&broken).expect("serialise")),
+    );
+    assert!(
+        http_status(&broken).contains("200 OK"),
+        "broken: {}",
+        http_body(&broken)
+    );
+    let broken = json(http_body(&broken));
+    assert_eq!(broken["ok"], false);
+    assert!(broken["count"].as_u64().unwrap_or_default() > 0);
+    let errors = broken["errors"].as_array().expect("errors");
+    assert!(
+        errors
+            .iter()
+            .any(|issue| { issue["location"].is_string() && issue["message"].is_string() })
+    );
 }
