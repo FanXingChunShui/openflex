@@ -64,6 +64,10 @@
   #scene { display: block; width: 100%; height: 100%; cursor: grab; }
   #webgl { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
            display: none; background: #f1f5f9; }
+  #connection-list { display: flex; flex-direction: column; gap: 2px; font-size: 11px; }
+  .connection-row { display: grid; grid-template-columns: 1fr 1fr 44px 96px auto; gap: 4px;
+                    align-items: center; padding: 2px 3px; border-bottom: 1px solid #e2e8f0; }
+  .connection-row button { padding: 1px 6px; font-size: 11px; }
   #compare-results table { width: 100%; border-collapse: collapse; font-size: 11px; }
   #compare-results th, #compare-results td { border: 1px solid #cbd5e1; padding: 2px 4px; text-align: right; }
   #compare-results th:first-child, #compare-results td:first-child { text-align: left; }
@@ -211,6 +215,26 @@
     <div id="object-list" data-object-tree="1" data-multi-select="1"><p class="muted">loading…</p></div>
     <div class="row"><button id="validate-model" type="button" data-validate-run="1">Validate model</button></div>
     <div id="validate-panel" data-validate-panel="1"></div>
+
+    <h2>Connections</h2>
+    <div id="connections-panel" data-connections-panel="1">
+      <div class="row">
+        <select id="connection-from" aria-label="connection from"></select>
+        <span class="muted">→</span>
+        <select id="connection-to" aria-label="connection to"></select>
+      </div>
+      <div class="row">
+        <label class="muted">Port <input id="connection-port" type="number" min="0" step="1" style="width:52px"></label>
+        <select id="connection-strategy" aria-label="connection strategy">
+          <option value="">default strategy</option>
+          <option value="first_available">first_available</option>
+          <option value="round_robin">round_robin</option>
+          <option value="random">random</option>
+        </select>
+        <button id="add-connection" type="button" data-connection-add="1">Add connection</button>
+      </div>
+      <div id="connection-list"></div>
+    </div>
 
     <h2>Edit object</h2>
     <div id="editor"><p class="muted">Select an object to edit its name, kind and parameters.</p></div>
@@ -797,6 +821,7 @@ async function loadAll() {
 function renderAll() {
   renderAddKinds();
   renderObjectList();
+  renderConnections();
   renderEditor();
   renderGlobalTables();
   updateSelectionUi();
@@ -877,6 +902,94 @@ async function contextDelete() {
   state.selected = state.contextObject;
   state.originalName = null;
   await deleteObject();
+}
+
+function connectionStrategyLabel(connection) {
+  if (!connection.strategy) return "default";
+  if (typeof connection.strategy === "string") return connection.strategy;
+  return connection.strategy.type || "custom";
+}
+
+function renderConnections() {
+  if (!state.model) return;
+  const from = $("connection-from");
+  const to = $("connection-to");
+  if (from && to) {
+    const objects = state.model.objects || [];
+    const options = objects.map(object => `<option value="${escapeText(object.name)}">${escapeText(object.name)}</option>`).join("");
+    from.innerHTML = options;
+    to.innerHTML = options;
+    if (objects.length > 1) to.value = objects[1].name;
+  }
+  const list = $("connection-list");
+  if (!list) return;
+  const connections = state.model.connections || [];
+  list.innerHTML = connections.map((connection, index) =>
+    `<div class="connection-row">
+      <span>${escapeText(connection.from)}</span>
+      <span>${escapeText(connection.to)}</span>
+      <span>${connection.port == null ? "–" : connection.port}</span>
+      <span>${escapeText(connectionStrategyLabel(connection))}</span>
+      <button type="button" data-connection-delete="1" data-connection-index="${index}">Delete</button>
+    </div>`
+  ).join("") || '<p class="muted">No connections.</p>';
+  list.querySelectorAll("[data-connection-delete]").forEach(button => {
+    button.addEventListener("click", () => deleteConnection(Number(button.dataset.connectionIndex)));
+  });
+}
+
+async function saveConnections(model, successMessage) {
+  setStatus("saving connections…");
+  try {
+    const response = await api("/api/model", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(model),
+    });
+    setStatus(successMessage);
+    clearHistory();
+    await loadAll();
+    renderConnections();
+    return response;
+  } catch (error) {
+    setStatus(error.message, true);
+    return null;
+  }
+}
+
+async function addConnection() {
+  const from = $("connection-from").value;
+  const to = $("connection-to").value;
+  if (!from || !to) {
+    setStatus("choose a from and to object", true);
+    return;
+  }
+  if (from === to) {
+    setStatus("a connection cannot point at the same object", true);
+    return;
+  }
+  if (!state.model.connections) state.model.connections = [];
+  if (state.model.connections.some(connection => connection.from === from && connection.to === to)) {
+    setStatus("that connection already exists", true);
+    return;
+  }
+  const connection = { from, to };
+  const port = $("connection-port").value.trim();
+  if (port !== "") connection.port = Number(port);
+  const strategy = $("connection-strategy").value;
+  if (strategy) connection.strategy = { type: strategy };
+  const model = JSON.parse(JSON.stringify(state.model));
+  model.connections.push(connection);
+  await saveConnections(model, `added connection ${from} → ${to}`);
+}
+
+async function deleteConnection(index) {
+  const connection = state.model.connections && state.model.connections[index];
+  if (!connection) return;
+  if (!window.confirm(`Delete connection ${connection.from} → ${connection.to}?`)) return;
+  const model = JSON.parse(JSON.stringify(state.model));
+  model.connections.splice(index, 1);
+  await saveConnections(model, "deleted connection");
 }
 
 function objectHasValidationError(object) {
@@ -4464,6 +4577,7 @@ $("heatmap-metric").addEventListener("change", event => {
 });
 $("reset-view").addEventListener("click", resetViewState);
 $("validate-model").addEventListener("click", validateModel);
+$("add-connection").addEventListener("click", addConnection);
 $("save-metadata").addEventListener("click", saveMetadata);
 $("grid-toggle").addEventListener("click", () => {
   state.gridVisible = !state.gridVisible;

@@ -6535,8 +6535,25 @@ impl<'m> Simulation<'m> {
         Ok(())
     }
 
-    /// task-124: one cell of a step-by-step person move.
+    /// task-124/128: one cell of a step-by-step person move.
     fn handle_person_step(&mut self, transporter: usize) -> Result<(), SimError> {
+        // task-128: the next cell may be taken by a lower-index person; wait a
+        // tick instead of overlapping (the lower index has priority, which also
+        // breaks head-on deadlocks).
+        if let Some(&next) = self.objects[transporter].person_path.front() {
+            let blocked = self.objects.iter().enumerate().any(|(index, object)| {
+                index != transporter
+                    && index < transporter
+                    && object.kind == ObjectKind::Person
+                    && object.tasks > 0
+                    && distance(object.position, next) < 0.5
+            });
+            if blocked {
+                self.record_object_trace("person_wait", transporter);
+                self.schedule(self.now + 0.5, EventKind::PersonStep(transporter));
+                return Ok(());
+            }
+        }
         if let Some(next) = self.objects[transporter].person_path.pop_front() {
             self.objects[transporter].position = next;
         }
@@ -9858,5 +9875,67 @@ mod tests {
         assert!(sim.objects[person].person_target.is_none());
         // The old path jumps to the home position immediately.
         assert_eq!(sim.objects[person].position, [0.5, 0.5]);
+    }
+
+    /// task-128: a following person waits when the next cell is taken by a
+    /// lower-index person and moves on once the cell is free.
+    #[test]
+    fn person_grid_step_waits_for_an_occupied_cell() {
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "person-follow-grid",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "grid": { "width": 10, "height": 10, "cell_size": 1.0 },
+          "objects": [
+            { "name": "D", "kind": "dispatcher", "pos": [0.5, 0.5], "params": {} },
+            { "name": "P", "kind": "processor", "pos": [4.5, 0.5], "params": {} },
+            { "name": "E0", "kind": "person", "pos": [0.5, 0.5], "params": {
+                "speed": 1.0, "home": "D", "grid_step": true } },
+            { "name": "E1", "kind": "person", "pos": [0.5, 0.5], "params": {
+                "speed": 1.0, "home": "D", "grid_step": true } },
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+        )
+        .expect("model");
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let first = sim.by_name["E0"];
+        let second = sim.by_name["E1"];
+        let requester = sim.by_name["P"];
+        assert!(first < second);
+
+        // Both people plan the same path; the first one occupies the next cell.
+        sim.handle_transport_pickup(second, requester)
+            .expect("pickup");
+        assert_eq!(sim.objects[second].person_path.len(), 4);
+        let next_cell = sim.objects[second].person_path[0];
+        sim.objects[first].position = next_cell;
+        sim.objects[first].tasks = 1;
+        let before = sim.events.len();
+
+        sim.handle_person_step(second).expect("step");
+        assert!(
+            sim.events.len() > before,
+            "a retry must be scheduled while the cell is taken"
+        );
+        assert_eq!(
+            sim.objects[second].person_path.len(),
+            4,
+            "the blocked cell stays in the path"
+        );
+        assert_ne!(sim.objects[second].position, next_cell);
+
+        // Once the cell is free the person enters it.
+        sim.objects[first].tasks = 0;
+        sim.handle_person_step(second).expect("step");
+        assert_eq!(sim.objects[second].position, next_cell);
+        assert_eq!(sim.objects[second].person_path.len(), 3);
     }
 }

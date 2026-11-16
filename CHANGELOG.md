@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.44.0 — 2026-11-16
+
+### Person
+
+- **逐格占用等待（接线 B）**：`handle_person_step` pop 下一格前检查是否被索引更小的 person 占用（tasks>0、距离<0.5）→
+  trace `person_wait`、`now+0.5` 重试、不 pop；小 id 先行避免死锁。测试：两人同路径逐格跟随时后者等待、释放后进入、
+  路径 4→3；开放网格总时间仍 == `grid_distance/speed`；默认关闭零回归。
+
+### Studio
+
+- **连接编辑器**：Connections 面板列出 from/to/port/strategy，支持添加/删除，保存走 `POST /api/model` 并刷新。
+
+### 性能基线
+
+- **挂账清零**：v0.33–v0.43 共 11 版逐版补测（每版 3 次中位数）。v0.43 正式基线（load 3.3–3.7）：
+  100k validate **0.77s** / run **2.41s** / **62,120 events/s**；v0.36–v0.43 与 v0.30 差 5–8% 且随 load 单调 → 无回归；
+  相比 v0.11.0 快约 **110×**。performance.md 新增 §3.0 逐版本基线表，删除“待补测”挂账。
+
+### 验证
+
+- 483 个测试全绿（core 249、CLI 85、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.44.0 三平台产物发布并 SHA256 校验。
+
 ## v0.43.0 — 2026-11-16
 
 ### Person
