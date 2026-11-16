@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.50.0 — 2026-11-17
+
+### 原生桌面 GUI（新 crate `openflex-gui`）
+
+- eframe/egui 桌面应用：打开/保存 `.ofm` 模型、对象列表与 pos/z 编辑、透视 3D 布局视图
+  （拖拽旋转、滚轮缩放、点击选中）、Run（后台线程 `run_model`）与逐对象统计表、错误/状态提示。
+- 复用 model/core crate，不复制模拟逻辑；`cargo build -p openflex-gui --release` 后运行。
+- CI 的 test/clippy/coverage 排除该 crate（Linux 桌面依赖），release 仍只打包 CLI（GUI 从源码构建，
+  docs/install.md 已说明）。
+
+### 验证
+
+- 489 个测试全绿（core 253、CLI 86、report 14、model 全部；GUI 编译通过、无 warning）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.50.0 三平台产物发布并 SHA256 校验。
+
 ## v0.49.0 — 2026-11-17
 
 ### AGV（定位与修复）

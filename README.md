@@ -45,7 +45,17 @@ cargo build --release -p openflex-cli
 
 要求 Rust 1.97 或更新。
 
-### 安装
+### 原生桌面 GUI
+
+```sh
+cargo build -p openflex-gui --release
+./target/release/openflex-gui examples/mm1.ofm   # 或直接运行、在窗口里填路径
+```
+
+原生窗口（eframe/egui）：打开/保存模型、对象列表与位置编辑、透视 3D 布局（拖拽旋转、滚轮缩放、点击选中）、
+Run 与对象统计表。浏览器版 `openflex studio model.ofm` 仍是零安装的完整编辑器。
+
+## 安装
 
 ```sh
 # macOS / Linux

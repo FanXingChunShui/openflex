@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/openflex-model", "crates/openflex-core", "crates/openflex-report", "crates/openflex-cli"]
+members = ["crates/openflex-model", "crates/openflex-core", "crates/openflex-report", "crates/openflex-cli", "crates/openflex-gui"]
 
 [workspace.package]
-version = "0.49.0"
+version = "0.50.0"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT OR Apache-2.0"

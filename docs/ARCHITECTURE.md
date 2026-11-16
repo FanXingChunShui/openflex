@@ -281,6 +281,12 @@ valve/sink 视为 0 Pa；pipe 流量 `flow=k·Δp`（k 由 `flow_rate` 标定）
 valve 用 `pressure_open/pressure_close` 滞回自动启闭（trace `fluid_valve_open/close`），`pressure` 报告为时间平均压力（Pa）。
 简化：不可压缩、无温度/压力/管道延迟；固定步长积分；fluid 不触发对象触发器、不支持 shifts/timetable。
 
+## 原生桌面 GUI
+
+`crates/openflex-gui` 是 eframe/egui 桌面应用：加载 `.ofm`、对象列表与 pos 编辑、简单透视 3D 布局
+（拖拽旋转/滚轮缩放/点击选中）、Run（后台线程调用 `run_model`）与报告表格、保存回模型。
+它复用同一套 model/core crate，不复制模拟逻辑。
+
 ## Studio 交互
 
 `openflex studio` 提供：字段级动态表单与实时重投影、增删对象、Process Flow 块/连接编辑、撤销/重做、

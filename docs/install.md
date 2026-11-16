@@ -235,7 +235,23 @@ msiexec /i openflex-0.10.0-windows-x64.msi
 按用户安装（`perUser`），装到 `%LOCALAPPDATA%\OpenFlex\bin` 并自动加入用户 PATH，不需要管理员权限。
 卸载：设置 → 应用 → OpenFlex → 卸载，或 `msiexec /x openflex-0.10.0-windows-x64.msi`。
 
-### Docker / GHCR — 已发布到 0.47.0，`latest` 已同步
+### Native GUI
+
+`openflex-gui` is a native desktop window (eframe/egui) over the same engine:
+open a `.ofm` model, move objects, run the simulation and read the report.
+It is built from source (it is not part of the release archives yet because it
+needs a desktop toolchain):
+
+```sh
+cargo build -p openflex-gui --release
+./target/release/openflex-gui examples/mm1.ofm
+```
+
+The web-based `openflex studio` (browser, no extra toolchain) remains the
+zero-install option and exposes the full editor; the native window is a lighter
+viewer/editor for quick checks.
+
+## Docker / GHCR — 已发布到 0.47.0，`latest` 已同步
 
 GHCR 镜像由 [`.github/workflows/container.yml`](../.github/workflows/container.yml) 在 tag 时
 构建并推送。**当前 registry 状态（2026-11-15 用 `scripts/verify-ghcr.sh` 核对）**：

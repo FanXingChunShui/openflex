@@ -43,10 +43,10 @@ jobs:
 
       - name: Clippy
         if: runner.os == 'Linux'
-        run: cargo clippy --workspace --all-targets
+        run: cargo clippy --workspace --all-targets --exclude openflex-gui
 
       - name: Tests
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --exclude openflex-gui
 
       # PowerShell cannot be parsed on Linux/macOS runners, so the Windows
       # runner is the one that proves install.ps1 / uninstall.ps1 / the two new
@@ -342,7 +342,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Tests
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --exclude openflex-gui
 
   # ---------------------------------------------------------------------------
   # D3: the simulation core must stay wasm32-compatible so the browser/edge
