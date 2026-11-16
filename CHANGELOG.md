@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.48.0 — 2026-11-17
+
+### Studio
+
+- **命名布局预设**：保存当前对象 pos 布局为命名预设（localStorage，最多 10 个）、下拉一键应用（入 undo/历史）、删除。
+
+### 已知问题（诚实记录）
+
+- 新增 `#[ignore]` 诊断测试 `agv_battery_drains_on_a_real_task`：真实模型中 AGV `output_count == 0`、
+  `battery` 不下降 → `finish_task → drain_agv_battery → ChargeTravel` 链未被触发。
+  **AGV 充电/行驶能力目前仅引擎级单测覆盖**；根因在 AGV 任务链（dispatch→Pickup→Arrive→Loaded→处理→Released→Home），
+  已记录到 UNIMPLEMENTED 并附 4 步定位方案。
+
+### 验证
+
+- 488 个测试全绿（core 253，其中 1 个 ignored 诊断测试；CLI 86、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.48.0 三平台产物发布并 SHA256 校验。
+
 ## v0.47.0 — 2026-11-17
 
 ### AGV

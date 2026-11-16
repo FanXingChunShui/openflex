@@ -10157,4 +10157,54 @@ mod tests {
         // The trip consumed 30 units of battery; charging refills it.
         assert_eq!(sim.objects[agv].battery, Some(-30.0));
     }
+
+    /// task-142: does the real task path drain the AGV battery?
+    ///
+    /// KNOWN FAILURE (task-142 diagnosis): in a real model the AGV finishes no
+    /// task at all (`output_count == 0`), so `finish_task` (and therefore
+    /// `drain_agv_battery`) never runs and `battery_remaining` stays at full.
+    /// The test is ignored until the AGV task chain is fixed; run it with
+    /// `cargo test -p openflex-core -- --ignored` to reproduce.
+    #[ignore = "task-142: AGV task chain never finishes in a real model"]
+    #[test]
+    fn agv_battery_drains_on_a_real_task() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "agv-real",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "pos": [0, 0], "params": {
+                "interarrival": { "distribution": "constant", "value": 10.0 },
+                "max_arrivals": 8, "first_arrival": 0.0 } },
+            { "name": "P", "kind": "processor", "pos": [0, 0], "params": {
+                "process_time": { "distribution": "constant", "value": 3.0 },
+                "process_operator": "Dispatcher1" } },
+            { "name": "K", "kind": "sink", "params": {} },
+            { "name": "D", "kind": "dispatcher", "pos": [10, 0], "params": {} },
+            { "name": "C", "kind": "resource", "pos": [20, 0], "params": { "capacity": 1 } },
+            { "name": "A", "kind": "agv", "pos": [10, 0], "params": {
+                "capacity": 1, "speed": 5.0, "home": "D",
+                "battery_capacity": 5.0, "consumption_per_distance": 1.0,
+                "charge_time": { "distribution": "constant", "value": 20.0 },
+                "charger": "C" } }
+          ],
+          "connections": [
+            { "from": "S", "to": "P" }, { "from": "P", "to": "K" },
+            { "from": "D", "to": "A" }
+          ]
+        }"#,
+        )
+        .expect("model");
+        let report = crate::run_model(&model).expect("run");
+        let agv = &report.replications[0].objects["A"];
+        println!(
+            "battery={:?} charging_fraction={} output={}",
+            agv.battery_remaining, agv.charging_fraction, agv.output_count
+        );
+        assert!(
+            agv.battery_remaining.unwrap_or(5.0) < 5.0,
+            "the battery must drain on a real task (got {:?})",
+            agv.battery_remaining
+        );
+    }
 }

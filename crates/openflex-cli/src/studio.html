@@ -217,6 +217,19 @@
       <button id="save-metadata" class="primary" type="button" data-metadata-save="1">Save metadata</button>
     </details>
 
+    <div id="layout-presets" data-layout-presets="1">
+      <h3>Layout presets</h3>
+      <div class="row">
+        <input id="layout-preset-name" type="text" placeholder="Preset name" maxlength="40">
+        <button id="layout-preset-save" type="button" data-layout-preset-save="1">Save preset</button>
+      </div>
+      <div class="row">
+        <select id="layout-preset-select" aria-label="layout preset"></select>
+        <button id="layout-preset-apply" type="button" data-layout-preset-apply="1">Apply</button>
+        <button id="layout-preset-delete" type="button" data-layout-preset-delete="1">Delete</button>
+      </div>
+    </div>
+
     <details id="history-panel" data-history-panel="1">
       <summary>History</summary>
       <div id="history-list"></div>
@@ -4342,6 +4355,103 @@ function exportReportCsv() {
   setStatus("exported openflex-report.csv");
 }
 
+const LAYOUT_PRESETS_KEY = "openflex.studio.layoutPresets.v1";
+const MAX_LAYOUT_PRESETS = 10;
+
+function readLayoutPresets() {
+  try {
+    const value = JSON.parse(localStorage.getItem(LAYOUT_PRESETS_KEY) || "[]");
+    return Array.isArray(value) ? value.slice(0, MAX_LAYOUT_PRESETS) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function writeLayoutPresets(presets) {
+  try {
+    localStorage.setItem(LAYOUT_PRESETS_KEY, JSON.stringify(presets.slice(0, MAX_LAYOUT_PRESETS)));
+  } catch (_) {
+    // ignore storage failures
+  }
+}
+
+function renderLayoutPresets() {
+  const select = $("layout-preset-select");
+  if (!select) return;
+  const presets = readLayoutPresets();
+  const current = select.value;
+  select.innerHTML = presets.map(preset => `<option value="${escapeText(preset.name)}">${escapeText(preset.name)}</option>`).join("");
+  if (presets.some(preset => preset.name === current)) select.value = current;
+  const disabled = presets.length === 0;
+  $("layout-preset-apply").disabled = disabled;
+  $("layout-preset-delete").disabled = disabled;
+}
+
+function saveLayoutPreset() {
+  if (!state.model) return;
+  const name = $("layout-preset-name").value.trim();
+  if (!name) {
+    setStatus("layout preset needs a name", true);
+    return;
+  }
+  const presets = readLayoutPresets();
+  const existing = presets.findIndex(preset => preset.name === name);
+  if (existing < 0 && presets.length >= MAX_LAYOUT_PRESETS) {
+    setStatus(`at most ${MAX_LAYOUT_PRESETS} layout presets`, true);
+    return;
+  }
+  const preset = {
+    name,
+    savedAt: Date.now(),
+    objects: state.model.objects.map(object => ({
+      name: object.name,
+      pos: [Number((object.pos || [0, 0])[0]) || 0, Number((object.pos || [0, 0])[1]) || 0],
+    })),
+  };
+  if (existing >= 0) presets[existing] = preset;
+  else presets.push(preset);
+  writeLayoutPresets(presets);
+  renderLayoutPresets();
+  $("layout-preset-select").value = name;
+  setStatus(`saved layout preset '${name}'`);
+}
+
+function applyLayoutPreset() {
+  const name = $("layout-preset-select").value;
+  if (!name) return;
+  const preset = readLayoutPresets().find(candidate => candidate.name === name);
+  if (!preset) {
+    setStatus("layout preset no longer exists", true);
+    renderLayoutPresets();
+    return;
+  }
+  rememberNow();
+  const byName = new Map(state.model.objects.map(object => [object.name, object]));
+  let applied = 0;
+  for (const entry of preset.objects || []) {
+    const object = byName.get(entry.name);
+    if (!object || !Array.isArray(entry.pos)) continue;
+    const x = Number(entry.pos[0]);
+    const y = Number(entry.pos[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    object.pos = [x, y];
+    applied += 1;
+  }
+  renderAll();
+  recordHistory("layout preset", `apply ${name}`);
+  setStatus(`applied layout preset '${name}' to ${applied} object(s) (unsaved)`);
+}
+
+function deleteLayoutPreset() {
+  const name = $("layout-preset-select").value;
+  if (!name) return;
+  if (!window.confirm(`Delete layout preset '${name}'?`)) return;
+  const presets = readLayoutPresets().filter(preset => preset.name !== name);
+  writeLayoutPresets(presets);
+  renderLayoutPresets();
+  setStatus(`deleted layout preset '${name}'`);
+}
+
 function exportLayoutJson() {
   if (!state.model) return;
   const layout = {
@@ -4944,6 +5054,9 @@ $("compare-run").addEventListener("click", () => {
 });
 $("export-report-json").addEventListener("click", exportReportJson);
 $("export-report-csv").addEventListener("click", exportReportCsv);
+$("layout-preset-save").addEventListener("click", saveLayoutPreset);
+$("layout-preset-apply").addEventListener("click", applyLayoutPreset);
+$("layout-preset-delete").addEventListener("click", deleteLayoutPreset);
 $("export-layout").addEventListener("click", exportLayoutJson);
 $("import-layout").addEventListener("click", () => $("import-layout-file").click());
 $("import-layout-file").addEventListener("change", async event => {
@@ -5045,6 +5158,7 @@ window.addEventListener("keydown", event => {
 renderEventList();
 renderTraceList();
 renderHistory();
+renderLayoutPresets();
 renderScenarioList();
 if (!initWebGL()) state.renderMode = "canvas";
 restoreViewState();
