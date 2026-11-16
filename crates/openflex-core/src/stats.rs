@@ -147,6 +147,12 @@ pub struct ObjectStats {
     pub utilization: f64,
     /// Output items per unit of simulated time.
     pub throughput: f64,
+    /// task-130: remaining battery of an AGV (None for other objects).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub battery_remaining: Option<f64>,
+    /// task-130: share of the simulated time spent charging (AGVs).
+    #[serde(default)]
+    pub charging_fraction: f64,
 }
 
 impl Default for ObjectStats {
@@ -161,6 +167,8 @@ impl Default for ObjectStats {
             state_times: StateTimes::default(),
             utilization: 0.0,
             throughput: 0.0,
+            battery_remaining: None,
+            charging_fraction: 0.0,
         }
     }
 }

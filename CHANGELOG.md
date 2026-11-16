@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.45.0 — 2026-11-16
+
+### AGV
+
+- **电池/充电报告字段**：`ObjectStats.battery_remaining: Option<f64>`（非 AGV 省略）与 `charging_fraction: f64`
+  （已完成充电时长/统计窗口）；`start_charging` 记录真正开始时刻（排队不计）、`ChargeDone` 累计；
+  `stats()`/`stats_at()` 双路径一致。Studio 状态面板自动读取（不再 n/a）。
+- 前往充电桩行驶时间与 `agv-charging.ofm` 示例留待下一批。
+
+### Studio
+
+- **检查点删除/重命名**：`DELETE /api/checkpoints/<file>` 与 `POST /api/checkpoint-rename`（安全 basename、
+  拒绝路径穿越/覆盖），面板每行 Rename/Delete 并刷新。
+
+### 性能
+
+- v0.44 基线补测：100k validate **0.78s** / run **2.41s** / **62,153 events/s**（load 3.4–3.7），与 v0.43 一致、无回归。
+
+### 验证
+
+- 485 个测试全绿（core 250、CLI 86、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.45.0 三平台产物发布并 SHA256 校验。
+
 ## v0.44.0 — 2026-11-16
 
 ### Person

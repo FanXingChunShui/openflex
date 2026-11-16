@@ -507,6 +507,16 @@ fn handle_connection(
         ("POST", "/api/verify-checkpoint") => {
             verify_checkpoint_endpoint(&mut stream, state, &request.body)
         }
+        ("POST", "/api/checkpoint-rename") => {
+            rename_checkpoint_endpoint(&mut stream, state, &request.body)
+        }
+        (method, path) if method == "DELETE" && path.starts_with("/api/checkpoints/") => {
+            let name = match percent_decode(path.trim_start_matches("/api/checkpoints/")) {
+                Ok(name) => name,
+                Err(error) => return bad_path(&mut stream, error),
+            };
+            delete_checkpoint_endpoint(&mut stream, state, &name)
+        }
         ("POST", "/api/pause") => {
             let runner = ensure_runner(state);
             match runner.pause() {
@@ -1787,13 +1797,14 @@ fn list_checkpoints_endpoint(stream: &mut TcpStream, state: &StudioState) -> std
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            let Some(index) = name
+            if !name.ends_with(".json") {
+                continue;
+            }
+            let index = name
                 .strip_prefix("checkpoint.rep")
                 .and_then(|rest| rest.strip_suffix(".json"))
                 .and_then(|index| index.parse::<u32>().ok())
-            else {
-                continue;
-            };
+                .unwrap_or(0);
             let Ok(text) = fs::read_to_string(&path) else {
                 continue;
             };
@@ -2055,6 +2066,114 @@ struct TraceRequest {
     stop_time: Option<f64>,
     #[serde(default)]
     max_events: Option<usize>,
+}
+
+/// Reject names that could escape the checkpoint directory.
+fn safe_checkpoint_name(name: &str) -> Option<&str> {
+    let path = Path::new(name);
+    if path.file_name().and_then(|file| file.to_str()) != Some(name)
+        || name.contains("..")
+        || !name.ends_with(".json")
+    {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+fn delete_checkpoint_endpoint(
+    stream: &mut TcpStream,
+    state: &StudioState,
+    name: &str,
+) -> std::io::Result<()> {
+    let Some(name) = safe_checkpoint_name(name) else {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": "invalid checkpoint file name" })
+                .to_string(),
+        );
+    };
+    let path = state.checkpoints.join(name);
+    match fs::remove_file(&path) {
+        Ok(()) => write_json(
+            stream,
+            "200 OK",
+            &serde_json::json!({ "ok": true, "deleted": name }).to_string(),
+        ),
+        Err(error) => write_json(
+            stream,
+            "404 Not Found",
+            &serde_json::json!({ "ok": false, "error": format!("could not delete {name}: {error}") })
+                .to_string(),
+        ),
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RenameCheckpointRequest {
+    file: String,
+    new_name: String,
+}
+
+fn rename_checkpoint_endpoint(
+    stream: &mut TcpStream,
+    state: &StudioState,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let request: RenameCheckpointRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return write_json(
+                stream,
+                "400 Bad Request",
+                &serde_json::json!({ "ok": false, "error": format!("invalid rename request: {error}") })
+                    .to_string(),
+            );
+        }
+    };
+    let (Some(old), Some(new)) = (
+        safe_checkpoint_name(&request.file),
+        safe_checkpoint_name(request.new_name.trim()),
+    ) else {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": "checkpoint names must be plain .json file names" })
+                .to_string(),
+        );
+    };
+    let old_path = state.checkpoints.join(old);
+    let new_path = state.checkpoints.join(new);
+    if !old_path.is_file() {
+        return write_json(
+            stream,
+            "404 Not Found",
+            &serde_json::json!({ "ok": false, "error": format!("unknown checkpoint '{old}'") })
+                .to_string(),
+        );
+    }
+    if new_path.exists() {
+        return write_json(
+            stream,
+            "422 Unprocessable Entity",
+            &serde_json::json!({ "ok": false, "error": format!("checkpoint '{new}' already exists") })
+                .to_string(),
+        );
+    }
+    match fs::rename(&old_path, &new_path) {
+        Ok(()) => write_json(
+            stream,
+            "200 OK",
+            &serde_json::json!({ "ok": true, "file": new, "renamed_from": old }).to_string(),
+        ),
+        Err(error) => write_json(
+            stream,
+            "500 Internal Server Error",
+            &serde_json::json!({ "ok": false, "error": format!("could not rename checkpoint: {error}") })
+                .to_string(),
+        ),
+    }
 }
 
 /// Validate the in-memory model, or a model posted in the request body.

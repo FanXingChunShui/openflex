@@ -2860,6 +2860,10 @@ fn studio_can_add_and_delete_objects_through_the_api() {
         "data-metadata-save=\"1\"",
         "data-connections-panel=\"1\"",
         "data-connection-add=\"1\"",
+        "data-checkpoint-delete=\"1\"",
+        "data-checkpoint-rename=\"1\"",
+        "function deleteCheckpoint",
+        "function renameCheckpoint",
         "data-connection-delete=\"1\"",
         "function addConnection",
         "function deleteConnection",
@@ -3819,6 +3823,10 @@ fn studio_global_table_editor_updates_the_model() {
         "data-metadata-save=\"1\"",
         "data-connections-panel=\"1\"",
         "data-connection-add=\"1\"",
+        "data-checkpoint-delete=\"1\"",
+        "data-checkpoint-rename=\"1\"",
+        "function deleteCheckpoint",
+        "function renameCheckpoint",
         "data-connection-delete=\"1\"",
         "function addConnection",
         "function deleteConnection",
@@ -4452,4 +4460,63 @@ fn studio_validate_endpoint_reports_model_errors() {
             .iter()
             .any(|issue| { issue["location"].is_string() && issue["message"].is_string() })
     );
+}
+
+#[test]
+fn studio_checkpoint_rename_and_delete() {
+    let dir = TempDir::new("studio-checkpoint-manage");
+    let model = dir.write("demo.ofm", MODEL);
+    let checkpoints = dir.join("checkpoints");
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--replications",
+        "2",
+        "--save-checkpoints",
+        &path_str(&checkpoints),
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let (_server, address) = start_studio(&model);
+
+    let renamed = http_request(
+        &address,
+        "POST",
+        "/api/checkpoint-rename",
+        Some(r#"{"file":"checkpoint.rep0.json","new_name":"checkpoint.rep0-renamed.json"}"#),
+    );
+    assert!(
+        http_status(&renamed).contains("200 OK"),
+        "rename: {}",
+        http_body(&renamed)
+    );
+    assert!(checkpoints.join("checkpoint.rep0-renamed.json").is_file());
+    assert!(!checkpoints.join("checkpoint.rep0.json").exists());
+
+    let bad = http_request(
+        &address,
+        "POST",
+        "/api/checkpoint-rename",
+        Some(r#"{"file":"checkpoint.rep1.json","new_name":"../escape.json"}"#),
+    );
+    assert!(http_status(&bad).contains("422"), "bad rename: {bad}");
+
+    let deleted = http_request(
+        &address,
+        "DELETE",
+        "/api/checkpoints/checkpoint.rep1.json",
+        None,
+    );
+    assert!(
+        http_status(&deleted).contains("200 OK"),
+        "delete: {}",
+        http_body(&deleted)
+    );
+    assert!(!checkpoints.join("checkpoint.rep1.json").exists());
+
+    let listed = http_get(&address, "/api/checkpoints");
+    let listed = json(http_body(&listed));
+    let entries = listed["checkpoints"].as_array().expect("checkpoints");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["file"], "checkpoint.rep0-renamed.json");
 }

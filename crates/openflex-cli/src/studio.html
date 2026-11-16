@@ -129,7 +129,7 @@
                      border: 1px solid #f59e0b; color: #92400e; font-size: 11px; }
   .on-draw-badge { background: #fef3c7; color: #92400e; border-radius: 8px; padding: 0 5px;
                    font-size: 9px; text-transform: uppercase; letter-spacing: .02em; }
-  .checkpoint-row { display: grid; grid-template-columns: 34px 58px 46px 86px auto auto 34px; gap: 5px; align-items: center;
+  .checkpoint-row { display: grid; grid-template-columns: 30px 52px 42px 78px auto auto auto auto 28px; gap: 5px; align-items: center;
                     padding: 3px 4px; border-bottom: 1px solid #e2e8f0; font-size: 11px; }
   .checkpoint-row button { padding: 2px 6px; font-size: 11px; }
   .checkpoint-short { font-family: ui-monospace, monospace; color: #64748b; }
@@ -1644,6 +1644,8 @@ async function loadCheckpoints() {
         <span class="checkpoint-short" title="${escapeText(entry.sha256 || "")}">${escapeText(entry.sha256_short || "")}</span>
         <button type="button" data-checkpoint-verify="1" data-file="${escapeText(entry.file)}" data-sha="${escapeText(entry.sha256 || "")}">Verify</button>
         <button type="button" data-restore-checkpoint="${escapeText(entry.file)}">Restore</button>
+        <button type="button" data-checkpoint-rename="1" data-file="${escapeText(entry.file)}">Rename</button>
+        <button type="button" data-checkpoint-delete="1" data-file="${escapeText(entry.file)}">Delete</button>
         <span class="checkpoint-badge" data-checkpoint-badge="${escapeText(entry.file)}"></span>
       </div>`
     ).join("") + `<button id="refresh-checkpoints" type="button">Refresh checkpoints</button>`;
@@ -1653,9 +1655,42 @@ async function loadCheckpoints() {
     container.querySelectorAll("[data-checkpoint-verify]").forEach(button => {
       button.addEventListener("click", () => verifyCheckpoint(button.dataset.file, button.dataset.sha, button));
     });
+    container.querySelectorAll("[data-checkpoint-rename]").forEach(button => {
+      button.addEventListener("click", () => renameCheckpoint(button.dataset.file));
+    });
+    container.querySelectorAll("[data-checkpoint-delete]").forEach(button => {
+      button.addEventListener("click", () => deleteCheckpoint(button.dataset.file));
+    });
     $("refresh-checkpoints").addEventListener("click", loadCheckpoints);
   } catch (error) {
     container.innerHTML = `<p class="muted">Could not list checkpoints: ${escapeText(error.message)}</p>`;
+  }
+}
+
+async function renameCheckpoint(file) {
+  const next = window.prompt("New checkpoint file name", file);
+  if (!next || next.trim() === file) return;
+  try {
+    const response = await api("/api/checkpoint-rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file, new_name: next.trim() }),
+    });
+    setStatus(`renamed checkpoint to ${response.file}`);
+    await loadCheckpoints();
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+async function deleteCheckpoint(file) {
+  if (!window.confirm(`Delete checkpoint ${file}?`)) return;
+  try {
+    await api(`/api/checkpoints/${encodeURIComponent(file)}`, { method: "DELETE" });
+    setStatus(`deleted checkpoint ${file}`);
+    await loadCheckpoints();
+  } catch (error) {
+    setStatus(error.message, true);
   }
 }
 

@@ -715,6 +715,11 @@ pub(crate) struct ObjectRt {
     /// task-65: how often this object's request was preempted.
     #[serde(default)]
     preempt_retries: u32,
+    /// task-130: accumulated charging time and the start of the current charge.
+    #[serde(default)]
+    charge_time_total: f64,
+    #[serde(default)]
+    charge_started_at: f64,
     /// task-124: remaining cells of a step-by-step person move.
     #[serde(default)]
     person_path: VecDeque<[f64; 2]>,
@@ -836,6 +841,8 @@ impl ObjectRt {
             last_picked_level: None,
             rack_pick: None,
             preempt_retries: 0,
+            charge_time_total: 0.0,
+            charge_started_at: 0.0,
             person_path: VecDeque::new(),
             person_target: None,
             pending_steps: Vec::new(),
@@ -1209,6 +1216,8 @@ impl ObjectRt {
             state_times: states,
             utilization: states.busy / denom,
             throughput: self.acc.output as f64 / denom,
+            battery_remaining: self.battery,
+            charging_fraction: self.charge_time_total / denom,
         }
     }
 
@@ -1241,6 +1250,8 @@ impl ObjectRt {
                 self.acc.states.busy / denom
             },
             throughput: self.acc.output as f64 / denom,
+            battery_remaining: self.battery,
+            charging_fraction: self.charge_time_total / denom,
         }
     }
 }
@@ -6289,6 +6300,7 @@ impl<'m> Simulation<'m> {
         };
         let charge = self.sample(&distribution).max(0.0);
         self.objects[transporter].charging = true;
+        self.objects[transporter].charge_started_at = self.now;
         self.objects[transporter].charge_until = self.now + charge;
         self.record_object_trace("agv_charge", transporter);
         if charge <= EPS {
@@ -6306,6 +6318,11 @@ impl<'m> Simulation<'m> {
         }
         self.objects[transporter].charging = false;
         self.objects[transporter].charge_until = 0.0;
+        if self.objects[transporter].charge_started_at > 0.0 {
+            let charged = (self.now - self.objects[transporter].charge_started_at).max(0.0);
+            self.objects[transporter].charge_time_total += charged;
+            self.objects[transporter].charge_started_at = 0.0;
+        }
         // task-106: free the charger slot and wake the next waiting AGV.
         if let Some(charger) = self.charger_slot(transporter) {
             if let Some(slot) = self.charger_in_use.get_mut(&charger) {
@@ -9937,5 +9954,43 @@ mod tests {
         sim.handle_person_step(second).expect("step");
         assert_eq!(sim.objects[second].position, next_cell);
         assert_eq!(sim.objects[second].person_path.len(), 3);
+    }
+
+    /// task-130: the report exposes the remaining battery and the share of
+    /// time spent charging.
+    #[test]
+    fn agv_stats_report_battery_and_charging() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "agv-stats",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "A", "kind": "agv", "params": { "battery_capacity": 10.0 } },
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let agv = sim.by_name["A"];
+        sim.objects[agv].battery = Some(4.0);
+        sim.objects[agv].charge_time_total = 25.0;
+        let stats = sim.objects[agv].stats(100.0);
+        assert_eq!(stats.battery_remaining, Some(4.0));
+        assert!(
+            (stats.charging_fraction - 0.25).abs() < 1e-9,
+            "charging fraction: {}",
+            stats.charging_fraction
+        );
+        // A non-AGV has no battery.
+        let source = sim.by_name["S"];
+        assert_eq!(sim.objects[source].stats(100.0).battery_remaining, None);
     }
 }
