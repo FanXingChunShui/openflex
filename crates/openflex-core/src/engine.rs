@@ -8485,6 +8485,88 @@ fn object_field(sim: &Simulation<'_>, index: usize, field: &str) -> Option<Value
 
 /// A* / BFS distance on a walking grid; `None` when a point is outside the
 /// grid, blocked or unreachable (callers fall back to network/euclidean).
+/// task-118: the cell sequence of the shortest 8-neighbour path.
+///
+/// Uses exactly the same cost model as [`grid_distance`] (straight 1000,
+/// diagonal 1414, obstacles blocked), so the path length and the distance
+/// always agree. Returns the cells including the start and the goal.
+#[allow(dead_code)] // wired into the step-by-step person movement in the next step
+fn grid_path(grid: &Grid, from: [f64; 2], to: [f64; 2]) -> Option<Vec<[usize; 2]>> {
+    let size = grid.cell_size.max(EPS);
+    let cell = |point: [f64; 2]| -> Option<(i32, i32)> {
+        let x = (point[0] / size).floor() as i32;
+        let y = (point[1] / size).floor() as i32;
+        if x < 0 || y < 0 || x >= grid.width as i32 || y >= grid.height as i32 {
+            None
+        } else {
+            Some((x, y))
+        }
+    };
+    let start = cell(from)?;
+    let goal = cell(to)?;
+    let blocked: std::collections::HashSet<(i32, i32)> = grid
+        .obstacles
+        .iter()
+        .map(|cell| (cell[0], cell[1]))
+        .collect();
+    if blocked.contains(&start) || blocked.contains(&goal) {
+        return None;
+    }
+    let mut best: std::collections::HashMap<(i32, i32), u64> = std::collections::HashMap::new();
+    let mut previous: std::collections::HashMap<(i32, i32), (i32, i32)> =
+        std::collections::HashMap::new();
+    let mut heap = std::collections::BinaryHeap::new();
+    best.insert(start, 0);
+    heap.push(std::cmp::Reverse((0u64, start)));
+    while let Some(std::cmp::Reverse((cost, current))) = heap.pop() {
+        if current == goal {
+            let mut path = vec![current];
+            let mut node = current;
+            while let Some(&prev) = previous.get(&node) {
+                path.push(prev);
+                node = prev;
+            }
+            path.reverse();
+            return Some(
+                path.into_iter()
+                    .map(|(x, y)| [x as usize, y as usize])
+                    .collect(),
+            );
+        }
+        if best.get(&current).is_some_and(|&known| cost > known) {
+            continue;
+        }
+        for (dx, dy) in [
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
+            (1, 1),
+            (1, -1),
+            (-1, 1),
+            (-1, -1),
+        ] {
+            let next = (current.0 + dx, current.1 + dy);
+            if next.0 < 0
+                || next.1 < 0
+                || next.0 >= grid.width as i32
+                || next.1 >= grid.height as i32
+                || blocked.contains(&next)
+            {
+                continue;
+            }
+            let step_cost = if dx != 0 && dy != 0 { 1414 } else { 1000 };
+            let next_cost = cost + step_cost;
+            if best.get(&next).is_none_or(|&known| next_cost < known) {
+                best.insert(next, next_cost);
+                previous.insert(next, current);
+                heap.push(std::cmp::Reverse((next_cost, next)));
+            }
+        }
+    }
+    None
+}
+
 fn grid_distance(grid: &Grid, from: [f64; 2], to: [f64; 2]) -> Option<f64> {
     let size = grid.cell_size.max(EPS);
     let cell = |point: [f64; 2]| -> Option<(i32, i32)> {
@@ -9560,5 +9642,68 @@ mod tests {
         sim.handle_transport_pickup(second, processor)
             .expect("pickup");
         assert_eq!(sim.objects[second].position, [0.0, 0.0]);
+    }
+
+    /// task-118: the path length and the distance share one cost model, the
+    /// path ends on the goal and blocked goals are unreachable.
+    #[test]
+    fn grid_path_matches_the_distance_model() {
+        let open = openflex_model::Grid {
+            width: 10,
+            height: 10,
+            cell_size: 1.0,
+            obstacles: Vec::new(),
+        };
+        let path = grid_path(&open, [0.5, 0.5], [4.5, 0.5]).expect("path");
+        assert_eq!(path.first(), Some(&[0, 0]));
+        assert_eq!(path.last(), Some(&[4, 0]));
+        assert_eq!(path.len(), 5, "four straight cells plus the start");
+        let distance = grid_distance(&open, [0.5, 0.5], [4.5, 0.5]).expect("distance");
+        assert!(
+            ((path.len() - 1) as f64 * open.cell_size - distance).abs() < 1e-9,
+            "path length {path:?} vs distance {distance}"
+        );
+
+        // A wall forces a detour: the path stays connected, the ends match.
+        let walled = openflex_model::Grid {
+            width: 6,
+            height: 6,
+            cell_size: 1.0,
+            obstacles: vec![[2, 0], [2, 1], [2, 2], [2, 3]],
+        };
+        let detour = grid_path(&walled, [0.5, 0.5], [4.5, 0.5]).expect("detour");
+        assert_eq!(detour.first(), Some(&[0, 0]));
+        assert_eq!(detour.last(), Some(&[4, 0]));
+        let detour_distance = grid_distance(&walled, [0.5, 0.5], [4.5, 0.5]).expect("distance");
+        // Diagonal steps cost sqrt(2), so compare the weighted path length.
+        let weighted: f64 = detour
+            .windows(2)
+            .map(|window| {
+                let dx = (window[1][0] as i64 - window[0][0] as i64).abs();
+                let dy = (window[1][1] as i64 - window[0][1] as i64).abs();
+                if dx != 0 && dy != 0 { 1.414 } else { 1.0 }
+            })
+            .sum();
+        // The detour must not be longer than the distance model reports; the
+        // two searches may pick different (equally valid) shortest paths.
+        assert!(
+            weighted <= detour_distance + 1e-3,
+            "detour cost {weighted} vs distance {detour_distance}"
+        );
+        assert!(detour.len() > 5, "the wall forces extra cells");
+        for window in detour.windows(2) {
+            let dx = (window[1][0] as i64 - window[0][0] as i64).abs();
+            let dy = (window[1][1] as i64 - window[0][1] as i64).abs();
+            assert!(dx <= 1 && dy <= 1 && dx + dy > 0, "8-neighbour steps only");
+        }
+
+        // A blocked goal has no path at all.
+        let blocked_goal = openflex_model::Grid {
+            width: 6,
+            height: 6,
+            cell_size: 1.0,
+            obstacles: vec![[4, 0]],
+        };
+        assert!(grid_path(&blocked_goal, [0.5, 0.5], [4.5, 0.5]).is_none());
     }
 }

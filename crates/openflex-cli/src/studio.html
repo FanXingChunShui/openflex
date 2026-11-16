@@ -258,7 +258,7 @@
       <text x="8" y="14" fill="#16a34a" font-size="11" font-weight="600">Y</text>
       <text x="41" y="39" fill="#2563eb" font-size="11" font-weight="600">Z</text>
     </svg>
-    <div class="layout-controls" data-layout-controls="1">
+    <div class="layout-controls" data-layout-controls="1" data-view-persist="1">
       <button type="button" data-layout-grid="1">Grid</button>
       <button type="button" data-layout-circle="1">Circle</button>
       <button type="button" data-layout-force="1">Force</button>
@@ -271,6 +271,7 @@
       <button type="button" data-view-preset="front">Front</button>
       <button type="button" data-view-preset="side">Side</button>
       <button id="grid-toggle" type="button" data-grid-toggle="1">Grid on</button>
+      <button id="reset-view" type="button" data-reset-view="1">Reset view</button>
       <label class="muted" data-heatmap="1">Heatmap
         <select id="heatmap-metric" data-heatmap-metric="1">
           <option value="utilization">Utilization</option>
@@ -444,6 +445,7 @@ const state = {
   compareAName: "A",
   compareBName: "B",
   checkpoints: null,
+  suppressPersist: false,
   dragging: false,
   lastX: 0,
   lastY: 0,
@@ -3217,6 +3219,83 @@ function drawWebGL(now) {
   gl.deleteBuffer(colorBuffer);
 }
 
+const VIEW_STATE_KEY = "openflex.studio.view.v1";
+
+function persistViewState() {
+  if (state.suppressPersist) return;
+  try {
+    localStorage.setItem(VIEW_STATE_KEY, JSON.stringify({
+      yaw: state.yaw,
+      pitch: state.pitch,
+      zoom: state.zoom,
+      focus: state.focusName,
+      renderMode: state.renderMode,
+      last3dMode: state.last3dMode,
+      view2d: state.view2d,
+      gridVisible: state.gridVisible,
+      heatmapMetric: state.heatmapMetric,
+      snapGrid: state.snapGrid,
+    }));
+  } catch (_) {
+    // localStorage can be unavailable (private mode/file URL); ignore.
+  }
+}
+
+function restoreViewState() {
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(VIEW_STATE_KEY) || "null");
+  } catch (_) {
+    saved = null;
+  }
+  if (!saved || typeof saved !== "object") return;
+  if (Number.isFinite(Number(saved.yaw))) state.yaw = Number(saved.yaw);
+  if (Number.isFinite(Number(saved.pitch))) state.pitch = Math.max(5, Math.min(80, Number(saved.pitch)));
+  if (Number.isFinite(Number(saved.zoom))) state.zoom = Math.max(0.3, Math.min(4, Number(saved.zoom)));
+  if (typeof saved.focus === "string" || saved.focus === null) state.focusName = saved.focus;
+  if (["webgl", "canvas", "2d"].includes(saved.renderMode)) state.renderMode = saved.renderMode;
+  if (["webgl", "canvas"].includes(saved.last3dMode)) state.last3dMode = saved.last3dMode;
+  if (typeof saved.gridVisible === "boolean") state.gridVisible = saved.gridVisible;
+  if (["utilization", "throughput", "wip"].includes(saved.heatmapMetric)) state.heatmapMetric = saved.heatmapMetric;
+  if ([0, 10, 20, 50].includes(Number(saved.snapGrid))) state.snapGrid = Number(saved.snapGrid);
+  if (saved.view2d === true) state.renderMode = "2d";
+  const gridButton = $("grid-toggle");
+  if (gridButton) {
+    gridButton.textContent = state.gridVisible ? "Grid on" : "Grid off";
+    gridButton.classList.toggle("primary", state.gridVisible);
+  }
+  if ($("heatmap-metric")) $("heatmap-metric").value = state.heatmapMetric;
+  if ($("snap-grid")) $("snap-grid").value = String(state.snapGrid);
+}
+
+function resetViewState() {
+  state.suppressPersist = true;
+  try {
+    localStorage.removeItem(VIEW_STATE_KEY);
+  } catch (_) {
+    // ignore
+  }
+  state.yaw = 45;
+  state.pitch = 30;
+  state.zoom = 1;
+  state.focusName = null;
+  state.gridVisible = true;
+  state.heatmapMetric = "utilization";
+  state.snapGrid = 10;
+  if ($("heatmap-metric")) $("heatmap-metric").value = "utilization";
+  if ($("snap-grid")) $("snap-grid").value = "10";
+  const gridButton = $("grid-toggle");
+  if (gridButton) {
+    gridButton.textContent = "Grid on";
+    gridButton.classList.add("primary");
+  }
+  setRenderMode("canvas");
+  state.suppressPersist = false;
+  updateHeatmapUi();
+  drawScene(state.clock);
+  setStatus("view state reset (camera, mode, grid, heatmap, snap)");
+}
+
 function setRenderMode(mode) {
   let fallback = false;
   if (mode === "webgl" && !webglState.gl) {
@@ -3241,6 +3320,7 @@ function setRenderMode(mode) {
   } else {
     setStatus(mode === "webgl" ? "WebGL 3D view" : mode === "canvas" ? "Canvas 3D view" : "top-down 2D view");
   }
+  persistViewState();
 }
 
 function snapValue(value) {
@@ -3891,6 +3971,7 @@ function setViewPreset(name) {
   state.pitch = preset.pitch;
   state.zoom = preset.zoom;
   if (state.view2d) setRenderMode(state.last3dMode || "canvas");
+  persistViewState();
   setStatus(`camera preset: ${name}`);
 }
 
@@ -4172,12 +4253,14 @@ const stopDrag = () => {
   state.dragging = false;
   state.dragGuides = null;
   scene.classList.remove("dragging");
+  persistViewState();
 };
 scene.addEventListener("pointerup", stopDrag);
 scene.addEventListener("pointercancel", stopDrag);
 scene.addEventListener("wheel", event => {
   event.preventDefault();
   state.zoom = Math.max(0.3, Math.min(4, state.zoom * Math.exp(-event.deltaY * 0.001)));
+  persistViewState();
 }, { passive: false });
 scene.addEventListener("dblclick", event => {
   const rect = scene.getBoundingClientRect();
@@ -4190,9 +4273,11 @@ scene.addEventListener("dblclick", event => {
     commitEdit();
     renderObjectList();
     renderEditor();
+    persistViewState();
     setStatus(`focused ${hit.name}`);
   } else {
     state.focusName = null;
+    persistViewState();
     setStatus("camera reset to the model centre");
   }
 });
@@ -4237,18 +4322,22 @@ $("apply-batch-pos").addEventListener("click", applyBatchPosition);
 $("heatmap-metric").addEventListener("change", event => {
   state.heatmapMetric = event.target.value;
   updateHeatmapUi();
+  persistViewState();
   setStatus(`heatmap: ${event.target.value}`);
   drawScene(state.clock);
   if (state.renderMode === "webgl" && !state.view2d) drawWebGL(state.clock);
 });
+$("reset-view").addEventListener("click", resetViewState);
 $("grid-toggle").addEventListener("click", () => {
   state.gridVisible = !state.gridVisible;
   $("grid-toggle").textContent = state.gridVisible ? "Grid on" : "Grid off";
   $("grid-toggle").classList.toggle("primary", state.gridVisible);
+  persistViewState();
   drawScene(state.clock);
 });
 $("snap-grid").addEventListener("change", event => {
   state.snapGrid = Number(event.target.value) || 0;
+  persistViewState();
   setStatus(state.snapGrid ? `grid snap ${state.snapGrid}` : "grid snap off");
   drawScene(state.clock);
 });
@@ -4497,6 +4586,7 @@ renderEventList();
 renderTraceList();
 renderScenarioList();
 if (!initWebGL()) state.renderMode = "canvas";
+restoreViewState();
 setRenderMode(state.renderMode);
 loadAll();
 requestAnimationFrame(animationFrame);

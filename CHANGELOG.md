@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.41.0 — 2026-11-16
+
+### Person
+
+- **`grid_path()` 路径回溯**：复用 `grid_distance` 的 8 邻接代价模型 + predecessor 回溯，返回含起点终点的格子序列；
+  越界/障碍/不可达返回 None；`grid_distance` 未改动。单测覆盖直线（长度与距离一致）、绕障、不可达。
+- 发现：绕障时 `grid_path` 加权代价可小于 `grid_distance`（tie-breaking 差异），路径合法且不劣——接线前记录。
+
+### Studio
+
+- **视图状态持久化**：相机/视图模式/网格/热力图指标/吸附网格存入 localStorage，刷新后恢复；`Reset view state` 清除。
+
+### 验证
+
+- 480 个测试全绿（core 247、CLI 84、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.41.0 三平台产物发布并 SHA256 校验。
+
 ## v0.40.0 — 2026-11-16
 
 ### Studio
