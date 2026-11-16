@@ -448,8 +448,8 @@ ghcr.io/fanxingchunshui/openflex:latest
 | `0.43.0` | ✅ 可用 | `a647fbb18740` |
 | `0.44.0` | ✅ 可用（发布后约 12 分钟） | `5449ea40de7c` |
 | `0.45.0` | ✅ 可用（发布后约 30 分钟） | `09ac5b00e603` |
-| `0.46.0` | ⏳ tag 已发布，镜像构建中（经验 9–35 分钟） | — |
-| `latest` | ✅ 指向 0.45.0 | `09ac5b00e603` |
+| `0.46.0` | ✅ 可用（发布后约 17 分钟） | `59385bd658c2` |
+| `latest` | ✅ 指向 0.46.0 | `59385bd658c2` |
 
 **container run 观察与经验值（2026-11-15）**：GHCR 镜像由 tag 触发的 `container` workflow 构建，
 耗时基本由 step「Build and push multi-arch image」里的 QEMU arm64 构建决定：
@@ -476,7 +476,8 @@ ghcr.io/fanxingchunshui/openflex:latest
 | v0.42.0 | ~9 分钟 | success |
 | v0.43.0 | （复核时已就绪） | success |
 | v0.44.0 | ~12 分钟 | success |
-| v0.45.0 | ~30 分钟 | 镜像已可用 |
+| v0.45.0 | ~30 分钟 | success |
+| v0.46.0 | ~17 分钟 | 镜像已可用 |
 
 - **观察到 `in_progress` 不等于失败**：镜像在 run 结束前就已推送成功（GHCR 各 tag 已 200、`latest` 已前移），
   剩余步骤是 buildx 收尾与 run 内的自校验（docker pull + run、registry tag 校验）。
@@ -513,9 +514,9 @@ buildx 多架构（amd64 + arm64）推送 → `docker pull` 后再次 `--version
 发布后验证（有 Docker 的机器）：
 
 ```sh
-docker run --rm ghcr.io/fanxingchunshui/openflex:0.45.0 --version   # openflex 0.45.0
+docker run --rm ghcr.io/fanxingchunshui/openflex:0.46.0 --version   # openflex 0.46.0
 docker run --rm -v "$PWD/examples:/models:ro" \
-  ghcr.io/fanxingchunshui/openflex:0.45.0 run /models/golden/mm1.ofm --format json | head -c 200
+  ghcr.io/fanxingchunshui/openflex:0.46.0 run /models/golden/mm1.ofm --format json | head -c 200
 ```
 
 没有 Docker 时的替代检查（本仓库用的方法）：查询 registry 的 manifest 是否存在、是否为
