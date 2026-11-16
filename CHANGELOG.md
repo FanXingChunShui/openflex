@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.49.0 — 2026-11-17
+
+### AGV（定位与修复）
+
+- **修复无限充电循环**：`agv_mid_task_charge` 在“满电仍不足以覆盖本段”（`capacity < consumption × distance`）时
+  不再重充，而是扣到 0、减少 `task_distance` 后继续任务（此前 charge→resume→charge 死循环，AGV `output_count=0`）。
+- **新增逐步诊断助手** `agv_task_chain_diagnosis`（`#[ignore]`，`--ignored --nocapture` 打印事件与 AGV/processor 状态）。
+- **记录未修根因**：`transport_arrive` 后 `requesting_operator` 已为 false → 不授予操作员 → processor 挂 Idle、AGV `tasks` 永为 1；
+  已写入 UNIMPLEMENTED 并附复现命令。CLI `--trace` 用法仍未确认（`run --trace` 被拒）。
+
+### 验证
+
+- 488 个测试全绿（core 253 + 2 ignored 诊断；CLI 86、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.49.0 三平台产物发布并 SHA256 校验。
+
 ## v0.48.0 — 2026-11-17
 
 ### Studio

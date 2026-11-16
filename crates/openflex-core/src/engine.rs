@@ -6720,6 +6720,14 @@ impl<'m> Simulation<'m> {
                 (self.objects[transporter].task_distance - distance).max(0.0);
             return Ok(false);
         }
+        // task-143: a full battery that still cannot cover the leg must not
+        // loop (charge -> resume -> charge). Drain it and let the task go on.
+        if battery >= capacity - EPS {
+            self.objects[transporter].battery = Some(0.0);
+            self.objects[transporter].task_distance =
+                (self.objects[transporter].task_distance - distance).max(0.0);
+            return Ok(false);
+        }
         self.objects[transporter].battery = Some(0.0);
         self.record_object_trace("agv_charge", transporter);
         let distribution = match &self.model.objects[transporter].params {
@@ -10158,14 +10166,15 @@ mod tests {
         assert_eq!(sim.objects[agv].battery, Some(-30.0));
     }
 
-    /// task-142: does the real task path drain the AGV battery?
-    ///
-    /// KNOWN FAILURE (task-142 diagnosis): in a real model the AGV finishes no
-    /// task at all (`output_count == 0`), so `finish_task` (and therefore
-    /// `drain_agv_battery`) never runs and `battery_remaining` stays at full.
-    /// The test is ignored until the AGV task chain is fixed; run it with
-    /// `cargo test -p openflex-core -- --ignored` to reproduce.
-    #[ignore = "task-142: AGV task chain never finishes in a real model"]
+    // task-142/143: KNOWN FAILURE - the AGV still finishes no task in a real
+    // model. Diagnosis so far: (1) `agv_mid_task_charge` used to loop forever
+    // (charge -> resume -> charge) when a full battery could not cover a leg;
+    // fixed in task-143 by draining it and letting the task continue.
+    // (2) after that fix the chain still stops before `finish_task` (AGV keeps
+    // `tasks == 1`, `serving_requester == Some(P)`). Reproduce with
+    // `cargo test -p openflex-core -- --ignored --nocapture` and the
+    // `agv_task_chain_diagnosis` helper.
+    #[ignore = "task-143: AGV task chain still stops before finish_task"]
     #[test]
     fn agv_battery_drains_on_a_real_task() {
         let model = Model::from_json(
@@ -10202,9 +10211,75 @@ mod tests {
             agv.battery_remaining, agv.charging_fraction, agv.output_count
         );
         assert!(
+            agv.output_count > 0,
+            "the AGV must finish at least one task"
+        );
+        assert!(
             agv.battery_remaining.unwrap_or(5.0) < 5.0,
             "the battery must drain on a real task (got {:?})",
             agv.battery_remaining
         );
+    }
+
+    /// task-143: trace the AGV task chain step by step (diagnosis helper).
+    #[ignore = "diagnosis helper"]
+    #[test]
+    fn agv_task_chain_diagnosis() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "agv-chain",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "pos": [0, 0], "params": {
+                "interarrival": { "distribution": "constant", "value": 10.0 },
+                "max_arrivals": 3, "first_arrival": 0.0 } },
+            { "name": "P", "kind": "processor", "pos": [0, 0], "params": {
+                "process_time": { "distribution": "constant", "value": 3.0 },
+                "process_operator": "D" } },
+            { "name": "K", "kind": "sink", "params": {} },
+            { "name": "D", "kind": "dispatcher", "pos": [10, 0], "params": {} },
+            { "name": "C", "kind": "resource", "pos": [20, 0], "params": { "capacity": 1 } },
+            { "name": "A", "kind": "agv", "pos": [10, 0], "params": {
+                "capacity": 1, "speed": 5.0, "home": "D",
+                "battery_capacity": 5.0, "consumption_per_distance": 1.0,
+                "charge_time": { "distribution": "constant", "value": 20.0 },
+                "charger": "C" } }
+          ],
+          "connections": [
+            { "from": "S", "to": "P" }, { "from": "P", "to": "K" },
+            { "from": "D", "to": "A" }
+          ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let dispatcher = sim.by_name["D"];
+        let agv = sim.by_name["A"];
+        let processor = sim.by_name["P"];
+        for step in 0..40 {
+            let Some(Reverse(event)) = sim.events.pop() else {
+                eprintln!("step {step}: no events left");
+                break;
+            };
+            sim.now = event.time;
+            let kind = describe_event(&event.kind).1;
+            sim.handle(event.kind).expect("handle");
+            eprintln!(
+                "step {step} t={:.1} {kind} agv(tasks={} charging={} serving={:?} battery={:?}) req={} p_phase={:?} p_held={}",
+                sim.now,
+                sim.objects[agv].tasks,
+                sim.objects[agv].charging,
+                sim.objects[agv].serving_requester,
+                sim.objects[agv].battery,
+                sim.objects[dispatcher].requests.len(),
+                sim.objects[processor].phase,
+                sim.objects[processor].operator_held,
+            );
+        }
     }
 }
