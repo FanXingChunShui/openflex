@@ -235,7 +235,7 @@ msiexec /i openflex-0.10.0-windows-x64.msi
 按用户安装（`perUser`），装到 `%LOCALAPPDATA%\OpenFlex\bin` 并自动加入用户 PATH，不需要管理员权限。
 卸载：设置 → 应用 → OpenFlex → 卸载，或 `msiexec /x openflex-0.10.0-windows-x64.msi`。
 
-### Docker / GHCR — 已发布到 0.44.0（0.45.0 随 tag 构建，经验 9–35 分钟）
+### Docker / GHCR — 已发布到 0.45.0（0.46.0 随 tag 构建，经验 9–35 分钟）
 
 GHCR 镜像由 [`.github/workflows/container.yml`](../.github/workflows/container.yml) 在 tag 时
 构建并推送。**当前 registry 状态（2026-11-15 用 `scripts/verify-ghcr.sh` 核对）**：
@@ -277,13 +277,14 @@ GHCR 镜像由 [`.github/workflows/container.yml`](../.github/workflows/containe
 | `0.42.0` | 200 | linux/amd64, linux/arm64 | `3aaacd475a61` |
 | `0.43.0` | 200 | linux/amd64, linux/arm64 | `a647fbb18740` |
 | `0.44.0` | 200 | linux/amd64, linux/arm64 | `5449ea40de7c` |
-| `0.45.0` | ⏳ 待推送 | — | 构建中（经验 9–35 分钟） |
-| `latest` | 200 | linux/amd64, linux/arm64 | `5449ea40de7c`（= 0.44.0） |
+| `0.45.0` | 200 | linux/amd64, linux/arm64 | `09ac5b00e603` |
+| `0.46.0` | ⏳ 待推送 | — | 构建中（经验 9–35 分钟） |
+| `latest` | 200 | linux/amd64, linux/arm64 | `09ac5b00e603`（= 0.45.0） |
 
 ```sh
-docker run --rm ghcr.io/fanxingchunshui/openflex:0.44.0 --version   # openflex 0.44.0
+docker run --rm ghcr.io/fanxingchunshui/openflex:0.45.0 --version   # openflex 0.45.0
 docker run --rm ghcr.io/fanxingchunshui/openflex:latest --version
-docker run --rm -v "$PWD:/workspace" ghcr.io/fanxingchunshui/openflex:0.44.0 \
+docker run --rm -v "$PWD:/workspace" ghcr.io/fanxingchunshui/openflex:0.45.0 \
   run /workspace/model.ofm
 ```
 
@@ -292,7 +293,7 @@ docker run --rm -v "$PWD:/workspace" ghcr.io/fanxingchunshui/openflex:0.44.0 \
 | 镜像 | `ghcr.io/fanxingchunshui/openflex` |
 | 架构 | `linux/amd64`、`linux/arm64`（同一 OCI manifest list） |
 | 验证 | 推送前在 CI 里跑 `--version` 与 `run examples/golden/mm1.ofm`；推送后 `docker pull` + registry API 双重校验 |
-| 0.44.0 digest | `sha256:5449ea40de7cddddfadcd4ff5afdbd4de8210baa422549644abd92467fc400dd` |
+| 0.45.0 digest | `sha256:09ac5b00e603f46aa1e4016391afce99b9535f176a55db0ec0ca10531ec847cf` |
 
 本地自己构建（不依赖 registry）：
 
@@ -306,10 +307,10 @@ docker run --rm openflex:0.18.0 --version
 生产环境请用 digest 固定版本：
 
 ```sh
-docker pull ghcr.io/fanxingchunshui/openflex@sha256:5449ea40de7cddddfadcd4ff5afdbd4de8210baa422549644abd92467fc400dd
+docker pull ghcr.io/fanxingchunshui/openflex@sha256:09ac5b00e603f46aa1e4016391afce99b9535f176a55db0ec0ca10531ec847cf
 ```
 
-（该 digest 是 v0.44.0 与 `latest` 共同指向的 OCI manifest list，2026-11-16 核对；用 `scripts/verify-ghcr.sh --tags 0.44.0,latest --expect-latest 0.44.0` 可复核。）
+（该 digest 是 v0.45.0 与 `latest` 共同指向的 OCI manifest list，2026-11-16 核对；用 `scripts/verify-ghcr.sh --tags 0.45.0,latest --expect-latest 0.45.0` 可复核。）
 
 > **container run 观察（2026-11-15/16）**：v0.28.0 / v0.29.0 / v0.30.0 的 run 最终均
 > **completed / success**，耗时 33 / 33 / 35 分钟。推送 v0.28.0 的 run
