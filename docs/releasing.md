@@ -449,8 +449,16 @@ ghcr.io/fanxingchunshui/openflex:latest
 | `0.44.0` | ✅ 可用（发布后约 12 分钟） | `5449ea40de7c` |
 | `0.45.0` | ✅ 可用（发布后约 30 分钟） | `09ac5b00e603` |
 | `0.46.0` | ✅ 可用（发布后约 17 分钟） | `59385bd658c2` |
-| `0.47.0` | ⏳ tag 已发布，镜像构建中（经验 9–35 分钟） | — |
-| `latest` | ✅ 指向 0.46.0 | `59385bd658c2` |
+| `0.47.0` | ✅ 可用（发布后约 13 分钟） | `cfc575da8145` |
+| `latest` | ✅ 指向 0.47.0 | `cfc575da8145` |
+
+> **v0.48.0 release 构建失败（2026-11-16 17:10 UTC）**：`release.yml` run `43912846437` 的
+> `Test (macos-latest)` job 被 **cancelled**，导致 macOS 产物缺失，`Publish release` 的
+> 「Merge checksums and sanity-check the file set」失败（产物数量不足 11），最终 release 未创建、
+> `SHA256SUMS.txt` 不存在。此时 `Cargo.toml` 已是 0.48.0 而包管理器清单仍为 0.47.0，
+> `verify-packaging.sh` 会报「manifests match 0.48.0」失败——**属预期暂态**。
+> 处理：在 Actions 重新运行 v0.48.0 的 release workflow，产物齐全后执行
+> `scripts/sync-package-manifests.sh --version 0.48.0` + `scripts/verify-packaging.sh --skip-build`。
 
 **container run 观察与经验值（2026-11-15）**：GHCR 镜像由 tag 触发的 `container` workflow 构建，
 耗时基本由 step「Build and push multi-arch image」里的 QEMU arm64 构建决定：
@@ -478,7 +486,8 @@ ghcr.io/fanxingchunshui/openflex:latest
 | v0.43.0 | （复核时已就绪） | success |
 | v0.44.0 | ~12 分钟 | success |
 | v0.45.0 | ~30 分钟 | success |
-| v0.46.0 | ~17 分钟 | 镜像已可用 |
+| v0.46.0 | ~17 分钟 | success |
+| v0.47.0 | ~13 分钟 | 镜像已可用 |
 
 - **观察到 `in_progress` 不等于失败**：镜像在 run 结束前就已推送成功（GHCR 各 tag 已 200、`latest` 已前移），
   剩余步骤是 buildx 收尾与 run 内的自校验（docker pull + run、registry tag 校验）。
@@ -515,9 +524,9 @@ buildx 多架构（amd64 + arm64）推送 → `docker pull` 后再次 `--version
 发布后验证（有 Docker 的机器）：
 
 ```sh
-docker run --rm ghcr.io/fanxingchunshui/openflex:0.46.0 --version   # openflex 0.46.0
+docker run --rm ghcr.io/fanxingchunshui/openflex:0.47.0 --version   # openflex 0.47.0
 docker run --rm -v "$PWD/examples:/models:ro" \
-  ghcr.io/fanxingchunshui/openflex:0.46.0 run /models/golden/mm1.ofm --format json | head -c 200
+  ghcr.io/fanxingchunshui/openflex:0.47.0 run /models/golden/mm1.ofm --format json | head -c 200
 ```
 
 没有 Docker 时的替代检查（本仓库用的方法）：查询 registry 的 manifest 是否存在、是否为
