@@ -273,6 +273,8 @@ pub(crate) enum EventKind {
     TaskStepDone(usize),
     /// task-124: a person moved one grid cell.
     PersonStep(usize),
+    /// task-133: a low-battery AGV reached its charger.
+    ChargeTravel(usize),
     /// A shift window starts or ends.
     ShiftChange(usize),
     /// A linear availability calendar (B11) window starts or ends.
@@ -2954,6 +2956,7 @@ impl<'m> Simulation<'m> {
             }
             EventKind::TaskStepDone(transporter) => self.handle_task_step_done(transporter),
             EventKind::PersonStep(transporter) => self.handle_person_step(transporter),
+            EventKind::ChargeTravel(transporter) => self.handle_charge_travel(transporter),
             EventKind::ShiftChange(index) => self.handle_shift_change(index),
             EventKind::TimetableChange(index) => self.handle_timetable_change(index),
             EventKind::FlowCreate(block) => self.handle_flow_create(block),
@@ -6227,11 +6230,31 @@ impl<'m> Simulation<'m> {
             return Ok(());
         };
         let consumption = self.agv_consumption(transporter);
-        let distance = std::mem::take(&mut self.objects[transporter].task_distance);
+        let leg_distance = std::mem::take(&mut self.objects[transporter].task_distance);
         let battery = self.objects[transporter].battery.unwrap_or(capacity);
-        let remaining = (battery - consumption * distance).max(0.0);
+        let remaining = (battery - consumption * leg_distance).max(0.0);
         self.objects[transporter].battery = Some(remaining);
         if remaining <= EPS {
+            // task-133: drive to the charger first (when one is configured),
+            // then charge; without a charger the AGV charges in place.
+            if let Some(charger) = self.charger_slot(transporter) {
+                let speed = self.transport_speed(transporter).max(EPS);
+                let trip = self
+                    .objects
+                    .get(transporter)
+                    .map(|agv| {
+                        crate::engine::euclidean(agv.position, self.objects[charger].position)
+                    })
+                    .unwrap_or(0.0)
+                    / speed;
+                if trip > EPS {
+                    self.objects[transporter].charging = true;
+                    self.objects[transporter].charge_until = f64::INFINITY;
+                    self.record_object_trace("agv_charge_travel", transporter);
+                    self.schedule(self.now + trip, EventKind::ChargeTravel(transporter));
+                    return Ok(());
+                }
+            }
             self.start_charging(transporter)?;
         }
         Ok(())
@@ -6249,6 +6272,17 @@ impl<'m> Simulation<'m> {
             ObjectParams::Agv(params) => params.consumption_per_distance.unwrap_or(1.0).max(EPS),
             _ => 1.0,
         }
+    }
+
+    /// task-133: the AGV reached its charger; begin (or queue for) charging.
+    fn handle_charge_travel(&mut self, transporter: usize) -> Result<(), SimError> {
+        if let Some(charger) = self.charger_slot(transporter) {
+            self.objects[transporter].position = self.objects[charger].position;
+            self.objects[transporter].z = self.objects[charger].z;
+        }
+        self.objects[transporter].charging = false;
+        self.objects[transporter].charge_until = 0.0;
+        self.start_charging(transporter)
     }
 
     /// task-106: the charger object an AGV is assigned to, if any.
@@ -8377,6 +8411,7 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
         EventKind::RackPick(index) => (Some(*index), "rack_pick", None),
         EventKind::TaskStepDone(transporter) => (Some(*transporter), "task_step_done", None),
         EventKind::PersonStep(transporter) => (Some(*transporter), "person_step", None),
+        EventKind::ChargeTravel(transporter) => (Some(*transporter), "charge_travel", None),
         EventKind::PreemptRetry(dispatcher, requester) => (
             Some(*dispatcher),
             "preempt_retry",
@@ -8477,6 +8512,13 @@ fn shortest_network_distance(edges: &[NetworkEdge], from: &str, to: &str) -> Opt
             }
         }
     }
+}
+
+/// Euclidean distance between two points (task-133 helper).
+fn euclidean(from: [f64; 2], to: [f64; 2]) -> f64 {
+    let dx = to[0] - from[0];
+    let dy = to[1] - from[1];
+    (dx * dx + dy * dy).sqrt()
 }
 
 /// Euclidean distance between two object positions.
@@ -9992,5 +10034,60 @@ mod tests {
         // A non-AGV has no battery.
         let source = sim.by_name["S"];
         assert_eq!(sim.objects[source].stats(100.0).battery_remaining, None);
+    }
+
+    /// task-133: a low-battery AGV drives to its charger before charging; the
+    /// trip takes distance / speed.
+    #[test]
+    fn agv_drives_to_the_charger_before_charging() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "agv-travel",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "A", "kind": "agv", "pos": [0, 0], "params": {
+                "battery_capacity": 10.0, "consumption_per_distance": 1.0,
+                "speed": 2.0,
+                "charge_time": { "distribution": "constant", "value": 10.0 },
+                "charger": "C1" } },
+            { "name": "C1", "kind": "resource", "pos": [10, 0], "params": { "capacity": 1 } },
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let agv = sim.by_name["A"];
+        sim.objects[agv].battery = Some(0.0);
+
+        sim.drain_agv_battery(agv).expect("drain");
+        assert!(sim.objects[agv].charging, "no new tasks while driving");
+        assert!(
+            sim.objects[agv].charge_until.is_infinite(),
+            "not charging yet"
+        );
+
+        // 10 distance / 2 speed = 5 time units before charging starts.
+        let mut travel = None;
+        while let Some(Reverse(event)) = sim.events.pop() {
+            if matches!(event.kind, EventKind::ChargeTravel(_)) {
+                travel = Some(event);
+                break;
+            }
+        }
+        let travel = travel.expect("a ChargeTravel event must be scheduled");
+        assert_eq!(travel.time, 5.0);
+        sim.now = travel.time;
+        sim.handle(travel.kind).expect("arrive");
+        assert!(sim.objects[agv].charging);
+        assert!((sim.objects[agv].charge_started_at - 5.0).abs() < 1e-9);
+        assert!(sim.objects[agv].charge_until.is_finite());
     }
 }

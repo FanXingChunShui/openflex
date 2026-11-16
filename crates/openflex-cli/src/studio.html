@@ -64,6 +64,13 @@
   #scene { display: block; width: 100%; height: 100%; cursor: grab; }
   #webgl { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
            display: none; background: #f1f5f9; }
+  #history-list { display: flex; flex-direction: column; gap: 1px; max-height: 170px; overflow: auto;
+                  font-size: 11px; }
+  .history-row { display: grid; grid-template-columns: 58px 64px 1fr; gap: 4px; text-align: left;
+                 padding: 2px 4px; border: 0; background: transparent; color: #334155;
+                 border-radius: 3px; }
+  .history-row:hover { background: #e2e8f0; }
+  .history-row.current { background: #dbeafe; }
   #connection-list { display: flex; flex-direction: column; gap: 2px; font-size: 11px; }
   .connection-row { display: grid; grid-template-columns: 1fr 1fr 44px 96px auto; gap: 4px;
                     align-items: center; padding: 2px 3px; border-bottom: 1px solid #e2e8f0; }
@@ -204,6 +211,11 @@
         <label>Replications <input id="meta-replications" type="number" min="1" step="1"></label>
       </div>
       <button id="save-metadata" class="primary" type="button" data-metadata-save="1">Save metadata</button>
+    </details>
+
+    <details id="history-panel" data-history-panel="1">
+      <summary>History</summary>
+      <div id="history-list"></div>
     </details>
 
     <h2>Objects</h2>
@@ -502,6 +514,7 @@ const state = {
   compareBName: "B",
   checkpoints: null,
   suppressPersist: false,
+  history: [],
   dragging: false,
   lastX: 0,
   lastY: 0,
@@ -516,6 +529,8 @@ const state = {
   undoStack: [],
   redoStack: [],
   pendingSnapshot: null,
+  pendingType: null,
+  pendingLabel: null,
   objectFilter: "",
   collapsedKinds: new Set(),
   lastStep: 0,
@@ -688,6 +703,52 @@ function deletePath(object, path) {
 
 function snapshot() { return JSON.stringify(state.model); }
 
+function recordHistory(type, label) {
+  if (!state.model) return;
+  state.history.push({
+    time: Date.now(),
+    type: type || "edit",
+    label: label || "edit",
+    snapshot: snapshot(),
+  });
+  if (state.history.length > 50) state.history.shift();
+  renderHistory();
+}
+
+function renderHistory() {
+  const list = $("history-list");
+  if (!list) return;
+  if (!state.history || state.history.length === 0) {
+    list.innerHTML = '<p class="muted">No recorded operations yet.</p>';
+    return;
+  }
+  list.innerHTML = state.history.map((entry, index) => {
+    const time = new Date(entry.time).toLocaleTimeString();
+    return `<button type="button" class="history-row" data-history-jump="${index}" title="Restore this step">
+      <span>${escapeText(time)}</span>
+      <span>${escapeText(entry.type)}</span>
+      <span>${escapeText(entry.label)}</span>
+    </button>`;
+  }).reverse().join("");
+  list.querySelectorAll("[data-history-jump]").forEach(button => {
+    button.addEventListener("click", () => jumpHistory(Number(button.dataset.historyJump)));
+  });
+}
+
+function jumpHistory(index) {
+  const entry = state.history[index];
+  if (!entry) return;
+  state.undoStack = [];
+  state.redoStack = [];
+  state.pendingSnapshot = null;
+  state.model = JSON.parse(entry.snapshot);
+  clampSelection();
+  renderAll();
+  updateHistoryButtons();
+  renderHistory();
+  setStatus(`restored history step: ${entry.label} (${entry.type})`, false);
+}
+
 function rememberNow() {
   state.undoStack.push(snapshot());
   if (state.undoStack.length > 50) state.undoStack.shift();
@@ -697,16 +758,24 @@ function rememberNow() {
 }
 
 function beginEdit() {
-  if (!state.pendingSnapshot) state.pendingSnapshot = snapshot();
+  if (!state.pendingSnapshot) {
+    state.pendingSnapshot = snapshot();
+    state.pendingType = "edit";
+    state.pendingLabel = state.originalName ? `edit ${state.originalName}` : "edit object";
+  }
 }
 
 function commitEdit() {
-  if (state.pendingSnapshot && state.pendingSnapshot !== snapshot()) {
+  const changed = state.pendingSnapshot && state.pendingSnapshot !== snapshot();
+  if (changed) {
     state.undoStack.push(state.pendingSnapshot);
     if (state.undoStack.length > 50) state.undoStack.shift();
     state.redoStack = [];
+    recordHistory(state.pendingType || "edit", state.pendingLabel || "edit object");
   }
   state.pendingSnapshot = null;
+  state.pendingType = null;
+  state.pendingLabel = null;
   updateHistoryButtons();
 }
 
@@ -786,6 +855,7 @@ async function saveMetadata() {
     setStatus(`saved metadata (${response.objects} objects)`);
     clearHistory();
     await loadAll();
+    recordHistory("metadata", `save metadata ${name}`);
   } catch (error) {
     setStatus(error.message, true);
   }
@@ -950,6 +1020,7 @@ async function saveConnections(model, successMessage) {
     clearHistory();
     await loadAll();
     renderConnections();
+    recordHistory("connection", successMessage);
     return response;
   } catch (error) {
     setStatus(error.message, true);
@@ -1364,6 +1435,7 @@ async function addObject() {
     state.selected = response.model.objects.length - 1;
     clearHistory();
     renderAll();
+    recordHistory("add", `add ${kind}`);
     setStatus(`added ${response.added}`);
   } catch (error) {
     setStatus(error.message, true);
@@ -1382,6 +1454,7 @@ async function deleteObject() {
     state.selected = Math.max(0, Math.min(state.selected, state.model.objects.length - 1));
     clearHistory();
     renderAll();
+    recordHistory("delete", `delete ${name}`);
     setStatus(`removed ${response.removed}; cleaned ${response.connections_removed} connections, ${response.references_cleaned} references`);
   } catch (error) {
     setStatus(error.message, true);
@@ -1404,6 +1477,7 @@ async function batchDelete() {
     state.selected = Math.max(0, Math.min(state.selected, state.model.objects.length - 1));
     clearHistory();
     renderAll();
+    recordHistory("delete", `delete ${names.length} objects`);
     setStatus(`deleted ${names.length} object(s)`);
   } catch (error) {
     setStatus(error.message, true);
@@ -1432,6 +1506,7 @@ async function batchDuplicate() {
     if (state.multiSelection.size > 0) state.selected = [...state.multiSelection][state.multiSelection.size - 1];
     clearHistory();
     renderAll();
+    recordHistory("duplicate", `duplicate ${added.length} objects`);
     setStatus(`duplicated ${added.length} object(s)`);
   } catch (error) {
     setStatus(error.message, true);
@@ -1484,6 +1559,7 @@ async function saveObject() {
     setStatus(`saved ${response.objects} objects`);
     clearHistory();
     await loadAll();
+    recordHistory("save", `save ${name}`);
   } catch (error) {
     setStatus(error.message, true);
     await loadAll();
@@ -2853,6 +2929,7 @@ function applyLayout(kind) {
     });
   }
   renderAll();
+  recordHistory("layout", `${kind} layout (${objects.length} objects)`);
   setStatus(`applied ${kind} layout to ${objects.length} object(s) (unsaved; use Save to persist)`);
 }
 
@@ -2906,6 +2983,7 @@ function alignObjects(kind) {
       : [pos[0], target];
   });
   renderAll();
+  recordHistory("align", `align ${kind} (${objects.length} objects)`);
   setStatus(`aligned ${kind} on ${objects.length} object(s) (unsaved)`);
 }
 
@@ -2932,6 +3010,7 @@ function distributeObjects(axis) {
     entry.object.pos = axis === "h" ? [value, pos[1]] : [pos[0], value];
   });
   renderAll();
+  recordHistory("distribute", `distribute ${axis === "h" ? "horizontally" : "vertically"} (${objects.length} objects)`);
   setStatus(`distributed ${axis === "h" ? "horizontally" : "vertically"} on ${objects.length} object(s) (unsaved)`);
 }
 
@@ -2953,6 +3032,8 @@ function nudgeSelected(dx, dy, snap = true) {
   object.pos = [x, y];
   if ($("edit-pos-x")) $("edit-pos-x").value = object.pos[0];
   if ($("edit-pos-y")) $("edit-pos-y").value = object.pos[1];
+  updateObjectCoords();
+  recordHistory("nudge", `nudge ${object.name}`);
   setStatus(`nudged ${object.name} to ${object.pos[0]}, ${object.pos[1]} (unsaved)`);
 }
 
@@ -2971,6 +3052,7 @@ function applyBatchPosition() {
   });
   renderAll();
   updateObjectCoords();
+  recordHistory("batch edit", `set pos/z on ${indices.length} objects`);
   setStatus(`batch set ${indices.length} object(s) to pos (${x}, ${y}), z=${z} (unsaved)`);
 }
 
@@ -4528,6 +4610,7 @@ const stopDrag = () => {
       state.undoStack.push(drag.snapshot);
       if (state.undoStack.length > 50) state.undoStack.shift();
       state.redoStack = [];
+      recordHistory("drag", `move ${state.model.objects[drag.index].name}`);
       updateHistoryButtons();
       setStatus(`moved ${state.model.objects[drag.index].name} (unsaved)`);
       renderEditor();
@@ -4870,6 +4953,7 @@ window.addEventListener("keydown", event => {
 
 renderEventList();
 renderTraceList();
+renderHistory();
 renderScenarioList();
 if (!initWebGL()) state.renderMode = "canvas";
 restoreViewState();

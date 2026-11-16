@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.46.0 — 2026-11-16
+
+### AGV
+
+- **前往充电桩行驶时间**：`drain_agv_battery` 在配了 `charger` 时计算当前位置→charger 直线距离 ÷ speed，
+  调度 `EventKind::ChargeTravel`（trace `charge_travel`）；到站后调用 `start_charging`（沿用容量排队）；未配 charger 零回归。
+- 测试：AGV `[0,0]`、charger `[10,0]`、speed 2、电量 0 → `ChargeTravel` 时间恰为 **5.0**，推进后 `charge_started_at == 5.0`。
+
+### Studio
+
+- **操作历史面板**：记录最近 50 次操作（编辑/拖拽/布局/对齐/增删/元数据/连接/导入）的时间与描述；
+  点击历史行可恢复到该步快照（清空 undo/redo 栈）。
+
+### 验证
+
+- 486 个测试全绿（core 251、CLI 86、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.46.0 三平台产物发布并 SHA256 校验。
+
 ## v0.45.0 — 2026-11-16
 
 ### AGV

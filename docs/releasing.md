@@ -447,6 +447,7 @@ ghcr.io/fanxingchunshui/openflex:latest
 | `0.42.0` | ✅ 可用（发布后约 9 分钟） | `3aaacd475a61` |
 | `0.43.0` | ✅ 可用 | `a647fbb18740` |
 | `0.44.0` | ✅ 可用（发布后约 12 分钟） | `5449ea40de7c` |
+| `0.45.0` | ⏳ tag 已发布，镜像构建中（经验 9–35 分钟） | — |
 | `latest` | ✅ 指向 0.44.0 | `5449ea40de7c` |
 
 **container run 观察与经验值（2026-11-15）**：GHCR 镜像由 tag 触发的 `container` workflow 构建，
