@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.43.0 — 2026-11-16
+
+### Person
+
+- **逐格移动（`grid_step`）**：`TransporterParams.grid_step == Some(true)` 且模型有 grid 时，pickup 段用 `grid_path`
+  拆成逐格 `PersonStep` 事件（每步 `cell_size/speed × density`），队列走完后吸附到 requester 精确坐标并复用原 arrive 逻辑；
+  trace `person_step`。默认关闭零行为变化（单测覆盖 4 格拆分与默认单段）。
+- 简化：仅 pickup 段逐格、无逐格占用等待（接线 B）、跳过 dwell/load 时间。
+
+### Studio
+
+- **模型元数据编辑**：name/description/time_unit/run.stop_time/warmup/seed/replications 表单，保存走 `POST /api/model` 并刷新。
+
+### 验证
+
+- 482 个测试全绿（core 248、CLI 85、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.43.0 三平台产物发布并 SHA256 校验。
+
 ## v0.42.0 — 2026-11-16
 
 ### Studio

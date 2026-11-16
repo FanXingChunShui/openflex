@@ -179,6 +179,29 @@
       <button id="redo" data-redo="1" type="button" disabled>Redo</button>
     </div>
 
+    <details id="metadata-panel" data-metadata-panel="1">
+      <summary>Model metadata</summary>
+      <label>Name <input id="meta-name" type="text"></label>
+      <label>Description <textarea id="meta-description" rows="2"></textarea></label>
+      <label>Time unit
+        <select id="meta-time-unit">
+          <option value="seconds">seconds</option>
+          <option value="minutes">minutes</option>
+          <option value="hours">hours</option>
+          <option value="days">days</option>
+        </select>
+      </label>
+      <div class="row">
+        <label>Stop time <input id="meta-stop" type="number" step="any"></label>
+        <label>Warm-up <input id="meta-warmup" type="number" step="any"></label>
+      </div>
+      <div class="row">
+        <label>Seed <input id="meta-seed" type="number" step="1"></label>
+        <label>Replications <input id="meta-replications" type="number" min="1" step="1"></label>
+      </div>
+      <button id="save-metadata" class="primary" type="button" data-metadata-save="1">Save metadata</button>
+    </details>
+
     <h2>Objects</h2>
     <div class="row">
       <select id="add-kind" aria-label="kind of the new object"></select>
@@ -702,12 +725,55 @@ function clampSelection() {
   state.selectedBlock = Math.max(0, Math.min(state.selectedBlock, blocks.length - 1));
 }
 
+function populateMetadata() {
+  if (!state.model) return;
+  const run = state.model.run || {};
+  if ($("meta-name")) $("meta-name").value = state.model.name || "";
+  if ($("meta-description")) $("meta-description").value = state.model.description || "";
+  if ($("meta-time-unit")) $("meta-time-unit").value = state.model.time_unit || "seconds";
+  if ($("meta-stop")) $("meta-stop").value = Number(run.stop_time ?? 0);
+  if ($("meta-warmup")) $("meta-warmup").value = Number(run.warmup ?? 0);
+  if ($("meta-seed")) $("meta-seed").value = Number(run.seed ?? 0);
+  if ($("meta-replications")) $("meta-replications").value = Number(run.replications ?? 1);
+}
+
+async function saveMetadata() {
+  if (!state.model) return;
+  const name = $("meta-name").value.trim();
+  if (!name) {
+    setStatus("model name cannot be empty", true);
+    return;
+  }
+  const run = state.model.run || (state.model.run = {});
+  run.stop_time = Number($("meta-stop").value);
+  run.warmup = Number($("meta-warmup").value);
+  run.seed = Number($("meta-seed").value);
+  run.replications = Number($("meta-replications").value);
+  state.model.name = name;
+  state.model.description = $("meta-description").value;
+  state.model.time_unit = $("meta-time-unit").value;
+  setStatus("saving metadata…");
+  try {
+    const response = await api("/api/model", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(state.model),
+    });
+    setStatus(`saved metadata (${response.objects} objects)`);
+    clearHistory();
+    await loadAll();
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
 async function loadAll() {
   setStatus("loading model…");
   try {
     const [model, catalog] = await Promise.all([api("/api/model"), api("/api/objects")]);
     state.model = model;
     state.kinds = catalog.objects || [];
+    populateMetadata();
     state.selected = Math.min(state.selected, Math.max(0, model.objects.length - 1));
     state.validationErrors = null;
     state.validationOk = true;
@@ -4398,6 +4464,7 @@ $("heatmap-metric").addEventListener("change", event => {
 });
 $("reset-view").addEventListener("click", resetViewState);
 $("validate-model").addEventListener("click", validateModel);
+$("save-metadata").addEventListener("click", saveMetadata);
 $("grid-toggle").addEventListener("click", () => {
   state.gridVisible = !state.gridVisible;
   $("grid-toggle").textContent = state.gridVisible ? "Grid on" : "Grid off";

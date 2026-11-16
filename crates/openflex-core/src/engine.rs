@@ -271,6 +271,8 @@ pub(crate) enum EventKind {
     PreemptRetry(usize, usize),
     /// task-68: one extra leg of a dispatcher task sequence finished.
     TaskStepDone(usize),
+    /// task-124: a person moved one grid cell.
+    PersonStep(usize),
     /// A shift window starts or ends.
     ShiftChange(usize),
     /// A linear availability calendar (B11) window starts or ends.
@@ -713,6 +715,12 @@ pub(crate) struct ObjectRt {
     /// task-65: how often this object's request was preempted.
     #[serde(default)]
     preempt_retries: u32,
+    /// task-124: remaining cells of a step-by-step person move.
+    #[serde(default)]
+    person_path: VecDeque<[f64; 2]>,
+    /// task-124: requester of the step-by-step move in progress.
+    #[serde(default)]
+    person_target: Option<usize>,
     /// task-68: durations of the extra task-sequence legs still to run.
     #[serde(default)]
     pending_steps: Vec<f64>,
@@ -828,6 +836,8 @@ impl ObjectRt {
             last_picked_level: None,
             rack_pick: None,
             preempt_retries: 0,
+            person_path: VecDeque::new(),
+            person_target: None,
             pending_steps: Vec::new(),
             preempt_epoch: -1.0,
             rack_slots: 0,
@@ -2932,6 +2942,7 @@ impl<'m> Simulation<'m> {
                 self.handle_preempt_retry(dispatcher, requester)
             }
             EventKind::TaskStepDone(transporter) => self.handle_task_step_done(transporter),
+            EventKind::PersonStep(transporter) => self.handle_person_step(transporter),
             EventKind::ShiftChange(index) => self.handle_shift_change(index),
             EventKind::TimetableChange(index) => self.handle_timetable_change(index),
             EventKind::FlowCreate(block) => self.handle_flow_create(block),
@@ -6484,11 +6495,81 @@ impl<'m> Simulation<'m> {
 
     /// B4/B6: first task leg — travel to the pickup point (the executor's
     /// `home`), load the operator there and travel to the requester.
+    /// task-124: whether this executer moves cell by cell on the grid.
+    fn person_grid_step(&self, index: usize) -> bool {
+        let flag = match &self.model.objects[index].params {
+            ObjectParams::Person(params)
+            | ObjectParams::Transporter(params)
+            | ObjectParams::Robot(params) => params.grid_step,
+            _ => None,
+        };
+        flag == Some(true)
+    }
+
+    /// task-124: duration of one grid cell for a walking person.
+    fn person_step_duration(&self, transporter: usize) -> f64 {
+        let size = self
+            .model
+            .grid
+            .as_ref()
+            .map(|grid| grid.cell_size)
+            .unwrap_or(1.0)
+            .max(EPS);
+        let factor = self.person_density_factor(transporter).max(EPS);
+        size / (self.transport_speed(transporter) * factor).max(EPS)
+    }
+
+    /// task-124: arm the next cell (or finish the move).
+    fn schedule_person_step(&mut self, transporter: usize) -> Result<(), SimError> {
+        if self.objects[transporter].person_path.is_empty() {
+            if let Some(requester) = self.objects[transporter].person_target.take() {
+                // Snap onto the exact (sub-cell) position of the requester.
+                self.objects[transporter].position = self.objects[requester].position;
+                self.objects[transporter].z = self.objects[requester].z;
+                return self.handle_transport_arrive(transporter, requester);
+            }
+            return Ok(());
+        }
+        let step = self.person_step_duration(transporter);
+        self.schedule(self.now + step, EventKind::PersonStep(transporter));
+        Ok(())
+    }
+
+    /// task-124: one cell of a step-by-step person move.
+    fn handle_person_step(&mut self, transporter: usize) -> Result<(), SimError> {
+        if let Some(next) = self.objects[transporter].person_path.pop_front() {
+            self.objects[transporter].position = next;
+        }
+        self.schedule_person_step(transporter)
+    }
+
     fn handle_transport_pickup(
         &mut self,
         transporter: usize,
         requester: usize,
     ) -> Result<(), SimError> {
+        // task-124: people with `grid_step` walk cell by cell on the grid.
+        if self.person_grid_step(transporter)
+            && self.objects[transporter].kind == ObjectKind::Person
+            && let Some(grid) = self.model.grid.clone()
+        {
+            let from = self.objects[transporter]
+                .home
+                .map(|home| self.objects[home].position)
+                .unwrap_or(self.objects[transporter].position);
+            let to = self.objects[requester].position;
+            if let Some(path) = grid_path(&grid, from, to) {
+                let size = grid.cell_size.max(EPS);
+                self.objects[transporter].person_path = path
+                    .into_iter()
+                    .skip(1)
+                    .map(|[x, y]| [(x as f64 + 0.5) * size, (y as f64 + 0.5) * size])
+                    .collect();
+                self.objects[transporter].person_target = Some(requester);
+                self.objects[transporter].position = from;
+                return self.schedule_person_step(transporter);
+            }
+        }
         // task-112: a person cannot step onto a cell already taken by a
         // lower-index person; it waits one tick and retries the pickup leg.
         if self.objects[transporter].kind == ObjectKind::Person
@@ -8261,6 +8342,7 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
         EventKind::TransportSettle(transporter) => (Some(*transporter), "transport_settle", None),
         EventKind::RackPick(index) => (Some(*index), "rack_pick", None),
         EventKind::TaskStepDone(transporter) => (Some(*transporter), "task_step_done", None),
+        EventKind::PersonStep(transporter) => (Some(*transporter), "person_step", None),
         EventKind::PreemptRetry(dispatcher, requester) => (
             Some(*dispatcher),
             "preempt_retry",
@@ -8490,7 +8572,6 @@ fn object_field(sim: &Simulation<'_>, index: usize, field: &str) -> Option<Value
 /// Uses exactly the same cost model as [`grid_distance`] (straight 1000,
 /// diagonal 1414, obstacles blocked), so the path length and the distance
 /// always agree. Returns the cells including the start and the goal.
-#[allow(dead_code)] // wired into the step-by-step person movement in the next step
 fn grid_path(grid: &Grid, from: [f64; 2], to: [f64; 2]) -> Option<Vec<[usize; 2]>> {
     let size = grid.cell_size.max(EPS);
     let cell = |point: [f64; 2]| -> Option<(i32, i32)> {
@@ -9705,5 +9786,77 @@ mod tests {
             obstacles: vec![[4, 0]],
         };
         assert!(grid_path(&blocked_goal, [0.5, 0.5], [4.5, 0.5]).is_none());
+    }
+
+    fn grid_person_model(grid_step: bool) -> Model {
+        let flag = if grid_step {
+            r#", "grid_step": true"#
+        } else {
+            ""
+        };
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "person-grid",
+          "run": {{ "stop_time": 100.0, "seed": 1, "replications": 1 }},
+          "grid": {{ "width": 10, "height": 10, "cell_size": 1.0 }},
+          "objects": [
+            {{ "name": "D", "kind": "dispatcher", "pos": [0.5, 0.5], "params": {{}} }},
+            {{ "name": "P", "kind": "processor", "pos": [4.5, 0.5], "params": {{}} }},
+            {{ "name": "E", "kind": "person", "pos": [0.5, 0.5], "params": {{
+                "speed": 1.0, "home": "D"{flag} }} }},
+            {{ "name": "S", "kind": "source", "params": {{}} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [ {{ "from": "S", "to": "K" }} ]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    /// task-124: with `grid_step` the pickup leg is split into cells whose
+    /// total time equals `grid_distance / speed`.
+    #[test]
+    fn person_grid_step_splits_the_pickup_leg() {
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let model = grid_person_model(true);
+        let mut sim = Simulation::new(&model, config.clone(), false).expect("simulation");
+        let person = sim.by_name["E"];
+        let requester = sim.by_name["P"];
+        sim.handle_transport_pickup(person, requester)
+            .expect("pickup");
+        // 4 cells from [0.5,0.5] to [4.5,0.5] (the start cell is skipped).
+        assert_eq!(sim.objects[person].person_path.len(), 4);
+        assert_eq!(sim.objects[person].person_target, Some(requester));
+        let grid = model.grid.clone().expect("grid");
+        let distance = grid_distance(&grid, [0.5, 0.5], [4.5, 0.5]).expect("distance");
+        let total = sim.person_step_duration(person) * 4.0;
+        assert!(
+            (total - distance).abs() < 1e-9,
+            "step total {total} vs distance {distance}"
+        );
+    }
+
+    /// Without `grid_step` the historical one-leg pickup is kept.
+    #[test]
+    fn person_without_grid_step_keeps_the_single_leg() {
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let model = grid_person_model(false);
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let person = sim.by_name["E"];
+        let requester = sim.by_name["P"];
+        sim.handle_transport_pickup(person, requester)
+            .expect("pickup");
+        assert!(sim.objects[person].person_path.is_empty(), "no cell path");
+        assert!(sim.objects[person].person_target.is_none());
+        // The old path jumps to the home position immediately.
+        assert_eq!(sim.objects[person].position, [0.5, 0.5]);
     }
 }
