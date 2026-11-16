@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.47.0 — 2026-11-17
+
+### AGV
+
+- **前往充电桩 network 行驶**：有 `home` 时用 `transport_object_distance(home, charger)`（network 最短路优先、无 network 回退欧氏），
+  距离存 `charge_trip_distance`；到达时按 `consumption_per_distance × 距离` 扣电（允许负值）后进入充电（沿用容量排队）。
+  无 `home` 保持直线欧氏（旧行为）。测试：network 有向边 30、speed 2 → `ChargeTravel` 时间 **15.0**；到达 `battery == Some(-30.0)`。
+
+### Studio
+
+- **时间序列多对象叠加**：选择多个对象绘制不同颜色折线 + 图例 + hover 值；支持导出时间序列 CSV。
+
+### 发布
+
+- 确认 v0.47 发布前 GHCR latest 指向 0.46.0（404 for 0.47），性能基线沿用 v0.46（0.80/2.56s）。
+
+### 验证
+
+- 487 个测试全绿（core 252、CLI 86、report 14、model 全部）。
+- 黄金案例零回归；clippy 0；fmt 干净；v0.47.0 三平台产物发布并 SHA256 校验。
+
 ## v0.46.0 — 2026-11-16
 
 ### AGV

@@ -717,6 +717,9 @@ pub(crate) struct ObjectRt {
     /// task-65: how often this object's request was preempted.
     #[serde(default)]
     preempt_retries: u32,
+    /// task-136: distance driven to the charger (deducted on arrival).
+    #[serde(default)]
+    charge_trip_distance: f64,
     /// task-130: accumulated charging time and the start of the current charge.
     #[serde(default)]
     charge_time_total: f64,
@@ -843,6 +846,7 @@ impl ObjectRt {
             last_picked_level: None,
             rack_pick: None,
             preempt_retries: 0,
+            charge_trip_distance: 0.0,
             charge_time_total: 0.0,
             charge_started_at: 0.0,
             person_path: VecDeque::new(),
@@ -6239,15 +6243,20 @@ impl<'m> Simulation<'m> {
             // then charge; without a charger the AGV charges in place.
             if let Some(charger) = self.charger_slot(transporter) {
                 let speed = self.transport_speed(transporter).max(EPS);
-                let trip = self
-                    .objects
-                    .get(transporter)
-                    .map(|agv| {
-                        crate::engine::euclidean(agv.position, self.objects[charger].position)
-                    })
-                    .unwrap_or(0.0)
-                    / speed;
+                // task-136: network shortest path when the AGV has one (the
+                // route starts at its home object), otherwise euclidean.
+                let trip_distance = match self.objects[transporter].home {
+                    // Network/eucldiean distance from the home object.
+                    Some(home) => self.transport_object_distance(transporter, home, charger),
+                    // No home: the straight line from the current position.
+                    None => crate::engine::euclidean(
+                        self.objects[transporter].position,
+                        self.objects[charger].position,
+                    ),
+                };
+                let trip = trip_distance / speed;
                 if trip > EPS {
+                    self.objects[transporter].charge_trip_distance = trip_distance;
                     self.objects[transporter].charging = true;
                     self.objects[transporter].charge_until = f64::INFINITY;
                     self.record_object_trace("agv_charge_travel", transporter);
@@ -6276,6 +6285,14 @@ impl<'m> Simulation<'m> {
 
     /// task-133: the AGV reached its charger; begin (or queue for) charging.
     fn handle_charge_travel(&mut self, transporter: usize) -> Result<(), SimError> {
+        // task-136: the trip costs battery; the value may go negative until the
+        // charger refills it.
+        let distance = std::mem::take(&mut self.objects[transporter].charge_trip_distance);
+        if distance > EPS {
+            let consumption = self.agv_consumption(transporter);
+            let battery = self.objects[transporter].battery.unwrap_or(0.0);
+            self.objects[transporter].battery = Some(battery - consumption * distance);
+        }
         if let Some(charger) = self.charger_slot(transporter) {
             self.objects[transporter].position = self.objects[charger].position;
             self.objects[transporter].z = self.objects[charger].z;
@@ -10089,5 +10106,55 @@ mod tests {
         assert!(sim.objects[agv].charging);
         assert!((sim.objects[agv].charge_started_at - 5.0).abs() < 1e-9);
         assert!(sim.objects[agv].charge_until.is_finite());
+    }
+
+    /// task-136: the drive to the charger uses the network when the AGV has
+    /// one, and the trip costs battery on arrival.
+    #[test]
+    fn agv_charge_trip_uses_the_network_and_drains_battery() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "agv-network",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "A", "kind": "agv", "pos": [0, 0], "params": {
+                "battery_capacity": 10.0, "consumption_per_distance": 1.0,
+                "speed": 2.0,
+                "charge_time": { "distribution": "constant", "value": 10.0 },
+                "charger": "C1", "home": "D",
+                "network": [ { "from": "D", "to": "C1", "distance": 30.0, "directed": true } ] } },
+            { "name": "D", "kind": "dispatcher", "pos": [0, 0], "params": {} },
+            { "name": "C1", "kind": "resource", "pos": [10, 0], "params": { "capacity": 1 } },
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let agv = sim.by_name["A"];
+        sim.objects[agv].battery = Some(0.0);
+
+        sim.drain_agv_battery(agv).expect("drain");
+        let mut travel = None;
+        while let Some(Reverse(event)) = sim.events.pop() {
+            if matches!(event.kind, EventKind::ChargeTravel(_)) {
+                travel = Some(event);
+                break;
+            }
+        }
+        let travel = travel.expect("ChargeTravel scheduled");
+        // Network distance 30 / speed 2 = 15 (the straight line would be 5).
+        assert_eq!(travel.time, 15.0);
+        sim.now = travel.time;
+        sim.handle(travel.kind).expect("arrive");
+        // The trip consumed 30 units of battery; charging refills it.
+        assert_eq!(sim.objects[agv].battery, Some(-30.0));
     }
 }

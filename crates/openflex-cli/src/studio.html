@@ -121,6 +121,10 @@
                        border-radius: 6px; }
   #timeseries-chart { width: 100%; height: 160px; background: white; border: 1px solid #cbd5e1;
                       border-radius: 6px; }
+  #timeseries-object { min-width: 130px; max-width: 180px; font-size: 11px; }
+  .timeseries-tooltip { position: fixed; z-index: 30; pointer-events: none; background: rgba(15,23,42,.92);
+                        color: #f8fafc; font-size: 11px; border-radius: 5px; padding: 4px 7px;
+                        line-height: 1.35; }
   #trace-list { display: flex; flex-direction: column; gap: 1px; max-height: 140px; overflow: auto;
                 font-size: 11px; }
   .trace-row { display: grid; grid-template-columns: 64px 76px 1fr 1fr; gap: 6px; padding: 1px 4px;
@@ -449,10 +453,12 @@
       <canvas id="replication-chart" aria-label="Per-replication scatter"></canvas>
       <div class="row">
         <label class="muted">Time series interval <input id="timeseries-interval" type="number" step="any" value="10"></label>
-        <label class="muted">Object <select id="timeseries-object"></select></label>
+        <label class="muted">Objects <select id="timeseries-object" data-timeseries-multi="1" multiple size="4"></select></label>
         <button id="load-timeseries" type="button">Load time series</button>
+        <button id="export-timeseries" type="button" data-timeseries-export="1">Export time series CSV</button>
       </div>
       <canvas id="timeseries-chart" aria-label="Content time series"></canvas>
+      <div id="timeseries-tooltip" class="timeseries-tooltip" data-timeseries-tooltip="1" hidden></div>
       <details id="compare-panel" data-compare-panel="1">
         <summary>Compare reports</summary>
         <div class="row">
@@ -2629,12 +2635,23 @@ async function loadTimeSeries() {
     select.innerHTML = (payload.objects || [])
       .map(name => `<option value="${escapeText(name)}">${escapeText(name)}</option>`)
       .join("");
+    if (select.options.length > 0) select.options[0].selected = true;
     drawTimeseriesChart();
     setStatus(`time series loaded (${(payload.series || []).length} samples)`);
   } catch (error) {
     setStatus(error.message, true);
   }
 }
+
+function selectedTimeseriesObjects() {
+  const payload = state.timeseries;
+  if (!payload) return [];
+  const select = $("timeseries-object");
+  const selected = select ? [...select.selectedOptions].map(option => option.value) : [];
+  return selected.length > 0 ? selected : (payload.objects || []).slice(0, 1);
+}
+
+const TIMESERIES_COLORS = ["#1d4ed8", "#dc2626", "#16a34a", "#f59e0b", "#7c3aed", "#0891b2", "#db2777", "#65a30d"];
 
 function drawTimeseriesChart() {
   const chart = $("timeseries-chart");
@@ -2648,36 +2665,107 @@ function drawTimeseriesChart() {
   ctx.clearRect(0, 0, width, height);
   const payload = state.timeseries;
   if (!payload || !payload.series || payload.series.length === 0) return;
-  const selected = $("timeseries-object").value || (payload.objects || [])[0];
-  const points = payload.series.filter(row => row.object === selected);
-  if (points.length === 0) return;
-  const maxY = Math.max(...points.map(point => point.content), 1e-9);
-  const maxT = Math.max(...points.map(point => point.time), 1e-9);
-  const left = 34, right = 10, top = 22, bottom = 22;
+  const selected = selectedTimeseriesObjects();
+  const series = selected.map(name => ({
+    name,
+    points: payload.series.filter(row => row.object === name),
+  })).filter(entry => entry.points.length > 0);
+  if (series.length === 0) return;
+  const maxY = Math.max(...series.flatMap(entry => entry.points.map(point => point.content)), 1e-9);
+  const maxT = Math.max(...series.flatMap(entry => entry.points.map(point => point.time)), 1e-9);
+  const left = 34, right = 10, top = 24, bottom = 22;
   ctx.fillStyle = "#0f172a";
   ctx.font = "600 11px system-ui, sans-serif";
   ctx.textAlign = "left";
-  ctx.fillText(`Content: ${selected}`, 8, 14);
+  ctx.fillText(`Content (${series.length} object${series.length === 1 ? "" : "s"})`, 8, 14);
+  let legendX = 150;
+  series.forEach((entry, index) => {
+    const color = TIMESERIES_COLORS[index % TIMESERIES_COLORS.length];
+    ctx.fillStyle = color;
+    ctx.fillRect(legendX, 8, 8, 8);
+    ctx.fillStyle = "#334155";
+    ctx.font = "9px system-ui, sans-serif";
+    ctx.fillText(entry.name.slice(0, 12), legendX + 11, 16);
+    legendX += Math.min(110, 20 + entry.name.length * 5);
+  });
   ctx.strokeStyle = "#cbd5e1";
+  ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(left, top);
   ctx.lineTo(left, height - bottom);
   ctx.lineTo(width - right, height - bottom);
   ctx.stroke();
-  ctx.strokeStyle = "#1d4ed8";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  points.forEach((point, index) => {
-    const x = left + (width - left - right) * (point.time / maxT);
-    const y = height - bottom - (height - top - bottom) * (point.content / maxY);
-    if (index === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+  series.forEach((entry, index) => {
+    ctx.strokeStyle = TIMESERIES_COLORS[index % TIMESERIES_COLORS.length];
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    entry.points.forEach((point, pointIndex) => {
+      const x = left + (width - left - right) * (point.time / maxT);
+      const y = height - bottom - (height - top - bottom) * (point.content / maxY);
+      if (pointIndex === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
   });
-  ctx.stroke();
   ctx.fillStyle = "#475569";
   ctx.font = "9px system-ui, sans-serif";
   ctx.fillText(`t=${maxT.toFixed(0)}`, width - right - 30, height - 6);
   ctx.fillText(maxY.toFixed(1), 4, top + 4);
+  state.timeseriesChart = { width, height, left, right, top, bottom, maxT, maxY, series };
+}
+
+function updateTimeseriesTooltip(event) {
+  const tooltip = $("timeseries-tooltip");
+  const chartInfo = state.timeseriesChart;
+  if (!tooltip || !chartInfo) return;
+  const chart = $("timeseries-chart");
+  const rect = chart.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  if (x < chartInfo.left || x > chartInfo.width - chartInfo.right
+      || y < chartInfo.top || y > chartInfo.height - chartInfo.bottom) {
+    tooltip.hidden = true;
+    return;
+  }
+  const time = (x - chartInfo.left) / (chartInfo.width - chartInfo.left - chartInfo.right) * chartInfo.maxT;
+  const lines = [`t=${time.toFixed(2)}`];
+  for (const entry of chartInfo.series) {
+    let nearest = entry.points[0];
+    for (const point of entry.points) {
+      if (Math.abs(point.time - time) < Math.abs(nearest.time - time)) nearest = point;
+    }
+    lines.push(`${entry.name}: ${Number(nearest.content).toFixed(3)}`);
+  }
+  tooltip.innerHTML = lines.map(escapeText).join("<br>");
+  tooltip.hidden = false;
+  tooltip.style.left = `${event.clientX + 12}px`;
+  tooltip.style.top = `${event.clientY + 12}px`;
+}
+
+function exportTimeSeriesCsv() {
+  const payload = state.timeseries;
+  if (!payload || !payload.series) {
+    setStatus("load a time series before exporting", true);
+    return;
+  }
+  const selected = new Set(selectedTimeseriesObjects());
+  const rows = payload.series
+    .filter(row => selected.has(row.object))
+    .sort((left, right) => left.time - right.time || left.object.localeCompare(right.object));
+  if (rows.length === 0) {
+    setStatus("no selected time-series data", true);
+    return;
+  }
+  const escapeCell = value => {
+    const text = String(value == null ? "" : value);
+    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const lines = ["time,object,content,utilization"];
+  for (const row of rows) {
+    lines.push([row.time, row.object, row.content, row.utilization].map(escapeCell).join(","));
+  }
+  downloadText("openflex-timeseries.csv", lines.join("\n"), "text/csv;charset=utf-8");
+  setStatus(`exported ${rows.length} time-series row(s)`);
 }
 
 function updateTimeline(report) {
@@ -4880,6 +4968,9 @@ $("export-model-json").addEventListener("click", exportModelJson);
 $("export-csv").addEventListener("click", exportCsv);
 $("load-timeseries").addEventListener("click", loadTimeSeries);
 $("timeseries-object").addEventListener("change", drawTimeseriesChart);
+$("export-timeseries").addEventListener("click", exportTimeSeriesCsv);
+$("timeseries-chart").addEventListener("mousemove", updateTimeseriesTooltip);
+$("timeseries-chart").addEventListener("mouseleave", () => { $("timeseries-tooltip").hidden = true; });
 $("save-object").addEventListener("click", saveObject);
 $("revert-object").addEventListener("click", revertObject);
 $("delete-object").addEventListener("click", deleteObject);
