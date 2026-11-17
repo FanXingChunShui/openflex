@@ -25,6 +25,19 @@ cargo build -p openflex-gui --release
 
 编辑历史：**撤销/重做栈（每个编辑前快照，上限 50）**，工具栏按钮 + 快捷键。
 
+## 打包为可双击应用
+
+macOS：
+
+```sh
+bash scripts/package-gui-app.sh          # 生成 dist/gui/OpenFlex.app 与 zip
+open dist/gui/OpenFlex.app               # 双击同样可启动
+```
+
+脚本会以 release 模式构建 `openflex-gui`、组装 `OpenFlex.app`（`Info.plist` 声明 `.ofm` 文档类型与
+`LSMinimumSystemVersion 11.0`）、做 ad-hoc 签名并打出 `OpenFlex-<version>-<triple>.app.zip`。
+Windows 上 `cargo build --release -p openflex-gui` 产出的 `openflex-gui.exe` 本身即可双击运行。
+
 ## 与 FlexSim 桌面界面差距（按优先级）
 
 | 优先级 | 缺口 | 说明 |
@@ -37,7 +50,7 @@ cargo build -p openflex-gui --release
 | ~~P2~~ | 撤销/重做 | **已完成（v0.56.0）** |
 | ~~P2~~ | 文件菜单/最近文件/新建 | **已完成（v0.56.0）**：New / Save as / Recent / 快捷键 |
 | P2 | 统计图表 | 只有利用率柱状图；缺时间序列/状态饼图/吞吐曲线 |
-| P3 | 打包成 .app/.exe 双击启动 | 需要 macOS bundle + Windows 安装器附带 GUI |
+| ~~P3~~ | 打包成 .app 双击启动 | **已完成（v0.58.0）**：`scripts/package-gui-app.sh` 生成 `OpenFlex.app` + zip；Windows 的 `.exe` 可直接双击（MSI 附带 GUI 仍未做） |
 
 ## 路线图
 

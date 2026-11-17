@@ -247,6 +247,13 @@ cargo build -p openflex-gui --release
 ./target/release/openflex-gui examples/mm1.ofm
 ```
 
+On macOS you can build a double-clickable bundle:
+
+```sh
+bash scripts/package-gui-app.sh     # dist/gui/OpenFlex.app (+ zip)
+open dist/gui/OpenFlex.app
+```
+
 The web-based `openflex studio` (browser, no extra toolchain) remains the
 zero-install option and exposes the full editor; the native window is a lighter
 viewer/editor for quick checks.

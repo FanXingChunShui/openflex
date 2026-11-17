@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.58.0 — 2026-11-17
+
+### 桌面 GUI
+
+- **macOS `.app` 打包**：新增 `scripts/package-gui-app.sh`——release 构建 `openflex-gui`、组装 `OpenFlex.app`
+  （`Info.plist` 含 `.ofm` 文档类型、`LSMinimumSystemVersion 11.0`、高分屏）、ad-hoc 签名、输出 `OpenFlex-<ver>-<triple>.app.zip`；
+  本地实测 `open dist/gui/OpenFlex.app` 可启动。
+
+### 验证
+
+- `bash -n` + `plutil -lint Info.plist` 通过；`.app` 启动进程确认。
+- 490 个测试全绿（core 255、CLI 86、report 14、model 全部）；v0.58.0 三平台产物发布。
+
 ## v0.57.0 — 2026-11-17
 
 ### 桌面 GUI
