@@ -39,6 +39,52 @@ fn decode<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T,
     serde_json::from_value(value).map_err(|error| error.to_string())
 }
 
+/// Sets a numeric field addressed by a slash path such as
+/// `objects/0/params/process_time/value`. Returns `false` when the path does
+/// not exist or the target is not a number.
+fn set_json_number(root: &mut serde_json::Value, path: &str, value: f64) -> bool {
+    let parts: Vec<&str> = path
+        .trim_matches('/')
+        .split('/')
+        .filter(|p| !p.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return false;
+    }
+    let mut current = root;
+    for part in &parts[..parts.len() - 1] {
+        current = match current {
+            serde_json::Value::Object(map) => {
+                let Some(next) = map.get_mut(*part) else {
+                    return false;
+                };
+                next
+            }
+            serde_json::Value::Array(items) => {
+                let Ok(index) = part.parse::<usize>() else {
+                    return false;
+                };
+                let Some(next) = items.get_mut(index) else {
+                    return false;
+                };
+                next
+            }
+            _ => return false,
+        };
+    }
+    let last = parts[parts.len() - 1];
+    match current {
+        serde_json::Value::Object(map) => {
+            if !map.contains_key(last) {
+                return false;
+            }
+            map.insert(last.to_string(), serde_json::json!(value));
+            true
+        }
+        _ => false,
+    }
+}
+
 fn parse_params(kind: ObjectKind, value: serde_json::Value) -> Result<ObjectParams, String> {
     Ok(match kind {
         ObjectKind::Source => ObjectParams::Source(decode(value)?),
@@ -538,6 +584,10 @@ struct OpenFlexApp {
     exp_rows: Vec<(f64, f64)>,
     exp_rx: Option<Receiver<Vec<(f64, f64)>>>,
     exp_running: bool,
+    exp_mode_param: bool,
+    exp_path: String,
+    smooth: std::collections::HashMap<String, [f32; 2]>,
+    last_frame: f64,
 }
 
 impl OpenFlexApp {
@@ -573,6 +623,10 @@ impl OpenFlexApp {
             exp_rows: Vec::new(),
             exp_rx: None,
             exp_running: false,
+            exp_mode_param: false,
+            exp_path: String::new(),
+            smooth: std::collections::HashMap::new(),
+            last_frame: 0.0,
         };
         if let Some(path) = model {
             app.load(PathBuf::from(path));
@@ -666,6 +720,19 @@ impl OpenFlexApp {
             self.exp_step as f64,
             self.exp_count.max(1),
         );
+        let sweep_params = self.exp_mode_param;
+        let path = self.exp_path.clone();
+        let base_json = if sweep_params {
+            match serde_json::to_value(&base) {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    self.error = Some(format!("could not serialise model: {error}"));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         let (tx, rx) = channel();
         self.exp_rx = Some(rx);
         self.exp_running = true;
@@ -673,11 +740,25 @@ impl OpenFlexApp {
         std::thread::spawn(move || {
             let mut rows = Vec::new();
             for index in 0..count {
-                let stop = start + step * index as f64;
+                let value = start + step * index as f64;
                 let mut model = base.clone();
-                model.run.stop_time = stop;
+                if sweep_params {
+                    let Some(json) = base_json.as_ref() else {
+                        continue;
+                    };
+                    let mut json = json.clone();
+                    if !set_json_number(&mut json, &path, value) {
+                        continue;
+                    }
+                    match serde_json::from_value::<Model>(json) {
+                        Ok(patched) => model = patched,
+                        Err(_) => continue,
+                    }
+                } else {
+                    model.run.stop_time = value;
+                }
                 if let Ok(report) = run_model(&model) {
-                    rows.push((stop, report.completed.mean));
+                    rows.push((value, report.completed.mean));
                 }
             }
             let _ = tx.send(rows);
@@ -966,6 +1047,7 @@ impl OpenFlexApp {
 
 impl eframe::App for OpenFlexApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.last_frame = ctx.input(|input| input.stable_dt) as f64;
         self.poll_report();
         self.poll_experiment();
         if self.report_running || self.exp_running {
@@ -1205,7 +1287,21 @@ impl eframe::App for OpenFlexApp {
                     }
                 }
                 ui.separator();
-                ui.heading("Experiment (stop-time sweep)");
+                ui.heading("Experiment");
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.exp_mode_param, false, "stop-time");
+                    ui.radio_value(&mut self.exp_mode_param, true, "parameter");
+                });
+                if self.exp_mode_param {
+                    ui.horizontal(|ui| {
+                        ui.label("path");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.exp_path)
+                                .hint_text("objects/0/params/process_time/value")
+                                .desired_width(240.0),
+                        );
+                    });
+                }
                 ui.horizontal(|ui| {
                     ui.label("start");
                     ui.add(egui::DragValue::new(&mut self.exp_start).speed(10.0));
@@ -1471,6 +1567,16 @@ impl eframe::App for OpenFlexApp {
                     world_pos = position;
                     world_z = stats.z;
                 }
+                // Visual smoothing: the engine reports positions at event
+                // boundaries only, so ease towards the new value.
+                let dt = (self.last_frame - 0.0).max(0.0);
+                let target = [world_pos[0] as f32, world_pos[1] as f32];
+                let key = object.name.clone();
+                let smooth = self.smooth.entry(key).or_insert(target);
+                let alpha = (1.0 - (-dt * 8.0).exp()).clamp(0.05, 0.9) as f32;
+                smooth[0] += (target[0] - smooth[0]) * alpha;
+                smooth[1] += (target[1] - smooth[1]) * alpha;
+                let world_pos = [smooth[0] as f64, smooth[1] as f64];
                 let ground = self.project(world_pos, 0.0, center, scale);
                 painter.circle_filled(
                     ground + egui::vec2(0.0, 2.0),

@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.55.0 — 2026-11-17
+
+### 桌面 GUI
+
+- **平滑动画**：执行器位置在帧间指数缓动（引擎只在事件边界更新位置）。
+- **参数扫描实验**：实验面板新增 `parameter` 模式，按 JSON path（如 `objects/0/params/process_time/value`）
+  扫描数值并逐次运行，柱状图 + 值/completed 表。
+
+### 验证
+
+- 490 个测试全绿（core 255、CLI 86、report 14、model 全部）；GUI 编译、clippy 0、启动无 panic。
+- v0.55.0 三平台产物发布并 SHA256 校验。
+
 ## v0.54.0 — 2026-11-17
 
 ### 桌面 GUI
