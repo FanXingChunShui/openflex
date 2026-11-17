@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.64.0 — 2026-11-18
+
+### 桌面 GUI
+
+- **参数表单覆盖剩余对象 kind**：rack（capacity/levels/channels/depth/aisles）、elevator（speed/stop time/door open-close/
+  max load/load per task/shaft）、dispatcher（max tasks/preempt retry/delay）、basic_te（speed/capacity）、
+  fluid_generator（flow rate/stop time）、fluid_tank（capacity/initial level/max outflow/density/gravity）、
+  fluid_valve（open/ratio/pressure threshold/opening）、fluid_pipe（length/speed/flow rate/temperature）；
+  basic_fr / sink / fluid_sink 显示 process flow/timetable/emptier/triggers 状态并提示走 JSON。
+  枚举型字段（rack_type/pick_policy）仍通过 JSON 编辑。
+
+### 验证
+
+- 490 个测试全绿（core 255、CLI 86、report 14、model 全部）；GUI 编译、clippy 0、启动无 panic。
+- v0.64.0 三平台产物发布并 SHA256 校验。
+
 ## v0.63.0 — 2026-11-17
 
 ### 桌面 GUI 安装包（三平台）

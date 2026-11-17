@@ -536,6 +536,191 @@ impl EditForm {
                 changed |= optional_f64(ui, "battery/distance", &mut p.consumption_per_distance);
                 changed |= optional_string(ui, "charger", &mut p.charger);
             }
+            ObjectParams::Rack(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.capacity)
+                            .speed(1.0)
+                            .prefix("capacity "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.levels)
+                            .speed(1.0)
+                            .prefix("levels "),
+                    )
+                    .changed();
+                changed |= optional_u32(ui, "channels", &mut p.channels);
+                changed |= optional_u32(ui, "depth", &mut p.depth);
+                changed |= optional_u32(ui, "aisles", &mut p.aisles);
+                ui.label(format!(
+                    "rack type / pick policy: edit via JSON ({:?} / {:?})",
+                    p.rack_type, p.pick_policy
+                ));
+            }
+            ObjectParams::Elevator(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.capacity)
+                            .speed(1.0)
+                            .prefix("capacity "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.speed)
+                            .speed(0.1)
+                            .prefix("speed "),
+                    )
+                    .changed();
+                changed |= distribution_editor(ui, "stop time", &mut p.stop_time);
+                changed |= optional_string(ui, "home", &mut p.home);
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.door_open_time)
+                            .speed(0.1)
+                            .prefix("door open "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.door_close_time)
+                            .speed(0.1)
+                            .prefix("door close "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.max_load)
+                            .speed(5.0)
+                            .prefix("max load "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.load_per_task)
+                            .speed(5.0)
+                            .prefix("load/task "),
+                    )
+                    .changed();
+                changed |= optional_string(ui, "shaft", &mut p.shaft);
+            }
+            ObjectParams::Dispatcher(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.max_tasks)
+                            .speed(1.0)
+                            .prefix("max tasks "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.preempt_retry_delay)
+                            .speed(0.1)
+                            .prefix("preempt retry delay "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.preempt_max_retries)
+                            .speed(1.0)
+                            .prefix("preempt max retries "),
+                    )
+                    .changed();
+                ui.label(format!(
+                    "task steps: {} (edit via JSON)",
+                    p.task_sequence.len()
+                ));
+            }
+            ObjectParams::BasicFr(p) => {
+                ui.label(format!(
+                    "process flow: {} · timetable: {} · emptier: {} (edit via JSON)",
+                    p.process_flow.is_some(),
+                    p.timetable.is_some(),
+                    p.emptier.is_some()
+                ));
+            }
+            ObjectParams::BasicTe(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.speed)
+                            .speed(0.1)
+                            .prefix("speed "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.capacity)
+                            .speed(1.0)
+                            .prefix("capacity "),
+                    )
+                    .changed();
+            }
+            ObjectParams::FluidGenerator(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.flow_rate)
+                            .speed(0.1)
+                            .prefix("flow rate "),
+                    )
+                    .changed();
+                changed |= optional_f64(ui, "stop time", &mut p.stop_time);
+            }
+            ObjectParams::FluidTank(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.capacity)
+                            .speed(10.0)
+                            .prefix("capacity "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.initial_level)
+                            .speed(10.0)
+                            .prefix("initial level "),
+                    )
+                    .changed();
+                changed |= optional_f64(ui, "max outflow", &mut p.max_outflow);
+                changed |= optional_f64(ui, "density", &mut p.density);
+                changed |= optional_f64(ui, "gravity", &mut p.gravity);
+            }
+            ObjectParams::FluidValve(p) => {
+                changed |= ui.checkbox(&mut p.open, "open").changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.ratio)
+                            .speed(0.05)
+                            .range(0.0..=1.0)
+                            .prefix("ratio "),
+                    )
+                    .changed();
+                changed |= optional_f64(ui, "pressure threshold", &mut p.pressure_threshold);
+                changed |= optional_f64(ui, "pressure open", &mut p.pressure_open);
+                changed |= optional_f64(ui, "opening", &mut p.opening);
+            }
+            ObjectParams::FluidPipe(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.length)
+                            .speed(1.0)
+                            .prefix("length "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.speed)
+                            .speed(0.1)
+                            .prefix("speed "),
+                    )
+                    .changed();
+                changed |= optional_f64(ui, "flow rate", &mut p.flow_rate);
+                changed |= optional_f64(ui, "temperature", &mut p.temperature);
+            }
+            ObjectParams::FluidSink(_) => {
+                ui.label("Fluid sink: no kind-specific parameters (see JSON for triggers).");
+            }
             ObjectParams::Sink(_) => {
                 ui.label("Sink: no kind-specific parameters (see JSON for process flow).");
             }
