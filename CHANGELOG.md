@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.56.0 — 2026-11-17
+
+### 桌面 GUI
+
+- **撤销/重做**：每个编辑（表单/JSON/连接增删）前保存快照，栈上限 50；工具栏按钮 + `Ctrl+Z` / `Ctrl+Shift+Z`。
+- **文件操作**：`New`（source→queue→processor→sink 模板）、`Save as…` 对话框、`Recent` 最近 8 个模型、`Ctrl+S` 保存。
+
+### 验证
+
+- 490 个测试全绿（core 255、CLI 86、report 14、model 全部）；GUI 编译、clippy 0、启动无 panic。
+- v0.56.0 三平台产物发布并 SHA256 校验。
+
 ## v0.55.0 — 2026-11-17
 
 ### 桌面 GUI

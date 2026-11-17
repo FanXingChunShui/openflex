@@ -12,7 +12,7 @@ cargo build -p openflex-gui --release
 
 | 区域 | 功能 |
 |---|---|
-| 文件 | Open（路径输入）、Save（写回原文件）、加载时校验并报告对象数/stop |
+| 文件 | **New**（生成 source→queue→processor→sink 模板）、Open（路径输入）、Save、**Save as…**、**Recent 最近 8 个**、加载时校验；**快捷键 Ctrl+Z / Ctrl+Shift+Z / Ctrl+S** |
 | 模型树 | 按 kind 分组（可折叠）、名称/kind 过滤、点击选中 |
 | 对象编辑 | `x/y/z` 拖拽数值、**按 kind 的参数表单**（Distribution 类型下拉 + 数值：source/queue/processor/conveyor/resource/transporter/person/robot/crane/asrs/agv）、Apply 校验后提交；JSON 高级模式（复选框） |
 | 连接编辑 | 列表 + 删除、from/to/port 添加（校验后原子替换模型） |
@@ -22,7 +22,7 @@ cargo build -p openflex-gui --release
 | 实验 | **stop-time 扫描**与**参数扫描**（JSON path 如 `objects/0/params/process_time/value`，起点/步长/次数）→ 后台逐次运行，柱状图 + 值/completed 表 |
 | 报告 | Completed ± CI、Created、**利用率柱状图**、逐对象 In/Out/Util 表 |
 
-快捷键：无（工具栏按钮；后续补）。撤销/重做：无（每次编辑直接替换模型，可用 Save 前确认）。
+编辑历史：**撤销/重做栈（每个编辑前快照，上限 50）**，工具栏按钮 + 快捷键。
 
 ## 与 FlexSim 桌面界面差距（按优先级）
 
@@ -33,8 +33,8 @@ cargo build -p openflex-gui --release
 | P1 | 运行可视化（部分完成） | ✅ 状态着色 + 瞬时 WIP + item 圆点 + 执行器实时位置 + 进度条；平滑动画用帧间指数缓动；仍缺逐事件回放 |
 | P1 | 流程图/Process Flow 编辑 | 只有对象与连接，没有 process flow 节点编辑 |
 | P1 | 实验与优化 UI（部分完成） | ✅ stop-time 与参数扫描实验；优化器（CLI `optimize`）未接入 |
-| P2 | 撤销/重做 | 编辑器无 undo 栈（Studio 有） |
-| P2 | 文件菜单/最近文件/新建向导 | 只有路径输入 |
+| ~~P2~~ | 撤销/重做 | **已完成（v0.56.0）** |
+| ~~P2~~ | 文件菜单/最近文件/新建 | **已完成（v0.56.0）**：New / Save as / Recent / 快捷键 |
 | P2 | 统计图表 | 只有利用率柱状图；缺时间序列/状态饼图/吞吐曲线 |
 | P3 | 打包成 .app/.exe 双击启动 | 需要 macOS bundle + Windows 安装器附带 GUI |
 

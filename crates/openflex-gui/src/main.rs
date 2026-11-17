@@ -588,6 +588,11 @@ struct OpenFlexApp {
     exp_path: String,
     smooth: std::collections::HashMap<String, [f32; 2]>,
     last_frame: f64,
+    undo: Vec<String>,
+    redo: Vec<String>,
+    recent: Vec<PathBuf>,
+    save_as: String,
+    show_save_as: bool,
 }
 
 impl OpenFlexApp {
@@ -627,11 +632,128 @@ impl OpenFlexApp {
             exp_path: String::new(),
             smooth: std::collections::HashMap::new(),
             last_frame: 0.0,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            recent: Vec::new(),
+            save_as: String::new(),
+            show_save_as: false,
         };
         if let Some(path) = model {
             app.load(PathBuf::from(path));
         }
         app
+    }
+
+    /// Records the current model in the undo stack (called before an edit).
+    fn snapshot(&mut self) {
+        let Some(model) = self.model else {
+            return;
+        };
+        if let Ok(json) = model.to_json() {
+            self.undo.push(json);
+            if self.undo.len() > 50 {
+                self.undo.remove(0);
+            }
+            self.redo.clear();
+        }
+    }
+
+    fn restore(&mut self) -> bool {
+        let Some(json) = self.undo.pop() else {
+            return false;
+        };
+        match Model::from_json(&json) {
+            Ok(model) => {
+                if let Some(current) = self.model
+                    && let Ok(text) = current.to_json()
+                {
+                    self.redo.push(text);
+                }
+                self.model = Some(Box::leak(Box::new(model)));
+                self.selected = None;
+                self.form = None;
+                self.handle = None;
+                self.sim_state = None;
+                self.status = "Undo".into();
+                true
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                false
+            }
+        }
+    }
+
+    fn redo_once(&mut self) -> bool {
+        let Some(json) = self.redo.pop() else {
+            return false;
+        };
+        match Model::from_json(&json) {
+            Ok(model) => {
+                if let Some(current) = self.model
+                    && let Ok(text) = current.to_json()
+                {
+                    self.undo.push(text);
+                }
+                self.model = Some(Box::leak(Box::new(model)));
+                self.selected = None;
+                self.form = None;
+                self.handle = None;
+                self.sim_state = None;
+                self.status = "Redo".into();
+                true
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                false
+            }
+        }
+    }
+
+    /// Builds a fresh minimal model (source → queue → processor → sink).
+    fn new_model(&mut self) {
+        let json = r#"{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "untitled",
+  "description": "",
+  "time_unit": "seconds",
+  "run": {"stop_time": 300.0, "warmup": 0.0, "seed": 1, "replications": 1},
+  "objects": [
+    {"name": "Source1", "kind": "source", "pos": [-6.0, 0.0], "params": {"interarrival": {"distribution": "exponential", "mean": 5.0}}},
+    {"name": "Queue1", "kind": "queue", "pos": [-2.0, 0.0], "params": {"max_content": 100}},
+    {"name": "Processor1", "kind": "processor", "pos": [2.0, 0.0], "params": {"process_time": {"distribution": "exponential", "mean": 4.0}}},
+    {"name": "Sink1", "kind": "sink", "pos": [6.0, 0.0], "params": {}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Queue1"},
+    {"from": "Queue1", "to": "Processor1"},
+    {"from": "Processor1", "to": "Sink1"}
+  ]
+}"#;
+        match Model::from_json(json) {
+            Ok(model) => {
+                self.model = Some(Box::leak(Box::new(model)));
+                self.path = None;
+                self.path_input.clear();
+                self.selected = None;
+                self.form = None;
+                self.report = None;
+                self.handle = None;
+                self.sim_state = None;
+                self.undo.clear();
+                self.redo.clear();
+                self.status = "New model".into();
+                self.error = None;
+            }
+            Err(error) => self.error = Some(format!("could not create a model: {error}")),
+        }
+    }
+
+    fn remember_recent(&mut self, path: &PathBuf) {
+        self.recent.retain(|item| item != path);
+        self.recent.insert(0, path.clone());
+        self.recent.truncate(8);
     }
 
     fn load(&mut self, path: PathBuf) {
@@ -653,6 +775,7 @@ impl OpenFlexApp {
                 self.model = Some(Box::leak(Box::new(model)));
                 self.path = Some(path.clone());
                 self.path_input = path.display().to_string();
+                self.remember_recent(&path);
                 self.error = None;
                 self.selected = None;
                 self.form = None;
@@ -890,6 +1013,7 @@ impl OpenFlexApp {
         let (Some(model), Some(index)) = (self.model, self.selected) else {
             return;
         };
+        self.snapshot();
         let kind = model.objects[index].kind;
         let value: serde_json::Value = match serde_json::from_str(&self.params_text) {
             Ok(value) => value,
@@ -920,6 +1044,10 @@ impl OpenFlexApp {
     }
 
     fn add_connection(&mut self) {
+        if self.model.is_none() {
+            return;
+        }
+        self.snapshot();
         let Some(model) = self.model else {
             return;
         };
@@ -962,6 +1090,10 @@ impl OpenFlexApp {
     }
 
     fn remove_connection(&mut self, index: usize) {
+        if self.model.is_none() {
+            return;
+        }
+        self.snapshot();
         let Some(model) = self.model else {
             return;
         };
@@ -1069,6 +1201,43 @@ impl eframe::App for OpenFlexApp {
                 }
                 if ui.button("Save").clicked() {
                     self.save();
+                }
+                if ui.button("Save as…").clicked() {
+                    self.save_as = self.path_input.clone();
+                    self.show_save_as = true;
+                }
+                if ui.button("New").clicked() {
+                    self.new_model();
+                }
+                if ui
+                    .add_enabled(!self.undo.is_empty(), egui::Button::new("Undo"))
+                    .clicked()
+                {
+                    self.restore();
+                }
+                if ui
+                    .add_enabled(!self.redo.is_empty(), egui::Button::new("Redo"))
+                    .clicked()
+                {
+                    self.redo_once();
+                }
+                if !self.recent.is_empty() {
+                    ui.menu_button("Recent", |ui| {
+                        let items: Vec<PathBuf> = self.recent.clone();
+                        for item in items {
+                            if ui
+                                .button(
+                                    item.file_name()
+                                        .map(|name| name.to_string_lossy().into_owned())
+                                        .unwrap_or_default(),
+                                )
+                                .clicked()
+                            {
+                                self.load(item);
+                                ui.close_menu();
+                            }
+                        }
+                    });
                 }
                 ui.separator();
                 if ui
@@ -1489,6 +1658,60 @@ impl eframe::App for OpenFlexApp {
                             });
                     });
             });
+
+        if self.show_save_as {
+            let mut open = true;
+            egui::Window::new("Save as")
+                .open(&mut open)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label("Path");
+                    ui.add(egui::TextEdit::singleline(&mut self.save_as).desired_width(360.0));
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() {
+                            let path = PathBuf::from(self.save_as.clone());
+                            let text = match self.model.and_then(|model| model.to_json().ok()) {
+                                Some(text) => text,
+                                None => {
+                                    self.error = Some("could not serialise the model".into());
+                                    return;
+                                }
+                            };
+                            match std::fs::write(&path, text) {
+                                Ok(()) => {
+                                    self.path = Some(path.clone());
+                                    self.path_input = path.display().to_string();
+                                    self.remember_recent(&path);
+                                    self.status = format!("Saved {}", path.display());
+                                    self.show_save_as = false;
+                                }
+                                Err(error) => self.error = Some(error.to_string()),
+                            }
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.show_save_as = false;
+                        }
+                    });
+                });
+            if !open {
+                self.show_save_as = false;
+            }
+        }
+        // Keyboard shortcuts.
+        ctx.input_mut(|input| {
+            if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z) {
+                self.restore();
+            }
+            if input.consume_key(
+                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                egui::Key::Z,
+            ) {
+                self.redo_once();
+            }
+            if input.consume_key(egui::Modifiers::COMMAND, egui::Key::S) {
+                self.save();
+            }
+        });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let Some(model) = self.model else {
