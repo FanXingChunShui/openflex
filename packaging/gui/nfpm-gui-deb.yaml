@@ -1,0 +1,36 @@
+# nfpm configuration for the OpenFlex desktop GUI (.deb).
+#
+# Built by packaging/gui/build-gui-packages.sh and by the `gui-*` CI jobs.
+# The caller expands VERSION/ARCH/BINARY/README before invoking nfpm:
+#   VERSION=0.1.0 ARCH=amd64 BINARY=target/release/openflex-gui README=README.md \
+#     nfpm package --config <this file> --packager deb --target dist/openflex-gui_0.1.0_amd64.deb
+name: openflex-gui
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: graphics
+priority: optional
+maintainer: OpenFlex contributors <openflex@users.noreply.github.com>
+description: |
+  Desktop GUI for OpenFlex discrete-event simulation models.
+  .
+  Native eframe/egui window: open and edit .ofm models, tune parameters with
+  per-kind forms, run and step simulations with live state colouring, edit
+  process flows on a node canvas and read reports, charts and experiments.
+vendor: OpenFlex contributors
+homepage: https://github.com/openflex/openflex
+license: MIT OR Apache-2.0
+depends:
+  - libxkbcommon0
+  - libx11-6
+  - libxcursor1
+  - libxrandr2
+  - libxi6
+  - libgl1
+contents:
+  - src: ${BINARY}
+    dst: /usr/bin/openflex-gui
+    file_info:
+      mode: 0755
+  - src: ${README}
+    dst: /usr/share/doc/openflex-gui/README.md

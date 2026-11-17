@@ -237,7 +237,10 @@ msiexec /i openflex-0.10.0-windows-x64.msi
 
 ### Native GUI
 
-`openflex-gui` is a native desktop window (eframe/egui) over the same engine:
+`openflex-gui` is a native desktop window (eframe/egui) over the same engine.
+Release archives ship ready-made installers: `openflex-gui-<ver>-windows-x64.msi`
+(Windows), `OpenFlex-<ver>-<triple>.app.zip` (macOS) and `openflex-gui_*.deb` /
+`openflex-gui-*.rpm` (Linux). Building it yourself:
 open a `.ofm` model, move objects, run the simulation and read the report.
 It is built from source (it is not part of the release archives yet because it
 needs a desktop toolchain):

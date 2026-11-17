@@ -26,18 +26,27 @@ cargo build -p openflex-gui --release
 
 编辑历史：**撤销/重做栈（每个编辑前快照，上限 50）**，工具栏按钮 + 快捷键。
 
-## 打包为可双击应用
+## 安装包（三平台）
 
-macOS：
+发布产物里包含桌面 GUI 的安装包（`gui (*)` CI job 构建，与 CLI 一起发布）：
+
+| 平台 | 文件 | 说明 |
+|---|---|---|
+| Windows | `openflex-gui-<ver>-windows-x64.msi` | per-user 安装到 `%LOCALAPPDATA%\OpenFlex GUI\bin`，开始菜单 + 桌面快捷方式，无需管理员 |
+| macOS | `OpenFlex-<ver>-<triple>.app.zip` | 解压即得 `OpenFlex.app`（ad-hoc 签名；首次打开需在「系统设置 → 隐私与安全性」放行） |
+| Linux | `openflex-gui_<ver>_<arch>.deb` / `openflex-gui-<ver>-1.<arch>.rpm` | 安装到 `/usr/bin/openflex-gui`，依赖 libxkbcommon/libX11/libGL 等 |
+
+本地自行打包：
 
 ```sh
-bash scripts/package-gui-app.sh          # 生成 dist/gui/OpenFlex.app 与 zip
-open dist/gui/OpenFlex.app               # 双击同样可启动
+# macOS .app
+bash scripts/package-gui-app.sh --out dist
+# Linux deb/rpm（需要 nfpm）
+packaging/gui/build-gui-packages.sh --version <ver> --format both --out-dir dist
+# Windows MSI（需要 WiX 5）
+wix build packaging\windows\openflex-gui.wxs -d Version=<ver> ^
+  -d BinaryPath=target\release\openflex-gui.exe -arch x64 -o dist\openflex-gui-<ver>-windows-x64.msi
 ```
-
-脚本会以 release 模式构建 `openflex-gui`、组装 `OpenFlex.app`（`Info.plist` 声明 `.ofm` 文档类型与
-`LSMinimumSystemVersion 11.0`）、做 ad-hoc 签名并打出 `OpenFlex-<version>-<triple>.app.zip`。
-Windows 上 `cargo build --release -p openflex-gui` 产出的 `openflex-gui.exe` 本身即可双击运行。
 
 ## 与 FlexSim 桌面界面差距（按优先级）
 

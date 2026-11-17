@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.63.0 — 2026-11-17
+
+### 桌面 GUI 安装包（三平台）
+
+- 新增 `gui (ubuntu-22.04 / windows-2022 / macos-latest)` CI job，随发布产出：
+  - Windows **MSI**（`packaging/windows/openflex-gui.wxs`：per-user 安装、开始菜单与桌面快捷方式、PATH）；
+  - macOS **`.app.zip`**（复用 `scripts/package-gui-app.sh`）；
+  - Linux **deb/rpm**（`packaging/gui/nfpm-gui-{deb,rpm}.yaml` + `build-gui-packages.sh`，声明 libxkbcommon/libX11/libGL 依赖）。
+- GUI 任务 `continue-on-error`，不会阻塞 CLI 发布；文档 `docs/GUI.md` 增加三平台安装包说明与本地打包命令。
+
+### 验证
+
+- `bash -n`、`xmllint`（WiX）、`ruby -YAML`（工作流）全部通过；本地 `.app` 打包与启动验证。
+- 490 个测试全绿（core 255、CLI 86、report 14、model 全部）。
+
 ## v0.62.0 — 2026-11-17
 
 ### 桌面 GUI
