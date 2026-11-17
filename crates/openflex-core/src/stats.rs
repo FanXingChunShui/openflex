@@ -164,6 +164,12 @@ pub struct ObjectStats {
     /// task-145: instantaneous processor phase.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<Phase>,
+    /// task-146: instantaneous layout position (GUI live view).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<[f64; 2]>,
+    /// task-146: instantaneous height.
+    #[serde(default)]
+    pub z: f64,
 }
 
 impl Default for ObjectStats {
@@ -183,6 +189,8 @@ impl Default for ObjectStats {
             content: 0,
             state: None,
             phase: None,
+            position: None,
+            z: 0.0,
         }
     }
 }

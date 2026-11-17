@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.54.0 — 2026-11-17
+
+### 桌面 GUI
+
+- **item 圆点**：对象上方按瞬时 `content` 画小圆点（最多 8 个）。
+- **执行器实时位置**：transporter/person/AGV/robot/crane/asrs/elevator 按引擎 `position`/`z` 绘制（运行时随任务移动）。
+- **实验面板**：stop-time 扫描（起点/步长/次数），后台逐次 `run_model`，柱状图 + `stop → completed` 表。
+
+### 引擎
+
+- `ObjectStats` 新增 `position: Option<[f64; 2]>` 与 `z: f64`（`#[serde(default)]`），`stats()`/`stats_at()` 双路径填充；
+  测试 `object_stats_expose_the_live_position`。
+
+### 验证
+
+- 490 个测试全绿（core 255、CLI 86、report 14、model 全部）；GUI 编译、clippy 0。
+- v0.54.0 三平台产物发布并 SHA256 校验。
+
 ## v0.53.0 — 2026-11-17
 
 ### 桌面 GUI

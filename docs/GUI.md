@@ -18,7 +18,8 @@ cargo build -p openflex-gui --release
 | 连接编辑 | 列表 + 删除、from/to/port 添加（校验后原子替换模型） |
 | 3D 视图 | 透视投影、**地面网格**、对象地面阴影、按 kind 着色、连接线、选中高亮、拖拽旋转、滚轮缩放、点击选中、**相机预设 Iso/Top/Front/Side** |
 | 运行 | `Run`（后台线程跑完整复现出报告）、`Step`（按 step 推进）、`Play`/`Pause`/`Resume`（`SimulationHandle`）、`Reset`、**进度条**、实时 `t`/created/completed |
-| 实时可视化 | 对象按**瞬时状态**着色（busy 红 / blocked 橙 / idle 绿 / down 灰 / off-shift 深灰）、`[n]` 显示瞬时持有件数、状态图例 |
+| 实时可视化 | 对象按**瞬时状态**着色（busy 红 / blocked 橙 / idle 绿 / down 灰 / off-shift 深灰）、`[n]` 显示瞬时持有件数、**对象上方 item 圆点**、**执行器（transporter/person/AGV/robot/crane/asrs/elevator）按引擎实时位置绘制**、状态图例 |
+| 实验 | **stop-time 扫描实验面板**：起点/步长/次数 → 后台逐次运行，柱状图 + stop/completed 表 |
 | 报告 | Completed ± CI、Created、**利用率柱状图**、逐对象 In/Out/Util 表 |
 
 快捷键：无（工具栏按钮；后续补）。撤销/重做：无（每次编辑直接替换模型，可用 Save 前确认）。
@@ -29,9 +30,9 @@ cargo build -p openflex-gui --release
 |---|---|---|
 | ~~P0~~ | ~~参数表单（按 kind 的控件）~~ | **已完成（v0.52.0）**：Distribution 下拉 + 数值控件，覆盖 10 种常用对象；其余 kind 走 JSON |
 | P0 | 3D 场景增强（部分完成） | 已有地面网格/阴影/相机预设；仍缺纹理、光照、对象几何体（圆柱/机台）、旋转 |
-| P1 | 运行可视化（部分完成） | ✅ 状态着色 + 瞬时 WIP + 进度条（引擎已暴露 `content`/`state`/`phase`）；仍缺 flow item 移动动画与逐事件回放 |
+| P1 | 运行可视化（部分完成） | ✅ 状态着色 + 瞬时 WIP + item 圆点 + 执行器实时位置 + 进度条；仍缺**平滑插值动画**（引擎阶跃更新，需 GUI 在事件间插值）与逐事件回放 |
 | P1 | 流程图/Process Flow 编辑 | 只有对象与连接，没有 process flow 节点编辑 |
-| P1 | 实验与优化 UI | CLI 有 `experiment`/`optimize`，GUI 未接入 |
+| P1 | 实验与优化 UI（部分完成） | ✅ stop-time 扫描实验（GUI 内）；参数扫描/优化器（CLI `optimize`）未接入 |
 | P2 | 撤销/重做 | 编辑器无 undo 栈（Studio 有） |
 | P2 | 文件菜单/最近文件/新建向导 | 只有路径输入 |
 | P2 | 统计图表 | 只有利用率柱状图；缺时间序列/状态饼图/吞吐曲线 |

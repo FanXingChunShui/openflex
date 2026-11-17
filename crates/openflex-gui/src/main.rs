@@ -532,6 +532,12 @@ struct OpenFlexApp {
     report: Option<SimReport>,
     report_rx: Option<Receiver<Result<SimReport, String>>>,
     report_running: bool,
+    exp_start: f32,
+    exp_step: f32,
+    exp_count: u32,
+    exp_rows: Vec<(f64, f64)>,
+    exp_rx: Option<Receiver<Vec<(f64, f64)>>>,
+    exp_running: bool,
 }
 
 impl OpenFlexApp {
@@ -561,6 +567,12 @@ impl OpenFlexApp {
             report: None,
             report_rx: None,
             report_running: false,
+            exp_start: 100.0,
+            exp_step: 100.0,
+            exp_count: 4,
+            exp_rows: Vec::new(),
+            exp_rx: None,
+            exp_running: false,
         };
         if let Some(path) = model {
             app.load(PathBuf::from(path));
@@ -642,6 +654,53 @@ impl OpenFlexApp {
         self.paused = false;
         self.report = None;
         self.status = "Reset".into();
+    }
+
+    fn start_experiment(&mut self) {
+        let Some(model) = self.model else {
+            return;
+        };
+        let base = model.clone();
+        let (start, step, count) = (
+            self.exp_start as f64,
+            self.exp_step as f64,
+            self.exp_count.max(1),
+        );
+        let (tx, rx) = channel();
+        self.exp_rx = Some(rx);
+        self.exp_running = true;
+        self.status = format!("Experiment: {count} runs…");
+        std::thread::spawn(move || {
+            let mut rows = Vec::new();
+            for index in 0..count {
+                let stop = start + step * index as f64;
+                let mut model = base.clone();
+                model.run.stop_time = stop;
+                if let Ok(report) = run_model(&model) {
+                    rows.push((stop, report.completed.mean));
+                }
+            }
+            let _ = tx.send(rows);
+        });
+    }
+
+    fn poll_experiment(&mut self) {
+        let Some(rx) = self.exp_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(rows) => {
+                self.status = format!("Experiment finished: {} runs", rows.len());
+                self.exp_rows = rows;
+                self.exp_running = false;
+                self.exp_rx = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.exp_running = false;
+                self.exp_rx = None;
+            }
+        }
     }
 
     fn start_report(&mut self) {
@@ -908,7 +967,8 @@ impl OpenFlexApp {
 impl eframe::App for OpenFlexApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_report();
-        if self.report_running {
+        self.poll_experiment();
+        if self.report_running || self.exp_running {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         if self.running && !self.paused {
@@ -1144,6 +1204,76 @@ impl eframe::App for OpenFlexApp {
                         }
                     }
                 }
+                ui.separator();
+                ui.heading("Experiment (stop-time sweep)");
+                ui.horizontal(|ui| {
+                    ui.label("start");
+                    ui.add(egui::DragValue::new(&mut self.exp_start).speed(10.0));
+                    ui.label("step");
+                    ui.add(egui::DragValue::new(&mut self.exp_step).speed(10.0));
+                    ui.label("runs");
+                    ui.add(
+                        egui::DragValue::new(&mut self.exp_count)
+                            .speed(1.0)
+                            .range(1..=20),
+                    );
+                });
+                if ui
+                    .add_enabled(
+                        self.model.is_some() && !self.exp_running,
+                        egui::Button::new(if self.exp_running {
+                            "Running…"
+                        } else {
+                            "Run experiment"
+                        }),
+                    )
+                    .clicked()
+                {
+                    self.start_experiment();
+                }
+                if !self.exp_rows.is_empty() {
+                    let (response, painter) = ui.allocate_painter(
+                        egui::vec2(ui.available_width(), 110.0),
+                        egui::Sense::hover(),
+                    );
+                    let rect = response.rect;
+                    painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(24, 26, 30));
+                    let max = self
+                        .exp_rows
+                        .iter()
+                        .map(|(_, completed)| *completed)
+                        .fold(0.0_f64, f64::max)
+                        .max(1.0);
+                    let n = self.exp_rows.len().max(1);
+                    let dx = rect.width() / n as f32;
+                    for (index, (_, completed)) in self.exp_rows.iter().enumerate() {
+                        let height = (rect.height() - 12.0) * (*completed / max) as f32;
+                        let bar = egui::Rect::from_min_max(
+                            egui::pos2(
+                                rect.left() + index as f32 * dx + 4.0,
+                                rect.bottom() - 4.0 - height,
+                            ),
+                            egui::pos2(
+                                rect.left() + (index as f32 + 1.0) * dx - 4.0,
+                                rect.bottom() - 4.0,
+                            ),
+                        );
+                        painter.rect_filled(bar, 2.0, egui::Color32::from_rgb(90, 150, 210));
+                    }
+                    egui::Grid::new("exp-grid")
+                        .striped(true)
+                        .num_columns(2)
+                        .show(ui, |ui| {
+                            ui.strong("stop");
+                            ui.strong("completed");
+                            ui.end_row();
+                            for (stop, completed) in &self.exp_rows {
+                                ui.label(format!("{stop:.0}"));
+                                ui.label(format!("{completed:.1}"));
+                                ui.end_row();
+                            }
+                        });
+                }
             });
 
         egui::SidePanel::right("report")
@@ -1317,20 +1447,40 @@ impl eframe::App for OpenFlexApp {
                 );
             }
             for (index, object) in model.objects.iter().enumerate() {
-                let ground = self.project(object.pos, 0.0, center, scale);
+                let live = self
+                    .sim_state
+                    .as_ref()
+                    .and_then(|state| state.objects.get(&object.name));
+                // Vehicles move: draw them at their live position when the
+                // engine reports one; static objects keep their layout position.
+                let mut world_pos = object.pos;
+                let mut world_z = object.z;
+                if let Some(stats) = live
+                    && let Some(position) = stats.position
+                    && matches!(
+                        object.kind,
+                        ObjectKind::Transporter
+                            | ObjectKind::Person
+                            | ObjectKind::Agv
+                            | ObjectKind::Robot
+                            | ObjectKind::Crane
+                            | ObjectKind::AsrsVehicle
+                            | ObjectKind::Elevator
+                    )
+                {
+                    world_pos = position;
+                    world_z = stats.z;
+                }
+                let ground = self.project(world_pos, 0.0, center, scale);
                 painter.circle_filled(
                     ground + egui::vec2(0.0, 2.0),
                     (12.0 * self.zoom).max(3.0),
                     egui::Color32::from_rgba_unmultiplied(0, 0, 0, 70),
                 );
-                let base = self.project(object.pos, object.z, center, scale);
+                let base = self.project(world_pos, world_z, center, scale);
                 let size = egui::vec2(38.0, 18.0) * self.zoom;
                 let box_rect = egui::Rect::from_center_size(base, size);
                 let selected = self.selected == Some(index);
-                let live = self
-                    .sim_state
-                    .as_ref()
-                    .and_then(|state| state.objects.get(&object.name));
                 let mut fill = match live {
                     Some(stats) => Self::state_fill(stats),
                     None => Self::kind_color(object.kind),
@@ -1344,6 +1494,21 @@ impl eframe::App for OpenFlexApp {
                     3.0,
                     egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(20, 24, 30)),
                 );
+                // Flow items held right now: small dots above the box.
+                if let Some(stats) = live {
+                    let shown = stats.content.min(8) as usize;
+                    for slot in 0..shown {
+                        let offset = egui::vec2(
+                            (slot as f32 - (shown as f32 - 1.0) * 0.5) * (7.0 * self.zoom),
+                            -(20.0 * self.zoom),
+                        );
+                        painter.circle_filled(
+                            box_rect.center() + offset,
+                            (2.6 * self.zoom).max(1.5),
+                            egui::Color32::from_rgb(240, 230, 190),
+                        );
+                    }
+                }
                 let caption = match live {
                     Some(stats) if stats.content > 0 => {
                         format!("{}  [{}]", object.name, stats.content)

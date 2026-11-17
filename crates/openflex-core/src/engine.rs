@@ -1229,6 +1229,8 @@ impl ObjectRt {
             content: self.content.len() as u32,
             state: Some(self.state),
             phase: Some(self.phase),
+            position: Some(self.position),
+            z: self.z,
         }
     }
 
@@ -1266,6 +1268,8 @@ impl ObjectRt {
             content: self.content.len() as u32,
             state: Some(self.state),
             phase: Some(self.phase),
+            position: Some(self.position),
+            z: self.z,
         }
     }
 }
@@ -10269,5 +10273,48 @@ mod tests {
         let stats = sim.objects[queue].stats_at(sim.now, 10.0);
         assert_eq!(stats.state, Some(State::Busy), "state follows the engine");
         assert_eq!(stats.content, 3, "content is unaffected by the state");
+    }
+
+    /// task-146: `stats_at` reports the live position and height.
+    #[test]
+    fn object_stats_expose_the_live_position() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "live-position",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} },
+            { "name": "T", "kind": "transporter", "pos": [0, 0], "params": { "speed": 1.0 } }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let transporter = sim.by_name["T"];
+        assert_eq!(
+            sim.objects[transporter].stats_at(sim.now, 10.0).position,
+            Some([0.0, 0.0])
+        );
+
+        // Halfway between two stations.
+        sim.objects[transporter].position = [5.0, 2.5];
+        sim.objects[transporter].z = 1.5;
+        let stats = sim.objects[transporter].stats_at(sim.now, 10.0);
+        assert_eq!(stats.position, Some([5.0, 2.5]));
+        assert_eq!(stats.z, 1.5);
+
+        // Arrived at the destination.
+        sim.objects[transporter].position = [10.0, 2.5];
+        sim.objects[transporter].z = 0.0;
+        let stats = sim.objects[transporter].stats_at(sim.now, 10.0);
+        assert_eq!(stats.position, Some([10.0, 2.5]));
+        assert_eq!(stats.z, 0.0);
     }
 }
