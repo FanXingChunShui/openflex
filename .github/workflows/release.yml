@@ -376,9 +376,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.local/bin"
-          nfpm_version="$(curl -fsSL https://api.github.com/repos/goreleaser/nfpm/releases/latest \
-            | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/p' | head -n 1)"
-          [ -n "$nfpm_version" ] || { echo "::error::could not resolve the nfpm version"; exit 1; }
+          # Pinned so the job never depends on the rate-limited GitHub API.
+          nfpm_version="2.38.0"
+          echo "using nfpm ${nfpm_version}"
           url="https://github.com/goreleaser/nfpm/releases/download/v${nfpm_version}/nfpm_${nfpm_version}_Linux_x86_64.tar.gz"
           curl -fsSL "$url" | tar -xz -C "$HOME/.local/bin" nfpm
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
