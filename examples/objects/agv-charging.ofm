@@ -1,0 +1,45 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "agv-charging",
+  "description": "Two AGVs with a tiny battery: each task drains it, the AGV drives 30 network units to the shared charger (capacity 1), queues if it is busy, and recharges",
+  "time_unit": "seconds",
+  "run": { "stop_time": 200.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "Source1", "kind": "source", "pos": [0, 0], "params": {
+        "interarrival": { "distribution": "constant", "value": 8.0 },
+        "max_arrivals": 10, "first_arrival": 0.0 } },
+    { "name": "Processor1", "kind": "processor", "pos": [0, 0], "params": {
+        "process_time": { "distribution": "constant", "value": 3.0 },
+        "process_operator": "Dispatcher1" } },
+    { "name": "Source2", "kind": "source", "pos": [0, 4], "params": {
+        "interarrival": { "distribution": "constant", "value": 8.0 },
+        "max_arrivals": 10, "first_arrival": 0.0 } },
+    { "name": "Processor2", "kind": "processor", "pos": [0, 4], "params": {
+        "process_time": { "distribution": "constant", "value": 3.0 },
+        "process_operator": "Dispatcher1" } },
+    { "name": "Sink1", "kind": "sink", "pos": [5, 0], "params": {} },
+    { "name": "Dispatcher1", "kind": "dispatcher", "pos": [10, 0], "params": {} },
+    { "name": "Charger1", "kind": "resource", "pos": [20, 0], "params": { "capacity": 1 } },
+    { "name": "Agv1", "kind": "agv", "pos": [10, 0], "params": {
+        "capacity": 1, "speed": 5.0, "home": "Dispatcher1",
+        "battery_capacity": 3.0, "consumption_per_distance": 1.0,
+        "charge_time": { "distribution": "constant", "value": 45.0 },
+        "charger": "Charger1",
+        "network": [ { "from": "Dispatcher1", "to": "Charger1", "distance": 30.0, "directed": true } ] } },
+    { "name": "Agv2", "kind": "agv", "pos": [10, 0], "params": {
+        "capacity": 1, "speed": 5.0, "home": "Dispatcher1",
+        "battery_capacity": 3.0, "consumption_per_distance": 1.0,
+        "charge_time": { "distribution": "constant", "value": 45.0 },
+        "charger": "Charger1",
+        "network": [ { "from": "Dispatcher1", "to": "Charger1", "distance": 30.0, "directed": true } ] } }
+  ],
+  "connections": [
+    { "from": "Source1", "to": "Processor1" },
+    { "from": "Processor1", "to": "Sink1" },
+    { "from": "Source2", "to": "Processor2" },
+    { "from": "Processor2", "to": "Sink1" },
+    { "from": "Dispatcher1", "to": "Agv1" },
+    { "from": "Dispatcher1", "to": "Agv2" }
+  ]
+}

@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.51.0 — 2026-11-17
+
+### 桌面 GUI
+
+- **模型树**：按 kind 分组 + 名称/kind 过滤；点击选中。
+- **参数编辑**：选中对象可编辑 `params` JSON 并 Apply（按 kind 反序列化 + 全模型校验后替换）。
+- **连接编辑**：列表/删除、from-to-port 添加（校验后原子更新）。
+- **运行控制**：`Step` 按步推进、`Play`/`Pause`/`Resume`（`SimulationHandle`）、`Reset`、实时 `t`/created/completed；
+  `Run` 仍在后台线程跑完整复现。
+- **报告**：Completed ± CI、Created、利用率柱状图、逐对象 In/Out/Util。
+- 新增 `docs/GUI.md`（能力矩阵、与 FlexSim 差距、路线图）。
+
+### AGV（端到端已通）
+
+- 修复诊断测试模型里的 `process_operator` 拼写（对象名不匹配 → 无操作员约束 → AGV 从不派任务）；
+  端到端测试改为断言 `output_count > 0`、`charging_fraction > 0`、`battery_remaining <= capacity`，**去掉 `#[ignore]`**。
+- 新增 `examples/objects/agv-charging.ofm`：实测 `--trace <FILE>` 得 4×`agv_charge_travel`、3×`agv_charge_start`、
+  1×`agv_charge_wait`（排队）、2×`agv_charged`；`Agv1` battery −30.0、charging_fraction 0.225。
+
+### 验证
+
+- 488 个测试全绿（core 253 **0 ignored**、CLI 86、report 14、model 全部）；GUI 编译通过、clippy 0、fmt 干净。
+- v0.51.0 三平台产物发布并 SHA256 校验。
+
 ## v0.50.0 — 2026-11-17
 
 ### 原生桌面 GUI（新 crate `openflex-gui`）

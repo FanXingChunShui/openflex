@@ -10174,7 +10174,6 @@ mod tests {
     // `tasks == 1`, `serving_requester == Some(P)`). Reproduce with
     // `cargo test -p openflex-core -- --ignored --nocapture` and the
     // `agv_task_chain_diagnosis` helper.
-    #[ignore = "task-143: AGV task chain still stops before finish_task"]
     #[test]
     fn agv_battery_drains_on_a_real_task() {
         let model = Model::from_json(
@@ -10187,7 +10186,7 @@ mod tests {
                 "max_arrivals": 8, "first_arrival": 0.0 } },
             { "name": "P", "kind": "processor", "pos": [0, 0], "params": {
                 "process_time": { "distribution": "constant", "value": 3.0 },
-                "process_operator": "Dispatcher1" } },
+                "process_operator": "D" } },
             { "name": "K", "kind": "sink", "params": {} },
             { "name": "D", "kind": "dispatcher", "pos": [10, 0], "params": {} },
             { "name": "C", "kind": "resource", "pos": [20, 0], "params": { "capacity": 1 } },
@@ -10215,71 +10214,14 @@ mod tests {
             "the AGV must finish at least one task"
         );
         assert!(
-            agv.battery_remaining.unwrap_or(5.0) < 5.0,
-            "the battery must drain on a real task (got {:?})",
-            agv.battery_remaining
+            agv.charging_fraction > 0.0,
+            "the drained AGV must recharge at its charger (got {})",
+            agv.charging_fraction
         );
-    }
-
-    /// task-143: trace the AGV task chain step by step (diagnosis helper).
-    #[ignore = "diagnosis helper"]
-    #[test]
-    fn agv_task_chain_diagnosis() {
-        let model = Model::from_json(
-            r#"{
-          "format": "openflex-model", "version": 1, "name": "agv-chain",
-          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
-          "objects": [
-            { "name": "S", "kind": "source", "pos": [0, 0], "params": {
-                "interarrival": { "distribution": "constant", "value": 10.0 },
-                "max_arrivals": 3, "first_arrival": 0.0 } },
-            { "name": "P", "kind": "processor", "pos": [0, 0], "params": {
-                "process_time": { "distribution": "constant", "value": 3.0 },
-                "process_operator": "D" } },
-            { "name": "K", "kind": "sink", "params": {} },
-            { "name": "D", "kind": "dispatcher", "pos": [10, 0], "params": {} },
-            { "name": "C", "kind": "resource", "pos": [20, 0], "params": { "capacity": 1 } },
-            { "name": "A", "kind": "agv", "pos": [10, 0], "params": {
-                "capacity": 1, "speed": 5.0, "home": "D",
-                "battery_capacity": 5.0, "consumption_per_distance": 1.0,
-                "charge_time": { "distribution": "constant", "value": 20.0 },
-                "charger": "C" } }
-          ],
-          "connections": [
-            { "from": "S", "to": "P" }, { "from": "P", "to": "K" },
-            { "from": "D", "to": "A" }
-          ]
-        }"#,
-        )
-        .expect("model");
-        let config = SimConfig {
-            stop_time: 100.0,
-            warmup: 0.0,
-            seed: 1,
-        };
-        let mut sim = Simulation::new(&model, config, false).expect("simulation");
-        let dispatcher = sim.by_name["D"];
-        let agv = sim.by_name["A"];
-        let processor = sim.by_name["P"];
-        for step in 0..40 {
-            let Some(Reverse(event)) = sim.events.pop() else {
-                eprintln!("step {step}: no events left");
-                break;
-            };
-            sim.now = event.time;
-            let kind = describe_event(&event.kind).1;
-            sim.handle(event.kind).expect("handle");
-            eprintln!(
-                "step {step} t={:.1} {kind} agv(tasks={} charging={} serving={:?} battery={:?}) req={} p_phase={:?} p_held={}",
-                sim.now,
-                sim.objects[agv].tasks,
-                sim.objects[agv].charging,
-                sim.objects[agv].serving_requester,
-                sim.objects[agv].battery,
-                sim.objects[dispatcher].requests.len(),
-                sim.objects[processor].phase,
-                sim.objects[processor].operator_held,
-            );
-        }
+        let battery = agv.battery_remaining.expect("AGV reports a battery");
+        assert!(
+            battery <= 5.0 + 1e-9,
+            "the battery never exceeds its capacity (got {battery})"
+        );
     }
 }
