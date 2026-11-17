@@ -615,6 +615,7 @@ struct OpenFlexApp {
     opt_best: Option<(f64, f64)>,
     opt_rx: Option<Receiver<Vec<(f64, f64)>>>,
     opt_running: bool,
+    replay_index: Option<usize>,
 }
 
 impl OpenFlexApp {
@@ -679,6 +680,7 @@ impl OpenFlexApp {
             opt_best: None,
             opt_rx: None,
             opt_running: false,
+            replay_index: None,
         };
         if let Some(path) = model {
             app.load(PathBuf::from(path));
@@ -2235,6 +2237,22 @@ impl eframe::App for OpenFlexApp {
                             .weak()
                             .small(),
                     );
+                    let last = self.series.len().saturating_sub(1);
+                    let mut index = self.replay_index.unwrap_or(last);
+                    ui.horizontal(|ui| {
+                        ui.label("Replay t");
+                        if ui
+                            .add(egui::Slider::new(&mut index, 0..=last).show_value(false))
+                            .changed()
+                        {
+                            self.replay_index = Some(index);
+                        }
+                        let time = self.series.get(index).map(|(t, _)| *t).unwrap_or(0.0);
+                        ui.label(format!("{time:.1}"));
+                        if ui.small_button("live").clicked() {
+                            self.replay_index = None;
+                        }
+                    });
                 }
                 ui.separator();
                 ui.heading("Report");
@@ -2416,6 +2434,13 @@ impl eframe::App for OpenFlexApp {
                     .sim_state
                     .as_ref()
                     .and_then(|state| state.objects.get(&object.name));
+                let replay_content = self.replay_index.and_then(|index| {
+                    self.series.get(index).and_then(|(_, row)| {
+                        row.iter()
+                            .find(|(name, _)| *name == object.name)
+                            .map(|(_, value)| *value)
+                    })
+                });
                 // Vehicles move: draw them at their live position when the
                 // engine reports one; static objects keep their layout position.
                 let mut world_pos = object.pos;
@@ -2484,14 +2509,18 @@ impl eframe::App for OpenFlexApp {
                         );
                     }
                 }
-                let caption = match live {
-                    Some(stats) if stats.content > 0 => {
-                        format!("{}  [{}]", object.name, stats.content)
+                let caption = if let Some(value) = replay_content {
+                    format!("{}  [{}]", object.name, value.round() as u32)
+                } else {
+                    match live {
+                        Some(stats) if stats.content > 0 => {
+                            format!("{}  [{}]", object.name, stats.content)
+                        }
+                        Some(stats) if stats.avg_content > 0.0 => {
+                            format!("{}  ≈{:.0}", object.name, stats.avg_content)
+                        }
+                        _ => object.name.clone(),
                     }
-                    Some(stats) if stats.avg_content > 0.0 => {
-                        format!("{}  ≈{:.0}", object.name, stats.avg_content)
-                    }
-                    _ => object.name.clone(),
                 };
                 painter.text(
                     box_rect.center_top() - egui::vec2(0.0, 4.0),
