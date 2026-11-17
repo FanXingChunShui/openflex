@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.52.0 — 2026-11-17
+
+### 桌面 GUI
+
+- **按 kind 的参数表单**：Distribution 类型下拉（constant/uniform/normal/exponential/triangular/gamma/weibull/lognormal/erlang/beta/
+  integer_uniform/pareto/rayleigh/poisson/bernoulli）+ 数值控件；覆盖 source（interarrival/items/arrivals）、queue（max content/batch）、
+  processor（setup/process time/operators）、conveyor（speed/length/accumulating/spacing）、resource（capacity）、
+  transporter/person/robot/crane/asrs（capacity/speed/load/unload/home）、agv（charge time/battery/charger）；其余 kind 走 JSON 高级模式。
+- **3D 增强**：地面网格、对象地面阴影、相机预设 Iso/Top/Front/Side。
+
+### 验证
+
+- GUI 编译通过、clippy 0、fmt 干净、启动无 panic。
+- 488 个测试全绿（core 253、CLI 86、report 14、model 全部）；v0.52.0 三平台产物发布。
+
 ## v0.51.0 — 2026-11-17
 
 ### 桌面 GUI

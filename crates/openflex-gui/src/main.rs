@@ -15,6 +15,7 @@ use openflex_core::SimConfig;
 use openflex_core::engine::{SimulationHandle, SimulationState};
 use openflex_core::run_model;
 use openflex_core::stats::SimReport;
+use openflex_model::Distribution;
 use openflex_model::Model;
 use openflex_model::model::{ObjectKind, ObjectParams};
 
@@ -71,6 +72,441 @@ fn parse_params(kind: ObjectKind, value: serde_json::Value) -> Result<ObjectPara
     })
 }
 
+// ---------------------------------------------------------------------------
+// Kind-aware parameter forms
+// ---------------------------------------------------------------------------
+
+const DIST_CHOICES: &[&str] = &[
+    "constant",
+    "uniform",
+    "normal",
+    "exponential",
+    "triangular",
+    "gamma",
+    "weibull",
+    "lognormal",
+    "erlang",
+    "beta",
+    "integer_uniform",
+    "pareto",
+    "rayleigh",
+    "poisson",
+    "bernoulli",
+];
+
+fn distribution_name(dist: &Distribution) -> &'static str {
+    match dist {
+        Distribution::Constant { .. } => "constant",
+        Distribution::Uniform { .. } => "uniform",
+        Distribution::Normal { .. } => "normal",
+        Distribution::Exponential { .. } => "exponential",
+        Distribution::Triangular { .. } => "triangular",
+        Distribution::Gamma { .. } => "gamma",
+        Distribution::Weibull { .. } => "weibull",
+        Distribution::Lognormal { .. } => "lognormal",
+        Distribution::Erlang { .. } => "erlang",
+        Distribution::Beta { .. } => "beta",
+        Distribution::IntegerUniform { .. } => "integer_uniform",
+        Distribution::Empirical { .. } => "empirical",
+        Distribution::Pareto { .. } => "pareto",
+        Distribution::LogLogistic { .. } => "log_logistic",
+        Distribution::Rayleigh { .. } => "rayleigh",
+        Distribution::Binomial { .. } => "binomial",
+        Distribution::Poisson { .. } => "poisson",
+        Distribution::Geometric { .. } => "geometric",
+        Distribution::NegativeBinomial { .. } => "negative_binomial",
+        Distribution::Bernoulli { .. } => "bernoulli",
+    }
+}
+
+fn make_distribution(name: &str) -> Distribution {
+    match name {
+        "uniform" => Distribution::Uniform { min: 0.0, max: 1.0 },
+        "normal" => Distribution::Normal {
+            mean: 1.0,
+            stddev: 0.1,
+        },
+        "exponential" => Distribution::Exponential { mean: 1.0 },
+        "triangular" => Distribution::Triangular {
+            min: 0.5,
+            mode: 1.0,
+            max: 1.5,
+        },
+        "gamma" => Distribution::Gamma {
+            shape: 2.0,
+            scale: 0.5,
+        },
+        "weibull" => Distribution::Weibull {
+            shape: 2.0,
+            scale: 1.0,
+        },
+        "lognormal" => Distribution::Lognormal {
+            meanlog: 0.0,
+            sdlog: 0.2,
+        },
+        "erlang" => Distribution::Erlang {
+            shape: 2,
+            scale: 0.5,
+        },
+        "beta" => Distribution::Beta {
+            alpha: 2.0,
+            beta: 2.0,
+        },
+        "integer_uniform" => Distribution::IntegerUniform { min: 1, max: 5 },
+        "pareto" => Distribution::Pareto {
+            shape: 1.5,
+            scale: 1.0,
+        },
+        "rayleigh" => Distribution::Rayleigh { sigma: 1.0 },
+        "poisson" => Distribution::Poisson { mean: 2.0 },
+        "bernoulli" => Distribution::Bernoulli { p: 0.5 },
+        _ => Distribution::Constant { value: 1.0 },
+    }
+}
+
+fn distribution_editor(ui: &mut egui::Ui, label: &str, dist: &mut Distribution) -> bool {
+    let mut changed = false;
+    let current = distribution_name(dist);
+    ui.horizontal(|ui| {
+        ui.label(label);
+        egui::ComboBox::from_id_salt(format!("dist-{label}"))
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                for name in DIST_CHOICES {
+                    if ui.selectable_label(current == *name, *name).clicked() && current != *name {
+                        *dist = make_distribution(name);
+                        changed = true;
+                    }
+                }
+            });
+    });
+    match dist {
+        Distribution::Constant { value } => {
+            changed |= ui
+                .add(egui::DragValue::new(value).speed(0.1).prefix("value "))
+                .changed();
+        }
+        Distribution::Uniform { min, max } => {
+            changed |= ui
+                .add(egui::DragValue::new(min).speed(0.1).prefix("min "))
+                .changed();
+            changed |= ui
+                .add(egui::DragValue::new(max).speed(0.1).prefix("max "))
+                .changed();
+        }
+        Distribution::Normal { mean, stddev } => {
+            changed |= ui
+                .add(egui::DragValue::new(mean).speed(0.1).prefix("mean "))
+                .changed();
+            changed |= ui
+                .add(egui::DragValue::new(stddev).speed(0.05).prefix("stddev "))
+                .changed();
+        }
+        Distribution::Exponential { mean } => {
+            changed |= ui
+                .add(egui::DragValue::new(mean).speed(0.1).prefix("mean "))
+                .changed();
+        }
+        Distribution::Triangular { min, mode, max } => {
+            changed |= ui
+                .add(egui::DragValue::new(min).speed(0.1).prefix("min "))
+                .changed();
+            changed |= ui
+                .add(egui::DragValue::new(mode).speed(0.1).prefix("mode "))
+                .changed();
+            changed |= ui
+                .add(egui::DragValue::new(max).speed(0.1).prefix("max "))
+                .changed();
+        }
+        Distribution::Gamma { shape, scale } => {
+            changed |= ui
+                .add(egui::DragValue::new(shape).speed(0.1).prefix("shape "))
+                .changed();
+            changed |= ui
+                .add(egui::DragValue::new(scale).speed(0.1).prefix("scale "))
+                .changed();
+        }
+        Distribution::Weibull { shape, scale } => {
+            changed |= ui
+                .add(egui::DragValue::new(shape).speed(0.1).prefix("shape "))
+                .changed();
+            changed |= ui
+                .add(egui::DragValue::new(scale).speed(0.1).prefix("scale "))
+                .changed();
+        }
+        Distribution::Lognormal { meanlog, sdlog } => {
+            changed |= ui
+                .add(egui::DragValue::new(meanlog).speed(0.1).prefix("meanlog "))
+                .changed();
+            changed |= ui
+                .add(egui::DragValue::new(sdlog).speed(0.05).prefix("sdlog "))
+                .changed();
+        }
+        Distribution::Erlang { shape, scale } => {
+            changed |= ui
+                .add(egui::DragValue::new(shape).speed(1.0).prefix("shape "))
+                .changed();
+            changed |= ui
+                .add(egui::DragValue::new(scale).speed(0.1).prefix("scale "))
+                .changed();
+        }
+        Distribution::Beta { alpha, beta } => {
+            changed |= ui
+                .add(egui::DragValue::new(alpha).speed(0.1).prefix("alpha "))
+                .changed();
+            changed |= ui
+                .add(egui::DragValue::new(beta).speed(0.1).prefix("beta "))
+                .changed();
+        }
+        Distribution::IntegerUniform { min, max } => {
+            changed |= ui
+                .add(egui::DragValue::new(min).speed(1.0).prefix("min "))
+                .changed();
+            changed |= ui
+                .add(egui::DragValue::new(max).speed(1.0).prefix("max "))
+                .changed();
+        }
+        Distribution::Pareto { shape, scale } => {
+            changed |= ui
+                .add(egui::DragValue::new(shape).speed(0.1).prefix("shape "))
+                .changed();
+            changed |= ui
+                .add(egui::DragValue::new(scale).speed(0.1).prefix("scale "))
+                .changed();
+        }
+        Distribution::Rayleigh { sigma } => {
+            changed |= ui
+                .add(egui::DragValue::new(sigma).speed(0.1).prefix("sigma "))
+                .changed();
+        }
+        Distribution::Poisson { mean } => {
+            changed |= ui
+                .add(egui::DragValue::new(mean).speed(0.1).prefix("mean "))
+                .changed();
+        }
+        Distribution::Bernoulli { p } => {
+            changed |= ui
+                .add(
+                    egui::DragValue::new(p)
+                        .speed(0.01)
+                        .range(0.0..=1.0)
+                        .prefix("p "),
+                )
+                .changed();
+        }
+        other => {
+            ui.label(
+                egui::RichText::new(format!("{} (edit via JSON)", distribution_name(other))).weak(),
+            );
+        }
+    }
+    changed
+}
+
+fn optional_u32(ui: &mut egui::Ui, label: &str, value: &mut Option<u32>) -> bool {
+    let mut enabled = value.is_some();
+    let mut changed = ui.checkbox(&mut enabled, label).changed();
+    if changed {
+        *value = if enabled { Some(1) } else { None };
+    }
+    if let Some(inner) = value {
+        changed |= ui.add(egui::DragValue::new(inner).speed(1.0)).changed();
+    }
+    changed
+}
+
+fn optional_f64(ui: &mut egui::Ui, label: &str, value: &mut Option<f64>) -> bool {
+    let mut enabled = value.is_some();
+    let mut changed = ui.checkbox(&mut enabled, label).changed();
+    if changed {
+        *value = if enabled { Some(1.0) } else { None };
+    }
+    if let Some(inner) = value {
+        changed |= ui.add(egui::DragValue::new(inner).speed(0.1)).changed();
+    }
+    changed
+}
+
+fn optional_string(ui: &mut egui::Ui, label: &str, value: &mut Option<String>) -> bool {
+    let mut text = value.clone().unwrap_or_default();
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(label);
+        if ui
+            .add(egui::TextEdit::singleline(&mut text).desired_width(150.0))
+            .changed()
+        {
+            *value = if text.trim().is_empty() {
+                None
+            } else {
+                Some(text.trim().to_string())
+            };
+            changed = true;
+        }
+    });
+    changed
+}
+
+struct EditForm {
+    kind: ObjectKind,
+    pos: [f32; 2],
+    z: f32,
+    params: ObjectParams,
+}
+
+impl EditForm {
+    fn from_object(object: &openflex_model::model::Object) -> Self {
+        Self {
+            kind: object.kind,
+            pos: [object.pos[0] as f32, object.pos[1] as f32],
+            z: object.z as f32,
+            params: object.params.clone(),
+        }
+    }
+
+    fn show(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        match &mut self.params {
+            ObjectParams::Source(p) => {
+                changed |= distribution_editor(ui, "interarrival", &mut p.interarrival);
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.items_per_arrival)
+                            .speed(1.0)
+                            .prefix("items/arrival "),
+                    )
+                    .changed();
+                changed |= optional_u32(ui, "max arrivals", &mut p.max_arrivals);
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.first_arrival)
+                            .speed(0.5)
+                            .prefix("first arrival "),
+                    )
+                    .changed();
+            }
+            ObjectParams::Queue(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.max_content)
+                            .speed(1.0)
+                            .prefix("max content "),
+                    )
+                    .changed();
+                changed |= optional_u32(ui, "batch size", &mut p.batch_size);
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.batch_max_wait)
+                            .speed(0.5)
+                            .prefix("batch max wait "),
+                    )
+                    .changed();
+            }
+            ObjectParams::Processor(p) => {
+                changed |= distribution_editor(ui, "setup time", &mut p.setup_time);
+                changed |= distribution_editor(ui, "process time", &mut p.process_time);
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.max_content)
+                            .speed(1.0)
+                            .prefix("max content "),
+                    )
+                    .changed();
+                changed |= optional_string(ui, "setup operator", &mut p.setup_operator);
+                changed |= optional_string(ui, "process operator", &mut p.process_operator);
+            }
+            ObjectParams::Conveyor(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.speed)
+                            .speed(0.1)
+                            .prefix("speed "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.length)
+                            .speed(1.0)
+                            .prefix("length "),
+                    )
+                    .changed();
+                changed |= ui.checkbox(&mut p.accumulating, "accumulating").changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.item_spacing)
+                            .speed(0.1)
+                            .prefix("item spacing "),
+                    )
+                    .changed();
+            }
+            ObjectParams::Resource(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.capacity)
+                            .speed(1.0)
+                            .prefix("capacity "),
+                    )
+                    .changed();
+            }
+            ObjectParams::Transporter(p)
+            | ObjectParams::Person(p)
+            | ObjectParams::Robot(p)
+            | ObjectParams::Crane(p)
+            | ObjectParams::AsrsVehicle(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.capacity)
+                            .speed(1.0)
+                            .prefix("capacity "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.speed)
+                            .speed(0.1)
+                            .prefix("speed "),
+                    )
+                    .changed();
+                changed |= distribution_editor(ui, "load time", &mut p.load_time);
+                changed |= distribution_editor(ui, "unload time", &mut p.unload_time);
+                changed |= optional_string(ui, "home", &mut p.home);
+            }
+            ObjectParams::Agv(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.capacity)
+                            .speed(1.0)
+                            .prefix("capacity "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.speed)
+                            .speed(0.1)
+                            .prefix("speed "),
+                    )
+                    .changed();
+                changed |= distribution_editor(ui, "charge time", &mut p.charge_time);
+                changed |= optional_f64(ui, "battery/distance", &mut p.consumption_per_distance);
+                changed |= optional_string(ui, "charger", &mut p.charger);
+            }
+            ObjectParams::Sink(_) => {
+                ui.label("Sink: no kind-specific parameters (see JSON for process flow).");
+            }
+            _ => {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{}: no form yet — edit the JSON below.",
+                        self.kind.as_str()
+                    ))
+                    .weak(),
+                );
+            }
+        }
+        changed
+    }
+}
+
 struct OpenFlexApp {
     model: Option<&'static Model>,
     path: Option<PathBuf>,
@@ -82,8 +518,9 @@ struct OpenFlexApp {
     yaw: f32,
     pitch: f32,
     zoom: f32,
+    form: Option<EditForm>,
     params_text: String,
-    position_edit: [f32; 3],
+    show_json: bool,
     new_from: String,
     new_to: String,
     new_port: String,
@@ -110,8 +547,9 @@ impl OpenFlexApp {
             yaw: -0.6,
             pitch: 0.5,
             zoom: 1.0,
+            form: None,
             params_text: String::new(),
-            position_edit: [0.0; 3],
+            show_json: false,
             new_from: String::new(),
             new_to: String::new(),
             new_port: String::new(),
@@ -151,6 +589,7 @@ impl OpenFlexApp {
                 self.path_input = path.display().to_string();
                 self.error = None;
                 self.selected = None;
+                self.form = None;
                 self.params_text.clear();
                 self.handle = None;
                 self.sim_state = None;
@@ -271,14 +710,43 @@ impl OpenFlexApp {
         }
     }
 
-    fn selected_json(&self) -> String {
-        let (Some(model), Some(index)) = (self.model, self.selected) else {
-            return String::new();
+    fn select(&mut self, index: usize) {
+        let Some(model) = self.model else {
+            return;
         };
-        serde_json::to_string_pretty(&model.objects[index].params).unwrap_or_else(|_| "{}".into())
+        let object = &model.objects[index];
+        self.selected = Some(index);
+        self.form = Some(EditForm::from_object(object));
+        self.params_text =
+            serde_json::to_string_pretty(&object.params).unwrap_or_else(|_| "{}".into());
     }
 
-    fn apply_params(&mut self) {
+    fn apply_form(&mut self) {
+        let (Some(model), Some(index), Some(form)) =
+            (self.model, self.selected, self.form.as_ref())
+        else {
+            return;
+        };
+        let mut copy = model.clone();
+        copy.objects[index].pos = [form.pos[0] as f64, form.pos[1] as f64];
+        copy.objects[index].z = form.z as f64;
+        copy.objects[index].params = form.params.clone();
+        let name = copy.objects[index].name.clone();
+        match copy.validate() {
+            Ok(()) => {
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.status = format!("Updated {name}");
+                self.error = None;
+                if let Some(form) = self.form.as_ref() {
+                    self.params_text =
+                        serde_json::to_string_pretty(&form.params).unwrap_or_default();
+                }
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    fn apply_json(&mut self) {
         let (Some(model), Some(index)) = (self.model, self.selected) else {
             return;
         };
@@ -300,6 +768,9 @@ impl OpenFlexApp {
                         self.model = Some(Box::leak(Box::new(copy)));
                         self.status = format!("Updated {name}");
                         self.error = None;
+                        self.form = self
+                            .model
+                            .map(|model| EditForm::from_object(&model.objects[index]));
                     }
                     Err(error) => self.error = Some(error.to_string()),
                 }
@@ -483,6 +954,27 @@ impl eframe::App for OpenFlexApp {
                         .speed(1.0)
                         .range(0.1..=1000.0),
                 );
+                ui.separator();
+                if ui.button("Iso").clicked() {
+                    self.yaw = -0.6;
+                    self.pitch = 0.5;
+                    self.zoom = 1.0;
+                }
+                if ui.button("Top").clicked() {
+                    self.yaw = 0.0;
+                    self.pitch = 1.45;
+                    self.zoom = 1.0;
+                }
+                if ui.button("Front").clicked() {
+                    self.yaw = 0.0;
+                    self.pitch = 0.05;
+                    self.zoom = 1.0;
+                }
+                if ui.button("Side").clicked() {
+                    self.yaw = 1.55;
+                    self.pitch = 0.05;
+                    self.zoom = 1.0;
+                }
                 if let Some(state) = self.sim_state.as_ref() {
                     ui.separator();
                     ui.label(format!("t = {:.2}", state.now));
@@ -563,50 +1055,51 @@ impl eframe::App for OpenFlexApp {
                                         )
                                         .clicked()
                                     {
-                                        self.selected = Some(index);
-                                        self.position_edit = [
-                                            object.pos[0] as f32,
-                                            object.pos[1] as f32,
-                                            object.z as f32,
-                                        ];
-                                        self.params_text = self.selected_json();
+                                        self.select(index);
                                     }
                                 }
                             });
                         }
                     });
                 ui.separator();
-                if let (Some(model), Some(index)) = (self.model, self.selected) {
-                    let object = &model.objects[index];
+                if let (Some(model), Some(index), Some(form)) =
+                    (self.model, self.selected, self.form.as_mut())
+                {
+                    let name = model.objects[index].name.clone();
                     ui.horizontal(|ui| {
-                        ui.heading(&object.name);
-                        ui.label(format!("({})", object.kind.as_str()));
+                        ui.heading(name);
+                        ui.label(format!("({})", form.kind.as_str()));
                     });
                     ui.horizontal(|ui| {
                         ui.label("x");
-                        ui.add(egui::DragValue::new(&mut self.position_edit[0]).speed(1.0));
+                        ui.add(egui::DragValue::new(&mut form.pos[0]).speed(1.0));
                         ui.label("y");
-                        ui.add(egui::DragValue::new(&mut self.position_edit[1]).speed(1.0));
+                        ui.add(egui::DragValue::new(&mut form.pos[1]).speed(1.0));
                         ui.label("z");
-                        ui.add(egui::DragValue::new(&mut self.position_edit[2]).speed(0.1));
+                        ui.add(egui::DragValue::new(&mut form.z).speed(0.1));
                     });
-                    if ui.button("Apply position").clicked() {
-                        let mut copy = model.clone();
-                        copy.objects[index].pos =
-                            [self.position_edit[0] as f64, self.position_edit[1] as f64];
-                        copy.objects[index].z = self.position_edit[2] as f64;
-                        let name = object.name.clone();
-                        self.model = Some(Box::leak(Box::new(copy)));
-                        self.status = format!("Moved {name}");
-                    }
-                    ui.label("Parameters (JSON)");
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.params_text)
-                            .code_editor()
-                            .desired_rows(10),
-                    );
-                    if ui.button("Apply parameters").clicked() {
-                        self.apply_params();
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .id_salt("form")
+                        .max_height(ui.available_height() * 0.55)
+                        .show(ui, |ui| {
+                            form.show(ui);
+                        });
+                    ui.horizontal(|ui| {
+                        if ui.button("Apply").clicked() {
+                            self.apply_form();
+                        }
+                        ui.checkbox(&mut self.show_json, "JSON");
+                    });
+                    if self.show_json {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.params_text)
+                                .code_editor()
+                                .desired_rows(8),
+                        );
+                        if ui.button("Apply JSON").clicked() {
+                            self.apply_json();
+                        }
                     }
                 }
             });
@@ -749,6 +1242,24 @@ impl eframe::App for OpenFlexApp {
             if scroll != 0.0 {
                 self.zoom = (self.zoom * (1.0 + scroll * 0.001)).clamp(0.2, 6.0);
             }
+            // Ground grid (z = 0 plane).
+            let grid = 20;
+            let step = 5.0;
+            for line in -grid..=grid {
+                let offset = line as f64 * step;
+                let extent = grid as f64 * step;
+                let color = if line == 0 {
+                    egui::Color32::from_rgb(70, 80, 95)
+                } else {
+                    egui::Color32::from_rgb(38, 44, 54)
+                };
+                let a = self.project([offset, -extent], 0.0, center, scale);
+                let b = self.project([offset, extent], 0.0, center, scale);
+                let c = self.project([-extent, offset], 0.0, center, scale);
+                let d = self.project([extent, offset], 0.0, center, scale);
+                painter.line_segment([a, b], egui::Stroke::new(1.0_f32, color));
+                painter.line_segment([c, d], egui::Stroke::new(1.0_f32, color));
+            }
             for connection in &model.connections {
                 let Some(from) = model.object(&connection.from) else {
                     continue;
@@ -764,6 +1275,12 @@ impl eframe::App for OpenFlexApp {
                 );
             }
             for (index, object) in model.objects.iter().enumerate() {
+                let ground = self.project(object.pos, 0.0, center, scale);
+                painter.circle_filled(
+                    ground + egui::vec2(0.0, 2.0),
+                    (12.0 * self.zoom).max(3.0),
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 70),
+                );
                 let base = self.project(object.pos, object.z, center, scale);
                 let size = egui::vec2(38.0, 18.0) * self.zoom;
                 let box_rect = egui::Rect::from_center_size(base, size);
@@ -790,13 +1307,7 @@ impl eframe::App for OpenFlexApp {
                     && let Some(pointer) = response.interact_pointer_pos()
                     && box_rect.expand(6.0).contains(pointer)
                 {
-                    self.selected = Some(index);
-                    self.position_edit = [
-                        object.pos[0] as f32,
-                        object.pos[1] as f32,
-                        object.z as f32,
-                    ];
-                    self.params_text = self.selected_json();
+                    self.select(index);
                 }
             }
             ui.label(

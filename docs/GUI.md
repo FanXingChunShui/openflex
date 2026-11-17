@@ -14,9 +14,9 @@ cargo build -p openflex-gui --release
 |---|---|
 | 文件 | Open（路径输入）、Save（写回原文件）、加载时校验并报告对象数/stop |
 | 模型树 | 按 kind 分组（可折叠）、名称/kind 过滤、点击选中 |
-| 对象编辑 | 名称/kind 显示、`x/y/z` 拖拽数值 + Apply position、**参数 JSON 编辑 + Apply**（按 kind 反序列化并全模型校验） |
+| 对象编辑 | `x/y/z` 拖拽数值、**按 kind 的参数表单**（Distribution 类型下拉 + 数值：source/queue/processor/conveyor/resource/transporter/person/robot/crane/asrs/agv）、Apply 校验后提交；JSON 高级模式（复选框） |
 | 连接编辑 | 列表 + 删除、from/to/port 添加（校验后原子替换模型） |
-| 3D 视图 | 透视投影、按 kind 着色、连接线、选中高亮、拖拽旋转、滚轮缩放、点击选中 |
+| 3D 视图 | 透视投影、**地面网格**、对象地面阴影、按 kind 着色、连接线、选中高亮、拖拽旋转、滚轮缩放、点击选中、**相机预设 Iso/Top/Front/Side** |
 | 运行 | `Run`（后台线程跑完整复现出报告）、`Step`（按 step 推进）、`Play`/`Pause`/`Resume`（`SimulationHandle`）、`Reset`、实时 `t`/created/completed |
 | 报告 | Completed ± CI、Created、**利用率柱状图**、逐对象 In/Out/Util 表 |
 
@@ -26,8 +26,8 @@ cargo build -p openflex-gui --release
 
 | 优先级 | 缺口 | 说明 |
 |---|---|---|
-| P0 | 参数表单（按 kind 的控件） | 目前是 JSON 编辑；需为 source/queue/processor/conveyor 等提供下拉/数值/分布编辑控件 |
-| P0 | 3D 场景增强 | 无纹理/光照/网格地面/相机视角预设/对象旋转；只有平面盒体 |
+| ~~P0~~ | ~~参数表单（按 kind 的控件）~~ | **已完成（v0.52.0）**：Distribution 下拉 + 数值控件，覆盖 10 种常用对象；其余 kind 走 JSON |
+| P0 | 3D 场景增强（部分完成） | 已有地面网格/阴影/相机预设；仍缺纹理、光照、对象几何体（圆柱/机台）、旋转 |
 | P1 | 运行可视化 | 无 flow item 动画、无对象状态着色（busy/blocked）、无事件回放 |
 | P1 | 流程图/Process Flow 编辑 | 只有对象与连接，没有 process flow 节点编辑 |
 | P1 | 实验与优化 UI | CLI 有 `experiment`/`optimize`，GUI 未接入 |
