@@ -513,6 +513,7 @@ jobs:
     name: gui (${{ matrix.os }})
     needs: [meta, test]
     continue-on-error: true
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -609,8 +610,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          CARGO_INCREMENTAL=0 bash scripts/package-gui-app.sh \
-            --target "${{ matrix.target }}" --out dist
+          bash scripts/package-gui-app.sh \
+            --target "${{ matrix.target }}" --out dist \
+            --binary "target/${{ matrix.target }}/release/openflex-gui"
           cd dist
           shasum -a 256 *.zip | awk '{printf "%s  %s\n", $1, $2}' > SHA256SUMS-gui-${{ matrix.kind }}.txt
 

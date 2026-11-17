@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
 # Builds a double-clickable OpenFlex.app (macOS) around the openflex-gui binary.
 #
-# Usage: scripts/package-gui-app.sh [--target <triple>] [--out <dir>]
+# Usage: scripts/package-gui-app.sh [--target <triple>] [--out <dir>] [--binary <path>]
 #   --target  cargo target triple (default: the host triple)
 #   --out     output directory for OpenFlex.app and the zip (default: dist/gui)
+#   --binary  pre-built openflex-gui binary (skips the cargo build when given)
 set -euo pipefail
 
 target=""
 out="dist/gui"
+binary=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --target) target="${2:?--target needs a value}"; shift 2 ;;
         --out) out="${2:?--out needs a value}"; shift 2 ;;
-        -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+        --binary) binary="${2:?--binary needs a value}"; shift 2 ;;
+        -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -28,9 +31,10 @@ fi
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 echo "packaging OpenFlex.app ${version} (${target})"
 
-CARGO_INCREMENTAL=0 cargo build --release -p openflex-gui --target "$target" --locked
-
-binary="target/${target}/release/openflex-gui"
+if [ -z "$binary" ]; then
+    CARGO_INCREMENTAL=0 cargo build --release -p openflex-gui --target "$target" --locked
+    binary="target/${target}/release/openflex-gui"
+fi
 if [ ! -x "$binary" ]; then
     echo "binary not found: $binary" >&2
     exit 1
