@@ -596,6 +596,10 @@ struct OpenFlexApp {
     flow_text: String,
     flow_from: String,
     flow_to: String,
+    flow_pos: std::collections::HashMap<String, [f32; 2]>,
+    flow_drag: Option<String>,
+    flow_pending: Option<String>,
+    flow_selected: Option<String>,
 }
 
 impl OpenFlexApp {
@@ -643,6 +647,10 @@ impl OpenFlexApp {
             flow_text: String::new(),
             flow_from: String::new(),
             flow_to: String::new(),
+            flow_pos: std::collections::HashMap::new(),
+            flow_drag: None,
+            flow_pending: None,
+            flow_selected: None,
         };
         if let Some(path) = model {
             app.load(PathBuf::from(path));
@@ -924,6 +932,32 @@ impl OpenFlexApp {
         }
         self.params_text = serde_json::to_string_pretty(&params).unwrap_or_default();
         self.apply_json();
+    }
+
+    fn flow_block_ids(&self) -> Vec<String> {
+        self.flow_value()
+            .and_then(|flow| {
+                flow.get("blocks")
+                    .and_then(|blocks| blocks.as_array())
+                    .map(|blocks| {
+                        blocks
+                            .iter()
+                            .filter_map(|block| {
+                                block
+                                    .get("id")
+                                    .and_then(|id| id.as_str())
+                                    .map(str::to_string)
+                            })
+                            .collect()
+                    })
+            })
+            .unwrap_or_default()
+    }
+
+    fn flow_default_pos(index: usize) -> [f32; 2] {
+        let column = index % 3;
+        let row = index / 3;
+        [20.0 + column as f32 * 150.0, 20.0 + row as f32 * 70.0]
     }
 
     fn new_handle(&mut self) -> bool {
@@ -1587,6 +1621,120 @@ impl eframe::App for OpenFlexApp {
                 egui::CollapsingHeader::new("Process Flow")
                     .id_salt("process-flow")
                     .show(ui, |ui| {
+                        // Visual node canvas: drag blocks, click two blocks to connect.
+                        let ids = self.flow_block_ids();
+                        if !ids.is_empty() {
+                            let (response, painter) = ui.allocate_painter(
+                                egui::vec2(ui.available_width(), 190.0),
+                                egui::Sense::click_and_drag(),
+                            );
+                            let origin = response.rect.min;
+                            let rect_of = |id: &String, index: usize| {
+                                let pos = self
+                                    .flow_pos
+                                    .get(id)
+                                    .copied()
+                                    .unwrap_or_else(|| Self::flow_default_pos(index));
+                                egui::Rect::from_min_size(
+                                    origin + egui::vec2(pos[0], pos[1]),
+                                    egui::vec2(124.0, 40.0),
+                                )
+                            };
+                            painter.rect_filled(
+                                response.rect,
+                                4.0,
+                                egui::Color32::from_rgb(24, 26, 30),
+                            );
+                            let rects: Vec<(String, egui::Rect)> = ids
+                                .iter()
+                                .enumerate()
+                                .map(|(index, id)| (id.clone(), rect_of(id, index)))
+                                .collect();
+                            // Connections.
+                            if let Some(flow) = self.flow_value()
+                                && let Some(connections) =
+                                    flow.get("connections").and_then(|c| c.as_array())
+                            {
+                                for connection in connections {
+                                    let from = connection.get("from").and_then(|v| v.as_str());
+                                    let to = connection.get("to").and_then(|v| v.as_str());
+                                    if let (Some(from), Some(to)) = (from, to)
+                                        && let (Some((_, a)), Some((_, b))) = (
+                                            rects.iter().find(|(id, _)| id == from),
+                                            rects.iter().find(|(id, _)| id == to),
+                                        )
+                                    {
+                                        painter.line_segment(
+                                            [a.right_center(), b.left_center()],
+                                            egui::Stroke::new(
+                                                1.5_f32,
+                                                egui::Color32::from_rgb(120, 160, 200),
+                                            ),
+                                        );
+                                    }
+                                }
+                            }
+                            if response.drag_started()
+                                && let Some(pointer) = response.interact_pointer_pos()
+                            {
+                                self.flow_drag = rects
+                                    .iter()
+                                    .find(|(_, rect)| rect.contains(pointer))
+                                    .map(|(id, _)| id.clone());
+                                self.flow_selected = self.flow_drag.clone();
+                            }
+                            if response.dragged()
+                                && let (Some(id), true) = (self.flow_drag.clone(), true)
+                            {
+                                let delta = response.drag_delta();
+                                let entry = self.flow_pos.entry(id).or_insert([20.0, 20.0]);
+                                entry[0] += delta.x;
+                                entry[1] += delta.y;
+                            }
+                            if response.drag_stopped() {
+                                self.flow_drag = None;
+                            }
+                            if response.clicked()
+                                && let Some(pointer) = response.interact_pointer_pos()
+                                && let Some((id, _)) =
+                                    rects.iter().find(|(_, rect)| rect.contains(pointer))
+                            {
+                                match self.flow_pending.clone() {
+                                    Some(from) if &from != id => {
+                                        self.flow_from = from;
+                                        self.flow_to = id.clone();
+                                        self.add_flow_connection();
+                                        self.flow_pending = None;
+                                    }
+                                    _ => {
+                                        self.flow_pending = Some(id.clone());
+                                        self.flow_selected = Some(id.clone());
+                                    }
+                                }
+                            }
+                            for (id, rect) in &rects {
+                                let selected = self.flow_selected.as_ref() == Some(id);
+                                let pending = self.flow_pending.as_ref() == Some(id);
+                                let fill = if selected || pending {
+                                    egui::Color32::from_rgb(255, 190, 80)
+                                } else {
+                                    egui::Color32::from_rgb(70, 100, 140)
+                                };
+                                painter.rect_filled(*rect, 6.0, fill);
+                                painter.text(
+                                    rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    id,
+                                    egui::FontId::proportional(13.0),
+                                    egui::Color32::WHITE,
+                                );
+                            }
+                            ui.label(
+                                egui::RichText::new("drag nodes · click two nodes to connect")
+                                    .weak()
+                                    .small(),
+                            );
+                        }
                         ui.label("Blocks (JSON; add/remove below)");
                         ui.horizontal_wrapped(|ui| {
                             for kind in
