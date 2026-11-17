@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.57.0 — 2026-11-17
+
+### 桌面 GUI
+
+- **Process Flow 面板**：块 JSON 编辑、`+create/delay/assign/decision/transfer/sink` 快速加块（自动生成 id 与默认参数）、
+  块列表删除（连带清理相关连接）、from/to 连接、`Apply process flow` 合并回对象参数并走完整校验。
+
+### 验证
+
+- 490 个测试全绿（core 255、CLI 86、report 14、model 全部）；GUI 编译、clippy 0、启动无 panic。
+- v0.57.0 三平台产物发布并 SHA256 校验。
+
 ## v0.56.0 — 2026-11-17
 
 ### 桌面 GUI

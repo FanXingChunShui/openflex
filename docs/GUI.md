@@ -19,6 +19,7 @@ cargo build -p openflex-gui --release
 | 3D 视图 | 透视投影、**地面网格**、对象地面阴影、按 kind 着色、连接线、选中高亮、拖拽旋转、滚轮缩放、点击选中、**相机预设 Iso/Top/Front/Side** |
 | 运行 | `Run`（后台线程跑完整复现出报告）、`Step`（按 step 推进）、`Play`/`Pause`/`Resume`（`SimulationHandle`）、`Reset`、**进度条**、实时 `t`/created/completed |
 | 实时可视化 | 对象按**瞬时状态**着色（busy 红 / blocked 橙 / idle 绿 / down 灰 / off-shift 深灰）、`[n]` 显示瞬时持有件数、**对象上方 item 圆点**、**执行器（transporter/person/AGV/robot/crane/asrs/elevator）按引擎实时位置绘制**、状态图例 |
+| Process Flow | 折叠面板：块 JSON 编辑、`+create/delay/assign/decision/transfer/sink` 快速加块、块列表删除（连带清理连接）、from/to 连接、`Apply process flow`（合并回参数并校验） |
 | 实验 | **stop-time 扫描**与**参数扫描**（JSON path 如 `objects/0/params/process_time/value`，起点/步长/次数）→ 后台逐次运行，柱状图 + 值/completed 表 |
 | 报告 | Completed ± CI、Created、**利用率柱状图**、逐对象 In/Out/Util 表 |
 
@@ -31,7 +32,7 @@ cargo build -p openflex-gui --release
 | ~~P0~~ | ~~参数表单（按 kind 的控件）~~ | **已完成（v0.52.0）**：Distribution 下拉 + 数值控件，覆盖 10 种常用对象；其余 kind 走 JSON |
 | P0 | 3D 场景增强（部分完成） | 已有地面网格/阴影/相机预设；仍缺纹理、光照、对象几何体（圆柱/机台）、旋转 |
 | P1 | 运行可视化（部分完成） | ✅ 状态着色 + 瞬时 WIP + item 圆点 + 执行器实时位置 + 进度条；平滑动画用帧间指数缓动；仍缺逐事件回放 |
-| P1 | 流程图/Process Flow 编辑 | 只有对象与连接，没有 process flow 节点编辑 |
+| P1 | 流程图/Process Flow 编辑（部分完成） | ✅ 块增删/连接/JSON 编辑（v0.57.0）；仍缺图形化拖拽画布 |
 | P1 | 实验与优化 UI（部分完成） | ✅ stop-time 与参数扫描实验；优化器（CLI `optimize`）未接入 |
 | ~~P2~~ | 撤销/重做 | **已完成（v0.56.0）** |
 | ~~P2~~ | 文件菜单/最近文件/新建 | **已完成（v0.56.0）**：New / Save as / Recent / 快捷键 |

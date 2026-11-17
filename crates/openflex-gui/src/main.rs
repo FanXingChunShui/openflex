@@ -593,6 +593,9 @@ struct OpenFlexApp {
     recent: Vec<PathBuf>,
     save_as: String,
     show_save_as: bool,
+    flow_text: String,
+    flow_from: String,
+    flow_to: String,
 }
 
 impl OpenFlexApp {
@@ -637,6 +640,9 @@ impl OpenFlexApp {
             recent: Vec::new(),
             save_as: String::new(),
             show_save_as: false,
+            flow_text: String::new(),
+            flow_from: String::new(),
+            flow_to: String::new(),
         };
         if let Some(path) = model {
             app.load(PathBuf::from(path));
@@ -801,6 +807,123 @@ impl OpenFlexApp {
             },
             Err(error) => self.error = Some(format!("could not serialise: {error}")),
         }
+    }
+
+    fn flow_value(&self) -> Option<serde_json::Value> {
+        if self.flow_text.trim().is_empty() {
+            None
+        } else {
+            serde_json::from_str(&self.flow_text).ok()
+        }
+    }
+
+    fn add_flow_block(&mut self, kind: &str) {
+        let mut flow = self
+            .flow_value()
+            .unwrap_or_else(|| serde_json::json!({"blocks": [], "connections": []}));
+        let blocks = flow
+            .get_mut("blocks")
+            .and_then(|blocks| blocks.as_array_mut());
+        let Some(blocks) = blocks else {
+            self.error = Some("process flow has no blocks array".into());
+            return;
+        };
+        let count = blocks.len() + 1;
+        let id = format!(
+            "{}{count}",
+            kind.chars().next().unwrap_or('B').to_uppercase()
+        );
+        let block = match kind {
+            "create" => serde_json::json!({
+                "id": id, "kind": "create", "quantity": 1, "first_arrival": 0.0,
+                "interarrival": {"distribution": "constant", "value": 10.0}, "max_creations": 1
+            }),
+            "delay" => serde_json::json!({
+                "id": id, "kind": "delay", "time": {"distribution": "constant", "value": 1.0}
+            }),
+            "assign" => serde_json::json!({"id": id, "kind": "assign", "actions": []}),
+            "decision" => serde_json::json!({"id": id, "kind": "decision", "conditions": []}),
+            "transfer" => serde_json::json!({"id": id, "kind": "transfer", "object": "Sink1"}),
+            _ => serde_json::json!({"id": id, "kind": "sink"}),
+        };
+        blocks.push(block);
+        self.flow_text = serde_json::to_string_pretty(&flow).unwrap_or_default();
+        self.status = format!("Added {id}");
+    }
+
+    fn remove_flow_block(&mut self, id: &str) {
+        let Some(mut flow) = self.flow_value() else {
+            return;
+        };
+        if let Some(blocks) = flow.get_mut("blocks").and_then(|b| b.as_array_mut()) {
+            blocks.retain(|block| block.get("id").and_then(|id| id.as_str()) != Some(id));
+        }
+        if let Some(connections) = flow.get_mut("connections").and_then(|c| c.as_array_mut()) {
+            connections.retain(|connection| {
+                connection.get("from").and_then(|v| v.as_str()) != Some(id)
+                    && connection.get("to").and_then(|v| v.as_str()) != Some(id)
+            });
+        }
+        self.flow_text = serde_json::to_string_pretty(&flow).unwrap_or_default();
+        self.status = format!("Removed {id}");
+    }
+
+    fn add_flow_connection(&mut self) {
+        let (from, to) = (
+            self.flow_from.trim().to_string(),
+            self.flow_to.trim().to_string(),
+        );
+        if from.is_empty() || to.is_empty() {
+            self.error = Some("choose block ids for the connection".into());
+            return;
+        }
+        let mut flow = self
+            .flow_value()
+            .unwrap_or_else(|| serde_json::json!({"blocks": [], "connections": []}));
+        if let Some(connections) = flow.get_mut("connections").and_then(|c| c.as_array_mut()) {
+            connections.push(serde_json::json!({"from": from, "to": to}));
+        }
+        self.flow_text = serde_json::to_string_pretty(&flow).unwrap_or_default();
+        self.status = "Flow connection added".into();
+    }
+
+    fn apply_flow(&mut self) {
+        let (Some(_), Some(_)) = (self.model, self.selected) else {
+            return;
+        };
+        let mut params: serde_json::Value = match serde_json::from_str(&self.params_text) {
+            Ok(value) => value,
+            Err(error) => {
+                self.error = Some(format!("invalid parameters JSON: {error}"));
+                return;
+            }
+        };
+        let flow: serde_json::Value = if self.flow_text.trim().is_empty() {
+            serde_json::Value::Null
+        } else {
+            match serde_json::from_str(&self.flow_text) {
+                Ok(value) => value,
+                Err(error) => {
+                    self.error = Some(format!("invalid process flow JSON: {error}"));
+                    return;
+                }
+            }
+        };
+        match params.as_object_mut() {
+            Some(map) => {
+                if flow.is_null() {
+                    map.remove("process_flow");
+                } else {
+                    map.insert("process_flow".into(), flow);
+                }
+            }
+            None => {
+                self.error = Some("parameters must be a JSON object".into());
+                return;
+            }
+        }
+        self.params_text = serde_json::to_string_pretty(&params).unwrap_or_default();
+        self.apply_json();
     }
 
     fn new_handle(&mut self) -> bool {
@@ -982,6 +1105,11 @@ impl OpenFlexApp {
         self.form = Some(EditForm::from_object(object));
         self.params_text =
             serde_json::to_string_pretty(&object.params).unwrap_or_else(|_| "{}".into());
+        self.flow_text = serde_json::to_value(&object.params)
+            .ok()
+            .and_then(|value| value.get("process_flow").cloned())
+            .map(|flow| serde_json::to_string_pretty(&flow).unwrap_or_default())
+            .unwrap_or_default();
     }
 
     fn apply_form(&mut self) {
@@ -1455,6 +1583,74 @@ impl eframe::App for OpenFlexApp {
                         }
                     }
                 }
+                ui.separator();
+                egui::CollapsingHeader::new("Process Flow")
+                    .id_salt("process-flow")
+                    .show(ui, |ui| {
+                        ui.label("Blocks (JSON; add/remove below)");
+                        ui.horizontal_wrapped(|ui| {
+                            for kind in
+                                ["create", "delay", "assign", "decision", "transfer", "sink"]
+                            {
+                                if ui.small_button(format!("+{kind}")).clicked() {
+                                    self.add_flow_block(kind);
+                                }
+                            }
+                        });
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.flow_text)
+                                .code_editor()
+                                .desired_rows(8),
+                        );
+                        if let Some(flow) = self.flow_value() {
+                            if let Some(blocks) = flow.get("blocks").and_then(|b| b.as_array()) {
+                                ui.label(format!("{} block(s)", blocks.len()));
+                                let ids: Vec<String> = blocks
+                                    .iter()
+                                    .filter_map(|block| {
+                                        block
+                                            .get("id")
+                                            .and_then(|id| id.as_str())
+                                            .map(str::to_string)
+                                    })
+                                    .collect();
+                                let mut remove: Option<String> = None;
+                                for id in ids {
+                                    ui.horizontal(|ui| {
+                                        ui.label(&id);
+                                        if ui.small_button("✕").clicked() {
+                                            remove = Some(id.clone());
+                                        }
+                                    });
+                                }
+                                if let Some(id) = remove {
+                                    self.remove_flow_block(&id);
+                                }
+                            }
+                            if let Some(items) = flow.get("connections").and_then(|c| c.as_array())
+                            {
+                                ui.label(format!("{} connection(s)", items.len()));
+                            }
+                        }
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.flow_from)
+                                    .hint_text("from")
+                                    .desired_width(60.0),
+                            );
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.flow_to)
+                                    .hint_text("to")
+                                    .desired_width(60.0),
+                            );
+                            if ui.small_button("connect").clicked() {
+                                self.add_flow_connection();
+                            }
+                        });
+                        if ui.button("Apply process flow").clicked() {
+                            self.apply_flow();
+                        }
+                    });
                 ui.separator();
                 ui.heading("Experiment");
                 ui.horizontal(|ui| {
