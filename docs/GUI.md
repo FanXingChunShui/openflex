@@ -20,7 +20,8 @@ cargo build -p openflex-gui --release
 | 运行 | `Run`（后台线程跑完整复现出报告）、`Step`（按 step 推进）、`Play`/`Pause`/`Resume`（`SimulationHandle`）、`Reset`、**进度条**、实时 `t`/created/completed |
 | 实时可视化 | 对象按**瞬时状态**着色（busy 红 / blocked 橙 / idle 绿 / down 灰 / off-shift 深灰）、`[n]` 显示瞬时持有件数、**对象上方 item 圆点**、**执行器（transporter/person/AGV/robot/crane/asrs/elevator）按引擎实时位置绘制**、状态图例 |
 | Process Flow | **可视化节点画布**（块画成圆角矩形、拖拽移动、点击两个块建立连接、选中高亮）+ 块 JSON 编辑、`+create/delay/assign/decision/transfer/sink` 快速加块、块列表删除（连带清理连接）、from/to 连接、`Apply process flow` |
-| 实验 | **stop-time 扫描**与**参数扫描**（JSON path 如 `objects/0/params/process_time/value`，起点/步长/次数）→ 后台逐次运行，柱状图 + 值/completed 表 |
+| 实验 | **stop-time 扫描**与**参数扫描**（JSON path，起点/步长/次数）→ 后台逐次运行，柱状图 + 值/completed 表 |
+| 优化 | **grid search**：按 JSON path 在 `[low, high]` 上取 `steps` 个点，逐点运行，显示最好点与完整 `param → completed` 表 |
 | 报告 | Completed ± CI、Created、**利用率柱状图**、逐对象 In/Out/Util 表、**状态饼图**（idle/busy/blocked/down/off-shift 合计）、**时间序列折线**（按 interval 采样，可切换对象） |
 
 编辑历史：**撤销/重做栈（每个编辑前快照，上限 50）**，工具栏按钮 + 快捷键。
@@ -46,7 +47,7 @@ Windows 上 `cargo build --release -p openflex-gui` 产出的 `openflex-gui.exe`
 | P0 | 3D 场景增强（部分完成） | 已有地面网格/阴影/相机预设；仍缺纹理、光照、对象几何体（圆柱/机台）、旋转 |
 | P1 | 运行可视化（部分完成） | ✅ 状态着色 + 瞬时 WIP + item 圆点 + 执行器实时位置 + 进度条；平滑动画用帧间指数缓动；仍缺逐事件回放 |
 | P1 | 流程图/Process Flow 编辑 | ✅ 可视化节点画布 + 块增删/连接/JSON 编辑（v0.59.0）；节点位置保存在内存（不写入模型） |
-| P1 | 实验与优化 UI（部分完成） | ✅ stop-time 与参数扫描实验；优化器（CLI `optimize`）未接入 |
+| P1 | 实验与优化 UI（部分完成） | ✅ stop-time/参数扫描 + **grid search 优化**（v0.61.0）；多目标/genetic/CLI `optimize` 未接入 |
 | ~~P2~~ | 撤销/重做 | **已完成（v0.56.0）** |
 | ~~P2~~ | 文件菜单/最近文件/新建 | **已完成（v0.56.0）**：New / Save as / Recent / 快捷键 |
 | P2 | 统计图表（部分完成） | ✅ 利用率柱状图 + 状态饼图 + 时间序列折线（v0.60.0）；缺吞吐曲线/导出 |

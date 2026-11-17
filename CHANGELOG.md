@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.61.0 — 2026-11-17
+
+### 桌面 GUI
+
+- **Grid search 优化面板**：指定 JSON path 与 `[low, high]/steps`，后台逐点运行，显示最优值（`completed` 最大）
+  与完整 `param → completed` 表。
+
+### 发布
+
+- 修复 `deb/rpm (arm64)` 因 GitHub API 限流（下载 nfpm 403）导致的发布失败：`release.yml` 固定 nfpm 2.38.0；
+  v0.60.0 重跑后 11 产物齐全并 SHA256 校验通过。
+
+### 验证
+
+- 490 个测试全绿（core 255、CLI 86、report 14、model 全部）；GUI 编译、clippy 0、启动无 panic。
+- v0.61.0 三平台产物发布并 SHA256 校验。
+
 ## v0.60.0 — 2026-11-17
 
 ### 桌面 GUI

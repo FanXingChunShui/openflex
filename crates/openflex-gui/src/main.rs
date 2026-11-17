@@ -607,6 +607,14 @@ struct OpenFlexApp {
     series_running: bool,
     series_rx: Option<Receiver<Vec<SeriesRow>>>,
     series_object: String,
+    opt_path: String,
+    opt_low: f32,
+    opt_high: f32,
+    opt_steps: u32,
+    opt_rows: Vec<(f64, f64)>,
+    opt_best: Option<(f64, f64)>,
+    opt_rx: Option<Receiver<Vec<(f64, f64)>>>,
+    opt_running: bool,
 }
 
 impl OpenFlexApp {
@@ -663,6 +671,14 @@ impl OpenFlexApp {
             series_running: false,
             series_rx: None,
             series_object: String::new(),
+            opt_path: String::new(),
+            opt_low: 1.0,
+            opt_high: 10.0,
+            opt_steps: 5,
+            opt_rows: Vec::new(),
+            opt_best: None,
+            opt_rx: None,
+            opt_running: false,
         };
         if let Some(path) = model {
             app.load(PathBuf::from(path));
@@ -1026,6 +1042,80 @@ impl OpenFlexApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.series_running = false;
                 self.series_rx = None;
+            }
+        }
+    }
+
+    fn start_optimize(&mut self) {
+        let Some(model) = self.model else {
+            return;
+        };
+        let path = self.opt_path.clone();
+        if path.trim().is_empty() {
+            self.error = Some("set the parameter path to optimise".into());
+            return;
+        }
+        let base = model.clone();
+        let base_json = match serde_json::to_value(&base) {
+            Ok(value) => value,
+            Err(error) => {
+                self.error = Some(format!("could not serialise model: {error}"));
+                return;
+            }
+        };
+        let (low, high, steps) = (
+            self.opt_low as f64,
+            self.opt_high as f64,
+            self.opt_steps.clamp(2, 50),
+        );
+        let (tx, rx) = channel();
+        self.opt_rx = Some(rx);
+        self.opt_running = true;
+        self.status = format!("Optimising: {steps} grid points…");
+        std::thread::spawn(move || {
+            let mut rows = Vec::new();
+            for index in 0..steps {
+                let value = if steps <= 1 {
+                    low
+                } else {
+                    low + (high - low) * index as f64 / (steps - 1) as f64
+                };
+                let mut json = base_json.clone();
+                if !set_json_number(&mut json, &path, value) {
+                    continue;
+                }
+                let Ok(patched) = serde_json::from_value::<Model>(json) else {
+                    continue;
+                };
+                if let Ok(report) = run_model(&patched) {
+                    rows.push((value, report.completed.mean));
+                }
+            }
+            let _ = tx.send(rows);
+        });
+    }
+
+    fn poll_optimize(&mut self) {
+        let Some(rx) = self.opt_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(rows) => {
+                self.opt_best = rows.iter().copied().max_by(|a, b| a.1.total_cmp(&b.1));
+                self.status = match self.opt_best {
+                    Some((value, score)) => {
+                        format!("Best: {value:.3} → completed {score:.1}")
+                    }
+                    None => "Optimisation finished without results".into(),
+                };
+                self.opt_rows = rows;
+                self.opt_running = false;
+                self.opt_rx = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.opt_running = false;
+                self.opt_rx = None;
             }
         }
     }
@@ -1415,6 +1505,7 @@ impl eframe::App for OpenFlexApp {
         self.poll_report();
         self.poll_experiment();
         self.poll_timeseries();
+        self.poll_optimize();
         if self.report_running || self.exp_running {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -1950,6 +2041,62 @@ impl eframe::App for OpenFlexApp {
                             for (stop, completed) in &self.exp_rows {
                                 ui.label(format!("{stop:.0}"));
                                 ui.label(format!("{completed:.1}"));
+                                ui.end_row();
+                            }
+                        });
+                }
+                ui.separator();
+                ui.heading("Optimise (grid search)");
+                ui.horizontal(|ui| {
+                    ui.label("path");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.opt_path)
+                            .hint_text("objects/0/params/interarrival/mean")
+                            .desired_width(200.0),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("low");
+                    ui.add(egui::DragValue::new(&mut self.opt_low).speed(0.5));
+                    ui.label("high");
+                    ui.add(egui::DragValue::new(&mut self.opt_high).speed(0.5));
+                    ui.label("steps");
+                    ui.add(
+                        egui::DragValue::new(&mut self.opt_steps)
+                            .speed(1.0)
+                            .range(2..=50),
+                    );
+                });
+                if ui
+                    .add_enabled(
+                        self.model.is_some() && !self.opt_running,
+                        egui::Button::new(if self.opt_running {
+                            "Optimising…"
+                        } else {
+                            "Run grid search"
+                        }),
+                    )
+                    .clicked()
+                {
+                    self.start_optimize();
+                }
+                if let Some((value, score)) = self.opt_best {
+                    ui.label(
+                        egui::RichText::new(format!("best: {value:.3} → completed {score:.1}"))
+                            .strong(),
+                    );
+                }
+                if !self.opt_rows.is_empty() {
+                    egui::Grid::new("opt-grid")
+                        .striped(true)
+                        .num_columns(2)
+                        .show(ui, |ui| {
+                            ui.strong("param");
+                            ui.strong("completed");
+                            ui.end_row();
+                            for (value, score) in &self.opt_rows {
+                                ui.label(format!("{value:.3}"));
+                                ui.label(format!("{score:.1}"));
                                 ui.end_row();
                             }
                         });
