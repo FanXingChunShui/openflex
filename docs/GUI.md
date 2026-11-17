@@ -21,7 +21,7 @@ cargo build -p openflex-gui --release
 | 实时可视化 | 对象按**瞬时状态**着色（busy 红 / blocked 橙 / idle 绿 / down 灰 / off-shift 深灰）、`[n]` 显示瞬时持有件数、**对象上方 item 圆点**、**执行器（transporter/person/AGV/robot/crane/asrs/elevator）按引擎实时位置绘制**、状态图例 |
 | Process Flow | **可视化节点画布**（块画成圆角矩形、拖拽移动、点击两个块建立连接、选中高亮）+ 块 JSON 编辑、`+create/delay/assign/decision/transfer/sink` 快速加块、块列表删除（连带清理连接）、from/to 连接、`Apply process flow` |
 | 实验 | **stop-time 扫描**与**参数扫描**（JSON path 如 `objects/0/params/process_time/value`，起点/步长/次数）→ 后台逐次运行，柱状图 + 值/completed 表 |
-| 报告 | Completed ± CI、Created、**利用率柱状图**、逐对象 In/Out/Util 表 |
+| 报告 | Completed ± CI、Created、**利用率柱状图**、逐对象 In/Out/Util 表、**状态饼图**（idle/busy/blocked/down/off-shift 合计）、**时间序列折线**（按 interval 采样，可切换对象） |
 
 编辑历史：**撤销/重做栈（每个编辑前快照，上限 50）**，工具栏按钮 + 快捷键。
 
@@ -49,7 +49,7 @@ Windows 上 `cargo build --release -p openflex-gui` 产出的 `openflex-gui.exe`
 | P1 | 实验与优化 UI（部分完成） | ✅ stop-time 与参数扫描实验；优化器（CLI `optimize`）未接入 |
 | ~~P2~~ | 撤销/重做 | **已完成（v0.56.0）** |
 | ~~P2~~ | 文件菜单/最近文件/新建 | **已完成（v0.56.0）**：New / Save as / Recent / 快捷键 |
-| P2 | 统计图表 | 只有利用率柱状图；缺时间序列/状态饼图/吞吐曲线 |
+| P2 | 统计图表（部分完成） | ✅ 利用率柱状图 + 状态饼图 + 时间序列折线（v0.60.0）；缺吞吐曲线/导出 |
 | ~~P3~~ | 打包成 .app 双击启动 | **已完成（v0.58.0）**：`scripts/package-gui-app.sh` 生成 `OpenFlex.app` + zip；Windows 的 `.exe` 可直接双击（MSI 附带 GUI 仍未做） |
 
 ## 路线图

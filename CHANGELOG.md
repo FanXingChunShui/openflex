@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.60.0 — 2026-11-17
+
+### 桌面 GUI
+
+- **时间序列图**：`Sample` 按可配 interval 用 `SimulationHandle` 逐段推进采样，多对象切换、折线绘制、max 标注。
+- **状态饼图**：汇总所有对象 `state_times`（idle/busy/blocked/down/off-shift），画扇区并标注百分比。
+
+### 验证
+
+- 490 个测试全绿（core 255、CLI 86、report 14、model 全部）；GUI 编译、clippy 0、启动无 panic。
+- v0.60.0 三平台产物发布并 SHA256 校验。
+
 ## v0.59.0 — 2026-11-17
 
 ### 桌面 GUI

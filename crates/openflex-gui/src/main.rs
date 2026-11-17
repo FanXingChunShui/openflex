@@ -553,6 +553,8 @@ impl EditForm {
     }
 }
 
+type SeriesRow = (f64, Vec<(String, f64)>);
+
 struct OpenFlexApp {
     model: Option<&'static Model>,
     path: Option<PathBuf>,
@@ -600,6 +602,11 @@ struct OpenFlexApp {
     flow_drag: Option<String>,
     flow_pending: Option<String>,
     flow_selected: Option<String>,
+    series: Vec<SeriesRow>,
+    series_interval: f32,
+    series_running: bool,
+    series_rx: Option<Receiver<Vec<SeriesRow>>>,
+    series_object: String,
 }
 
 impl OpenFlexApp {
@@ -651,6 +658,11 @@ impl OpenFlexApp {
             flow_drag: None,
             flow_pending: None,
             flow_selected: None,
+            series: Vec::new(),
+            series_interval: 5.0,
+            series_running: false,
+            series_rx: None,
+            series_object: String::new(),
         };
         if let Some(path) = model {
             app.load(PathBuf::from(path));
@@ -958,6 +970,64 @@ impl OpenFlexApp {
         let column = index % 3;
         let row = index / 3;
         [20.0 + column as f32 * 150.0, 20.0 + row as f32 * 70.0]
+    }
+
+    fn start_timeseries(&mut self) {
+        let Some(model) = self.model else {
+            return;
+        };
+        let interval = (self.series_interval as f64).max(0.1);
+        let stop = model.run.stop_time;
+        let (tx, rx) = channel();
+        self.series_rx = Some(rx);
+        self.series_running = true;
+        self.status = "Sampling time series…".into();
+        std::thread::spawn(move || {
+            let config = SimConfig {
+                stop_time: stop,
+                warmup: model.run.warmup,
+                seed: model.run.seed,
+            };
+            let mut rows = Vec::new();
+            if let Ok(mut handle) = SimulationHandle::new(model, &config, 0) {
+                let mut now = 0.0;
+                while now < stop - 1e-9 {
+                    now = (now + interval).min(stop);
+                    if handle.step_until(now).is_err() {
+                        break;
+                    }
+                    let state = handle.state();
+                    let row = state
+                        .objects
+                        .iter()
+                        .map(|(name, stats)| {
+                            (name.clone(), stats.avg_content.max(stats.content as f64))
+                        })
+                        .collect();
+                    rows.push((state.now, row));
+                }
+            }
+            let _ = tx.send(rows);
+        });
+    }
+
+    fn poll_timeseries(&mut self) {
+        let Some(rx) = self.series_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(rows) => {
+                self.status = format!("Time series: {} samples", rows.len());
+                self.series = rows;
+                self.series_running = false;
+                self.series_rx = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.series_running = false;
+                self.series_rx = None;
+            }
+        }
     }
 
     fn new_handle(&mut self) -> bool {
@@ -1344,6 +1414,7 @@ impl eframe::App for OpenFlexApp {
         self.last_frame = ctx.input(|input| input.stable_dt) as f64;
         self.poll_report();
         self.poll_experiment();
+        self.poll_timeseries();
         if self.report_running || self.exp_running {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -1934,6 +2005,90 @@ impl eframe::App for OpenFlexApp {
                         self.add_connection();
                     }
                 });
+                ui.separator();
+                ui.heading("Time series");
+                ui.horizontal(|ui| {
+                    ui.label("interval");
+                    ui.add(
+                        egui::DragValue::new(&mut self.series_interval)
+                            .speed(0.5)
+                            .range(0.1..=1000.0),
+                    );
+                    if ui
+                        .add_enabled(
+                            self.model.is_some() && !self.series_running,
+                            egui::Button::new(if self.series_running {
+                                "Sampling…"
+                            } else {
+                                "Sample"
+                            }),
+                        )
+                        .clicked()
+                    {
+                        self.start_timeseries();
+                    }
+                });
+                if !self.series.is_empty() {
+                    let names: Vec<String> = self
+                        .series
+                        .first()
+                        .map(|(_, row)| row.iter().map(|(name, _)| name.clone()).collect())
+                        .unwrap_or_default();
+                    if self.series_object.is_empty()
+                        && let Some(first) = names.first()
+                    {
+                        self.series_object = first.clone();
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        for name in &names {
+                            if ui
+                                .selectable_label(&self.series_object == name, name)
+                                .clicked()
+                            {
+                                self.series_object = name.clone();
+                            }
+                        }
+                    });
+                    let (response, painter) = ui.allocate_painter(
+                        egui::vec2(ui.available_width(), 120.0),
+                        egui::Sense::hover(),
+                    );
+                    let rect = response.rect;
+                    painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(24, 26, 30));
+                    let max = self
+                        .series
+                        .iter()
+                        .filter_map(|(_, row)| {
+                            row.iter()
+                                .find(|(name, _)| *name == self.series_object)
+                                .map(|(_, value)| *value)
+                        })
+                        .fold(0.0_f64, f64::max)
+                        .max(1.0);
+                    let total = self.series.len().max(1);
+                    let mut points = Vec::with_capacity(total);
+                    for (index, (_, row)) in self.series.iter().enumerate() {
+                        let value = row
+                            .iter()
+                            .find(|(name, _)| *name == self.series_object)
+                            .map(|(_, value)| *value)
+                            .unwrap_or(0.0);
+                        let x = rect.left() + rect.width() * index as f32 / total as f32;
+                        let y = rect.bottom() - 6.0 - (rect.height() - 12.0) * (value / max) as f32;
+                        points.push(egui::pos2(x, y));
+                    }
+                    for pair in points.windows(2) {
+                        painter.line_segment(
+                            [pair[0], pair[1]],
+                            egui::Stroke::new(1.6_f32, egui::Color32::from_rgb(120, 200, 240)),
+                        );
+                    }
+                    ui.label(
+                        egui::RichText::new(format!("{} · max {:.1}", self.series_object, max))
+                            .weak()
+                            .small(),
+                    );
+                }
                 ui.separator();
                 ui.heading("Report");
                 ui.separator();
