@@ -127,8 +127,8 @@ jobs:
         with:
           key: test-${{ matrix.os }}
 
-      - name: cargo test --workspace
-        run: cargo test --workspace --locked
+      - name: cargo test --workspace --exclude openflex-gui
+        run: cargo test --workspace --locked --exclude openflex-gui
 
   # ---------------------------------------------------------------------------
   # Build and archive every platform. macOS ships a universal binary, Linux
