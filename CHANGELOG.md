@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.53.0 — 2026-11-17
+
+### 桌面 GUI
+
+- **实时可视化**：对象按引擎瞬时 `state` 着色（busy 红 / blocked 橙 / idle 绿 / down 灰 / off-shift 深灰），
+  标签显示瞬时持有件数 `[n]`（回退到 ≈平均 WIP）、顶部进度条（`t/stop`）、状态图例。
+
+### 引擎
+
+- `ObjectStats` 新增 `content: u32`（瞬时持有件数）、`state: Option<State>`、`phase: Option<Phase>`
+  （`#[serde(default)]`，`state/phase` 仅 `Some` 时序列化）；`State`/`Phase` 改为 `pub` + snake_case；
+  `stats()` 与 `stats_at()` 双路径填充。测试 `object_stats_expose_live_content_and_state`。
+
+### 验证
+
+- 489 个测试全绿（core 254、CLI 86、report 14、model 全部）；GUI 编译、clippy 0、启动无 panic。
+- v0.53.0 三平台产物发布并 SHA256 校验。
+
 ## v0.52.0 — 2026-11-17
 
 ### 桌面 GUI

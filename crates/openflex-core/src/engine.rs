@@ -219,7 +219,8 @@ impl FlowItem {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-enum State {
+#[serde(rename_all = "snake_case")]
+pub enum State {
     Idle,
     Busy,
     Blocked,
@@ -508,7 +509,8 @@ struct StateDetail {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-enum Phase {
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
     #[default]
     Idle,
     Setup,
@@ -1224,6 +1226,9 @@ impl ObjectRt {
             throughput: self.acc.output as f64 / denom,
             battery_remaining: self.battery,
             charging_fraction: self.charge_time_total / denom,
+            content: self.content.len() as u32,
+            state: Some(self.state),
+            phase: Some(self.phase),
         }
     }
 
@@ -1258,6 +1263,9 @@ impl ObjectRt {
             throughput: self.acc.output as f64 / denom,
             battery_remaining: self.battery,
             charging_fraction: self.charge_time_total / denom,
+            content: self.content.len() as u32,
+            state: Some(self.state),
+            phase: Some(self.phase),
         }
     }
 }
@@ -10223,5 +10231,43 @@ mod tests {
             battery <= 5.0 + 1e-9,
             "the battery never exceeds its capacity (got {battery})"
         );
+    }
+
+    /// task-145: `stats_at` exposes the live content and state for the GUI.
+    #[test]
+    fn object_stats_expose_live_content_and_state() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "live-stats",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "Q", "kind": "queue", "params": { "max_content": 10 } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "Q" }, { "from": "Q", "to": "K" } ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let queue = sim.by_name["Q"];
+        for _ in 0..3 {
+            let item = item();
+            sim.objects[queue].push_content(sim.now, item);
+        }
+        let stats = sim.objects[queue].stats_at(sim.now, 10.0);
+        assert_eq!(stats.content, 3, "live content");
+        assert_eq!(stats.state, Some(State::Idle), "state before any flow");
+        assert_eq!(stats.phase, Some(Phase::Idle));
+
+        sim.set_state(queue, State::Busy);
+        let stats = sim.objects[queue].stats_at(sim.now, 10.0);
+        assert_eq!(stats.state, Some(State::Busy), "state follows the engine");
+        assert_eq!(stats.content, 3, "content is unaffected by the state");
     }
 }

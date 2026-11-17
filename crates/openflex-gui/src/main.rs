@@ -850,6 +850,36 @@ impl OpenFlexApp {
         center + egui::vec2(rx, ry * sin_pitch - z * cos_pitch)
     }
 
+    /// Fill colour of an object while a simulation is running: the dominant
+    /// state (busy/blocked/down/off-shift/idle) wins over the kind colour.
+    fn state_fill(stats: &openflex_core::stats::ObjectStats) -> egui::Color32 {
+        // Prefer the instantaneous state reported by the engine (task-145).
+        if let Some(state) = stats.state {
+            return match state {
+                openflex_core::engine::State::Busy => egui::Color32::from_rgb(214, 96, 70),
+                openflex_core::engine::State::Blocked => egui::Color32::from_rgb(214, 160, 60),
+                openflex_core::engine::State::Down => egui::Color32::from_rgb(120, 120, 120),
+                openflex_core::engine::State::OffShift => egui::Color32::from_rgb(80, 80, 90),
+                openflex_core::engine::State::Idle => egui::Color32::from_rgb(80, 160, 110),
+            };
+        }
+        let times = &stats.state_times;
+        let entries = [
+            (times.busy, egui::Color32::from_rgb(214, 96, 70)),
+            (times.blocked, egui::Color32::from_rgb(214, 160, 60)),
+            (times.down, egui::Color32::from_rgb(120, 120, 120)),
+            (times.off_shift, egui::Color32::from_rgb(80, 80, 90)),
+            (times.idle, egui::Color32::from_rgb(80, 160, 110)),
+        ];
+        let mut best = entries[4];
+        for entry in entries.iter() {
+            if entry.0 > best.0 {
+                best = *entry;
+            }
+        }
+        best.1
+    }
+
     fn kind_color(kind: ObjectKind) -> egui::Color32 {
         match kind {
             ObjectKind::Source => egui::Color32::from_rgb(70, 150, 100),
@@ -946,6 +976,18 @@ impl eframe::App for OpenFlexApp {
                 }
                 if ui.button("Reset").clicked() {
                     self.reset_run();
+                }
+                if let (Some(state), Some(model)) = (self.sim_state.as_ref(), self.model) {
+                    let progress = if model.run.stop_time > 0.0 {
+                        (state.now / model.run.stop_time).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    ui.add(
+                        egui::ProgressBar::new(progress as f32)
+                            .desired_width(140.0)
+                            .text(format!("{:.1}/{:.1}", state.now, model.run.stop_time)),
+                    );
                 }
                 ui.separator();
                 ui.label("Step");
@@ -1285,21 +1327,36 @@ impl eframe::App for OpenFlexApp {
                 let size = egui::vec2(38.0, 18.0) * self.zoom;
                 let box_rect = egui::Rect::from_center_size(base, size);
                 let selected = self.selected == Some(index);
-                let fill = if selected {
-                    egui::Color32::from_rgb(255, 190, 80)
-                } else {
-                    Self::kind_color(object.kind)
+                let live = self
+                    .sim_state
+                    .as_ref()
+                    .and_then(|state| state.objects.get(&object.name));
+                let mut fill = match live {
+                    Some(stats) => Self::state_fill(stats),
+                    None => Self::kind_color(object.kind),
                 };
+                if selected {
+                    fill = egui::Color32::from_rgb(255, 190, 80);
+                }
                 painter.rect_filled(box_rect, 3.0, fill);
                 painter.rect_stroke(
                     box_rect,
                     3.0,
                     egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(20, 24, 30)),
                 );
+                let caption = match live {
+                    Some(stats) if stats.content > 0 => {
+                        format!("{}  [{}]", object.name, stats.content)
+                    }
+                    Some(stats) if stats.avg_content > 0.0 => {
+                        format!("{}  ≈{:.0}", object.name, stats.avg_content)
+                    }
+                    _ => object.name.clone(),
+                };
                 painter.text(
                     box_rect.center_top() - egui::vec2(0.0, 4.0),
                     egui::Align2::CENTER_BOTTOM,
-                    &object.name,
+                    &caption,
                     egui::FontId::proportional(12.0),
                     egui::Color32::WHITE,
                 );
@@ -1310,12 +1367,26 @@ impl eframe::App for OpenFlexApp {
                     self.select(index);
                 }
             }
-            ui.label(
-                egui::RichText::new(
-                    "drag to rotate · wheel to zoom · click an object to edit · Step/Play drive the engine",
-                )
-                .color(egui::Color32::from_gray(140)),
-            );
+            ui.horizontal(|ui| {
+                let legend = [
+                    ("busy", egui::Color32::from_rgb(214, 96, 70)),
+                    ("blocked", egui::Color32::from_rgb(214, 160, 60)),
+                    ("idle", egui::Color32::from_rgb(80, 160, 110)),
+                    ("down", egui::Color32::from_rgb(120, 120, 120)),
+                ];
+                for (name, color) in legend {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 2.0, color);
+                    ui.label(egui::RichText::new(name).small());
+                }
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(
+                        "drag to rotate · wheel to zoom · click an object to edit · Step/Play drive the engine",
+                    )
+                    .color(egui::Color32::from_gray(140)),
+                );
+            });
         });
     }
 }

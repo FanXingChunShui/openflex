@@ -7,6 +7,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use openflex_model::{ObjectKind, RunSettings, TimeUnit};
+
+use crate::engine::{Phase, State};
 use serde::{Deserialize, Serialize};
 
 /// Simulation clock configuration for one replication.
@@ -153,6 +155,15 @@ pub struct ObjectStats {
     /// task-130: share of the simulated time spent charging (AGVs).
     #[serde(default)]
     pub charging_fraction: f64,
+    /// task-145: instantaneous number of items held (live view for the GUI).
+    #[serde(default)]
+    pub content: u32,
+    /// task-145: instantaneous object state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<State>,
+    /// task-145: instantaneous processor phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Phase>,
 }
 
 impl Default for ObjectStats {
@@ -169,6 +180,9 @@ impl Default for ObjectStats {
             throughput: 0.0,
             battery_remaining: None,
             charging_fraction: 0.0,
+            content: 0,
+            state: None,
+            phase: None,
         }
     }
 }
