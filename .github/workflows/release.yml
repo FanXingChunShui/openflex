@@ -576,7 +576,7 @@ jobs:
             --version "$VERSION" --arch "${{ matrix.arch }}" \
             --binary "target/${{ matrix.target }}/release/openflex-gui" --out-dir dist
           cd dist
-          sha256sum *.deb *.rpm | awk '{printf "%s  %s\n", $1, $2}' > SHA256SUMS-gui.txt
+          sha256sum *.deb *.rpm | awk '{printf "%s  %s\n", $1, $2}' > SHA256SUMS-gui-${{ matrix.kind }}.txt
 
       - name: Install WiX
         if: matrix.kind == 'windows'
@@ -600,7 +600,7 @@ jobs:
             -arch x64 `
             -o "dist\openflex-gui-$env:VERSION-windows-x64.msi"
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "dist\openflex-gui-$env:VERSION-windows-x64.msi").Hash.ToLowerInvariant()
-          Add-Content -LiteralPath 'dist\SHA256SUMS-gui.txt' -Value "$hash  openflex-gui-$env:VERSION-windows-x64.msi"
+          Add-Content -LiteralPath 'dist\SHA256SUMS-gui-${{ matrix.kind }}.txt' -Value "$hash  openflex-gui-$env:VERSION-windows-x64.msi"
 
       - name: Package .app
         if: matrix.kind == 'macos'
@@ -612,7 +612,7 @@ jobs:
           CARGO_INCREMENTAL=0 bash scripts/package-gui-app.sh \
             --target "${{ matrix.target }}" --out dist
           cd dist
-          shasum -a 256 *.zip | awk '{printf "%s  %s\n", $1, $2}' > SHA256SUMS-gui.txt
+          shasum -a 256 *.zip | awk '{printf "%s  %s\n", $1, $2}' > SHA256SUMS-gui-${{ matrix.kind }}.txt
 
       - name: Upload GUI packages
         uses: actions/upload-artifact@v4
@@ -623,7 +623,7 @@ jobs:
             dist/*.rpm
             dist/*.msi
             dist/*.zip
-            dist/SHA256SUMS-gui.txt
+            dist/SHA256SUMS-gui-${{ matrix.kind }}.txt
           if-no-files-found: error
           retention-days: 7
 
