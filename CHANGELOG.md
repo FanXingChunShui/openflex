@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.78.0 — 2026-11-19
+
+### 渲染一致性
+
+- **Studio WebGL 3D 支持 `Object.rot`**：立方体角点在物体空间旋转后再平移，与 2D/Canvas 3D 路径一致。
+- **等轴测 SVG 支持旋转**：`openflex layout --svg`（isometric）直接旋转 footprint 角点，
+  `--html` 交互预览（含帧动画）继承同一份 SVG。
+
+### 验证
+
+- `node --check`（Studio 脚本）通过；工作区 490 项测试全绿；CLI clippy 0、fmt 干净。
+- 实测 `rot: 30` 模型：平面 SVG 输出 `rotate(30.0 …)`，`--html` 含 4 处 `rotate(`。
+- v0.78.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.77.0 — 2026-11-19
 
 ### 浏览器 Studio

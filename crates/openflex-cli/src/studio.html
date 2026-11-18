@@ -3527,9 +3527,15 @@ function drawWebGL(now) {
     const x = centerPoint[0];
     const y = centerPoint[1];
     const corners = [];
+    const rotRad = Number(object.rot || 0) * Math.PI / 180;
+    const cosRot = Math.cos(rotRad);
+    const sinRot = Math.sin(rotRad);
     for (const cz of [z, z + objectHeight]) {
       for (const [dx, dy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
-        corners.push([x + dx * size / 2, y + dy * depth / 2, cz]);
+        // Rotate the footprint corner in object space before translating.
+        const lx = dx * size / 2;
+        const ly = dy * depth / 2;
+        corners.push([x + lx * cosRot - ly * sinRot, y + lx * sinRot + ly * cosRot, cz]);
       }
     }
     const labelWorld = [x, y, z + objectHeight * 1.25];

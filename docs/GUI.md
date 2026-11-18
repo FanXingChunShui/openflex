@@ -59,8 +59,10 @@ wix build packaging\windows\openflex-gui.wxs -d Version=<ver> ^
 
 - 桌面 GUI：右键对象菜单 `-15° / +15° / 0°`；
 - 浏览器 Studio：对象编辑面板的 `rot°` 输入框；
-- 两者都会在 2D 俯视与 3D 视图中按角度旋转 footprint（桌面版额外把前/右侧面挤出做出立体感）；
-- `openflex layout --svg` 用 `<g transform="rotate(deg cx cy)">` 输出，可与模型一起进版本库。
+- 渲染路径全部按角度旋转 footprint：桌面 GUI（旋转 + 侧面挤出）、Studio **2D 俯视**、Studio **3D Canvas**、
+  Studio **WebGL 3D**（角点在物体空间旋转后投影）；桌面版额外把前/右侧面挤出做出立体感；
+- `openflex layout --svg` 平面视图用 `<g transform="rotate(deg cx cy)">`，等轴测视图直接旋转 footprint 角点，
+  `--html` 交互预览继承同一份 SVG，可随模型一起进版本库。
 
 ## 与 FlexSim 桌面界面差距（按优先级）
 

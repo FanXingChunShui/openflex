@@ -257,12 +257,25 @@ pub fn to_svg_3d(model: &Model, width: u32, height: u32, frame: Option<Frame>) -
         let half_w = footprint_w / 2.0;
         let half_d = footprint_d / 2.0;
         let box_height = object_height(model, object) * HEIGHT_SCALE;
+        let rot = object.rot.unwrap_or(0.0).to_radians();
+        let (sin_rot, cos_rot) = rot.sin_cos();
         let corners = |z: f64| {
+            // Rotate the footprint in object space so the isometric view
+            // honours `Object.rot` just like the flat view does.
+            let corner = |dx: f64, dy: f64| {
+                let lx = dx * half_w;
+                let ly = dy * half_d;
+                isometric(
+                    cx + lx * cos_rot - ly * sin_rot,
+                    cy + lx * sin_rot + ly * cos_rot,
+                    z,
+                )
+            };
             [
-                isometric(cx - half_w, cy - half_d, z),
-                isometric(cx + half_w, cy - half_d, z),
-                isometric(cx + half_w, cy + half_d, z),
-                isometric(cx - half_w, cy + half_d, z),
+                corner(-1.0, -1.0),
+                corner(1.0, -1.0),
+                corner(1.0, 1.0),
+                corner(-1.0, 1.0),
             ]
         };
         let bottom = corners(0.0);
