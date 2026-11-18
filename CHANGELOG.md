@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.69.0 — 2026-11-18
+
+### 桌面 GUI
+
+- **Pareto 前沿**：勾选第二目标（max stay）后，优化结果下方绘制散点图（x = max stay、y = completed），
+  非支配解用琥珀色高亮并统计数量（`Pareto front: n of m points`）。
+
+### 验证
+
+- 490 个测试全绿（core 255、CLI 86、report 14、model 全部）；GUI 编译、clippy 0、启动无 panic。
+- v0.69.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.68.0 — 2026-11-18
 
 ### 桌面 GUI

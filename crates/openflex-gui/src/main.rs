@@ -1490,6 +1490,24 @@ impl OpenFlexApp {
         }
     }
 
+    /// Indices of the non-dominated rows: higher `completed` and lower
+    /// secondary value. Used for the Pareto scatter plot.
+    fn pareto_front(rows: &[OptRow]) -> Vec<usize> {
+        let mut front = Vec::new();
+        for (index, (_, score, second)) in rows.iter().enumerate() {
+            let dominated = rows.iter().enumerate().any(|(other_index, (_, s2, sec2))| {
+                other_index != index
+                    && s2 >= score
+                    && sec2 <= second
+                    && (s2 > score || sec2 < second)
+            });
+            if !dominated {
+                front.push(index);
+            }
+        }
+        front
+    }
+
     fn new_handle(&mut self) -> bool {
         let Some(model) = self.model else {
             return false;
@@ -2683,6 +2701,55 @@ impl eframe::App for OpenFlexApp {
                                 ui.end_row();
                             }
                         });
+                }
+                if self.opt_secondary_stay && !self.opt_rows.is_empty() {
+                    let front = Self::pareto_front(&self.opt_rows);
+                    let (response, painter) = ui.allocate_painter(
+                        egui::vec2(ui.available_width(), 130.0),
+                        egui::Sense::hover(),
+                    );
+                    let rect = response.rect;
+                    painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(24, 26, 30));
+                    let max_score = self
+                        .opt_rows
+                        .iter()
+                        .map(|(_, score, _)| *score)
+                        .fold(0.0_f64, f64::max)
+                        .max(1e-9);
+                    let max_second = self
+                        .opt_rows
+                        .iter()
+                        .map(|(_, _, second)| *second)
+                        .fold(0.0_f64, f64::max)
+                        .max(1e-9);
+                    for (index, (_, score, second)) in self.opt_rows.iter().enumerate() {
+                        let x = rect.left()
+                            + 6.0
+                            + (rect.width() - 12.0) * (*second / max_second) as f32;
+                        let y = rect.bottom()
+                            - 6.0
+                            - (rect.height() - 12.0) * (*score / max_score) as f32;
+                        let point = egui::pos2(x, y);
+                        let on_front = front.contains(&index);
+                        painter.circle_filled(
+                            point,
+                            if on_front { 4.0 } else { 2.5 },
+                            if on_front {
+                                egui::Color32::from_rgb(255, 190, 80)
+                            } else {
+                                egui::Color32::from_rgb(110, 130, 150)
+                            },
+                        );
+                    }
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Pareto front: {} of {} points (x = max stay, y = completed)",
+                            front.len(),
+                            self.opt_rows.len()
+                        ))
+                        .weak()
+                        .small(),
+                    );
                 }
             });
 
