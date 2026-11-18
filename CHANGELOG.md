@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.84.0 — 2026-11-19
+
+### 引擎（Person）
+
+- **逐格返回 home**（task-150）：`grid_step` 的人完成服务后按 A* 路径**逐格走回 home**，走完才 `settle_task`；
+  `ObjectRt.person_returning` 标记回程、复用逐格占用等待；无 grid 或无 home 时保持一次性 travel（零回归）。
+- 新增单元测试 `person_grid_step_walks_home_cell_by_cell`：释放后进入回程、路径非空、逐事件走完后位置回到 home 且任务结算。
+
+### 验证
+
+- `cargo test --workspace --locked --exclude openflex-gui`：**497 passed**（30 个 test 结果行）。
+- core `clippy` 0、`fmt` 干净；v0.84.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.83.0 — 2026-11-19
 
 ### 引擎（AGV）

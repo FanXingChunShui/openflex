@@ -786,6 +786,10 @@ pub(crate) struct ObjectRt {
     /// task-149: model time at which this AGV started waiting at a charger.
     #[serde(default)]
     charge_queue_since: Option<f64>,
+    /// task-150: a step-by-step person is walking back home; settle the task
+    /// when the path runs out.
+    #[serde(default)]
+    person_returning: bool,
     /// Distance accumulated by the current task (battery drain).
     #[serde(default)]
     task_distance: f64,
@@ -880,6 +884,7 @@ impl ObjectRt {
             charging: false,
             charge_until: 0.0,
             charge_queue_since: None,
+            person_returning: false,
             task_distance: 0.0,
             capacity: 1,
             tasks: 0,
@@ -6709,6 +6714,16 @@ impl<'m> Simulation<'m> {
                 self.objects[transporter].z = self.objects[requester].z;
                 return self.handle_transport_arrive(transporter, requester);
             }
+            if self.objects[transporter].person_returning {
+                // task-150: the walk home finished; snap onto the home object
+                // and settle the task like the single-leg path does.
+                self.objects[transporter].person_returning = false;
+                if let Some(home) = self.objects[transporter].home {
+                    self.objects[transporter].position = self.objects[home].position;
+                    self.objects[transporter].z = self.objects[home].z;
+                }
+                return self.settle_task(transporter);
+            }
             return Ok(());
         }
         let step = self.person_step_duration(transporter);
@@ -7144,6 +7159,30 @@ impl<'m> Simulation<'m> {
         transporter: usize,
         requester: usize,
     ) -> Result<(), SimError> {
+        // task-150: people with `grid_step` also walk home cell by cell.
+        if self.person_grid_step(transporter)
+            && self.objects[transporter].kind == ObjectKind::Person
+            && self.objects[transporter].home.is_some()
+            && let Some(grid) = self.model.grid.clone()
+        {
+            let home = self.objects[transporter].home.expect("checked above");
+            let from = self.objects[requester].position;
+            let to = self.objects[home].position;
+            if let Some(path) = grid_path(&grid, from, to)
+                && path.len() > 1
+            {
+                let size = grid.cell_size.max(EPS);
+                self.objects[transporter].person_path = path
+                    .into_iter()
+                    .skip(1)
+                    .map(|[x, y]| [(x as f64 + 0.5) * size, (y as f64 + 0.5) * size])
+                    .collect();
+                self.objects[transporter].person_target = None;
+                self.objects[transporter].person_returning = true;
+                self.objects[transporter].position = from;
+                return self.schedule_person_step(transporter);
+            }
+        }
         let speed = self.transport_speed(transporter);
         let home_travel = self.objects[transporter]
             .home
@@ -10159,6 +10198,68 @@ mod tests {
         }}"#
         ))
         .expect("model")
+    }
+
+    /// task-150: the walk home is also split into cells when `grid_step` is on.
+    #[test]
+    fn person_grid_step_walks_home_cell_by_cell() {
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        // A dedicated model: the shared helper's source has a zero
+        // inter-arrival, which is fine for single-event tests but not for a
+        // loop that steps through the calendar.
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "person-walk-home",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "grid": { "width": 10, "height": 10, "cell_size": 1.0 },
+          "objects": [
+            { "name": "D", "kind": "dispatcher", "pos": [0.5, 0.5], "params": {} },
+            { "name": "P", "kind": "processor", "pos": [4.5, 0.5], "params": {} },
+            { "name": "E", "kind": "person", "pos": [0.5, 0.5],
+              "params": { "speed": 1.0, "home": "D", "grid_step": true } },
+            { "name": "S", "kind": "source", "params": { "max_arrivals": 1, "interarrival": { "distribution": "constant", "value": 1.0 } } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+        )
+        .expect("model");
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let person = sim.by_name["E"];
+        let requester = sim.by_name["P"];
+        let home = sim.by_name["D"];
+        // Pretend the person just finished a task at the requester.
+        sim.objects[person].position = sim.objects[requester].position;
+        sim.objects[person].tasks = 1;
+        sim.objects[person].serving_requester = Some(requester);
+
+        sim.handle_operator_released(person, requester)
+            .expect("release");
+        assert!(
+            sim.objects[person].person_returning,
+            "the return leg should be a step-by-step walk"
+        );
+        assert!(
+            !sim.objects[person].person_path.is_empty(),
+            "the home path should be queued"
+        );
+
+        // Walk every cell: after the last one the task settles at the home.
+        let mut guard = 0;
+        while sim.objects[person].person_returning && guard < 200 {
+            sim.step_one_event().expect("step");
+            guard += 1;
+        }
+        assert!(!sim.objects[person].person_returning, "return finished");
+        assert!(
+            distance(sim.objects[person].position, sim.objects[home].position) < 0.5,
+            "the person should be back home"
+        );
+        assert_eq!(sim.objects[person].tasks, 0, "the task settled");
     }
 
     /// task-124: with `grid_step` the pickup leg is split into cells whose
