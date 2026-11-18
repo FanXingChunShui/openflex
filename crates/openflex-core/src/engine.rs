@@ -5676,11 +5676,14 @@ impl<'m> Simulation<'m> {
                         .fluid
                         .as_ref()
                         .is_some_and(|fluid| fluid.state[position].valve_open);
-                    let offered = if was_open {
-                        entering * params.ratio.clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    };
+                    // task-86: the effective opening combines `ratio` with the
+                    // `opening`/`open_curve` characteristic when given.
+                    let fraction = valve_effective_fraction(
+                        params.ratio,
+                        params.opening,
+                        params.open_curve.as_ref(),
+                    );
+                    let offered = if was_open { entering * fraction } else { 0.0 };
                     let sent = distribute_fluid(
                         &links,
                         &outgoing[position],
@@ -8869,6 +8872,34 @@ fn is_fluid_kind(kind: ObjectKind) -> bool {
 /// The Darcy law applies when the pipe declares `diameter`, `friction_factor`
 /// and `density` **and** a pressure difference is available; otherwise the
 /// caller's linear `flow_rate` fallback is returned unchanged.
+/// Effective opening fraction of a valve from its `opening`/`open_curve`.
+///
+/// `Linear` scales the area with the opening; `EqualPercentage` uses the
+/// standard `R^(x-1)` characteristic (rangeability `R = 50`), normalised so a
+/// fully open valve passes everything and a closed one nothing.
+fn valve_effective_fraction(
+    ratio: f64,
+    opening: Option<f64>,
+    curve: Option<&openflex_model::ValveOpeningCurve>,
+) -> f64 {
+    let ratio = ratio.clamp(0.0, 1.0);
+    let Some(opening) = opening else {
+        return ratio;
+    };
+    let opening = opening.clamp(0.0, 1.0);
+    if opening <= 0.0 {
+        return 0.0;
+    }
+    let characteristic = match curve {
+        Some(openflex_model::ValveOpeningCurve::EqualPercentage) => {
+            const RANGEABILITY: f64 = 50.0;
+            RANGEABILITY.powf(opening - 1.0)
+        }
+        _ => opening,
+    };
+    (ratio * characteristic).clamp(0.0, 1.0)
+}
+
 fn pipe_capacity(
     pipe: &openflex_model::FluidPipeParams,
     delta_p: Option<f64>,

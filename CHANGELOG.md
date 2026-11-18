@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.80.0 — 2026-11-19
+
+### 引擎（Fluid）
+
+- **阀门开度曲线接线**（task-86）：新增 `valve_effective_fraction(ratio, opening, curve)`——
+  `linear` 按开度线性缩放，`equal_percentage` 用标准 `R^(x-1)`（R = 50）归一化，二者与 `ratio` 相乘并夹紧到 0..1；
+  阀门传输量由该有效开度决定。
+- 新增集成测试 `crates/openflex-core/tests/valve_opening.rs`（4 项）：
+  全开 ≈10/s、线性 50% ≈5/s、等百分比 50% ≈1.4/s、同开度下等百分比低于线性。
+
+### 验证
+
+- `cargo test --workspace --locked --exclude openflex-gui`：**494 passed**（30 个 test 结果行）。
+- core `clippy` 0、`fmt` 干净；v0.80.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.79.0 — 2026-11-19
 
 ### 编辑体验
