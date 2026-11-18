@@ -122,6 +122,38 @@ fn parse_params(kind: ObjectKind, value: serde_json::Value) -> Result<ObjectPara
 // Kind-aware parameter forms
 // ---------------------------------------------------------------------------
 
+/// Object kinds offered by the "add object" picker (same names as the model).
+const KINDS: &[&str] = &[
+    "source",
+    "queue",
+    "processor",
+    "multi_processor",
+    "sink",
+    "conveyor",
+    "combiner",
+    "separator",
+    "merge",
+    "split",
+    "rack",
+    "resource",
+    "dispatcher",
+    "transporter",
+    "person",
+    "agv",
+    "elevator",
+    "robot",
+    "crane",
+    "asrs_vehicle",
+    "escalator",
+    "basic_fr",
+    "basic_te",
+    "fluid_generator",
+    "fluid_tank",
+    "fluid_valve",
+    "fluid_sink",
+    "fluid_pipe",
+];
+
 const DIST_CHOICES: &[&str] = &[
     "constant",
     "uniform",
@@ -764,6 +796,8 @@ struct OpenFlexApp {
     batch_dx: f32,
     batch_dy: f32,
     batch_rot: f32,
+    new_kind: String,
+    new_name: String,
     search: String,
     yaw: f32,
     pitch: f32,
@@ -841,6 +875,8 @@ impl OpenFlexApp {
             batch_dx: 0.0,
             batch_dy: 0.0,
             batch_rot: 0.0,
+            new_kind: "processor".to_string(),
+            new_name: String::new(),
             search: String::new(),
             yaw: -0.6,
             pitch: 0.5,
@@ -1676,6 +1712,77 @@ impl OpenFlexApp {
                 self.model = Some(Box::leak(Box::new(copy)));
                 self.status = format!("{name} rotated to {stored:.0}°");
                 self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    /// Adds an object of the chosen kind with engine-safe default parameters.
+    fn add_object(&mut self, kind_name: &str) {
+        let Some(kind) = ObjectKind::parse(kind_name) else {
+            self.error = Some(format!("unknown object kind '{kind_name}'"));
+            return;
+        };
+        let Some(model) = self.model else {
+            self.error = Some("open a model first".into());
+            return;
+        };
+        let name = if self.new_name.trim().is_empty() {
+            let mut suffix = 1;
+            loop {
+                let candidate = format!("{}{suffix}", kind.as_str());
+                if !model.objects.iter().any(|object| object.name == candidate) {
+                    break candidate;
+                }
+                suffix += 1;
+            }
+        } else {
+            let candidate = self.new_name.trim().to_string();
+            if model.objects.iter().any(|object| object.name == candidate) {
+                self.error = Some(format!("an object named '{candidate}' already exists"));
+                return;
+            }
+            candidate
+        };
+        let params_json = if kind == ObjectKind::Source {
+            serde_json::json!({ "interarrival": { "distribution": "constant", "value": 5.0 } })
+        } else {
+            serde_json::json!({})
+        };
+        let params = match parse_params(kind, params_json) {
+            Ok(params) => params,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
+        let max_x = model
+            .objects
+            .iter()
+            .map(|object| object.pos[0])
+            .fold(-8.0_f64, f64::max);
+        self.snapshot();
+        let mut copy = model.clone();
+        copy.objects.push(openflex_model::model::Object {
+            name: name.clone(),
+            kind,
+            pos: [max_x + 4.0, 0.0],
+            z: 0.0,
+            rot: None,
+            params,
+        });
+        match copy.validate() {
+            Ok(()) => {
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.new_name.clear();
+                self.status = format!("Added {name}");
+                self.error = None;
+                if let Some(index) = self
+                    .model
+                    .and_then(|model| model.objects.iter().position(|object| object.name == name))
+                {
+                    self.select(index);
+                }
             }
             Err(error) => self.error = Some(error.to_string()),
         }
@@ -2587,6 +2694,26 @@ impl eframe::App for OpenFlexApp {
                             .hint_text("filter")
                             .desired_width(110.0),
                     );
+                });
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("new-kind")
+                        .selected_text(self.new_kind.clone())
+                        .show_ui(ui, |ui| {
+                            for kind in KINDS {
+                                if ui.selectable_label(self.new_kind == *kind, *kind).clicked() {
+                                    self.new_kind = (*kind).to_string();
+                                }
+                            }
+                        });
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.new_name)
+                            .hint_text("name (optional)")
+                            .desired_width(110.0),
+                    );
+                    if ui.button("Add").clicked() {
+                        let kind = self.new_kind.clone();
+                        self.add_object(&kind);
+                    }
                 });
                 ui.separator();
                 let Some(model) = self.model else {
