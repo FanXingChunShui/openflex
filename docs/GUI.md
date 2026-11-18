@@ -16,7 +16,7 @@ cargo build -p openflex-gui --release
 | 快捷键 | `Ctrl/Cmd+O` 打开、`Ctrl/Cmd+N` 新建、`Ctrl/Cmd+S` 保存、`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 重做、`Space` 播放/暂停、`R` 重置、`F1` 快捷键帮助对话框 |
 | 对象菜单 | 3D 视图**右键对象**：Focus camera（居中）、Reset position（z 归零）、**旋转 -15°/+15°/0°**（写 `Object.rot`，入撤销栈）、Delete object（删除并清理连接），均走校验 |
 | 模型树 | 按 kind 分组（可折叠）、名称/kind 过滤、点击选中 |
-| 多选与批量 | 3D 视图**拖框多选**（Shift 追加），选中集合高亮；批量 **Align X/Y**（以首个为基准）、**Delete**（清理连接）、**按 dx/dy 移动**、**Clear** |
+| 多选与批量 | 3D 视图**拖框多选**（Shift 追加），选中集合高亮；批量 **Align X/Y**（以首个为基准）、**Delete**（清理连接）、**按 dx/dy 移动**、**统一设置 rot°**、**Clear** |
 | 对象编辑 | `x/y/z` 拖拽数值、**按 kind 的参数表单**（Distribution 类型下拉 + 数值：source/queue/processor/conveyor/resource/transporter/person/robot/crane/asrs/agv）、Apply 校验后提交；JSON 高级模式（复选框） |
 | 连接编辑 | 列表 + 删除、from/to/port 添加（校验后原子替换模型） |
 | 3D 视图 | 透视投影、**地面网格**、对象地面阴影、按 kind 着色、连接线、选中高亮、拖拽旋转、滚轮缩放、点击选中、**相机预设 Iso/Top/Front/Side**、**按 kind 的几何体与明暗**（机台带顶板与指示灯、传送带带方向箭头、货架分层、源/汇圆鼓、人员/车辆胶囊、流体罐带液位、其余盒体）、**可旋转 footprint + 侧面挤出**（右键对象菜单 -15°/+15°/0°，写入 `Object.rot` 并随模型保存）、右侧挤出面模拟立体感 |
@@ -57,8 +57,8 @@ wix build packaging\windows\openflex-gui.wxs -d Version=<ver> ^
 
 `Object.rot`（度，逆时针）是模型字段，两套 UI 都读写它：
 
-- 桌面 GUI：右键对象菜单 `-15° / +15° / 0°`；
-- 浏览器 Studio：对象编辑面板的 `rot°` 输入框；
+- 桌面 GUI：右键对象菜单 `-15° / +15° / 0°`，或多选后在批量面板填 `rotate to` 统一设置；
+- 浏览器 Studio：对象编辑面板的 `rot°` 输入框，或多选后批量编辑的 `rot°`；
 - 渲染路径全部按角度旋转 footprint：桌面 GUI（旋转 + 侧面挤出）、Studio **2D 俯视**、Studio **3D Canvas**、
   Studio **WebGL 3D**（角点在物体空间旋转后投影）；桌面版额外把前/右侧面挤出做出立体感；
 - `openflex layout --svg` 平面视图用 `<g transform="rotate(deg cx cy)">`，等轴测视图直接旋转 footprint 角点，

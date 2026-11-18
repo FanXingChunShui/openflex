@@ -763,6 +763,7 @@ struct OpenFlexApp {
     marquee_start: Option<egui::Pos2>,
     batch_dx: f32,
     batch_dy: f32,
+    batch_rot: f32,
     search: String,
     yaw: f32,
     pitch: f32,
@@ -839,6 +840,7 @@ impl OpenFlexApp {
             marquee_start: None,
             batch_dx: 0.0,
             batch_dy: 0.0,
+            batch_rot: 0.0,
             search: String::new(),
             yaw: -0.6,
             pitch: 0.5,
@@ -1734,6 +1736,34 @@ impl OpenFlexApp {
                         .map(|model| EditForm::from_object(&model.objects[index]))
                 });
                 self.status = format!("Moved {} object(s)", self.selection.len());
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    /// Sets the same rotation on every selected object (0 clears the field).
+    fn batch_rotate(&mut self) {
+        let Some(model) = self.model else {
+            return;
+        };
+        if self.selection.is_empty() {
+            return;
+        }
+        let value = self.batch_rot.rem_euclid(360.0) as f64;
+        self.snapshot();
+        let mut copy = model.clone();
+        for index in self.selection.clone() {
+            copy.objects[index].rot = if value.abs() < 0.01 {
+                None
+            } else {
+                Some(value)
+            };
+        }
+        match copy.validate() {
+            Ok(()) => {
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.status = format!("Rotated {} object(s) to {value:.0}°", self.selection.len());
                 self.error = None;
             }
             Err(error) => self.error = Some(error.to_string()),
@@ -2653,7 +2683,7 @@ impl eframe::App for OpenFlexApp {
                         }
                     }
                 }
-                if self.selection.len() > 1 {
+                if !self.selection.is_empty() {
                     ui.separator();
                     ui.heading(format!("{} objects selected", self.selection.len()));
                     ui.horizontal(|ui| {
@@ -2685,6 +2715,18 @@ impl eframe::App for OpenFlexApp {
                         );
                         if ui.small_button("Apply").clicked() {
                             self.batch_move();
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("rotate to");
+                        ui.add(
+                            egui::DragValue::new(&mut self.batch_rot)
+                                .speed(15.0)
+                                .range(-360.0..=360.0)
+                                .suffix("°"),
+                        );
+                        if ui.small_button("Apply").clicked() {
+                            self.batch_rotate();
                         }
                     });
                 }

@@ -281,8 +281,9 @@
           <label>X <input id="batch-x" type="number" step="any" value="0"></label>
           <label>Y <input id="batch-y" type="number" step="any" value="0"></label>
           <label>Z <input id="batch-z" type="number" step="any" value="0"></label>
+          <label>rot° <input id="batch-rot" type="number" step="15" value="0" title="rotation applied to every selected object"></label>
         </div>
-        <button id="apply-batch-pos" type="button">Apply position/Z</button>
+        <button id="apply-batch-pos" type="button">Apply position/Z/rot</button>
       </div>
       <button id="revert-object" type="button">Revert</button>
       <button id="delete-object" class="danger" type="button">Delete</button>
@@ -3153,16 +3154,19 @@ function applyBatchPosition() {
   const x = Number($("batch-x").value) || 0;
   const y = Number($("batch-y").value) || 0;
   const z = Number($("batch-z").value) || 0;
+  const rot = Number($("batch-rot")?.value);
   indices.forEach(index => {
     const object = state.model.objects[index];
     if (!object) return;
     object.pos = [x, y];
     object.z = z;
+    if (Number.isFinite(rot) && Math.abs(rot % 360) > 0.01) object.rot = rot;
+    else delete object.rot;
   });
   renderAll();
   updateObjectCoords();
   recordHistory("batch edit", `set pos/z on ${indices.length} objects`);
-  setStatus(`batch set ${indices.length} object(s) to pos (${x}, ${y}), z=${z} (unsaved)`);
+  setStatus(`batch set ${indices.length} object(s) to pos (${x}, ${y}), z=${z}, rot=${Number.isFinite(rot) ? rot : 0}° (unsaved)`);
 }
 
 function project(x, y, z, centerX, centerY, scale, span) {
