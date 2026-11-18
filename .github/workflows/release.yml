@@ -536,9 +536,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          # "macos-universal" is a pseudo-target; the macOS steps add the two
-          # real Apple targets themselves before building.
-          targets: ${{ matrix.kind == 'macos' && '' || matrix.target }}
+          # No `targets:` here: the Linux/Windows jobs build for the host, and
+          # the macOS job adds the two real Apple targets before building (it
+          # uses "macos-universal" only as a matrix label).
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
