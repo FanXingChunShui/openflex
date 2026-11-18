@@ -1407,6 +1407,7 @@ function renderEditor() {
     <div class="row">
       <label>pos x <input id="edit-pos-x" type="number" step="any" value="${Number((object.pos || [0, 0])[0])}"></label>
       <label>pos y <input id="edit-pos-y" type="number" step="any" value="${Number((object.pos || [0, 0])[1])}"></label>
+      <label>rot° <input id="edit-rot" type="number" step="15" value="${Number(object.rot || 0)}" title="planar rotation in degrees (counter-clockwise)"></label>
     </div>`;
   $("object-actions").hidden = false;
   $("edit-params").value = JSON.stringify(object.params || {}, null, 2);
@@ -1431,8 +1432,11 @@ function renderEditor() {
     }
     target.kind = $("edit-kind").value;
     target.pos = [Number($("edit-pos-x").value) || 0, Number($("edit-pos-y").value) || 0];
+    const rot = Number($("edit-rot").value);
+    if (Number.isFinite(rot) && Math.abs(rot % 360) > 0.01) target.rot = rot;
+    else delete target.rot;
   };
-  ["edit-name", "edit-kind", "edit-pos-x", "edit-pos-y"].forEach(id => {
+  ["edit-name", "edit-kind", "edit-pos-x", "edit-pos-y", "edit-rot"].forEach(id => {
     $(id).addEventListener("focusin", beginEdit);
     $(id).addEventListener("input", liveIdentity);
     $(id).addEventListener("change", () => { commitEdit(); liveIdentity(); renderEditor(); });
@@ -1562,6 +1566,9 @@ async function saveObject() {
   object.name = nextName;
   object.kind = $("edit-kind").value;
   object.pos = [Number($("edit-pos-x").value) || 0, Number($("edit-pos-y").value) || 0];
+  const rot = Number($("edit-rot")?.value);
+  if (Number.isFinite(rot) && Math.abs(rot % 360) > 0.01) object.rot = rot;
+  else delete object.rot;
   if (oldName !== nextName) {
     for (const connection of state.model.connections || []) {
       if (connection.from === oldName) connection.from = nextName;
@@ -3133,6 +3140,7 @@ function nudgeSelected(dx, dy, snap = true) {
   object.pos = [x, y];
   if ($("edit-pos-x")) $("edit-pos-x").value = object.pos[0];
   if ($("edit-pos-y")) $("edit-pos-y").value = object.pos[1];
+  if ($("edit-rot")) $("edit-rot").value = Number(object.rot || 0);
   updateObjectCoords();
   recordHistory("nudge", `nudge ${object.name}`);
   setStatus(`nudged ${object.name} to ${object.pos[0]}, ${object.pos[1]} (unsaved)`);
@@ -3926,8 +3934,19 @@ function drawScene2d(now, width, height) {
     ctx.fillStyle = fill;
     ctx.strokeStyle = selected ? "#f59e0b" : multi ? "#0284c7" : "#334155";
     ctx.lineWidth = selected ? 2.2 : multi ? 1.6 : 1;
-    ctx.fillRect(left, top, item.width, item.height);
-    ctx.strokeRect(left, top, item.width, item.height);
+    const rotDeg = Number(item.object.rot || 0);
+    if (Math.abs(rotDeg % 360) > 0.01) {
+      // Rotate the footprint around the object centre (matches the desktop GUI).
+      ctx.save();
+      ctx.translate(item.point.x, item.point.y);
+      ctx.rotate(rotDeg * Math.PI / 180);
+      ctx.fillRect(-item.width / 2, -item.height / 2, item.width, item.height);
+      ctx.strokeRect(-item.width / 2, -item.height / 2, item.width, item.height);
+      ctx.restore();
+    } else {
+      ctx.fillRect(left, top, item.width, item.height);
+      ctx.strokeRect(left, top, item.width, item.height);
+    }
     ctx.textAlign = "center";
     ctx.fillStyle = "#0f172a";
     ctx.font = "600 11px system-ui, sans-serif";
@@ -4067,11 +4086,20 @@ function drawScene(now) {
   const projected = boxes.map(box => {
     const corners = [];
     const footprint = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+    const rotDeg = Number(box.object.rot || 0);
+    const rotRad = rotDeg * Math.PI / 180;
+    const cosRot = Math.cos(rotRad);
+    const sinRot = Math.sin(rotRad);
     for (const z of [0, box.height]) {
       for (const [dx, dy] of footprint) {
+        // Rotate the local corner (object space) before placing it.
+        const lx = dx * box.size / 2;
+        const ly = dy * box.depth / 2;
+        const rx = lx * cosRot - ly * sinRot;
+        const ry = lx * sinRot + ly * cosRot;
         corners.push(project(
-          box.center[0] + dx * box.size / 2,
-          box.center[1] + dy * box.depth / 2,
+          box.center[0] + rx,
+          box.center[1] + ry,
           z, centerX, centerY, scale, span));
       }
     }
@@ -4750,6 +4778,7 @@ scene.addEventListener("pointermove", event => {
     })) > 0.01;
     if ($("edit-pos-x")) $("edit-pos-x").value = object.pos[0].toFixed(2);
     if ($("edit-pos-y")) $("edit-pos-y").value = object.pos[1].toFixed(2);
+    if ($("edit-rot")) $("edit-rot").value = Number(object.rot || 0);
     updateObjectCoords();
     return;
   }

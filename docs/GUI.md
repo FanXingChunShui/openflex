@@ -53,6 +53,15 @@ wix build packaging\windows\openflex-gui.wxs -d Version=<ver> ^
   -d BinaryPath=target\release\openflex-gui.exe -arch x64 -o dist\openflex-gui-<ver>-windows-x64.msi
 ```
 
+## 与浏览器版 Studio 的一致性
+
+`Object.rot`（度，逆时针）是模型字段，两套 UI 都读写它：
+
+- 桌面 GUI：右键对象菜单 `-15° / +15° / 0°`；
+- 浏览器 Studio：对象编辑面板的 `rot°` 输入框；
+- 两者都会在 2D 俯视与 3D 视图中按角度旋转 footprint（桌面版额外把前/右侧面挤出做出立体感）；
+- `openflex layout --svg` 用 `<g transform="rotate(deg cx cy)">` 输出，可与模型一起进版本库。
+
 ## 与 FlexSim 桌面界面差距（按优先级）
 
 | 优先级 | 缺口 | 说明 |
