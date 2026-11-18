@@ -26,7 +26,7 @@ cargo build -p openflex-gui --release
 | 优化 | **grid / random / genetic** 三种搜索，**支持多变量**（`+ variable` 添加 JSON path + `[low, high]`）；
 grid 为笛卡尔积（>400 点时拒绝）、random 为 `samples` 次采样、genetic 为种群 12/6 代；可选**第二目标**（max avg stay）形成双列结果表 + **Pareto 前沿散点图**（x = max stay，y = completed，非支配点高亮），
 按主目标降序显示 top 12 与最佳点 |
-| 报告 | Completed ± CI、Created、**利用率柱状图**、逐对象 **In/Out/WIP/Stay/Util** 表、**Export report CSV / JSON**、**状态饼图**（idle/busy/blocked/down/off-shift 合计）、**时间序列折线**（按 interval 采样；指标可切 WIP / throughput / utilization；对象可切换；**Export CSV** 导出 `time,object,content,throughput,utilization`）、**Replay 滑块** |
+| 报告 | Completed ± CI、Created、**利用率柱状图**、逐对象 **In/Out/WIP/Stay/Util** 表、**Export report CSV / JSON**、**Set baseline / Compare / Export compare CSV**（与上一次运行对比，Δ利用率着色）、**状态饼图**（idle/busy/blocked/down/off-shift 合计）、**时间序列折线**（按 interval 采样；指标可切 WIP / throughput / utilization；对象可切换；**Export CSV** 导出 `time,object,content,throughput,utilization`）、**Replay 滑块** |
 
 编辑历史：**撤销/重做栈（每个编辑前快照，上限 50）**，工具栏按钮 + 快捷键。
 
@@ -60,6 +60,7 @@ wix build packaging\windows\openflex-gui.wxs -d Version=<ver> ^
 | P0 | 3D 场景增强（部分完成） | ✅ 地面网格/阴影/相机预设/按 kind 几何体与明暗（v0.68.0）；仍缺纹理、实时光照模型、对象旋转 |
 | P1 | 运行可视化 | ✅ 状态着色 + 瞬时 WIP + item 圆点 + 执行器实时位置 + 进度条 + 平滑动画 + **采样回放滑块**（v0.62.0） |
 | P1 | 流程图/Process Flow 编辑 | ✅ 可视化节点画布 + 块增删/连接/JSON 编辑（v0.59.0）；节点位置保存在内存（不写入模型） |
+| P1 | 报告对比 | ✅ Set baseline + 并排对比表（Δ Utilization 绿/红）+ compare CSV（v0.73.0） |
 | P1 | 实验与优化 UI | ✅ stop-time/参数扫描 + grid/random/genetic 多变量搜索 + 双目标表 + Pareto 前沿散点图（v0.69.0） |
 | ~~P2~~ | 撤销/重做 | **已完成（v0.56.0）** |
 | ~~P2~~ | 文件菜单/最近文件/新建 | **已完成（v0.56.0）**：New / Save as / Recent / 快捷键 |

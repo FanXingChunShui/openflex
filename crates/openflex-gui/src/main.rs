@@ -775,6 +775,8 @@ struct OpenFlexApp {
     paused: bool,
     step_size: f32,
     report: Option<SimReport>,
+    baseline: Option<SimReport>,
+    show_compare: bool,
     report_rx: Option<Receiver<Result<SimReport, String>>>,
     report_running: bool,
     exp_start: f32,
@@ -845,6 +847,8 @@ impl OpenFlexApp {
             paused: false,
             step_size: 10.0,
             report: None,
+            baseline: None,
+            show_compare: false,
             report_rx: None,
             report_running: false,
             exp_start: 100.0,
@@ -1519,6 +1523,77 @@ impl OpenFlexApp {
             .as_ref()
             .map(|path| path.with_extension(extension))
             .unwrap_or_else(|| PathBuf::from(format!("openflex-report.{extension}")))
+    }
+
+    /// Keeps the current report as the comparison baseline.
+    fn snapshot_baseline(&mut self) {
+        match self.report.clone() {
+            Some(report) => {
+                self.baseline = Some(report);
+                self.show_compare = true;
+                self.status = "Baseline captured".into();
+            }
+            None => self.error = Some("run the model first".into()),
+        }
+    }
+
+    fn export_compare_csv(&mut self) {
+        let (Some(report), Some(baseline)) = (self.report.as_ref(), self.baseline.as_ref()) else {
+            return;
+        };
+        let mut text = String::from("object,metric,baseline,current,delta,delta_percent\n");
+        let mut push = |object: &str, metric: &str, old: f64, new: f64| {
+            let delta = new - old;
+            let percent = if old.abs() > 1e-12 {
+                format!("{:.1}", 100.0 * delta / old)
+            } else {
+                String::new()
+            };
+            text.push_str(&format!(
+                "{object},{metric},{old:.4},{new:.4},{delta:+.4},{percent}\n"
+            ));
+        };
+        push(
+            "<all>",
+            "completed",
+            baseline.completed.mean,
+            report.completed.mean,
+        );
+        for (name, current) in &report.objects {
+            let Some(base) = baseline.objects.get(name) else {
+                continue;
+            };
+            push(
+                name,
+                "input",
+                base.input_count.mean,
+                current.input_count.mean,
+            );
+            push(
+                name,
+                "output",
+                base.output_count.mean,
+                current.output_count.mean,
+            );
+            push(name, "wip", base.avg_content.mean, current.avg_content.mean);
+            push(
+                name,
+                "stay",
+                base.avg_stay_time.mean,
+                current.avg_stay_time.mean,
+            );
+            push(
+                name,
+                "utilization",
+                base.utilization.mean,
+                current.utilization.mean,
+            );
+        }
+        let path = self.report_path("compare.csv");
+        match std::fs::write(&path, text) {
+            Ok(()) => self.status = format!("Comparison written to {}", path.display()),
+            Err(error) => self.error = Some(format!("could not write comparison: {error}")),
+        }
     }
 
     fn export_report_csv(&mut self) {
@@ -2986,6 +3061,8 @@ impl eframe::App for OpenFlexApp {
                 }
                 let mut export_csv = false;
                 let mut export_json = false;
+                let mut set_baseline = false;
+                let mut export_compare = false;
                 ui.horizontal(|ui| {
                     if ui.small_button("Export report CSV").clicked() {
                         export_csv = true;
@@ -2993,7 +3070,24 @@ impl eframe::App for OpenFlexApp {
                     if ui.small_button("Export report JSON").clicked() {
                         export_json = true;
                     }
+                    if ui.small_button("Set baseline").clicked() {
+                        set_baseline = true;
+                    }
+                    if self.baseline.is_some()
+                        && ui.selectable_label(self.show_compare, "Compare").clicked()
+                    {
+                        self.show_compare = !self.show_compare;
+                    }
+                    if self.baseline.is_some() && ui.small_button("Export compare CSV").clicked() {
+                        export_compare = true;
+                    }
                 });
+                if set_baseline {
+                    self.snapshot_baseline();
+                }
+                if export_compare {
+                    self.export_compare_csv();
+                }
                 if export_csv {
                     self.export_report_csv();
                 }
@@ -3066,6 +3160,50 @@ impl eframe::App for OpenFlexApp {
                                     ui.end_row();
                                 }
                             });
+                        if self.show_compare
+                            && let Some(baseline) = self.baseline.as_ref()
+                        {
+                            ui.separator();
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Comparison vs baseline (completed {:.1} → {:.1})",
+                                    baseline.completed.mean, report.completed.mean
+                                ))
+                                .strong(),
+                            );
+                            egui::Grid::new("compare-grid")
+                                .striped(true)
+                                .num_columns(4)
+                                .show(ui, |ui| {
+                                    ui.strong("Object");
+                                    ui.strong("Util base");
+                                    ui.strong("Util now");
+                                    ui.strong("Δ");
+                                    ui.end_row();
+                                    for (name, current) in &report.objects {
+                                        let Some(base) = baseline.objects.get(name) else {
+                                            continue;
+                                        };
+                                        let delta =
+                                            current.utilization.mean - base.utilization.mean;
+                                        let color = if delta > 0.005 {
+                                            egui::Color32::from_rgb(90, 200, 130)
+                                        } else if delta < -0.005 {
+                                            egui::Color32::from_rgb(220, 100, 90)
+                                        } else {
+                                            egui::Color32::from_gray(160)
+                                        };
+                                        ui.label(name);
+                                        ui.label(format!("{:.0}%", base.utilization.mean * 100.0));
+                                        ui.label(format!(
+                                            "{:.0}%",
+                                            current.utilization.mean * 100.0
+                                        ));
+                                        ui.colored_label(color, format!("{:+.1}%", delta * 100.0));
+                                        ui.end_row();
+                                    }
+                                });
+                        }
                     });
             });
 

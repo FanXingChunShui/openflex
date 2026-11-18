@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.73.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **运行结果对比**：`Set baseline` 保存当前报告为基线；`Compare` 切换并排对比表（每个对象的 Util base / Util now / Δ，
+  改善绿色、变差红色）；`Export compare CSV` 输出 `object,metric,baseline,current,delta,delta_percent`
+  （含 `<all>` completed 行与每对象 input/output/wip/stay/utilization）。
+
+### 验证
+
+- 490 个测试全绿（core 255、CLI 86、report 14、model 全部）；GUI 编译、clippy 0、启动无 panic。
+- v0.73.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.72.0 — 2026-11-19
 
 ### 桌面 GUI
