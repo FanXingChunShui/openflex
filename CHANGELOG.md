@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.83.0 — 2026-11-19
+
+### 引擎（AGV）
+
+- **充电排队策略**（task-149）：新增 `AgvParams.charge_queue_order`（`fifo`（默认）/ `lowest_battery` / `longest_waiting`）；
+  `ObjectRt.charge_queue_since` 记录开始等待的时刻；槽位释放时由**释放者**的策略决定弹出哪台 AGV。
+- 新增单元测试 `charger_queue_orders_by_policy`：lowest_battery 先服务电量最低者，FIFO 按到达顺序。
+
+### 验证
+
+- `cargo test --workspace --locked --exclude openflex-gui`：**496 passed**（30 个 test 结果行）。
+- core/model `clippy` 0、`fmt` 干净；v0.83.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.82.0 — 2026-11-19
 
 ### 桌面 GUI

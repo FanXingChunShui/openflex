@@ -783,6 +783,9 @@ pub(crate) struct ObjectRt {
     charging: bool,
     #[serde(default)]
     charge_until: f64,
+    /// task-149: model time at which this AGV started waiting at a charger.
+    #[serde(default)]
+    charge_queue_since: Option<f64>,
     /// Distance accumulated by the current task (battery drain).
     #[serde(default)]
     task_distance: f64,
@@ -876,6 +879,7 @@ impl ObjectRt {
             battery: None,
             charging: false,
             charge_until: 0.0,
+            charge_queue_since: None,
             task_distance: 0.0,
             capacity: 1,
             tasks: 0,
@@ -6388,6 +6392,9 @@ impl<'m> Simulation<'m> {
             let capacity = self.charger_capacity(charger);
             let in_use = self.charger_in_use.get(&charger).copied().unwrap_or(0);
             if in_use >= capacity {
+                // task-149: remember when the AGV started waiting so the
+                // `longest_waiting` policy can order the queue.
+                self.objects[transporter].charge_queue_since = Some(self.now);
                 self.charger_queue
                     .entry(charger)
                     .or_default()
@@ -6437,10 +6444,10 @@ impl<'m> Simulation<'m> {
             if let Some(slot) = self.charger_in_use.get_mut(&charger) {
                 *slot = slot.saturating_sub(1);
             }
-            let next = self
-                .charger_queue
-                .get_mut(&charger)
-                .and_then(|queue| queue.pop_front());
+            // task-149: pick the next AGV by the charger queue policy of the
+            // AGV that just finished (FIFO by default).
+            let order = self.agv_queue_order(transporter);
+            let next = self.pop_charger_queue(charger, order);
             if let Some(next) = next {
                 self.objects[next].charging = false;
                 self.objects[next].charge_until = 0.0;
@@ -6451,6 +6458,54 @@ impl<'m> Simulation<'m> {
             self.dispatch(dispatcher)?;
         }
         Ok(())
+    }
+
+    /// task-149: the queue policy configured on an AGV.
+    fn agv_queue_order(&self, transporter: usize) -> openflex_model::ChargeQueueOrder {
+        match &self.model.objects[transporter].params {
+            ObjectParams::Agv(params) => params.charge_queue_order,
+            _ => openflex_model::ChargeQueueOrder::Fifo,
+        }
+    }
+
+    /// Removes and returns the next AGV of a charger queue under `order`.
+    fn pop_charger_queue(
+        &mut self,
+        charger: usize,
+        order: openflex_model::ChargeQueueOrder,
+    ) -> Option<usize> {
+        let queue = self.charger_queue.get_mut(&charger)?;
+        match order {
+            openflex_model::ChargeQueueOrder::Fifo => queue.pop_front(),
+            openflex_model::ChargeQueueOrder::LowestBattery => {
+                let best = queue
+                    .iter()
+                    .enumerate()
+                    .min_by(|(_, left), (_, right)| {
+                        let left_battery = self.objects[**left].battery.unwrap_or(f64::INFINITY);
+                        let right_battery = self.objects[**right].battery.unwrap_or(f64::INFINITY);
+                        left_battery.total_cmp(&right_battery)
+                    })
+                    .map(|(index, _)| index)?;
+                queue.remove(best)
+            }
+            openflex_model::ChargeQueueOrder::LongestWaiting => {
+                let best = queue
+                    .iter()
+                    .enumerate()
+                    .min_by(|(_, left), (_, right)| {
+                        let left_since = self.objects[**left]
+                            .charge_queue_since
+                            .unwrap_or(f64::INFINITY);
+                        let right_since = self.objects[**right]
+                            .charge_queue_since
+                            .unwrap_or(f64::INFINITY);
+                        left_since.total_cmp(&right_since)
+                    })
+                    .map(|(index, _)| index)?;
+                queue.remove(best)
+            }
+        }
     }
 
     fn record_object_trace(&mut self, label: &str, index: usize) {
@@ -9738,6 +9793,73 @@ mod tests {
 
     /// task-106: a charger with capacity 1 serves one AGV and queues the next;
     /// finishing a charge wakes the waiting AGV.
+    #[test]
+    fn charger_queue_orders_by_policy() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "queue-order",
+          "run": { "stop_time": 200.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "A1", "kind": "agv", "params": {
+                "battery_capacity": 10.0, "consumption_per_distance": 1.0,
+                "charge_time": { "distribution": "constant", "value": 10.0 },
+                "charger": "C1", "charge_queue_order": "lowest_battery" } },
+            { "name": "A2", "kind": "agv", "params": {
+                "battery_capacity": 10.0, "consumption_per_distance": 1.0,
+                "charge_time": { "distribution": "constant", "value": 10.0 },
+                "charger": "C1" } },
+            { "name": "A3", "kind": "agv", "params": {
+                "battery_capacity": 10.0, "consumption_per_distance": 1.0,
+                "charge_time": { "distribution": "constant", "value": 10.0 },
+                "charger": "C1" } },
+            { "name": "C1", "kind": "resource", "params": { "capacity": 1 } },
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 200.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let a1 = sim.by_name["A1"];
+        let a2 = sim.by_name["A2"];
+        let a3 = sim.by_name["A3"];
+        let charger = sim.by_name["C1"];
+
+        // A1 takes the only slot; A2 (battery 2) and A3 (battery 1) queue up.
+        sim.objects[a1].battery = Some(3.0);
+        sim.start_charging(a1).expect("first charge");
+        sim.objects[a2].battery = Some(2.0);
+        sim.start_charging(a2).expect("queued");
+        sim.objects[a3].battery = Some(1.0);
+        sim.start_charging(a3).expect("queued");
+        assert_eq!(sim.charger_queue[&charger].len(), 2);
+
+        // The lowest-battery policy serves A3 before A2.
+        let next = sim
+            .pop_charger_queue(charger, openflex_model::ChargeQueueOrder::LowestBattery)
+            .expect("queued AGV");
+        assert_eq!(next, a3, "lowest battery should be served first");
+        let rest = sim
+            .pop_charger_queue(charger, openflex_model::ChargeQueueOrder::LowestBattery)
+            .expect("remaining AGV");
+        assert_eq!(rest, a2);
+
+        // FIFO keeps the arrival order instead.
+        sim.charger_queue.get_mut(&charger).unwrap().clear();
+        sim.charger_queue.get_mut(&charger).unwrap().push_back(a2);
+        sim.charger_queue.get_mut(&charger).unwrap().push_back(a3);
+        let fifo = sim
+            .pop_charger_queue(charger, openflex_model::ChargeQueueOrder::Fifo)
+            .expect("queued AGV");
+        assert_eq!(fifo, a2, "FIFO serves the first arrival");
+    }
+
     #[test]
     fn agv_prefers_a_free_charger_over_a_busy_one() {
         let model = Model::from_json(

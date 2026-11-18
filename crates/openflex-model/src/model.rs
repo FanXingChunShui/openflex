@@ -1642,6 +1642,11 @@ pub struct AgvParams {
     /// several AGVs do not all queue at the same station.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chargers: Vec<String>,
+    /// task-149: order in which AGVs waiting at a charger are served. The
+    /// policy of the AGV that releases a slot decides who goes next, so a
+    /// fleet configured the same way behaves consistently.
+    #[serde(default)]
+    pub charge_queue_order: ChargeQueueOrder,
 
     #[serde(default)]
     pub process_flow: Option<ProcessFlow>,
@@ -1669,6 +1674,7 @@ impl Default for AgvParams {
             charge_time: Distribution::default(),
             charger: None,
             chargers: Vec::new(),
+            charge_queue_order: ChargeQueueOrder::default(),
             process_flow: None,
             timetable: None,
             pull: None,
@@ -2270,6 +2276,19 @@ pub enum ValveOpeningCurve {
     Linear,
     /// Equal-percentage characteristic (area grows geometrically).
     EqualPercentage,
+}
+
+/// Order in which AGVs waiting at a charger are served (task-149).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChargeQueueOrder {
+    /// First come, first served (historical behaviour).
+    #[default]
+    Fifo,
+    /// The AGV with the lowest battery charges first.
+    LowestBattery,
+    /// The AGV that has waited the longest charges first.
+    LongestWaiting,
 }
 
 /// A fluid valve (`fluid_valve`): passes `ratio` of the incoming flow when open.
