@@ -763,6 +763,7 @@ struct OpenFlexApp {
     marquee_start: Option<egui::Pos2>,
     batch_dx: f32,
     batch_dy: f32,
+    rotations: std::collections::HashMap<String, f32>,
     search: String,
     yaw: f32,
     pitch: f32,
@@ -839,6 +840,7 @@ impl OpenFlexApp {
             marquee_start: None,
             batch_dx: 0.0,
             batch_dy: 0.0,
+            rotations: std::collections::HashMap::new(),
             search: String::new(),
             yaw: -0.6,
             pitch: 0.5,
@@ -2111,6 +2113,7 @@ impl OpenFlexApp {
 
     /// Draws a kind-specific 3D-ish body and returns the rectangle used for
     /// hit-testing and labels.
+    #[allow(clippy::too_many_arguments)]
     fn draw_object_shape(
         painter: &egui::Painter,
         kind: ObjectKind,
@@ -2118,6 +2121,8 @@ impl OpenFlexApp {
         zoom: f32,
         fill: egui::Color32,
         selected: bool,
+        rotation: f32,
+        depth: f32,
     ) -> egui::Rect {
         let outline = egui::Stroke::new(
             1.0_f32,
@@ -2127,6 +2132,10 @@ impl OpenFlexApp {
                 egui::Color32::from_rgb(16, 20, 26)
             },
         );
+        // Rotation is applied to the footprint: a rotated box keeps its size
+        // but the corners swing, which is what FlexSim's layout view shows.
+        // Height of the side face that fakes the third dimension.
+        let lift = (depth.max(0.0) * zoom * 0.6 + 4.0).min(26.0);
         match kind {
             // Machines: a body plus a lighter top plate.
             ObjectKind::Processor
@@ -2174,23 +2183,24 @@ impl OpenFlexApp {
             }
             // Racks: a stack of levels.
             ObjectKind::Rack => {
-                let w = 34.0 * zoom;
-                let levels = 3;
-                let level_h = 7.0 * zoom;
-                let total = egui::Rect::from_center_size(
-                    base + egui::vec2(0.0, -level_h),
-                    egui::vec2(w, level_h * levels as f32 + 4.0 * zoom),
+                let body = Self::draw_rotated_box(
+                    painter,
+                    base,
+                    egui::vec2(17.0 * zoom, 12.0 * zoom),
+                    rotation,
+                    fill,
+                    outline,
+                    lift * 1.2,
                 );
-                for level in 0..levels {
-                    let rect = egui::Rect::from_min_size(
-                        egui::pos2(total.left(), total.bottom() - (level + 1) as f32 * level_h),
-                        egui::vec2(w, level_h - 1.0 * zoom),
+                for level in 1..3 {
+                    let t = level as f32 / 3.0;
+                    let y = body.top() + body.height() * t;
+                    painter.line_segment(
+                        [egui::pos2(body.left(), y), egui::pos2(body.right(), y)],
+                        egui::Stroke::new(1.0_f32, Self::shade(fill, -0.3)),
                     );
-                    let tone = -0.05 + 0.12 * level as f32;
-                    painter.rect_filled(rect, 1.0, Self::shade(fill, tone));
-                    painter.rect_stroke(rect, 1.0, outline);
                 }
-                total
+                body
             }
             // Sources / sinks: a drum.
             ObjectKind::Source | ObjectKind::Sink => {
@@ -2255,6 +2265,56 @@ impl OpenFlexApp {
                 body
             }
         }
+    }
+
+    /// Draws a rotated rectangle (footprint) plus a lighter top face, which is
+    /// how objects get their "3D" look on the flat canvas.
+    fn draw_rotated_box(
+        painter: &egui::Painter,
+        base: egui::Pos2,
+        half: egui::Vec2,
+        rotation_deg: f32,
+        fill: egui::Color32,
+        stroke: egui::Stroke,
+        lift: f32,
+    ) -> egui::Rect {
+        let (sin, cos) = rotation_deg.to_radians().sin_cos();
+        let rot = |offset: egui::Vec2| -> egui::Pos2 {
+            base + egui::vec2(
+                offset.x * cos - offset.y * sin,
+                offset.x * sin + offset.y * cos,
+            )
+        };
+        let corners = [
+            rot(egui::vec2(-half.x, -half.y)),
+            rot(egui::vec2(half.x, -half.y)),
+            rot(egui::vec2(half.x, half.y)),
+            rot(egui::vec2(-half.x, half.y)),
+        ];
+        // Side face: extrude the front edge downwards.
+        let side = egui::vec2(0.0, lift);
+        let front: Vec<egui::Pos2> = corners.iter().map(|point| *point + side).collect();
+        let side_color = Self::shade(fill, -0.35);
+        painter.add(egui::Shape::convex_polygon(
+            vec![corners[2], corners[3], front[3], front[2]],
+            side_color,
+            egui::Stroke::NONE,
+        ));
+        let right_side = egui::Shape::convex_polygon(
+            vec![corners[1], corners[2], front[2], front[1]],
+            Self::shade(fill, -0.2),
+            egui::Stroke::NONE,
+        );
+        painter.add(right_side);
+        painter.add(egui::Shape::convex_polygon(corners.to_vec(), fill, stroke));
+        painter.add(egui::Shape::convex_polygon(
+            front.to_vec(),
+            egui::Color32::TRANSPARENT,
+            egui::Stroke::new(stroke.width, Self::shade(fill, -0.45)),
+        ));
+        egui::Rect::from_points(&[
+            corners[0], corners[1], corners[2], corners[3], front[0], front[1], front[2], front[3],
+        ])
     }
 
     fn kind_color(kind: ObjectKind) -> egui::Color32 {
@@ -3637,9 +3697,17 @@ impl eframe::App for OpenFlexApp {
                 } else if in_selection {
                     fill = Self::shade(fill, 0.25);
                 }
-                let box_rect =
-                    Self::draw_object_shape(&painter, object.kind, base, self.zoom, fill, selected);
-                // Flow items held right now: small dots above the box.
+                let rotation = self.rotations.get(&object.name).copied().unwrap_or(0.0);
+                let box_rect = Self::draw_object_shape(
+                    &painter,
+                    object.kind,
+                    base,
+                    self.zoom,
+                    fill,
+                    selected,
+                    rotation,
+                    object.z as f32,
+                );
                 // Flow items held right now: small dots above the box.
                 if let Some(stats) = live {
                     let shown = stats.content.min(8) as usize;
@@ -3737,6 +3805,20 @@ impl eframe::App for OpenFlexApp {
                             }
                             self.context_menu_open = None;
                         }
+                        ui.horizontal(|ui| {
+                            ui.label("rotate");
+                            if ui.small_button("-15°").clicked() {
+                                let entry = self.rotations.entry(name.clone()).or_insert(0.0);
+                                *entry -= 15.0;
+                            }
+                            if ui.small_button("+15°").clicked() {
+                                let entry = self.rotations.entry(name.clone()).or_insert(0.0);
+                                *entry += 15.0;
+                            }
+                            if ui.small_button("0°").clicked() {
+                                self.rotations.remove(&name);
+                            }
+                        });
                         if ui.button("Close").clicked() {
                             self.context_menu_open = None;
                         }

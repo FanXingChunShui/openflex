@@ -246,6 +246,10 @@ pub struct Object {
     pub pos: [f64; 2],
     /// Height / floor elevation used by the elevator family (B6).
     pub z: f64,
+    /// Planar orientation in degrees (counter-clockwise, `None` = 0°).
+    ///
+    /// Rendering only: the simulation is unaffected by the orientation.
+    pub rot: Option<f64>,
     pub params: ObjectParams,
 }
 
@@ -257,6 +261,7 @@ impl Object {
             kind,
             pos: [0.0, 0.0],
             z: 0.0,
+            rot: None,
             params,
         }
     }
@@ -264,12 +269,15 @@ impl Object {
 
 impl Serialize for Object {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(5))?;
+        let mut map = serializer.serialize_map(Some(6))?;
         map.serialize_entry("name", &self.name)?;
         map.serialize_entry("kind", self.kind.as_str())?;
         map.serialize_entry("pos", &self.pos)?;
         if self.z != 0.0 {
             map.serialize_entry("z", &self.z)?;
+        }
+        if let Some(rot) = self.rot {
+            map.serialize_entry("rot", &rot)?;
         }
         map.serialize_entry("params", &self.params)?;
         map.end()
@@ -286,6 +294,8 @@ impl<'de> Deserialize<'de> for Object {
             pos: [f64; 2],
             #[serde(default)]
             z: f64,
+            #[serde(default)]
+            rot: Option<f64>,
             #[serde(default = "empty_object")]
             params: serde_json::Value,
         }
@@ -303,9 +313,12 @@ impl<'de> Deserialize<'de> for Object {
             .to_string();
         if let Some(map) = value.as_object() {
             for key in map.keys() {
-                if !matches!(key.as_str(), "name" | "kind" | "pos" | "z" | "params") {
+                if !matches!(
+                    key.as_str(),
+                    "name" | "kind" | "pos" | "z" | "rot" | "params"
+                ) {
                     return Err(de::Error::custom(format!(
-                        "object '{object_name}' has unknown key '{key}' (expected name, kind, pos, z, params)"
+                        "object '{object_name}' has unknown key '{key}' (expected name, kind, pos, z, rot, params)"
                     )));
                 }
             }
@@ -331,6 +344,7 @@ impl<'de> Deserialize<'de> for Object {
             kind,
             pos: raw.pos,
             z: raw.z,
+            rot: raw.rot,
             params,
         })
     }

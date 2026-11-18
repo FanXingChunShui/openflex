@@ -96,6 +96,14 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
                 "height must be finite",
             ));
         }
+        if let Some(rot) = object.rot
+            && !rot.is_finite()
+        {
+            issues.push(ValidationIssue::new(
+                format!("objects.{}.rot", object.name),
+                "rotation must be a finite number of degrees",
+            ));
+        }
         issues.extend(validate_object(model, object));
         if let crate::model::ObjectParams::Agv(params) = &object.params
             && let Some(charger) = &params.charger

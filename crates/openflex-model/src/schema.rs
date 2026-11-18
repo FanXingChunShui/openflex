@@ -770,6 +770,10 @@ fn object_schema() -> Value {
                 "default": [0.0, 0.0]
             },
             "z": { "type": "number", "default": 0.0 },
+            "rot": {
+                "type": ["number", "null"],
+                "description": "Planar orientation in degrees (counter-clockwise); omitted means 0."
+            },
             "params": { "type": "object" }
         },
         "required": ["name", "kind"],
