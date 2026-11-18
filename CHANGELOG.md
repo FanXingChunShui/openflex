@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.86.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **逐事件步进**：新增 `Step event` 按钮（`SimulationHandle::next_event` + `step_event`），每次只推进一个事件；
+  右侧新增**事件日志**折叠面板，显示最近 200 条 `t / event / object`（等宽小字、自动滚底），`Reset` 时清空。
+
+### 验证
+
+- 490 个测试全绿（core 255、CLI 86、report 14、model 115）；GUI 编译、clippy 0、启动无 panic。
+- v0.86.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.85.0 — 2026-11-19
 
 ### 引擎（AGV）

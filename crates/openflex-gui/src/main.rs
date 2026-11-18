@@ -810,6 +810,7 @@ struct OpenFlexApp {
     new_port: String,
     handle: Option<SimulationHandle<'static>>,
     sim_state: Option<SimulationState>,
+    event_log: Vec<String>,
     running: bool,
     paused: bool,
     step_size: f32,
@@ -889,6 +890,7 @@ impl OpenFlexApp {
             new_port: String::new(),
             handle: None,
             sim_state: None,
+            event_log: Vec::new(),
             running: false,
             paused: false,
             step_size: 10.0,
@@ -1930,6 +1932,7 @@ impl OpenFlexApp {
     }
 
     fn reset_run(&mut self) {
+        self.event_log.clear();
         self.handle = None;
         self.sim_state = None;
         self.running = false;
@@ -2053,6 +2056,44 @@ impl OpenFlexApp {
                 self.report_rx = None;
             }
         }
+    }
+
+    /// Runs until the next event, recording it in the event log.
+    fn step_event(&mut self) {
+        if !self.new_handle() {
+            return;
+        }
+        let Some(handle) = self.handle.as_mut() else {
+            return;
+        };
+        let preview = match handle.next_event() {
+            Some(preview) => preview,
+            None => {
+                self.status = "No more events before the stop time".into();
+                self.running = false;
+                return;
+            }
+        };
+        let line = format!(
+            "t={:.3} {}{}",
+            preview.time,
+            preview.kind,
+            preview
+                .object
+                .as_ref()
+                .map(|object| format!(" [{object}]"))
+                .unwrap_or_default()
+        );
+        if let Err(error) = handle.step_event() {
+            self.error = Some(error.to_string());
+            return;
+        }
+        self.event_log.push(line);
+        if self.event_log.len() > 200 {
+            self.event_log.remove(0);
+        }
+        self.sim_state = Some(handle.state());
+        self.status = format!("Stepped to t={:.3}", preview.time);
     }
 
     fn advance(&mut self, delta: f64) {
@@ -2589,6 +2630,15 @@ impl eframe::App for OpenFlexApp {
                     .clicked()
                 {
                     self.advance(self.step_size as f64);
+                }
+                if ui
+                    .add_enabled(
+                        self.model.is_some() && !self.running,
+                        egui::Button::new("Step event"),
+                    )
+                    .clicked()
+                {
+                    self.step_event();
                 }
                 if ui
                     .add_enabled(self.handle.is_some(), egui::Button::new("Pause"))
@@ -3445,6 +3495,24 @@ impl eframe::App for OpenFlexApp {
                         }
                     });
                 }
+                ui.separator();
+                egui::CollapsingHeader::new(format!("Events ({})", self.event_log.len()))
+                    .id_salt("event-log")
+                    .show(ui, |ui| {
+                        if self.event_log.is_empty() {
+                            ui.label("Use Step event or Play to fill the log.");
+                            return;
+                        }
+                        egui::ScrollArea::vertical()
+                            .id_salt("event-scroll")
+                            .max_height(140.0)
+                            .stick_to_bottom(true)
+                            .show(ui, |ui| {
+                                for line in &self.event_log {
+                                    ui.label(egui::RichText::new(line).monospace().small());
+                                }
+                            });
+                    });
                 ui.separator();
                 ui.heading("Report");
                 ui.separator();
