@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.76.0 — 2026-11-19
+
+### 桌面 GUI / CLI
+
+- **旋转写入模型**：GUI 右键菜单的 `-15° / +15° / 0°` 现在写 `Object.rot`（归一化到 `[0,360)`，0° 写回 `None`），
+  经撤销栈与 `validate()` 后保存进 `.ofm`——旋转成为模型的一部分而非会话状态。
+- **SVG 布局导出带旋转**：`openflex layout --svg` 的对象组用 `<g transform="rotate(deg cx cy)">` 包裹节点与端口，
+  文字标签保持水平可读。实测 `rot: 30` 的模型输出 `rotate(30.0 ...)`。
+
+### 验证
+
+- `cargo test --workspace --locked --exclude openflex-gui`：**490 passed**（CLI 26+86、core 255、report 14、model 115）。
+- GUI 与 CLI clippy 0、fmt 干净；v0.76.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.75.0 — 2026-11-19
 
 ### 桌面 GUI

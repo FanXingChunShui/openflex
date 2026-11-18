@@ -141,12 +141,15 @@ pub fn to_svg_flat(model: &Model, width: u32, height: u32, frame: Option<Frame>)
             x + NODE_WIDTH - 10.0,
             cy + 6.0
         );
+        let rot = object.rot.unwrap_or(0.0);
         let _ = writeln!(
             svg,
             r#"<g class="object" data-name="{name}">
-  <rect class="node {class}" x="{x:.1}" y="{y:.1}" width="{NODE_WIDTH}" height="{NODE_HEIGHT}" rx="8"/>
-  <polygon class="port" points="{in_port}"/>
-  <polygon class="port" points="{out_port}"/>
+  <g transform="rotate({rot:.1} {cx:.1} {cy:.1})">
+    <rect class="node {class}" x="{x:.1}" y="{y:.1}" width="{NODE_WIDTH}" height="{NODE_HEIGHT}" rx="8"/>
+    <polygon class="port" points="{in_port}"/>
+    <polygon class="port" points="{out_port}"/>
+  </g>
   <text class="name" x="{tx:.1}" y="{ty:.1}" text-anchor="middle">{name}</text>
   <text class="kind" x="{tx:.1}" y="{ky:.1}" text-anchor="middle">{kind}</text>
 </g>"#,

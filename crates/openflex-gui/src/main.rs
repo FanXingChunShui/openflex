@@ -763,7 +763,6 @@ struct OpenFlexApp {
     marquee_start: Option<egui::Pos2>,
     batch_dx: f32,
     batch_dy: f32,
-    rotations: std::collections::HashMap<String, f32>,
     search: String,
     yaw: f32,
     pitch: f32,
@@ -840,7 +839,6 @@ impl OpenFlexApp {
             marquee_start: None,
             batch_dx: 0.0,
             batch_dy: 0.0,
-            rotations: std::collections::HashMap::new(),
             search: String::new(),
             yaw: -0.6,
             pitch: 0.5,
@@ -1648,6 +1646,36 @@ impl OpenFlexApp {
                 }
             }
             Err(error) => self.error = Some(format!("could not serialise report: {error}")),
+        }
+    }
+
+    /// Rotates the named object by `delta` degrees (writes `Object.rot`).
+    /// `f64::NEG_INFINITY` resets the rotation to 0.
+    fn rotate_object(&mut self, name: &str, delta: f64) {
+        let Some(model) = self.model else {
+            return;
+        };
+        let Some(index) = model.objects.iter().position(|object| object.name == name) else {
+            return;
+        };
+        self.snapshot();
+        let mut copy = model.clone();
+        let current = copy.objects[index].rot.unwrap_or(0.0);
+        let next = if delta.is_infinite() {
+            0.0
+        } else {
+            // Normalise into [0, 360) so the file stays readable.
+            (current + delta).rem_euclid(360.0)
+        };
+        copy.objects[index].rot = if next == 0.0 { None } else { Some(next) };
+        match copy.validate() {
+            Ok(()) => {
+                let stored = copy.objects[index].rot.unwrap_or(0.0);
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.status = format!("{name} rotated to {stored:.0}°");
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
         }
     }
 
@@ -3697,7 +3725,7 @@ impl eframe::App for OpenFlexApp {
                 } else if in_selection {
                     fill = Self::shade(fill, 0.25);
                 }
-                let rotation = self.rotations.get(&object.name).copied().unwrap_or(0.0);
+                let rotation = object.rot.unwrap_or(0.0) as f32;
                 let box_rect = Self::draw_object_shape(
                     &painter,
                     object.kind,
@@ -3808,15 +3836,13 @@ impl eframe::App for OpenFlexApp {
                         ui.horizontal(|ui| {
                             ui.label("rotate");
                             if ui.small_button("-15°").clicked() {
-                                let entry = self.rotations.entry(name.clone()).or_insert(0.0);
-                                *entry -= 15.0;
+                                self.rotate_object(&name, -15.0);
                             }
                             if ui.small_button("+15°").clicked() {
-                                let entry = self.rotations.entry(name.clone()).or_insert(0.0);
-                                *entry += 15.0;
+                                self.rotate_object(&name, 15.0);
                             }
                             if ui.small_button("0°").clicked() {
-                                self.rotations.remove(&name);
+                                self.rotate_object(&name, f64::NEG_INFINITY);
                             }
                         });
                         if ui.button("Close").clicked() {
