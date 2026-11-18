@@ -1637,6 +1637,11 @@ pub struct AgvParams {
     /// Object where charging happens (default: `home`, else in place).
     #[serde(default)]
     pub charger: Option<String>,
+    /// task-148: alternative chargers considered when `charger` is set. The
+    /// engine picks the reachable one with a free slot (nearest first), so
+    /// several AGVs do not all queue at the same station.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chargers: Vec<String>,
 
     #[serde(default)]
     pub process_flow: Option<ProcessFlow>,
@@ -1663,6 +1668,7 @@ impl Default for AgvParams {
             consumption_per_distance: None,
             charge_time: Distribution::default(),
             charger: None,
+            chargers: Vec::new(),
             process_flow: None,
             timetable: None,
             pull: None,

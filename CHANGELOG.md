@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.81.0 — 2026-11-19
+
+### 引擎（AGV）
+
+- **多充电桩选择**（task-148）：`AgvParams.chargers: Vec<String>` 与 `charger` 一起构成候选集合；
+  `charger_slot` 优先选**有空位且最近**的桩（同等空闲时比距离），全部占满才回到最近的桩排队；
+  单桩模型行为不变（零回归）。
+- 新增单元测试 `agv_prefers_a_free_charger_over_a_busy_one`：两桩都空闲 → 选最近；C1 占用 → 选 C2；两桩都满 → 回落到最近并排队。
+- Fluid：为 tank 出流与密度/压头关系补注释（`p = ρ·g·h` 已在压力场生效；释放量仍按液位）。
+
+### 验证
+
+- `cargo test --workspace --locked --exclude openflex-gui`：**495 passed**（30 个 test 结果行）。
+- core/model `clippy` 0、`fmt` 干净；v0.81.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.80.0 — 2026-11-19
 
 ### 引擎（Fluid）

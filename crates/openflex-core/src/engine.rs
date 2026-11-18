@@ -5639,6 +5639,12 @@ impl<'m> Simulation<'m> {
                     let accepted = entering;
                     let overflow = (level + entering - params.capacity).max(0.0);
                     let level_after = (level + entering).min(params.capacity);
+                    // task-89: a tank releases through its outlet; the head
+                    // (density * gravity * level) sets the driving pressure and a
+                    // denser fluid therefore needs the same volume but carries
+                    // more pressure. The released volume stays level-based; the
+                    // density only changes the reported pressure and the
+                    // pressure-mode downstream flow.
                     let offered = match params.max_outflow {
                         Some(rate) => level_after.min(rate * dt),
                         None => level_after,
@@ -6317,15 +6323,52 @@ impl<'m> Simulation<'m> {
         self.start_charging(transporter)
     }
 
-    /// task-106: the charger object an AGV is assigned to, if any.
+    /// task-106/task-148: the charger an AGV drives to.
+    ///
+    /// The primary `charger` is the preferred station; `chargers` adds
+    /// alternatives. The engine keeps the nearest reachable station that has a
+    /// free slot (falling back to the primary when all are busy, so the AGV
+    /// still queues instead of charging in place).
     fn charger_slot(&self, transporter: usize) -> Option<usize> {
-        match &self.model.objects[transporter].params {
-            ObjectParams::Agv(params) => params
-                .charger
-                .as_ref()
-                .and_then(|name| self.by_name.get(name).copied()),
-            _ => None,
+        let (primary, alternatives) = match &self.model.objects[transporter].params {
+            ObjectParams::Agv(params) => (
+                params
+                    .charger
+                    .as_ref()
+                    .and_then(|name| self.by_name.get(name).copied()),
+                params.chargers.clone(),
+            ),
+            _ => (None, Vec::new()),
+        };
+        let mut candidates: Vec<usize> = Vec::new();
+        if let Some(primary) = primary {
+            candidates.push(primary);
         }
+        for name in alternatives {
+            if let Some(index) = self.by_name.get(&name).copied()
+                && !candidates.contains(&index)
+            {
+                candidates.push(index);
+            }
+        }
+        if candidates.len() <= 1 {
+            return candidates.first().copied();
+        }
+        let position = self.objects[transporter].position;
+        let mut best: Option<(usize, f64)> = None;
+        for charger in &candidates {
+            let capacity = self.charger_capacity(*charger);
+            let in_use = self.charger_in_use.get(charger).copied().unwrap_or(0);
+            let free = in_use < capacity;
+            let target = self.objects[*charger].position;
+            let distance = (target[0] - position[0]).hypot(target[1] - position[1]);
+            // Free stations always win over busy ones; among equals the nearest.
+            let score = distance + if free { 0.0 } else { 1e6 };
+            if best.is_none_or(|(_, best_score)| score < best_score) {
+                best = Some((*charger, score));
+            }
+        }
+        best.map(|(charger, _)| charger)
     }
 
     fn charger_capacity(&self, charger: usize) -> u32 {
@@ -9695,6 +9738,45 @@ mod tests {
 
     /// task-106: a charger with capacity 1 serves one AGV and queues the next;
     /// finishing a charge wakes the waiting AGV.
+    #[test]
+    fn agv_prefers_a_free_charger_over_a_busy_one() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "multicharger",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "A1", "kind": "agv", "pos": [0.0, 0.0], "params": {
+                "speed": 1.0, "battery_capacity": 10.0, "consumption_per_distance": 1.0,
+                "charge_time": { "distribution": "constant", "value": 10.0 },
+                "charger": "C1", "chargers": ["C2"] } },
+            { "name": "C1", "kind": "resource", "pos": [2.0, 0.0], "params": { "capacity": 1 } },
+            { "name": "C2", "kind": "resource", "pos": [40.0, 0.0], "params": { "capacity": 1 } },
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let agv = sim.by_name["A1"];
+        let c1 = sim.by_name["C1"];
+        let c2 = sim.by_name["C2"];
+        // Both free: the nearest station (C1) wins.
+        assert_eq!(sim.charger_slot(agv), Some(c1));
+        // C1 busy: the AGV drives to the free C2 instead of queueing.
+        sim.charger_in_use.insert(c1, 1);
+        assert_eq!(sim.charger_slot(agv), Some(c2));
+        // C2 busy as well: fall back to the nearest (C1) and queue there.
+        sim.charger_in_use.insert(c2, 1);
+        assert_eq!(sim.charger_slot(agv), Some(c1));
+    }
+
     #[test]
     fn agv_charger_slots_queue() {
         let model = Model::from_json(
