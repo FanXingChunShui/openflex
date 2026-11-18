@@ -526,7 +526,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             kind: windows
           - os: macos-latest
-            target: universal-apple-darwin
+            target: macos-universal
             kind: macos
     runs-on: ${{ matrix.os }}
     steps:
@@ -536,7 +536,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          targets: ${{ matrix.target }}
+          # "macos-universal" is a pseudo-target; the macOS steps add the two
+          # real Apple targets themselves before building.
+          targets: ${{ matrix.kind == 'macos' && '' || matrix.target }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -628,7 +630,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           bash scripts/package-gui-app.sh \
-            --target "${{ matrix.target }}" --out dist \
+            --target universal-apple-darwin --out dist \
             --binary dist/openflex-gui
           rm -f dist/openflex-gui
           cd dist
