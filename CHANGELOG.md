@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.70.0 — 2026-11-18
+
+### 桌面 GUI
+
+- **报告表扩展**：逐对象显示 `In / Out / WIP / Stay / Util` 六列。
+- **报告导出**：`Export report CSV`（object/kind/input/output/avg_wip/max_wip/avg_stay/throughput/utilization）与
+  `Export report JSON`（完整 `SimReport`）。
+
+### 验证
+
+- 490 个测试全绿（core 255、CLI 86、report 14、model 全部）；GUI 编译、clippy 0、启动无 panic。
+- v0.70.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.69.0 — 2026-11-18
 
 ### 桌面 GUI

@@ -24,7 +24,7 @@ cargo build -p openflex-gui --release
 | 优化 | **grid / random / genetic** 三种搜索，**支持多变量**（`+ variable` 添加 JSON path + `[low, high]`）；
 grid 为笛卡尔积（>400 点时拒绝）、random 为 `samples` 次采样、genetic 为种群 12/6 代；可选**第二目标**（max avg stay）形成双列结果表 + **Pareto 前沿散点图**（x = max stay，y = completed，非支配点高亮），
 按主目标降序显示 top 12 与最佳点 |
-| 报告 | Completed ± CI、Created、**利用率柱状图**、逐对象 In/Out/Util 表、**状态饼图**（idle/busy/blocked/down/off-shift 合计）、**时间序列折线**（按 interval 采样；指标可切 WIP / throughput / utilization；对象可切换；**Export CSV** 导出 `time,object,content,throughput,utilization`）、**Replay 滑块** |
+| 报告 | Completed ± CI、Created、**利用率柱状图**、逐对象 **In/Out/WIP/Stay/Util** 表、**Export report CSV / JSON**、**状态饼图**（idle/busy/blocked/down/off-shift 合计）、**时间序列折线**（按 interval 采样；指标可切 WIP / throughput / utilization；对象可切换；**Export CSV** 导出 `time,object,content,throughput,utilization`）、**Replay 滑块** |
 
 编辑历史：**撤销/重做栈（每个编辑前快照，上限 50）**，工具栏按钮 + 快捷键。
 
@@ -61,7 +61,7 @@ wix build packaging\windows\openflex-gui.wxs -d Version=<ver> ^
 | P1 | 实验与优化 UI | ✅ stop-time/参数扫描 + grid/random/genetic 多变量搜索 + 双目标表 + Pareto 前沿散点图（v0.69.0） |
 | ~~P2~~ | 撤销/重做 | **已完成（v0.56.0）** |
 | ~~P2~~ | 文件菜单/最近文件/新建 | **已完成（v0.56.0）**：New / Save as / Recent / 快捷键 |
-| P2 | 统计图表 | ✅ 利用率柱状图 + 状态饼图 + 时间序列（WIP/吞吐/利用率）+ CSV 导出（v0.65.0） |
+| P2 | 统计图表 | ✅ 利用率柱状图 + 状态饼图 + 时间序列（WIP/吞吐/利用率）+ 时间序列/报告 CSV + 报告 JSON 导出（v0.70.0） |
 | ~~P3~~ | 打包成 .app 双击启动 | **已完成（v0.58.0）**：`scripts/package-gui-app.sh` 生成 `OpenFlex.app` + zip；Windows 的 `.exe` 可直接双击（MSI 附带 GUI 仍未做） |
 
 ## 路线图
