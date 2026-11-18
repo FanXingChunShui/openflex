@@ -1,6 +1,6 @@
 {
   "$comment": "Scoop manifest template for OpenFlex. Not published yet: move this file to a bucket (e.g. scoop-bucket/bucket/openflex.json) and replace version/hash/extract_dir for every release. Hashes come from the release SHA256SUMS.txt.",
-  "version": "0.77.0",
+  "version": "0.78.0",
   "description": "Clean-room, cross-platform discrete-event simulation engine and CLI",
   "homepage": "https://github.com/FanXingChunShui/openflex",
   "license": "MIT OR Apache-2.0",
@@ -10,14 +10,14 @@
   ],
   "architecture": {
     "64bit": {
-      "url": "https://github.com/FanXingChunShui/openflex/releases/download/v0.77.0/openflex-0.77.0-x86_64-pc-windows-msvc.zip",
-      "hash": "e1018f094a09ea43e88586fc33835cb6dd500b9dfa87eea6115cd901a16732b2",
-      "extract_dir": "openflex-0.77.0-x86_64-pc-windows-msvc"
+      "url": "https://github.com/FanXingChunShui/openflex/releases/download/v0.78.0/openflex-0.78.0-x86_64-pc-windows-msvc.zip",
+      "hash": "a4b7518f98195cf374acbd97e2c557457d35a0cbc89df8afea6826ab31558b27",
+      "extract_dir": "openflex-0.78.0-x86_64-pc-windows-msvc"
     },
     "arm64": {
-      "url": "https://github.com/FanXingChunShui/openflex/releases/download/v0.77.0/openflex-0.77.0-aarch64-pc-windows-msvc.zip",
-      "hash": "fbdbafe1983764aab22fd45647328fe63436999e08d11c89586a073ae0a1c5a0",
-      "extract_dir": "openflex-0.77.0-aarch64-pc-windows-msvc"
+      "url": "https://github.com/FanXingChunShui/openflex/releases/download/v0.78.0/openflex-0.78.0-aarch64-pc-windows-msvc.zip",
+      "hash": "fe1ae7cba7a633659f388a78d09cff7055886ae315693c97854ebf093587790b",
+      "extract_dir": "openflex-0.78.0-aarch64-pc-windows-msvc"
     }
   },
   "bin": "openflex.exe",
