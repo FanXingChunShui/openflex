@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.85.0 — 2026-11-19
+
+### 引擎（AGV）
+
+- **节点等待防死锁**（task-151）：AGV 在目标节点被**索引更小**的 AGV 占用时等待（0.5 重试、trace `agv_wait`），
+  连续 3 轮后**升级放行**（不再等待、计数清零），保证环形/相向场景不会永久挂起；等待计数存入
+  `ObjectRt.agv_wait_rounds`（checkpoint 兼容）。
+- 新增单元测试 `agv_node_wait_escalates_instead_of_blocking_forever`：首轮计数 +1，达到阈值后计数清零并继续。
+
+### 验证
+
+- `cargo test --workspace --locked --exclude openflex-gui`：**504 passed**（30 个 test 结果行）。
+- core `clippy` 0、`fmt` 干净；v0.85.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.84.0 — 2026-11-19
 
 ### 引擎（Person）

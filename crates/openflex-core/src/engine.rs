@@ -790,6 +790,9 @@ pub(crate) struct ObjectRt {
     /// when the path runs out.
     #[serde(default)]
     person_returning: bool,
+    /// task-151: consecutive node-wait retries of this AGV (deadlock breaker).
+    #[serde(default)]
+    agv_wait_rounds: u32,
     /// Distance accumulated by the current task (battery drain).
     #[serde(default)]
     task_distance: f64,
@@ -885,6 +888,7 @@ impl ObjectRt {
             charge_until: 0.0,
             charge_queue_since: None,
             person_returning: false,
+            agv_wait_rounds: 0,
             task_distance: 0.0,
             capacity: 1,
             tasks: 0,
@@ -6892,21 +6896,36 @@ impl<'m> Simulation<'m> {
         requester: usize,
     ) -> Result<(), SimError> {
         if self.objects[transporter].kind == ObjectKind::Agv {
-            let busy_here = self.objects.iter().enumerate().any(|(index, object)| {
-                index != transporter
-                    && object.kind == ObjectKind::Agv
-                    && object.tasks > 0
-                    && distance(object.position, self.objects[requester].position) <= EPS
-            });
+            // task-151: a node occupied by another AGV is a wait, but a ring of
+            // AGVs can all wait on each other forever. After a few retries the
+            // AGV with the largest index stops claiming priority, so one of them
+            // always makes progress.
+            // Only AGVs with a *lower* index claim the node, so two AGVs that
+            // block each other cannot both wait: the higher index always moves.
+            // After three retries the wait is escalated and the node is entered
+            // anyway — a ring of AGVs must never dead-lock the run.
+            let rounds = self.objects[transporter].agv_wait_rounds;
+            let escalated = rounds >= 3;
+            let busy_here = !escalated
+                && self.objects.iter().enumerate().any(|(index, object)| {
+                    index != transporter
+                        && object.kind == ObjectKind::Agv
+                        && object.tasks > 0
+                        && index < transporter
+                        && distance(object.position, self.objects[requester].position) <= EPS
+                });
             if busy_here {
                 // Node occupied: queue outside the node and retry (avoids
                 // entering the same station simultaneously / head-on deadlocks).
+                self.objects[transporter].agv_wait_rounds = rounds.saturating_add(1);
+                self.record_object_trace("agv_wait", transporter);
                 self.schedule(
                     self.now + 0.5,
                     EventKind::TransportArrive(transporter, requester),
                 );
                 return Ok(());
             }
+            self.objects[transporter].agv_wait_rounds = 0;
         }
         // task-109: two people cannot stand on the same cell. The lower object
         // index has priority; the other one waits one tick and retries, which
@@ -9832,6 +9851,53 @@ mod tests {
 
     /// task-106: a charger with capacity 1 serves one AGV and queues the next;
     /// finishing a charge wakes the waiting AGV.
+    /// task-151: an AGV whose target node is held by another AGV retries a few
+    /// times but never waits forever (the escalation breaks a would-be ring).
+    #[test]
+    fn agv_node_wait_escalates_instead_of_blocking_forever() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "agv-wait",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "P", "kind": "processor", "pos": [0.0, 0.0], "params": { "process_operator": "D" } },
+            { "name": "D", "kind": "dispatcher", "pos": [0.0, 0.0], "params": {} },
+            { "name": "A1", "kind": "agv", "pos": [0.0, 0.0], "params": { "speed": 1.0 } },
+            { "name": "A2", "kind": "agv", "pos": [0.0, 0.0], "params": { "speed": 1.0 } },
+            { "name": "S", "kind": "source",
+              "params": { "max_arrivals": 1, "interarrival": { "distribution": "constant", "value": 1.0 } } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let high = sim.by_name["A1"];
+        let low = sim.by_name["A2"];
+        let requester = sim.by_name["P"];
+        // The higher-index AGV occupies the node the lower-index one wants.
+        sim.objects[high].tasks = 1;
+        sim.objects[low].tasks = 1;
+        sim.objects[low].agv_wait_rounds = 0;
+        sim.handle_transport_arrive(low, requester)
+            .expect("first attempt");
+        assert_eq!(sim.objects[low].agv_wait_rounds, 1, "wait counted");
+        // Reaching the escalation threshold stops the wait.
+        sim.objects[low].agv_wait_rounds = 3;
+        sim.handle_transport_arrive(low, requester)
+            .expect("escalated attempt");
+        assert_eq!(
+            sim.objects[low].agv_wait_rounds, 0,
+            "after escalation the wait counter resets and the AGV proceeds"
+        );
+    }
+
     #[test]
     fn charger_queue_orders_by_policy() {
         let model = Model::from_json(
