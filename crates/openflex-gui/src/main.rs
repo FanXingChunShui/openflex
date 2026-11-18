@@ -798,6 +798,8 @@ struct OpenFlexApp {
     opt_low: f32,
     opt_high: f32,
     opt_steps: u32,
+    opt_mode: u8,
+    opt_samples: u32,
     opt_rows: Vec<(f64, f64)>,
     opt_best: Option<(f64, f64)>,
     opt_rx: Option<Receiver<Vec<(f64, f64)>>>,
@@ -864,6 +866,8 @@ impl OpenFlexApp {
             opt_low: 1.0,
             opt_high: 10.0,
             opt_steps: 5,
+            opt_mode: 0,
+            opt_samples: 20,
             opt_rows: Vec::new(),
             opt_best: None,
             opt_rx: None,
@@ -1263,27 +1267,98 @@ impl OpenFlexApp {
             self.opt_high as f64,
             self.opt_steps.clamp(2, 50),
         );
+        let mode = self.opt_mode;
+        let samples = self.opt_samples.clamp(2, 300);
         let (tx, rx) = channel();
         self.opt_rx = Some(rx);
         self.opt_running = true;
-        self.status = format!("Optimising: {steps} grid points…");
+        self.status = format!(
+            "Optimising: {}",
+            match mode {
+                1 => format!("{samples} random samples"),
+                2 => "genetic search".to_string(),
+                _ => format!("{steps} grid points"),
+            }
+        );
         std::thread::spawn(move || {
-            let mut rows = Vec::new();
-            for index in 0..steps {
-                let value = if steps <= 1 {
-                    low
-                } else {
-                    low + (high - low) * index as f64 / (steps - 1) as f64
-                };
+            let evaluate = |value: f64| -> Option<f64> {
                 let mut json = base_json.clone();
                 if !set_json_number(&mut json, &path, value) {
-                    continue;
+                    return None;
                 }
-                let Ok(patched) = serde_json::from_value::<Model>(json) else {
-                    continue;
-                };
-                if let Ok(report) = run_model(&patched) {
-                    rows.push((value, report.completed.mean));
+                let patched: Model = serde_json::from_value(json).ok()?;
+                run_model(&patched).ok().map(|report| report.completed.mean)
+            };
+            let mut rows: Vec<(f64, f64)> = Vec::new();
+            match mode {
+                // Random search over [low, high].
+                1 => {
+                    let mut state = 0x9E37_79B9_u64;
+                    for _ in 0..samples {
+                        state = state
+                            .wrapping_mul(6364136223846793005)
+                            .wrapping_add(1442695040888963407);
+                        let unit = (state >> 11) as f64 / (1u64 << 53) as f64;
+                        let value = low + (high - low) * unit;
+                        if let Some(score) = evaluate(value) {
+                            rows.push((value, score));
+                        }
+                    }
+                }
+                // Genetic search: elitist uniform crossover + Gaussian-ish mutation.
+                2 => {
+                    let population_size = 12usize;
+                    let generations = 6usize;
+                    let mut state = 0x2545_F491_u64;
+                    let mut next_unit = || -> f64 {
+                        state = state
+                            .wrapping_mul(6364136223846793005)
+                            .wrapping_add(1442695040888963407);
+                        (state >> 11) as f64 / (1u64 << 53) as f64
+                    };
+                    let span = (high - low).max(1e-9);
+                    let mut population: Vec<f64> = (0..population_size)
+                        .map(|_| low + span * next_unit())
+                        .collect();
+                    for _ in 0..generations {
+                        let mut scored: Vec<(f64, f64)> = population
+                            .iter()
+                            .filter_map(|value| evaluate(*value).map(|score| (*value, score)))
+                            .collect();
+                        if scored.is_empty() {
+                            break;
+                        }
+                        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+                        rows.extend(scored.iter().copied());
+                        let elite: Vec<f64> =
+                            scored.iter().take(4).map(|(value, _)| *value).collect();
+                        let mut next_generation = elite.clone();
+                        while next_generation.len() < population_size {
+                            let a =
+                                elite[(next_unit() * elite.len() as f64) as usize % elite.len()];
+                            let b =
+                                elite[(next_unit() * elite.len() as f64) as usize % elite.len()];
+                            let mut child = if next_unit() < 0.5 { a } else { b };
+                            if next_unit() < 0.25 {
+                                child = (child + (next_unit() - 0.5) * span * 0.3).clamp(low, high);
+                            }
+                            next_generation.push(child);
+                        }
+                        population = next_generation;
+                    }
+                }
+                // Grid search.
+                _ => {
+                    for index in 0..steps {
+                        let value = if steps <= 1 {
+                            low
+                        } else {
+                            low + (high - low) * index as f64 / (steps - 1) as f64
+                        };
+                        if let Some(score) = evaluate(value) {
+                            rows.push((value, score));
+                        }
+                    }
                 }
             }
             let _ = tx.send(rows);
@@ -1295,7 +1370,9 @@ impl OpenFlexApp {
             return;
         };
         match rx.try_recv() {
-            Ok(rows) => {
+            Ok(mut rows) => {
+                rows.sort_by(|a, b| b.1.total_cmp(&a.1));
+                rows.truncate(12);
                 self.opt_best = rows.iter().copied().max_by(|a, b| a.1.total_cmp(&b.1));
                 self.status = match self.opt_best {
                     Some((value, score)) => {
@@ -2264,7 +2341,12 @@ impl eframe::App for OpenFlexApp {
                         });
                 }
                 ui.separator();
-                ui.heading("Optimise (grid search)");
+                ui.heading("Optimise");
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.opt_mode, 0, "grid");
+                    ui.radio_value(&mut self.opt_mode, 1, "random");
+                    ui.radio_value(&mut self.opt_mode, 2, "genetic");
+                });
                 ui.horizontal(|ui| {
                     ui.label("path");
                     ui.add(
@@ -2284,6 +2366,14 @@ impl eframe::App for OpenFlexApp {
                             .speed(1.0)
                             .range(2..=50),
                     );
+                    if self.opt_mode == 1 {
+                        ui.label("samples");
+                        ui.add(
+                            egui::DragValue::new(&mut self.opt_samples)
+                                .speed(1.0)
+                                .range(2..=300),
+                        );
+                    }
                 });
                 if ui
                     .add_enabled(
@@ -2291,7 +2381,7 @@ impl eframe::App for OpenFlexApp {
                         egui::Button::new(if self.opt_running {
                             "Optimising…"
                         } else {
-                            "Run grid search"
+                            "Run"
                         }),
                     )
                     .clicked()

@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.66.0 — 2026-11-18
+
+### 桌面 GUI
+
+- **优化器扩展**：`Optimise` 面板新增 `grid / random / genetic` 三种搜索模式（单变量，目标为 `completed` 最大）：
+  - random：`samples` 次均匀采样（LCG 可复现）；
+  - genetic：种群 12、6 代，elitist 保留 + 均匀交叉 + 变异；
+  - 结果按目标降序取 top 12，显示最佳点。
+
+### 验证
+
+- 490 个测试全绿（core 255、CLI 86、report 14、model 全部）；GUI 编译、clippy 0、启动无 panic。
+- v0.66.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.65.0 — 2026-11-18
 
 ### 桌面 GUI
