@@ -739,6 +739,17 @@ impl EditForm {
 }
 
 type SeriesPoint = (String, f64, f64, f64); // object, content, throughput, utilization
+
+/// One evaluated optimisation point: variable values, objective, secondary score.
+type OptRow = (Vec<f64>, f64, f64);
+
+/// One optimisation variable: JSON path plus its search range.
+#[derive(Clone, Default)]
+struct OptVar {
+    path: String,
+    low: f32,
+    high: f32,
+}
 type SeriesRow = (f64, Vec<SeriesPoint>);
 
 struct OpenFlexApp {
@@ -794,15 +805,14 @@ struct OpenFlexApp {
     series_rx: Option<Receiver<Vec<SeriesRow>>>,
     series_object: String,
     series_metric: u8,
-    opt_path: String,
-    opt_low: f32,
-    opt_high: f32,
     opt_steps: u32,
     opt_mode: u8,
     opt_samples: u32,
-    opt_rows: Vec<(f64, f64)>,
-    opt_best: Option<(f64, f64)>,
-    opt_rx: Option<Receiver<Vec<(f64, f64)>>>,
+    opt_vars: Vec<OptVar>,
+    opt_secondary_stay: bool,
+    opt_rows: Vec<OptRow>,
+    opt_best: Option<OptRow>,
+    opt_rx: Option<Receiver<Vec<OptRow>>>,
     opt_running: bool,
     replay_index: Option<usize>,
 }
@@ -862,12 +872,15 @@ impl OpenFlexApp {
             series_rx: None,
             series_object: String::new(),
             series_metric: 0,
-            opt_path: String::new(),
-            opt_low: 1.0,
-            opt_high: 10.0,
             opt_steps: 5,
             opt_mode: 0,
             opt_samples: 20,
+            opt_vars: vec![OptVar {
+                path: String::new(),
+                low: 1.0,
+                high: 10.0,
+            }],
+            opt_secondary_stay: false,
             opt_rows: Vec::new(),
             opt_best: None,
             opt_rx: None,
@@ -1249,26 +1262,37 @@ impl OpenFlexApp {
         let Some(model) = self.model else {
             return;
         };
-        let path = self.opt_path.clone();
-        if path.trim().is_empty() {
-            self.error = Some("set the parameter path to optimise".into());
+        let vars = self.opt_vars.clone();
+        if vars.iter().any(|var| var.path.trim().is_empty()) {
+            self.error = Some("set a JSON path for every optimisation variable".into());
             return;
         }
-        let base = model.clone();
-        let base_json = match serde_json::to_value(&base) {
+        let base_json = match serde_json::to_value(model) {
             Ok(value) => value,
             Err(error) => {
                 self.error = Some(format!("could not serialise model: {error}"));
                 return;
             }
         };
-        let (low, high, steps) = (
-            self.opt_low as f64,
-            self.opt_high as f64,
-            self.opt_steps.clamp(2, 50),
-        );
         let mode = self.opt_mode;
-        let samples = self.opt_samples.clamp(2, 300);
+        let steps = self.opt_steps.clamp(2, 50) as usize;
+        let samples = self.opt_samples.clamp(2, 300) as usize;
+        let secondary = self.opt_secondary_stay;
+        let roots: Vec<(String, f64, f64)> = vars
+            .iter()
+            .map(|var| (var.path.clone(), var.low as f64, var.high as f64))
+            .collect();
+        if mode == 0 {
+            let combos = roots
+                .iter()
+                .fold(1usize, |acc, _| acc.saturating_mul(steps));
+            if combos > 400 {
+                self.error = Some(format!(
+                    "grid search would evaluate {combos} points; reduce steps or variables"
+                ));
+                return;
+            }
+        }
         let (tx, rx) = channel();
         self.opt_rx = Some(rx);
         self.opt_running = true;
@@ -1277,35 +1301,46 @@ impl OpenFlexApp {
             match mode {
                 1 => format!("{samples} random samples"),
                 2 => "genetic search".to_string(),
-                _ => format!("{steps} grid points"),
+                _ => "grid".to_string(),
             }
         );
         std::thread::spawn(move || {
-            let evaluate = |value: f64| -> Option<f64> {
+            let evaluate = |values: &[f64]| -> Option<(f64, f64)> {
                 let mut json = base_json.clone();
-                if !set_json_number(&mut json, &path, value) {
-                    return None;
+                for (index, (path, _, _)) in roots.iter().enumerate() {
+                    if !set_json_number(&mut json, path, values[index]) {
+                        return None;
+                    }
                 }
                 let patched: Model = serde_json::from_value(json).ok()?;
-                run_model(&patched).ok().map(|report| report.completed.mean)
+                let report = run_model(&patched).ok()?;
+                let stay = report
+                    .objects
+                    .values()
+                    .map(|stats| stats.avg_stay_time.mean)
+                    .fold(0.0_f64, f64::max);
+                Some((report.completed.mean, if secondary { stay } else { 0.0 }))
             };
-            let mut rows: Vec<(f64, f64)> = Vec::new();
+            let mut rows: Vec<OptRow> = Vec::new();
             match mode {
-                // Random search over [low, high].
                 1 => {
                     let mut state = 0x9E37_79B9_u64;
                     for _ in 0..samples {
-                        state = state
-                            .wrapping_mul(6364136223846793005)
-                            .wrapping_add(1442695040888963407);
-                        let unit = (state >> 11) as f64 / (1u64 << 53) as f64;
-                        let value = low + (high - low) * unit;
-                        if let Some(score) = evaluate(value) {
-                            rows.push((value, score));
+                        let values: Vec<f64> = roots
+                            .iter()
+                            .map(|(_, low, high)| {
+                                state = state
+                                    .wrapping_mul(6364136223846793005)
+                                    .wrapping_add(1442695040888963407);
+                                let unit = (state >> 11) as f64 / (1u64 << 53) as f64;
+                                low + (high - low) * unit
+                            })
+                            .collect();
+                        if let Some((score, second)) = evaluate(&values) {
+                            rows.push((values, score, second));
                         }
                     }
                 }
-                // Genetic search: elitist uniform crossover + Gaussian-ish mutation.
                 2 => {
                     let population_size = 12usize;
                     let generations = 6usize;
@@ -1316,47 +1351,82 @@ impl OpenFlexApp {
                             .wrapping_add(1442695040888963407);
                         (state >> 11) as f64 / (1u64 << 53) as f64
                     };
-                    let span = (high - low).max(1e-9);
-                    let mut population: Vec<f64> = (0..population_size)
-                        .map(|_| low + span * next_unit())
+                    let mut population: Vec<Vec<f64>> = (0..population_size)
+                        .map(|_| {
+                            roots
+                                .iter()
+                                .map(|(_, low, high)| low + (high - low) * next_unit())
+                                .collect()
+                        })
                         .collect();
                     for _ in 0..generations {
-                        let mut scored: Vec<(f64, f64)> = population
+                        let mut scored: Vec<OptRow> = population
                             .iter()
-                            .filter_map(|value| evaluate(*value).map(|score| (*value, score)))
+                            .filter_map(|values| {
+                                evaluate(values)
+                                    .map(|(score, second)| (values.clone(), score, second))
+                            })
                             .collect();
                         if scored.is_empty() {
                             break;
                         }
                         scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-                        rows.extend(scored.iter().copied());
-                        let elite: Vec<f64> =
-                            scored.iter().take(4).map(|(value, _)| *value).collect();
+                        rows.extend(scored.iter().cloned());
+                        let elite: Vec<Vec<f64>> =
+                            scored.iter().take(4).map(|(v, _, _)| v.clone()).collect();
                         let mut next_generation = elite.clone();
                         while next_generation.len() < population_size {
                             let a =
-                                elite[(next_unit() * elite.len() as f64) as usize % elite.len()];
+                                &elite[(next_unit() * elite.len() as f64) as usize % elite.len()];
                             let b =
-                                elite[(next_unit() * elite.len() as f64) as usize % elite.len()];
-                            let mut child = if next_unit() < 0.5 { a } else { b };
-                            if next_unit() < 0.25 {
-                                child = (child + (next_unit() - 0.5) * span * 0.3).clamp(low, high);
+                                &elite[(next_unit() * elite.len() as f64) as usize % elite.len()];
+                            let mut child: Vec<f64> = a
+                                .iter()
+                                .zip(b.iter())
+                                .map(|(a, b)| if next_unit() < 0.5 { *a } else { *b })
+                                .collect();
+                            for (index, value) in child.iter_mut().enumerate() {
+                                if next_unit() < 0.25 {
+                                    let (_, low, high) = roots[index];
+                                    let span = (high - low).max(1e-9);
+                                    *value = (*value + (next_unit() - 0.5) * span * 0.3)
+                                        .clamp(low, high);
+                                }
                             }
                             next_generation.push(child);
                         }
                         population = next_generation;
                     }
                 }
-                // Grid search.
                 _ => {
-                    for index in 0..steps {
-                        let value = if steps <= 1 {
-                            low
-                        } else {
-                            low + (high - low) * index as f64 / (steps - 1) as f64
-                        };
-                        if let Some(score) = evaluate(value) {
-                            rows.push((value, score));
+                    let mut indices = vec![0usize; roots.len()];
+                    loop {
+                        let values: Vec<f64> = roots
+                            .iter()
+                            .enumerate()
+                            .map(|(index, (_, low, high))| {
+                                if steps <= 1 {
+                                    *low
+                                } else {
+                                    low + (high - low) * indices[index] as f64 / (steps - 1) as f64
+                                }
+                            })
+                            .collect();
+                        if let Some((score, second)) = evaluate(&values) {
+                            rows.push((values, score, second));
+                        }
+                        let mut position = 0;
+                        loop {
+                            if position >= indices.len() {
+                                let _ = tx.send(rows);
+                                return;
+                            }
+                            indices[position] += 1;
+                            if indices[position] < steps {
+                                break;
+                            }
+                            indices[position] = 0;
+                            position += 1;
                         }
                     }
                 }
@@ -1372,12 +1442,17 @@ impl OpenFlexApp {
         match rx.try_recv() {
             Ok(mut rows) => {
                 rows.sort_by(|a, b| b.1.total_cmp(&a.1));
-                rows.truncate(12);
-                self.opt_best = rows.iter().copied().max_by(|a, b| a.1.total_cmp(&b.1));
-                self.status = match self.opt_best {
-                    Some((value, score)) => {
-                        format!("Best: {value:.3} → completed {score:.1}")
-                    }
+                rows.truncate(20);
+                self.opt_best = rows.first().cloned();
+                self.status = match self.opt_best.as_ref() {
+                    Some((values, score, _)) => format!(
+                        "Best: {} → completed {score:.1}",
+                        values
+                            .iter()
+                            .map(|value| format!("{value:.3}"))
+                            .collect::<Vec<_>>()
+                            .join(" / ")
+                    ),
                     None => "Optimisation finished without results".into(),
                 };
                 self.opt_rows = rows;
@@ -2347,19 +2422,35 @@ impl eframe::App for OpenFlexApp {
                     ui.radio_value(&mut self.opt_mode, 1, "random");
                     ui.radio_value(&mut self.opt_mode, 2, "genetic");
                 });
+                let mut remove: Option<usize> = None;
+                for index in 0..self.opt_vars.len() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("#{}", index + 1));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.opt_vars[index].path)
+                                .hint_text("objects/0/params/interarrival/mean")
+                                .desired_width(170.0),
+                        );
+                        ui.label("low");
+                        ui.add(egui::DragValue::new(&mut self.opt_vars[index].low).speed(0.5));
+                        ui.label("high");
+                        ui.add(egui::DragValue::new(&mut self.opt_vars[index].high).speed(0.5));
+                        if ui.small_button("✕").clicked() {
+                            remove = Some(index);
+                        }
+                    });
+                }
+                if let Some(index) = remove {
+                    self.opt_vars.remove(index);
+                }
                 ui.horizontal(|ui| {
-                    ui.label("path");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.opt_path)
-                            .hint_text("objects/0/params/interarrival/mean")
-                            .desired_width(200.0),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.label("low");
-                    ui.add(egui::DragValue::new(&mut self.opt_low).speed(0.5));
-                    ui.label("high");
-                    ui.add(egui::DragValue::new(&mut self.opt_high).speed(0.5));
+                    if ui.small_button("+ variable").clicked() {
+                        self.opt_vars.push(OptVar {
+                            path: String::new(),
+                            low: 1.0,
+                            high: 10.0,
+                        });
+                    }
                     ui.label("steps");
                     ui.add(
                         egui::DragValue::new(&mut self.opt_steps)
@@ -2374,6 +2465,7 @@ impl eframe::App for OpenFlexApp {
                                 .range(2..=300),
                         );
                     }
+                    ui.checkbox(&mut self.opt_secondary_stay, "2nd: max stay");
                 });
                 if ui
                     .add_enabled(
@@ -2388,23 +2480,45 @@ impl eframe::App for OpenFlexApp {
                 {
                     self.start_optimize();
                 }
-                if let Some((value, score)) = self.opt_best {
+                if let Some((values, score, second)) = self.opt_best.as_ref() {
+                    let vars = values
+                        .iter()
+                        .map(|value| format!("{value:.3}"))
+                        .collect::<Vec<_>>()
+                        .join(" / ");
                     ui.label(
-                        egui::RichText::new(format!("best: {value:.3} → completed {score:.1}"))
-                            .strong(),
+                        egui::RichText::new(if self.opt_secondary_stay {
+                            format!("best: {vars} → completed {score:.1}, max stay {second:.1}")
+                        } else {
+                            format!("best: {vars} → completed {score:.1}")
+                        })
+                        .strong(),
                     );
                 }
                 if !self.opt_rows.is_empty() {
+                    let columns = if self.opt_secondary_stay { 3 } else { 2 };
                     egui::Grid::new("opt-grid")
                         .striped(true)
-                        .num_columns(2)
+                        .num_columns(columns)
                         .show(ui, |ui| {
-                            ui.strong("param");
+                            ui.strong("variables");
                             ui.strong("completed");
+                            if self.opt_secondary_stay {
+                                ui.strong("max stay");
+                            }
                             ui.end_row();
-                            for (value, score) in &self.opt_rows {
-                                ui.label(format!("{value:.3}"));
+                            for (values, score, second) in self.opt_rows.iter().take(12) {
+                                ui.label(
+                                    values
+                                        .iter()
+                                        .map(|value| format!("{value:.3}"))
+                                        .collect::<Vec<_>>()
+                                        .join(" / "),
+                                );
                                 ui.label(format!("{score:.1}"));
+                                if self.opt_secondary_stay {
+                                    ui.label(format!("{second:.1}"));
+                                }
                                 ui.end_row();
                             }
                         });

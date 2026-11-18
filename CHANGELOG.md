@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.67.0 — 2026-11-18
+
+### 桌面 GUI
+
+- **多变量优化**：变量列表（`+ variable` / `✕`），每个变量一套 JSON path + `[low, high]`；grid 为笛卡尔积（>400 点拒绝并提示），
+  random 与 genetic 在多维盒内采样/进化。
+- **双目标结果表**：可选「2nd: max stay」，结果表同时显示 `completed` 与 `max avg stay`，最佳点按主目标选取。
+
+### 验证
+
+- 490 个测试全绿（core 255、CLI 86、report 14、model 全部）；GUI 编译、clippy 0、启动无 panic。
+- v0.67.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.66.0 — 2026-11-18
 
 ### 桌面 GUI
