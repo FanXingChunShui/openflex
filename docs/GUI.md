@@ -35,7 +35,7 @@ grid 为笛卡尔积（>400 点时拒绝）、random 为 `samples` 次采样、g
 | 平台 | 文件 | 说明 |
 |---|---|---|
 | Windows | `openflex-gui-<ver>-windows-x64.msi` | per-user 安装到 `%LOCALAPPDATA%\OpenFlex GUI\bin`，开始菜单 + 桌面快捷方式，无需管理员 |
-| macOS | `OpenFlex-<ver>-<triple>.app.zip` | 解压即得 `OpenFlex.app`（ad-hoc 签名；首次打开需在「系统设置 → 隐私与安全性」放行） |
+| macOS | `OpenFlex-<ver>-universal-apple-darwin.app.zip` | **Universal**（Apple Silicon + Intel，`lipo` 合并）；解压即得 `OpenFlex.app`（ad-hoc 签名；首次打开需在「系统设置 → 隐私与安全性」放行） |
 | Linux | `openflex-gui_<ver>_<arch>.deb` / `openflex-gui-<ver>-1.<arch>.rpm` | 安装到 `/usr/bin/openflex-gui`，依赖 libxkbcommon/libX11/libGL 等 |
 
 本地自行打包：
@@ -62,7 +62,7 @@ wix build packaging\windows\openflex-gui.wxs -d Version=<ver> ^
 | ~~P2~~ | 撤销/重做 | **已完成（v0.56.0）** |
 | ~~P2~~ | 文件菜单/最近文件/新建 | **已完成（v0.56.0）**：New / Save as / Recent / 快捷键 |
 | P2 | 统计图表 | ✅ 利用率柱状图 + 状态饼图 + 时间序列（WIP/吞吐/利用率）+ 时间序列/报告 CSV + 报告 JSON 导出（v0.70.0） |
-| ~~P3~~ | 打包成 .app 双击启动 | **已完成（v0.58.0）**：`scripts/package-gui-app.sh` 生成 `OpenFlex.app` + zip；Windows 的 `.exe` 可直接双击（MSI 附带 GUI 仍未做） |
+| ~~P3~~ | 打包成 .app 双击启动（v0.58.0，universal v0.71.0）：`scripts/package-gui-app.sh` 生成 `OpenFlex.app` + zip；Windows 的 `.exe` 可直接双击（MSI 附带 GUI 仍未做） |
 
 ## 路线图
 

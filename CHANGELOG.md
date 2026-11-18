@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.71.0 — 2026-11-18
+
+### 桌面 GUI 安装包
+
+- **macOS Universal `.app`**：`gui (macos-latest)` 现在同时构建 `aarch64-apple-darwin` 与 `x86_64-apple-darwin`
+  的 `openflex-gui`，用 `lipo` 合并为 universal 可执行文件再打进 `OpenFlex.app`
+  （产物名 `OpenFlex-<ver>-universal-apple-darwin.app.zip`），Apple Silicon 与 Intel Mac 均可直接运行。
+
+### 验证
+
+- 本地以 `--target universal-apple-darwin` 跑打包脚本，产出 `OpenFlex-0.70.0-universal-apple-darwin.app.zip`，
+  `plutil -lint Info.plist` 通过；工作流 YAML 由 ruby 解析通过。
+- 490 个测试全绿（core 255、CLI 86、report 14、model 全部）。
+
 ## v0.70.0 — 2026-11-18
 
 ### 桌面 GUI

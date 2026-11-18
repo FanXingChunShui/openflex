@@ -526,7 +526,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             kind: windows
           - os: macos-latest
-            target: aarch64-apple-darwin
+            target: universal-apple-darwin
             kind: macos
     runs-on: ${{ matrix.os }}
     steps:
@@ -562,9 +562,26 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Build GUI
+        if: matrix.kind != 'macos'
         env:
           CARGO_INCREMENTAL: "0"
         run: cargo build --release --locked -p openflex-gui --target ${{ matrix.target }}
+
+      - name: Build GUI (universal macOS)
+        if: matrix.kind == 'macos'
+        env:
+          CARGO_INCREMENTAL: "0"
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build --release --locked -p openflex-gui --target aarch64-apple-darwin
+          cargo build --release --locked -p openflex-gui --target x86_64-apple-darwin
+          mkdir -p dist
+          lipo -create \
+            target/aarch64-apple-darwin/release/openflex-gui \
+            target/x86_64-apple-darwin/release/openflex-gui \
+            -output dist/openflex-gui
+          lipo -info dist/openflex-gui
 
       - name: Package .deb/.rpm
         if: matrix.kind == 'linux'
@@ -612,7 +629,8 @@ jobs:
           mkdir -p dist
           bash scripts/package-gui-app.sh \
             --target "${{ matrix.target }}" --out dist \
-            --binary "target/${{ matrix.target }}/release/openflex-gui"
+            --binary dist/openflex-gui
+          rm -f dist/openflex-gui
           cd dist
           shasum -a 256 *.zip | awk '{printf "%s  %s\n", $1, $2}' > SHA256SUMS-gui-${{ matrix.kind }}.txt
 
