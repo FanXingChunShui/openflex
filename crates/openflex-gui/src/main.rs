@@ -1844,6 +1844,167 @@ impl OpenFlexApp {
         best.1
     }
 
+    /// Lightens (`amount > 0`) or darkens (`amount < 0`) a colour, which is how
+    /// the flat 2D canvas fakes a light coming from the top-left.
+    fn shade(color: egui::Color32, amount: f32) -> egui::Color32 {
+        let adjust = |channel: u8| -> u8 {
+            if amount >= 0.0 {
+                (channel as f32 + (255.0 - channel as f32) * amount).round() as u8
+            } else {
+                (channel as f32 * (1.0 + amount)).round() as u8
+            }
+        };
+        egui::Color32::from_rgb(adjust(color.r()), adjust(color.g()), adjust(color.b()))
+    }
+
+    /// Draws a kind-specific 3D-ish body and returns the rectangle used for
+    /// hit-testing and labels.
+    fn draw_object_shape(
+        painter: &egui::Painter,
+        kind: ObjectKind,
+        base: egui::Pos2,
+        zoom: f32,
+        fill: egui::Color32,
+        selected: bool,
+    ) -> egui::Rect {
+        let outline = egui::Stroke::new(
+            1.0_f32,
+            if selected {
+                egui::Color32::from_rgb(255, 235, 190)
+            } else {
+                egui::Color32::from_rgb(16, 20, 26)
+            },
+        );
+        match kind {
+            // Machines: a body plus a lighter top plate.
+            ObjectKind::Processor
+            | ObjectKind::MultiProcessor
+            | ObjectKind::Combiner
+            | ObjectKind::Separator
+            | ObjectKind::Merge
+            | ObjectKind::Split => {
+                let w = 40.0 * zoom;
+                let h = 22.0 * zoom;
+                let body = egui::Rect::from_center_size(
+                    base + egui::vec2(0.0, 2.0 * zoom),
+                    egui::vec2(w, h),
+                );
+                painter.rect_filled(body, 2.0, fill);
+                painter.rect_stroke(body, 2.0, outline);
+                let top = egui::Rect::from_min_size(
+                    body.left_top() + egui::vec2(0.0, -5.0 * zoom),
+                    egui::vec2(w, 5.0 * zoom),
+                );
+                painter.rect_filled(top, 2.0, Self::shade(fill, 0.28));
+                painter.rect_stroke(top, 2.0, outline);
+                // A small working light on the machine.
+                painter.circle_filled(
+                    body.left_top() + egui::vec2(5.0 * zoom, 5.0 * zoom),
+                    (2.2 * zoom).max(1.0),
+                    Self::shade(fill, 0.55),
+                );
+                body.union(top)
+            }
+            // Conveyors / escalators: a long belt with side rails.
+            ObjectKind::Conveyor | ObjectKind::Escalator => {
+                let w = 56.0 * zoom;
+                let h = 12.0 * zoom;
+                let belt = egui::Rect::from_center_size(base, egui::vec2(w, h));
+                painter.rect_filled(belt, 3.0, Self::shade(fill, -0.15));
+                painter.rect_stroke(belt, 3.0, outline);
+                for side in [belt.left_top(), belt.left_bottom()] {
+                    painter.line_segment(
+                        [side, side + egui::vec2(w, 0.0)],
+                        egui::Stroke::new(1.6_f32, Self::shade(fill, 0.35)),
+                    );
+                }
+                belt
+            }
+            // Racks: a stack of levels.
+            ObjectKind::Rack => {
+                let w = 34.0 * zoom;
+                let levels = 3;
+                let level_h = 7.0 * zoom;
+                let total = egui::Rect::from_center_size(
+                    base + egui::vec2(0.0, -level_h),
+                    egui::vec2(w, level_h * levels as f32 + 4.0 * zoom),
+                );
+                for level in 0..levels {
+                    let rect = egui::Rect::from_min_size(
+                        egui::pos2(total.left(), total.bottom() - (level + 1) as f32 * level_h),
+                        egui::vec2(w, level_h - 1.0 * zoom),
+                    );
+                    let tone = -0.05 + 0.12 * level as f32;
+                    painter.rect_filled(rect, 1.0, Self::shade(fill, tone));
+                    painter.rect_stroke(rect, 1.0, outline);
+                }
+                total
+            }
+            // Sources / sinks: a drum.
+            ObjectKind::Source | ObjectKind::Sink => {
+                let radius = 13.0 * zoom;
+                painter.circle_filled(base, radius, fill);
+                painter.circle_stroke(base, radius, outline);
+                painter.circle_filled(
+                    base + egui::vec2(-radius * 0.3, -radius * 0.3),
+                    radius * 0.42,
+                    Self::shade(fill, 0.3),
+                );
+                egui::Rect::from_center_size(base, egui::vec2(radius * 2.0, radius * 2.0))
+            }
+            // People / vehicles: a smaller pill.
+            ObjectKind::Person
+            | ObjectKind::Transporter
+            | ObjectKind::Agv
+            | ObjectKind::Robot
+            | ObjectKind::Crane
+            | ObjectKind::AsrsVehicle => {
+                let size = egui::vec2(26.0, 14.0) * zoom;
+                let body = egui::Rect::from_center_size(base, size);
+                painter.rect_filled(body, 6.0, fill);
+                painter.rect_stroke(body, 6.0, outline);
+                painter.rect_filled(
+                    egui::Rect::from_min_size(
+                        body.left_top() + egui::vec2(0.0, -3.0 * zoom),
+                        egui::vec2(size.x, 3.0 * zoom),
+                    ),
+                    2.0,
+                    Self::shade(fill, 0.3),
+                );
+                body
+            }
+            // Tanks / fluid bodies: a tall cylinder.
+            ObjectKind::FluidTank
+            | ObjectKind::FluidGenerator
+            | ObjectKind::FluidSink
+            | ObjectKind::FluidPipe
+            | ObjectKind::FluidValve => {
+                let size = egui::vec2(22.0, 26.0) * zoom;
+                let body = egui::Rect::from_center_size(base, size);
+                painter.rect_filled(body, 5.0, fill);
+                painter.rect_stroke(body, 5.0, outline);
+                let liquid = egui::Rect::from_min_max(
+                    body.left_bottom() - egui::vec2(0.0, size.y * 0.45),
+                    body.right_bottom(),
+                );
+                painter.rect_filled(liquid, 0.0, Self::shade(fill, 0.35));
+                body
+            }
+            // Everything else: the classic box with a lit top edge.
+            _ => {
+                let size = egui::vec2(38.0, 18.0) * zoom;
+                let body = egui::Rect::from_center_size(base, size);
+                painter.rect_filled(body, 3.0, fill);
+                painter.rect_stroke(body, 3.0, outline);
+                painter.line_segment(
+                    [body.left_top(), body.right_top()],
+                    egui::Stroke::new(1.4_f32, Self::shade(fill, 0.4)),
+                );
+                body
+            }
+        }
+    }
+
     fn kind_color(kind: ObjectKind) -> egui::Color32 {
         match kind {
             ObjectKind::Source => egui::Color32::from_rgb(70, 150, 100),
@@ -2912,8 +3073,6 @@ impl eframe::App for OpenFlexApp {
                     egui::Color32::from_rgba_unmultiplied(0, 0, 0, 70),
                 );
                 let base = self.project(world_pos, world_z, center, scale);
-                let size = egui::vec2(38.0, 18.0) * self.zoom;
-                let box_rect = egui::Rect::from_center_size(base, size);
                 let selected = self.selected == Some(index);
                 let mut fill = match live {
                     Some(stats) => Self::state_fill(stats),
@@ -2922,12 +3081,9 @@ impl eframe::App for OpenFlexApp {
                 if selected {
                     fill = egui::Color32::from_rgb(255, 190, 80);
                 }
-                painter.rect_filled(box_rect, 3.0, fill);
-                painter.rect_stroke(
-                    box_rect,
-                    3.0,
-                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(20, 24, 30)),
-                );
+                let box_rect =
+                    Self::draw_object_shape(&painter, object.kind, base, self.zoom, fill, selected);
+                // Flow items held right now: small dots above the box.
                 // Flow items held right now: small dots above the box.
                 if let Some(stats) = live {
                     let shown = stats.content.min(8) as usize;

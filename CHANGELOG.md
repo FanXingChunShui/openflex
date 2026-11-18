@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.68.0 — 2026-11-18
+
+### 桌面 GUI
+
+- **按 kind 的 3D 几何体与明暗**：processor/multiprocessor/combiner/separator/merge/split 画成带顶板与指示灯的机台；
+  conveyor/escalator 为带侧轨的长条；rack 为分层货架；source/sink 为圆鼓；person/transporter/agv/robot/crane/asrs 为胶囊；
+  fluid 系列为带液位的罐体；其余为带上沿高光的盒体。新增 `shade()` 实现伪光照（左上光源）。
+
+### 验证
+
+- 490 个测试全绿（core 255、CLI 86、report 14、model 全部）；GUI 编译、clippy 0、启动无 panic。
+- v0.68.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.67.0 — 2026-11-18
 
 ### 桌面 GUI
