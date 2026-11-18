@@ -759,6 +759,10 @@ struct OpenFlexApp {
     status: String,
     error: Option<String>,
     selected: Option<usize>,
+    selection: Vec<usize>,
+    marquee_start: Option<egui::Pos2>,
+    batch_dx: f32,
+    batch_dy: f32,
     search: String,
     yaw: f32,
     pitch: f32,
@@ -831,6 +835,10 @@ impl OpenFlexApp {
             status: "Open a model to start.".into(),
             error: None,
             selected: None,
+            selection: Vec::new(),
+            marquee_start: None,
+            batch_dx: 0.0,
+            batch_dy: 0.0,
             search: String::new(),
             yaw: -0.6,
             pitch: 0.5,
@@ -1641,6 +1649,98 @@ impl OpenFlexApp {
         }
     }
 
+    fn batch_align(&mut self, along_x: bool) {
+        let Some(model) = self.model else {
+            return;
+        };
+        if self.selection.len() < 2 {
+            return;
+        }
+        let indices = self.selection.clone();
+        let anchor = model.objects[indices[0]].pos;
+        self.snapshot();
+        let mut copy = model.clone();
+        for index in indices {
+            let object = &mut copy.objects[index];
+            if along_x {
+                object.pos[0] = anchor[0];
+            } else {
+                object.pos[1] = anchor[1];
+            }
+        }
+        match copy.validate() {
+            Ok(()) => {
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.status = if along_x {
+                    "Aligned on X".into()
+                } else {
+                    "Aligned on Y".into()
+                };
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    fn batch_move(&mut self) {
+        let Some(model) = self.model else {
+            return;
+        };
+        let (dx, dy) = (self.batch_dx as f64, self.batch_dy as f64);
+        if dx == 0.0 && dy == 0.0 {
+            return;
+        }
+        self.snapshot();
+        let mut copy = model.clone();
+        for index in self.selection.clone() {
+            copy.objects[index].pos[0] += dx;
+            copy.objects[index].pos[1] += dy;
+        }
+        match copy.validate() {
+            Ok(()) => {
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.form = self.selected.and_then(|index| {
+                    self.model
+                        .map(|model| EditForm::from_object(&model.objects[index]))
+                });
+                self.status = format!("Moved {} object(s)", self.selection.len());
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    fn batch_delete(&mut self) {
+        let Some(model) = self.model else {
+            return;
+        };
+        if self.selection.is_empty() {
+            return;
+        }
+        let names: Vec<String> = self
+            .selection
+            .iter()
+            .filter_map(|index| model.objects.get(*index).map(|object| object.name.clone()))
+            .collect();
+        self.snapshot();
+        let mut copy = model.clone();
+        copy.objects.retain(|object| !names.contains(&object.name));
+        copy.connections.retain(|connection| {
+            !names.contains(&connection.from) && !names.contains(&connection.to)
+        });
+        match copy.validate() {
+            Ok(()) => {
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.selection.clear();
+                self.selected = None;
+                self.form = None;
+                self.status = format!("Deleted {} object(s)", names.len());
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
     fn new_handle(&mut self) -> bool {
         let Some(model) = self.model else {
             return false;
@@ -1817,6 +1917,7 @@ impl OpenFlexApp {
         };
         let object = &model.objects[index];
         self.selected = Some(index);
+        self.selection = vec![index];
         self.form = Some(EditForm::from_object(object));
         self.params_text =
             serde_json::to_string_pretty(&object.params).unwrap_or_else(|_| "{}".into());
@@ -2463,6 +2564,41 @@ impl eframe::App for OpenFlexApp {
                             self.apply_json();
                         }
                     }
+                }
+                if self.selection.len() > 1 {
+                    ui.separator();
+                    ui.heading(format!("{} objects selected", self.selection.len()));
+                    ui.horizontal(|ui| {
+                        if ui.small_button("Align X").clicked() {
+                            self.batch_align(true);
+                        }
+                        if ui.small_button("Align Y").clicked() {
+                            self.batch_align(false);
+                        }
+                        if ui.small_button("Delete").clicked() {
+                            self.batch_delete();
+                        }
+                        if ui.small_button("Clear").clicked() {
+                            self.selection.clear();
+                            self.status = "Selection cleared".into();
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("move by");
+                        ui.add(
+                            egui::DragValue::new(&mut self.batch_dx)
+                                .speed(0.5)
+                                .prefix("dx "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.batch_dy)
+                                .speed(0.5)
+                                .prefix("dy "),
+                        );
+                        if ui.small_button("Apply").clicked() {
+                            self.batch_move();
+                        }
+                    });
                 }
                 ui.separator();
                 egui::CollapsingHeader::new("Process Flow")
@@ -3378,6 +3514,68 @@ impl eframe::App for OpenFlexApp {
                     egui::Stroke::new(1.2_f32, egui::Color32::from_rgb(90, 120, 150)),
                 );
             }
+            // Marquee selection: drag on empty space to select a rectangle of
+            // objects (Shift adds to the current selection).
+            let drag_started = response.drag_started();
+            let pointer = response.interact_pointer_pos();
+            if drag_started {
+                self.marquee_start = pointer;
+            }
+            let marquee = self.marquee_start.zip(pointer).map(|(start, current)| {
+                egui::Rect::from_two_pos(start, current)
+            });
+            if response.drag_stopped() {
+                if let Some(rect) = marquee
+                    && rect.width() > 6.0
+                    && rect.height() > 6.0
+                {
+                    let shift = ui.input(|input| input.modifiers.shift);
+                    let mut hits: Vec<usize> = Vec::new();
+                    for (index, object) in model.objects.iter().enumerate() {
+                        let point = self.project(object.pos, object.z, center, scale);
+                        if rect.contains(point) {
+                            hits.push(index);
+                        }
+                    }
+                    if !hits.is_empty() {
+                        if shift {
+                            for index in hits {
+                                if !self.selection.contains(&index) {
+                                    self.selection.push(index);
+                                }
+                            }
+                        } else {
+                            self.selection = hits;
+                        }
+                        if let Some(first) = self.selection.first().copied() {
+                            self.selected = Some(first);
+                            if let Some(model) = self.model {
+                                let object = &model.objects[first];
+                                self.form = Some(EditForm::from_object(object));
+                                self.params_text = serde_json::to_string_pretty(&object.params)
+                                    .unwrap_or_else(|_| "{}".into());
+                            }
+                        }
+                        self.status = format!("{} object(s) selected", self.selection.len());
+                    }
+                }
+                self.marquee_start = None;
+            }
+            if let Some(rect) = marquee
+                && rect.width() > 6.0
+                && rect.height() > 6.0
+            {
+                painter.rect_filled(
+                    rect,
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(110, 170, 230, 40),
+                );
+                painter.rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(120, 180, 240)),
+                );
+            }
             let mut context_target: Option<usize> = None;
             for (index, object) in model.objects.iter().enumerate() {
                 let live = self
@@ -3429,12 +3627,15 @@ impl eframe::App for OpenFlexApp {
                 );
                 let base = self.project(world_pos, world_z, center, scale);
                 let selected = self.selected == Some(index);
+                let in_selection = self.selection.contains(&index);
                 let mut fill = match live {
                     Some(stats) => Self::state_fill(stats),
                     None => Self::kind_color(object.kind),
                 };
                 if selected {
                     fill = egui::Color32::from_rgb(255, 190, 80);
+                } else if in_selection {
+                    fill = Self::shade(fill, 0.25);
                 }
                 let box_rect =
                     Self::draw_object_shape(&painter, object.kind, base, self.zoom, fill, selected);
