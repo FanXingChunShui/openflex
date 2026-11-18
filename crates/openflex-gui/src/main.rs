@@ -738,7 +738,8 @@ impl EditForm {
     }
 }
 
-type SeriesRow = (f64, Vec<(String, f64)>);
+type SeriesPoint = (String, f64, f64, f64); // object, content, throughput, utilization
+type SeriesRow = (f64, Vec<SeriesPoint>);
 
 struct OpenFlexApp {
     model: Option<&'static Model>,
@@ -792,6 +793,7 @@ struct OpenFlexApp {
     series_running: bool,
     series_rx: Option<Receiver<Vec<SeriesRow>>>,
     series_object: String,
+    series_metric: u8,
     opt_path: String,
     opt_low: f32,
     opt_high: f32,
@@ -857,6 +859,7 @@ impl OpenFlexApp {
             series_running: false,
             series_rx: None,
             series_object: String::new(),
+            series_metric: 0,
             opt_path: String::new(),
             opt_low: 1.0,
             opt_high: 10.0,
@@ -1204,7 +1207,12 @@ impl OpenFlexApp {
                         .objects
                         .iter()
                         .map(|(name, stats)| {
-                            (name.clone(), stats.avg_content.max(stats.content as f64))
+                            (
+                                name.clone(),
+                                stats.content as f64,
+                                stats.throughput,
+                                stats.utilization,
+                            )
                         })
                         .collect();
                     rows.push((state.now, row));
@@ -1304,6 +1312,29 @@ impl OpenFlexApp {
                 self.opt_running = false;
                 self.opt_rx = None;
             }
+        }
+    }
+
+    fn export_series_csv(&mut self) {
+        if self.series.is_empty() {
+            return;
+        }
+        let mut text = String::from("time,object,content,throughput,utilization\n");
+        for (time, row) in &self.series {
+            for (name, content, throughput, utilization) in row {
+                text.push_str(&format!(
+                    "{time:.4},{name},{content:.4},{throughput:.6},{utilization:.6}\n"
+                ));
+            }
+        }
+        let path = self
+            .path
+            .as_ref()
+            .map(|path| path.with_extension("timeseries.csv"))
+            .unwrap_or_else(|| PathBuf::from("openflex-timeseries.csv"));
+        match std::fs::write(&path, text) {
+            Ok(()) => self.status = format!("Time series written to {}", path.display()),
+            Err(error) => self.error = Some(format!("could not write time series: {error}")),
         }
     }
 
@@ -2366,13 +2397,21 @@ impl eframe::App for OpenFlexApp {
                     let names: Vec<String> = self
                         .series
                         .first()
-                        .map(|(_, row)| row.iter().map(|(name, _)| name.clone()).collect())
+                        .map(|(_, row)| row.iter().map(|(name, ..)| name.clone()).collect())
                         .unwrap_or_default();
                     if self.series_object.is_empty()
                         && let Some(first) = names.first()
                     {
                         self.series_object = first.clone();
                     }
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut self.series_metric, 0, "WIP");
+                        ui.radio_value(&mut self.series_metric, 1, "throughput");
+                        ui.radio_value(&mut self.series_metric, 2, "utilization");
+                        if ui.small_button("Export CSV").clicked() {
+                            self.export_series_csv();
+                        }
+                    });
                     ui.horizontal_wrapped(|ui| {
                         for name in &names {
                             if ui
@@ -2389,13 +2428,19 @@ impl eframe::App for OpenFlexApp {
                     );
                     let rect = response.rect;
                     painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(24, 26, 30));
+                    let metric = self.series_metric as usize;
+                    let value_of = |point: &SeriesPoint| match metric {
+                        1 => point.2,
+                        2 => point.3,
+                        _ => point.1,
+                    };
                     let max = self
                         .series
                         .iter()
                         .filter_map(|(_, row)| {
                             row.iter()
-                                .find(|(name, _)| *name == self.series_object)
-                                .map(|(_, value)| *value)
+                                .find(|(name, ..)| *name == self.series_object)
+                                .map(value_of)
                         })
                         .fold(0.0_f64, f64::max)
                         .max(1.0);
@@ -2404,8 +2449,8 @@ impl eframe::App for OpenFlexApp {
                     for (index, (_, row)) in self.series.iter().enumerate() {
                         let value = row
                             .iter()
-                            .find(|(name, _)| *name == self.series_object)
-                            .map(|(_, value)| *value)
+                            .find(|(name, ..)| *name == self.series_object)
+                            .map(value_of)
                             .unwrap_or(0.0);
                         let x = rect.left() + rect.width() * index as f32 / total as f32;
                         let y = rect.bottom() - 6.0 - (rect.height() - 12.0) * (value / max) as f32;
@@ -2622,8 +2667,8 @@ impl eframe::App for OpenFlexApp {
                 let replay_content = self.replay_index.and_then(|index| {
                     self.series.get(index).and_then(|(_, row)| {
                         row.iter()
-                            .find(|(name, _)| *name == object.name)
-                            .map(|(_, value)| *value)
+                            .find(|(name, ..)| *name == object.name)
+                            .map(|point| point.1)
                     })
                 });
                 // Vehicles move: draw them at their live position when the

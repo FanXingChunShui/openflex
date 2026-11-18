@@ -22,7 +22,7 @@ cargo build -p openflex-gui --release
 | Process Flow | **可视化节点画布**（块画成圆角矩形、拖拽移动、点击两个块建立连接、选中高亮）+ 块 JSON 编辑、`+create/delay/assign/decision/transfer/sink` 快速加块、块列表删除（连带清理连接）、from/to 连接、`Apply process flow` |
 | 实验 | **stop-time 扫描**与**参数扫描**（JSON path，起点/步长/次数）→ 后台逐次运行，柱状图 + 值/completed 表 |
 | 优化 | **grid search**：按 JSON path 在 `[low, high]` 上取 `steps` 个点，逐点运行，显示最好点与完整 `param → completed` 表 |
-| 报告 | Completed ± CI、Created、**利用率柱状图**、逐对象 In/Out/Util 表、**状态饼图**（idle/busy/blocked/down/off-shift 合计）、**时间序列折线**（按 interval 采样，可切换对象）、**Replay 滑块**（拖动回放某次采样的 WIP 并显示该时刻） |
+| 报告 | Completed ± CI、Created、**利用率柱状图**、逐对象 In/Out/Util 表、**状态饼图**（idle/busy/blocked/down/off-shift 合计）、**时间序列折线**（按 interval 采样；指标可切 WIP / throughput / utilization；对象可切换；**Export CSV** 导出 `time,object,content,throughput,utilization`）、**Replay 滑块** |
 
 编辑历史：**撤销/重做栈（每个编辑前快照，上限 50）**，工具栏按钮 + 快捷键。
 
@@ -59,7 +59,7 @@ wix build packaging\windows\openflex-gui.wxs -d Version=<ver> ^
 | P1 | 实验与优化 UI（部分完成） | ✅ stop-time/参数扫描 + **grid search 优化**（v0.61.0）；多目标/genetic/CLI `optimize` 未接入 |
 | ~~P2~~ | 撤销/重做 | **已完成（v0.56.0）** |
 | ~~P2~~ | 文件菜单/最近文件/新建 | **已完成（v0.56.0）**：New / Save as / Recent / 快捷键 |
-| P2 | 统计图表（部分完成） | ✅ 利用率柱状图 + 状态饼图 + 时间序列折线（v0.60.0）；缺吞吐曲线/导出 |
+| P2 | 统计图表 | ✅ 利用率柱状图 + 状态饼图 + 时间序列（WIP/吞吐/利用率）+ CSV 导出（v0.65.0） |
 | ~~P3~~ | 打包成 .app 双击启动 | **已完成（v0.58.0）**：`scripts/package-gui-app.sh` 生成 `OpenFlex.app` + zip；Windows 的 `.exe` 可直接双击（MSI 附带 GUI 仍未做） |
 
 ## 路线图

@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.65.0 — 2026-11-18
+
+### 桌面 GUI
+
+- **吞吐/利用率曲线**：时间序列采样同时记录 `content / throughput / utilization`，图表可在三者间切换。
+- **时间序列 CSV 导出**：`Export CSV` 写出 `time,object,content,throughput,utilization`（文件名 `<model>.timeseries.csv`）。
+
+### 验证
+
+- 490 个测试全绿（core 255、CLI 86、report 14、model 全部）；GUI 编译、clippy 0、启动无 panic。
+- v0.65.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.64.0 — 2026-11-18
 
 ### 桌面 GUI
