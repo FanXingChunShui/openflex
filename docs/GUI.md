@@ -12,7 +12,9 @@ cargo build -p openflex-gui --release
 
 | 区域 | 功能 |
 |---|---|
-| 文件 | **New**（生成 source→queue→processor→sink 模板）、Open（路径输入）、Save、**Save as…**、**Recent 最近 8 个**、加载时校验；**快捷键 Ctrl+Z / Ctrl+Shift+Z / Ctrl+S** |
+| 文件 | **New**（生成 source→queue→processor→sink 模板）、Open（路径输入）、Save、**Save as…**、**Recent 最近 8 个**、加载时校验 |
+| 快捷键 | `Ctrl/Cmd+O` 打开、`Ctrl/Cmd+N` 新建、`Ctrl/Cmd+S` 保存、`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 重做、`Space` 播放/暂停、`R` 重置、`F1` 快捷键帮助对话框 |
+| 对象菜单 | 3D 视图**右键对象**：Focus camera（居中）、Reset position（z 归零）、Delete object（删除并清理连接），均走校验 |
 | 模型树 | 按 kind 分组（可折叠）、名称/kind 过滤、点击选中 |
 | 对象编辑 | `x/y/z` 拖拽数值、**按 kind 的参数表单**（Distribution 类型下拉 + 数值：source/queue/processor/conveyor/resource/transporter/person/robot/crane/asrs/agv）、Apply 校验后提交；JSON 高级模式（复选框） |
 | 连接编辑 | 列表 + 删除、from/to/port 添加（校验后原子替换模型） |

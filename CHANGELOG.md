@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.72.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **快捷键**：`Ctrl/Cmd+O` 打开、`Ctrl/Cmd+N` 新建、`Ctrl/Cmd+S` 保存、`Ctrl/Cmd+Z` / `Ctrl/Cmd+Shift+Z` 撤销/重做、
+  `Space` 播放/暂停、`R` 重置、`F1` 打开快捷键帮助对话框（工具栏也有 `Help`）。
+- **对象右键菜单**：3D 视图中右键对象弹出操作面板——Focus camera（相机居中到该对象）、Reset position（z 归零）、
+  Delete object（删除对象并清理其连接，校验通过才提交）。
+
+### 验证
+
+- 490 个测试全绿（core 255、CLI 86、report 14、model 全部）；GUI 编译、clippy 0、启动无 panic。
+- v0.72.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.71.0 — 2026-11-18
 
 ### 桌面 GUI 安装包

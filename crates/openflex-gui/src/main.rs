@@ -792,6 +792,9 @@ struct OpenFlexApp {
     recent: Vec<PathBuf>,
     save_as: String,
     show_save_as: bool,
+    show_help: bool,
+    context_menu_open: Option<String>,
+    focus: [f32; 2],
     flow_text: String,
     flow_from: String,
     flow_to: String,
@@ -859,6 +862,9 @@ impl OpenFlexApp {
             recent: Vec::new(),
             save_as: String::new(),
             show_save_as: false,
+            show_help: false,
+            context_menu_open: None,
+            focus: [0.0, 0.0],
             flow_text: String::new(),
             flow_from: String::new(),
             flow_to: String::new(),
@@ -2134,6 +2140,9 @@ impl eframe::App for OpenFlexApp {
                 if ui.button("New").clicked() {
                     self.new_model();
                 }
+                if ui.button("Help").clicked() {
+                    self.show_help = !self.show_help;
+                }
                 if ui
                     .add_enabled(!self.undo.is_empty(), egui::Button::new("Undo"))
                     .clicked()
@@ -3060,6 +3069,36 @@ impl eframe::App for OpenFlexApp {
                     });
             });
 
+        if self.show_help {
+            let mut open = true;
+            egui::Window::new("Keyboard shortcuts")
+                .open(&mut open)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    egui::Grid::new("help-grid").num_columns(2).show(ui, |ui| {
+                        for (key, action) in [
+                            ("Ctrl/Cmd + O", "open a model"),
+                            ("Ctrl/Cmd + N", "new model"),
+                            ("Ctrl/Cmd + S", "save"),
+                            ("Ctrl/Cmd + Z", "undo"),
+                            ("Ctrl/Cmd + Shift + Z", "redo"),
+                            ("Space", "play / pause"),
+                            ("R", "reset the run"),
+                            ("F1", "toggle this dialog"),
+                            ("drag", "rotate the camera"),
+                            ("wheel", "zoom"),
+                            ("click", "select an object"),
+                        ] {
+                            ui.strong(key);
+                            ui.label(action);
+                            ui.end_row();
+                        }
+                    });
+                });
+            if !open {
+                self.show_help = false;
+            }
+        }
         if self.show_save_as {
             let mut open = true;
             egui::Window::new("Save as")
@@ -3112,6 +3151,33 @@ impl eframe::App for OpenFlexApp {
             if input.consume_key(egui::Modifiers::COMMAND, egui::Key::S) {
                 self.save();
             }
+            if input.consume_key(egui::Modifiers::COMMAND, egui::Key::O) {
+                self.load(PathBuf::from(self.path_input.clone()));
+            }
+            if input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
+                self.new_model();
+            }
+            // Space toggles play/pause; R resets; F1 shows the short help.
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::Space) {
+                if self.running && !self.paused {
+                    if let Some(handle) = self.handle.as_mut() {
+                        let _ = handle.pause();
+                    }
+                    self.paused = true;
+                } else {
+                    if let Some(handle) = self.handle.as_mut() {
+                        let _ = handle.resume();
+                    }
+                    self.running = true;
+                    self.paused = false;
+                }
+            }
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::R) {
+                self.reset_run();
+            }
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::F1) {
+                self.show_help = !self.show_help;
+            }
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -3123,8 +3189,16 @@ impl eframe::App for OpenFlexApp {
                 ui.allocate_painter(ui.available_size(), egui::Sense::drag());
             let rect = response.rect;
             painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(18, 22, 28));
-            let center = rect.center();
             let scale = (rect.width().min(rect.height()) / 12.0) * self.zoom;
+            // Shift the origin so the focused object sits in the middle.
+            let raw_center = rect.center();
+            let focus_offset = self.project(
+                [self.focus[0] as f64, self.focus[1] as f64],
+                0.0,
+                egui::pos2(0.0, 0.0),
+                scale,
+            );
+            let center = raw_center - focus_offset.to_vec2();
             if response.dragged() {
                 let delta = response.drag_delta();
                 self.yaw += delta.x * 0.01;
@@ -3166,6 +3240,7 @@ impl eframe::App for OpenFlexApp {
                     egui::Stroke::new(1.2_f32, egui::Color32::from_rgb(90, 120, 150)),
                 );
             }
+            let mut context_target: Option<usize> = None;
             for (index, object) in model.objects.iter().enumerate() {
                 let live = self
                     .sim_state
@@ -3266,6 +3341,69 @@ impl eframe::App for OpenFlexApp {
                     && box_rect.expand(6.0).contains(pointer)
                 {
                     self.select(index);
+                }
+                if response.secondary_clicked()
+                    && let Some(pointer) = response.interact_pointer_pos()
+                    && box_rect.expand(6.0).contains(pointer)
+                {
+                    context_target = Some(index);
+                }
+            }
+            if let Some(index) = context_target {
+                let name = model.objects[index].name.clone();
+                self.select(index);
+                self.context_menu_open = Some(name);
+            }
+            if let Some(name) = self.context_menu_open.clone() {
+                let mut open = true;
+                egui::Window::new(format!("{name}  (right-click menu)"))
+                    .id(egui::Id::new("object-context"))
+                    .open(&mut open)
+                    .resizable(false)
+                    .show(ctx, |ui| {
+                        if ui.button("Focus camera").clicked() {
+                            if let Some(model) = self.model
+                                && let Some(object) = model.object(&name)
+                            {
+                                self.focus = [object.pos[0] as f32, object.pos[1] as f32];
+                            }
+                            self.context_menu_open = None;
+                        }
+                        if ui.button("Reset position").clicked() {
+                            if let (Some(index), Some(model)) = (self.selected, self.model) {
+                                let mut copy = model.clone();
+                                copy.objects[index].z = 0.0;
+                                self.model = Some(Box::leak(Box::new(copy)));
+                                self.status = format!("Reset the height of {name}");
+                            }
+                            self.context_menu_open = None;
+                        }
+                        if ui.button("Delete object").clicked() {
+                            if let Some(model) = self.model {
+                                let mut copy = model.clone();
+                                copy.objects.retain(|object| object.name != name);
+                                copy.connections.retain(|connection| {
+                                    connection.from != name && connection.to != name
+                                });
+                                match copy.validate() {
+                                    Ok(()) => {
+                                        self.model = Some(Box::leak(Box::new(copy)));
+                                        self.selected = None;
+                                        self.form = None;
+                                        self.status = format!("Deleted {name}");
+                                        self.error = None;
+                                    }
+                                    Err(error) => self.error = Some(error.to_string()),
+                                }
+                            }
+                            self.context_menu_open = None;
+                        }
+                        if ui.button("Close").clicked() {
+                            self.context_menu_open = None;
+                        }
+                    });
+                if !open {
+                    self.context_menu_open = None;
                 }
             }
             ui.horizontal(|ui| {
