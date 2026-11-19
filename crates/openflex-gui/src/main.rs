@@ -462,6 +462,9 @@ struct EditForm {
     pos: [f32; 2],
     z: f32,
     params: ObjectParams,
+    /// Trigger JSON (shared by every kind); kept as text so the user can type
+    /// full `Action` objects without a dedicated editor per action type.
+    triggers_text: String,
 }
 
 impl EditForm {
@@ -471,6 +474,8 @@ impl EditForm {
             pos: [object.pos[0] as f32, object.pos[1] as f32],
             z: object.z as f32,
             params: object.params.clone(),
+            triggers_text: serde_json::to_string_pretty(object.params.triggers())
+                .unwrap_or_else(|_| "{}".into()),
         }
     }
 
@@ -867,7 +872,37 @@ impl EditForm {
                 );
             }
         }
+        ui.separator();
+        egui::CollapsingHeader::new("Triggers (JSON)")
+            .id_salt("triggers")
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "on_create / on_entry / on_exit / on_receive / on_message / on_breakdown / on_repair …",
+                    )
+                    .weak()
+                    .small(),
+                );
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.triggers_text)
+                        .code_editor()
+                        .desired_rows(6),
+                );
+            });
         changed
+    }
+
+    /// Applies the trigger JSON to the params (used by Apply).
+    fn apply_triggers(&self, params: &mut ObjectParams) -> Result<(), String> {
+        let triggers: openflex_model::Triggers =
+            serde_json::from_str(if self.triggers_text.trim().is_empty() {
+                "{}"
+            } else {
+                &self.triggers_text
+            })
+            .map_err(|error| format!("invalid triggers JSON: {error}"))?;
+        *params.triggers_mut() = triggers;
+        Ok(())
     }
 }
 
@@ -2368,7 +2403,12 @@ impl OpenFlexApp {
         let mut copy = model.clone();
         copy.objects[index].pos = [form.pos[0] as f64, form.pos[1] as f64];
         copy.objects[index].z = form.z as f64;
-        copy.objects[index].params = form.params.clone();
+        let mut params = form.params.clone();
+        if let Err(error) = form.apply_triggers(&mut params) {
+            self.error = Some(error);
+            return;
+        }
+        copy.objects[index].params = params;
         let name = copy.objects[index].name.clone();
         match copy.validate() {
             Ok(()) => {

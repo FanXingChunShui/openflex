@@ -462,6 +462,40 @@ impl ObjectParams {
         }
     }
 
+    /// Mutable access to the shared trigger lists.
+    pub fn triggers_mut(&mut self) -> &mut Triggers {
+        match self {
+            ObjectParams::Source(p) => &mut p.triggers,
+            ObjectParams::Queue(p) => &mut p.triggers,
+            ObjectParams::Processor(p) => &mut p.triggers,
+            ObjectParams::MultiProcessor(p) => &mut p.triggers,
+            ObjectParams::Sink(p) => &mut p.triggers,
+            ObjectParams::Combiner(p) => &mut p.triggers,
+            ObjectParams::Separator(p) => &mut p.triggers,
+            ObjectParams::Conveyor(p) => &mut p.triggers,
+            ObjectParams::Escalator(p) => &mut p.triggers,
+            ObjectParams::Merge(p) => &mut p.triggers,
+            ObjectParams::Split(p) => &mut p.triggers,
+            ObjectParams::Transporter(p) => &mut p.triggers,
+            ObjectParams::Robot(p) => &mut p.triggers,
+            ObjectParams::Crane(p) => &mut p.triggers,
+            ObjectParams::AsrsVehicle(p) => &mut p.triggers,
+            ObjectParams::Person(p) => &mut p.triggers,
+            ObjectParams::Agv(p) => &mut p.triggers,
+            ObjectParams::Elevator(p) => &mut p.triggers,
+            ObjectParams::Dispatcher(p) => &mut p.triggers,
+            ObjectParams::Resource(p) => &mut p.triggers,
+            ObjectParams::Rack(p) => &mut p.triggers,
+            ObjectParams::BasicFr(p) => &mut p.triggers,
+            ObjectParams::BasicTe(p) => &mut p.triggers,
+            ObjectParams::FluidGenerator(p) => &mut p.triggers,
+            ObjectParams::FluidTank(p) => &mut p.triggers,
+            ObjectParams::FluidValve(p) => &mut p.triggers,
+            ObjectParams::FluidSink(p) => &mut p.triggers,
+            ObjectParams::FluidPipe(p) => &mut p.triggers,
+        }
+    }
+
     /// Availability calendar shared by every object kind (B11).
     pub fn timetable(&self) -> Option<&TimeTable> {
         match self {

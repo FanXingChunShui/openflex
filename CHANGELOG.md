@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.97.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **触发器编辑**：每个对象的表单底部新增 `Triggers (JSON)` 折叠区，可编辑 `on_create/on_entry/on_exit/on_receive/on_message/
+  on_breakdown/on_repair/on_photo_eye/on_content_change/on_state_change` 等全部触发器；Apply 时解析为 `Triggers` 并参与校验。
+- 模型层新增 `ObjectParams::triggers_mut()`（与既有 `triggers()` 对应），供 GUI 写回所有 kind 的共享触发器。
+
+### 验证
+
+- 工作区 **507 passed / 0 failed**（model 与 core 零回归）；GUI 编译、clippy 0、fmt 干净、启动无 panic。
+- v0.97.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.96.0 — 2026-11-19
 
 ### 桌面 GUI
