@@ -5575,8 +5575,18 @@ impl<'m> Simulation<'m> {
                             return f64::INFINITY;
                         }
                     };
+                    // task-153: the pipe-full limit applies in both flow
+                    // modes: a pipe of known diameter can only pass its
+                    // internal volume per residence time.
+                    let residence = params
+                        .delay
+                        .unwrap_or_else(|| params.length / params.speed.max(EPS))
+                        .max(EPS);
+                    let volume_limit = pipe_volume(&params)
+                        .map_or(f64::INFINITY, |volume| volume / residence * dt);
                     if !fluid.pressure_mode {
-                        return params.flow_rate.map_or(f64::INFINITY, |rate| rate * dt);
+                        let base = params.flow_rate.map_or(f64::INFINITY, |rate| rate * dt);
+                        return base.min(volume_limit);
                     }
                     let (inlet, target) = match outgoing[position].first() {
                         Some(&link) => (model_pressure[position], pressures[links[link].to]),
@@ -5592,7 +5602,7 @@ impl<'m> Simulation<'m> {
                     // pressure-flow calibration is kept.
                     let linear = (k * delta * temperature_factor).min(rate);
                     let capacity = pipe_capacity(&params, Some(delta), linear);
-                    capacity * dt
+                    (capacity * dt).min(volume_limit)
                 }
                 _ => 0.0,
             })
@@ -9091,6 +9101,18 @@ fn valve_effective_fraction(
         _ => opening,
     };
     (ratio * characteristic).clamp(0.0, 1.0)
+}
+
+/// task-153: internal volume of a pipe (`π/4 · d² · length`) when its
+/// diameter is known. `None` means the pipe is treated as loss-free
+/// (unbounded), which keeps every existing model unchanged.
+fn pipe_volume(pipe: &openflex_model::FluidPipeParams) -> Option<f64> {
+    let diameter = pipe.diameter?;
+    if diameter <= 0.0 || pipe.length <= 0.0 {
+        return None;
+    }
+    let area = std::f64::consts::PI * diameter * diameter / 4.0;
+    Some(area * pipe.length)
 }
 
 fn pipe_capacity(

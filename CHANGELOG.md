@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.90.0 — 2026-11-19
+
+### 引擎（Fluid）
+
+- **管满背压**（task-153）：新增 `pipe_volume()`（`π/4·d²·length`）；pipe 的通过量上限为
+  `volume / residence × dt`（residence 取 `delay` 或 `length/speed`），**流率模式与压差模式都生效**；
+  未给 `diameter` 的 pipe 仍视为无容量上限，既有示例与测试数值不变（零回归）。
+- 新增测试 `crates/openflex-core/tests/pipe_full.rs`（2 项）：无直径 → ≈100/s 直通；`d=0.1, length=10, delay=30`
+  → 通过量被限制在约 2.6/s 量级。
+
+### 验证
+
+- `cargo test --workspace --locked --exclude openflex-gui`：**507 passed / 0 failed**。
+- 4 个 fluid 示例（line/pipe/pressure/backpressure）数值与改动前一致；`fluid_safety_net` 3 项通过。
+- core `clippy` 0、`fmt` 干净；v0.90.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.89.0 — 2026-11-19
 
 ### 浏览器 Studio
