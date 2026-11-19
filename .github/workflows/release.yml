@@ -548,10 +548,22 @@ jobs:
       - name: Install Linux GUI dependencies
         if: matrix.kind == 'linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
-            libgl1-mesa-dev libwayland-dev pkg-config
+          # The Azure apt mirror is occasionally unreachable; retry with a
+          # backoff before giving up so a transient outage does not drop the
+          # Linux GUI packages from the release.
+          for attempt in 1 2 3 4; do
+            if sudo apt-get update -o Acquire::Retries=5 &&
+               sudo apt-get install -y --no-install-recommends \
+                 libxkbcommon-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+                 libgl1-mesa-dev libwayland-dev pkg-config; then
+              exit 0
+            fi
+            echo "apt attempt $attempt failed, retrying in $((attempt * 20))s"
+            sudo apt-get -f install -y || true
+            sleep $((attempt * 20))
+          done
+          echo "apt failed after 4 attempts" >&2
+          exit 1
 
       - name: Install nfpm (Linux packages)
         if: matrix.kind == 'linux'
