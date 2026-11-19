@@ -2093,20 +2093,35 @@ impl OpenFlexApp {
         let Some(report) = self.report.as_ref() else {
             return;
         };
+        // Every metric carries its 95% half-width next to the mean so the
+        // export matches the CLI/Studio tables (which show mean ± CI95).
         let mut text = String::from(
-            "object,kind,input,output,avg_wip,max_wip,avg_stay,throughput,utilization\n",
+            "object,kind,input,input_ci95,output,output_ci95,avg_wip,avg_wip_ci95,\
+max_wip,avg_stay,avg_stay_ci95,throughput,throughput_ci95,utilization,utilization_ci95,\
+idle,busy,blocked,down\n",
         );
         for (name, stats) in &report.objects {
             text.push_str(&format!(
-                "{name},{},{:.1},{:.1},{:.3},{:.0},{:.3},{:.5},{:.4}\n",
+                "{name},{},{:.1},{:.2},{:.1},{:.2},{:.3},{:.4},{:.0},{:.3},{:.4},\
+{:.5},{:.6},{:.4},{:.5},{:.4},{:.4},{:.4},{:.4}\n",
                 stats.kind.as_str(),
                 stats.input_count.mean,
+                stats.input_count.ci95,
                 stats.output_count.mean,
+                stats.output_count.ci95,
                 stats.avg_content.mean,
+                stats.avg_content.ci95,
                 stats.max_content.mean,
                 stats.avg_stay_time.mean,
+                stats.avg_stay_time.ci95,
                 stats.throughput.mean,
-                stats.utilization.mean
+                stats.throughput.ci95,
+                stats.utilization.mean,
+                stats.utilization.ci95,
+                stats.idle_fraction.mean,
+                stats.busy_fraction.mean,
+                stats.blocked_fraction.mean,
+                stats.down_fraction.mean
             ));
         }
         let path = self.report_path("report.csv");

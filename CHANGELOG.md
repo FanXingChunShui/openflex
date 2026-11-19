@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.18.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **报告 CSV 增强**：每个指标同时输出均值与 `ci95`（`input/output/avg_wip/avg_stay/throughput/utilization` 各带 `_ci95` 列），
+  并新增 `idle/busy/blocked/down` 四列，与 CLI / Studio 表格口径一致。
+
+### 环境
+
+- 磁盘再次被 `target/debug/build`（80 GB）占满导致链接失败；清理后剩余 73 GB，重建与全量测试恢复。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**517 passed / 0 failed**；clippy 0、fmt 干净、启动无 panic。
+
 ## v1.17.0 — 2026-11-19
 
 ### 桌面 GUI
