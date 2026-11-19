@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.12.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **Process Flow 画布平移/缩放**：支持拖拽空白处平移、`Cmd/Ctrl + 滚轮` 缩放（0.4–2.5×）、
+  `Reset view` 复位，画布右上角显示当前缩放；节点拖拽按缩放比例换算位移。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**516 passed / 0 failed**；clippy 0、fmt 干净、启动无 panic。
+- v1.12.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v1.11.0 — 2026-11-19
 
 ### 桌面 GUI

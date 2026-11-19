@@ -1070,6 +1070,8 @@ struct OpenFlexApp {
     flow_drag: Option<String>,
     flow_pending: Option<String>,
     flow_selected: Option<String>,
+    flow_pan: egui::Vec2,
+    flow_zoom: f32,
     series: Vec<SeriesRow>,
     series_interval: f32,
     series_running: bool,
@@ -1164,6 +1166,8 @@ impl OpenFlexApp {
             flow_drag: None,
             flow_pending: None,
             flow_selected: None,
+            flow_pan: egui::Vec2::ZERO,
+            flow_zoom: 1.0,
             series: Vec::new(),
             series_interval: 5.0,
             series_running: false,
@@ -4057,7 +4061,8 @@ impl eframe::App for OpenFlexApp {
                                 egui::vec2(ui.available_width(), 190.0),
                                 egui::Sense::click_and_drag(),
                             );
-                            let origin = response.rect.min;
+                            let origin = response.rect.min + self.flow_pan;
+                            let zoom = self.flow_zoom.clamp(0.4, 2.5);
                             let rect_of = |id: &String, index: usize| {
                                 let pos = self
                                     .flow_pos
@@ -4065,8 +4070,8 @@ impl eframe::App for OpenFlexApp {
                                     .copied()
                                     .unwrap_or_else(|| Self::flow_default_pos(index));
                                 egui::Rect::from_min_size(
-                                    origin + egui::vec2(pos[0], pos[1]),
-                                    egui::vec2(124.0, 40.0),
+                                    origin + egui::vec2(pos[0], pos[1]) * zoom,
+                                    egui::vec2(124.0, 40.0) * zoom,
                                 )
                             };
                             painter.rect_filled(
@@ -4115,10 +4120,27 @@ impl eframe::App for OpenFlexApp {
                             if response.dragged()
                                 && let (Some(id), true) = (self.flow_drag.clone(), true)
                             {
-                                let delta = response.drag_delta();
+                                let delta = response.drag_delta() / zoom;
                                 let entry = self.flow_pos.entry(id).or_insert([20.0, 20.0]);
                                 entry[0] += delta.x;
                                 entry[1] += delta.y;
+                            } else if response.dragged() && self.flow_drag.is_none() {
+                                // Dragging empty canvas pans the view.
+                                self.flow_pan += response.drag_delta();
+                            }
+                            if response.hovered() {
+                                let (scroll, ctrl) = ui.input(|input| {
+                                    (input.smooth_scroll_delta.y, input.modifiers.command)
+                                });
+                                if scroll != 0.0 {
+                                    if ctrl {
+                                        self.flow_zoom =
+                                            (self.flow_zoom * (1.0 + scroll * 0.002))
+                                                .clamp(0.4, 2.5);
+                                    } else {
+                                        self.flow_pan.y += scroll * 0.5;
+                                    }
+                                }
                             }
                             if response.drag_stopped() {
                                 self.flow_drag = None;
@@ -4158,11 +4180,24 @@ impl eframe::App for OpenFlexApp {
                                     egui::Color32::WHITE,
                                 );
                             }
-                            ui.label(
-                                egui::RichText::new("drag nodes · click two nodes to connect")
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "drag nodes · drag empty space to pan · Cmd+wheel to zoom · click two nodes to connect",
+                                    )
                                     .weak()
                                     .small(),
-                            );
+                                );
+                                if ui.small_button("Reset view").clicked() {
+                                    self.flow_pan = egui::Vec2::ZERO;
+                                    self.flow_zoom = 1.0;
+                                }
+                                ui.label(
+                                    egui::RichText::new(format!("{:.2}×", self.flow_zoom))
+                                        .weak()
+                                        .small(),
+                                );
+                            });
                         }
                         ui.label("Blocks (JSON; add/remove below)");
                         ui.horizontal_wrapped(|ui| {

@@ -37,7 +37,7 @@ cargo build -p openflex-gui --release
 | Studio trace 跳转 | Studio 的 trace 列表行可点击，把时间轴滑块移到该事件时间并同步 nearest 提示 |
 | 指标热力图 | 工具栏 `Heatmap` 下拉（off/utilization/throughput/WIP）按报告给对象着色（绿→黄→红），左下角显示色带与当前指标 |
 | 实时可视化 | 对象按**瞬时状态**着色（busy 红 / blocked 橙 / idle 绿 / down 灰 / off-shift 深灰）、`[n]` 显示瞬时持有件数、**对象上方 item 圆点**、**执行器（transporter/person/AGV/robot/crane/asrs/elevator）按引擎实时位置绘制**、状态图例 |
-| Process Flow | **可视化节点画布**（块画成圆角矩形、拖拽移动、点击两个块建立连接、选中高亮）+ 块 JSON 编辑、`+create/delay/assign/decision/transfer/sink` 快速加块、块列表删除（连带清理连接）、from/to 连接、`Apply process flow` |
+| Process Flow | **可视化节点画布（支持拖拽平移、Cmd+滚轮缩放 0.4–2.5×、Reset view 与当前缩放显示）**（块画成圆角矩形、拖拽移动、点击两个块建立连接、选中高亮）+ 块 JSON 编辑、`+create/delay/assign/decision/transfer/sink` 快速加块、块列表删除（连带清理连接）、from/to 连接、`Apply process flow` |
 | 实验 |**每个场景可设 `reps`（1…50）复现次数**，结果表显示 `value / completed / ±CI95`；图形仍是柱状对比 |
 | 实验 | **stop-time 扫描**与**参数扫描**（JSON path，起点/步长/次数）→ 后台逐次运行，柱状图 + 值/completed 表 |
 | 优化 | **grid / random / genetic** 三种搜索，**支持多变量**（`+ variable` 添加 JSON path + `[low, high]`）；
@@ -87,7 +87,7 @@ wix build packaging\windows\openflex-gui.wxs -d Version=<ver> ^
 | ~~P0~~ | ~~参数表单（按 kind 的控件）~~ | **已完成（v0.52.0 + v0.64.0）**：Distribution 下拉 + 数值控件，覆盖全部 28 种对象（枚举型字段如 rack type/pick policy 仍走 JSON） |
 | P0 | 3D 场景增强（部分完成） | ✅ 地面网格/阴影/相机预设/按 kind 几何体/明暗/旋转 + 侧面挤出（v0.75.0）；仍缺纹理贴图与实时光照模型 |
 | P1 | 运行可视化 | ✅ 状态着色 + 瞬时 WIP + item 圆点 + 执行器实时位置 + 进度条 + 平滑动画 + **采样回放滑块**（v0.62.0） |
-| P1 | 流程图/Process Flow 编辑 | ✅ 可视化节点画布 + 块增删/连接/JSON 编辑（v0.59.0）；节点位置保存在内存（不写入模型） |
+| P1 | 流程图/Process Flow 编辑 | ✅ 可视化节点画布 + 块增删/连接/JSON 编辑 + 平移/缩放（v0.59.0 / v1.12.0）；节点位置保存在内存（不写入模型） |
 | P1 | 报告对比 | ✅ Set baseline + 并排对比表（Δ Utilization 绿/红）+ compare CSV（v0.73.0） |
 | P1 | 实验与优化 UI | ✅ stop-time/参数扫描 + grid/random/genetic 多变量搜索 + 双目标表 + Pareto 前沿散点图（v0.69.0） |
 | ~~P2~~ | 撤销/重做 | **已完成（v0.56.0）** |
