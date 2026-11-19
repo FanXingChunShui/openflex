@@ -3906,17 +3906,32 @@ impl eframe::App for OpenFlexApp {
                             ))
                             .id_salt(kind.as_str())
                             .show(ui, |ui| {
-                                for index in indices {
+                                for index in indices.clone() {
                                     let object = &model.objects[index];
+                                    let label = format!(
+                                        "{}  ({:.0}, {:.0}){}",
+                                        object.name,
+                                        object.pos[0],
+                                        object.pos[1],
+                                        object
+                                            .rot
+                                            .map(|rot| format!("  {rot:.0}°"))
+                                            .unwrap_or_default()
+                                    );
                                     if ui
                                         .selectable_label(
                                             self.selected == Some(index),
-                                            &object.name,
+                                            label,
                                         )
                                         .clicked()
                                     {
                                         self.select(index);
                                     }
+                                }
+                                if indices.len() > 1 && ui.small_button("select all").clicked() {
+                                    self.selection = indices.clone();
+                                    self.status =
+                                        format!("{} object(s) selected", indices.len());
                                 }
                             });
                         }

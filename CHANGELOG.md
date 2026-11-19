@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.13.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **模型树增强**：每个对象行显示 `(x, y)` 坐标与旋转角（如 `45°`），同 kind 组内提供 `select all` 一键选中该组全部对象。
+
+### 文档
+
+- `docs/UNIMPLEMENTED.md` 第 29 项更新：模型树已具备分组/过滤/坐标与旋转显示/组内全选，仅缺多级父子嵌套。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**516 passed / 0 failed**；clippy 0、fmt 干净、启动无 panic。
+
 ## v1.12.0 — 2026-11-19
 
 ### 桌面 GUI
