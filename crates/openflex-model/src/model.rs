@@ -984,6 +984,7 @@ impl Default for TransporterParams {
             load_time: Distribution::default(),
             unload_time: Distribution::default(),
             home: None,
+            grid_reserve: 0,
             grid_step: None,
             network: Vec::new(),
             shifts: Vec::new(),
@@ -1575,6 +1576,11 @@ pub struct TransporterParams {
     /// Object the transporter returns to when idle.
     #[serde(default)]
     pub home: Option<String>,
+    /// task-152: how many cells ahead a step-by-step person reserves on its
+    /// path (0 = no reservation, only the cell being entered is checked).
+    #[serde(default)]
+    pub grid_reserve: u32,
+
     /// task-121: move people cell by cell on the model grid (`true`) instead of
     /// one straight travel leg. `None`/`false` keeps the historical behaviour.
     #[serde(default, skip_serializing_if = "Option::is_none")]

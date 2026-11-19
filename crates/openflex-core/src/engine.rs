@@ -793,6 +793,10 @@ pub(crate) struct ObjectRt {
     /// task-151: consecutive node-wait retries of this AGV (deadlock breaker).
     #[serde(default)]
     agv_wait_rounds: u32,
+    /// task-152: cells this person has reserved ahead on its path
+    /// (`grid_reserve` cells). Other people treat them as occupied.
+    #[serde(default)]
+    person_reserved: Vec<[f64; 2]>,
     /// Distance accumulated by the current task (battery drain).
     #[serde(default)]
     task_distance: f64,
@@ -889,6 +893,7 @@ impl ObjectRt {
             charge_queue_since: None,
             person_returning: false,
             agv_wait_rounds: 0,
+            person_reserved: Vec::new(),
             task_distance: 0.0,
             capacity: 1,
             tasks: 0,
@@ -6712,6 +6717,7 @@ impl<'m> Simulation<'m> {
     /// task-124: arm the next cell (or finish the move).
     fn schedule_person_step(&mut self, transporter: usize) -> Result<(), SimError> {
         if self.objects[transporter].person_path.is_empty() {
+            self.objects[transporter].person_reserved.clear();
             if let Some(requester) = self.objects[transporter].person_target.take() {
                 // Snap onto the exact (sub-cell) position of the requester.
                 self.objects[transporter].position = self.objects[requester].position;
@@ -6736,17 +6742,45 @@ impl<'m> Simulation<'m> {
     }
 
     /// task-124/128: one cell of a step-by-step person move.
+    /// task-152: refresh this person's forward reservation window.
+    fn refresh_person_reservations(&mut self, transporter: usize) {
+        let window = self.person_reservation_window(transporter);
+        let path: Vec<[f64; 2]> = self.objects[transporter]
+            .person_path
+            .iter()
+            .take(window)
+            .copied()
+            .collect();
+        self.objects[transporter].person_reserved = path;
+    }
+
+    /// task-152: how many cells ahead a person reserves (per person params).
+    fn person_reservation_window(&self, transporter: usize) -> usize {
+        match &self.model.objects[transporter].params {
+            ObjectParams::Person(params) => params.grid_reserve as usize,
+            ObjectParams::Robot(params) => params.grid_reserve as usize,
+            _ => 0,
+        }
+    }
+
     fn handle_person_step(&mut self, transporter: usize) -> Result<(), SimError> {
         // task-128: the next cell may be taken by a lower-index person; wait a
         // tick instead of overlapping (the lower index has priority, which also
         // breaks head-on deadlocks).
         if let Some(&next) = self.objects[transporter].person_path.front() {
+            // task-152: a cell is taken when a lower-index person stands on it
+            // **or has reserved it ahead**. Reservations therefore make people
+            // yield early instead of colliding at the next cell.
             let blocked = self.objects.iter().enumerate().any(|(index, object)| {
                 index != transporter
                     && index < transporter
                     && object.kind == ObjectKind::Person
                     && object.tasks > 0
-                    && distance(object.position, next) < 0.5
+                    && (distance(object.position, next) < 0.5
+                        || object
+                            .person_reserved
+                            .iter()
+                            .any(|cell| distance(*cell, next) < 0.5))
             });
             if blocked {
                 self.record_object_trace("person_wait", transporter);
@@ -6757,6 +6791,7 @@ impl<'m> Simulation<'m> {
         if let Some(next) = self.objects[transporter].person_path.pop_front() {
             self.objects[transporter].position = next;
         }
+        self.refresh_person_reservations(transporter);
         self.schedule_person_step(transporter)
     }
 
@@ -6784,6 +6819,7 @@ impl<'m> Simulation<'m> {
                     .collect();
                 self.objects[transporter].person_target = Some(requester);
                 self.objects[transporter].position = from;
+                self.refresh_person_reservations(transporter);
                 return self.schedule_person_step(transporter);
             }
         }
@@ -7199,6 +7235,7 @@ impl<'m> Simulation<'m> {
                 self.objects[transporter].person_target = None;
                 self.objects[transporter].person_returning = true;
                 self.objects[transporter].position = from;
+                self.refresh_person_reservations(transporter);
                 return self.schedule_person_step(transporter);
             }
         }
@@ -10264,6 +10301,69 @@ mod tests {
         }}"#
         ))
         .expect("model")
+    }
+
+    /// task-152: `grid_reserve` cells ahead are treated as occupied by other
+    /// people, so a follower yields before it reaches the reserved cell.
+    #[test]
+    fn person_reservations_block_followers_early() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "person-reserve",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "grid": { "width": 10, "height": 10, "cell_size": 1.0 },
+          "objects": [
+            { "name": "D", "kind": "dispatcher", "pos": [0.5, 0.5], "params": {} },
+            { "name": "P", "kind": "processor", "pos": [4.5, 0.5], "params": {} },
+            { "name": "E0", "kind": "person", "pos": [0.5, 0.5],
+              "params": { "speed": 1.0, "home": "D", "grid_step": true, "grid_reserve": 2 } },
+            { "name": "E1", "kind": "person", "pos": [0.5, 0.5],
+              "params": { "speed": 1.0, "home": "D", "grid_step": true, "grid_reserve": 2 } },
+            { "name": "S", "kind": "source",
+              "params": { "max_arrivals": 1, "interarrival": { "distribution": "constant", "value": 1.0 } } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let leader = sim.by_name["E0"];
+        let follower = sim.by_name["E1"];
+        let requester = sim.by_name["P"];
+        sim.objects[follower].tasks = 1;
+        sim.objects[follower].person_target = Some(requester);
+
+        // The leader reserves two cells ahead of the follower.
+        let reserved = [[1.5, 0.5], [2.5, 0.5]];
+        sim.objects[leader].tasks = 1;
+        sim.objects[leader].person_reserved = reserved.to_vec();
+        // The follower's next cell is the leader's *second* reservation.
+        sim.objects[follower].person_path.clear();
+        sim.objects[follower].person_path.push_back([2.5, 0.5]);
+        sim.objects[follower].position = [1.5, 0.5];
+
+        sim.handle_person_step(follower).expect("step");
+        assert_eq!(
+            sim.objects[follower].position,
+            [1.5, 0.5],
+            "a reserved cell must not be entered"
+        );
+        // Without the reservation the follower walks on (clear the target so
+        // the finished path does not snap onto the requester).
+        sim.objects[leader].person_reserved.clear();
+        sim.objects[follower].person_target = None;
+        sim.handle_person_step(follower).expect("step");
+        assert_eq!(
+            sim.objects[follower].position,
+            [2.5, 0.5],
+            "after the reservation is released the follower proceeds"
+        );
     }
 
     /// task-150: the walk home is also split into cells when `grid_step` is on.

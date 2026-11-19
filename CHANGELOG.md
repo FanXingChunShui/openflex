@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.87.0 — 2026-11-19
+
+### 引擎（Person）
+
+- **多格预约**（task-152）：`TransporterParams.grid_reserve`（默认 0）指定逐格移动的人**提前预约前方 N 格**；
+  预约格存在 `ObjectRt.person_reserved`，其他人在判断阻挡时同时检查"站位"与"预约"，因此跟随者会提前让行而不是撞到下一格。
+- 预约窗口在每次移动后与路径建立时刷新、路径走完即清空；`grid_reserve = 0` 时行为与之前完全一致（零回归）。
+- 新增单元测试 `person_reservations_block_followers_early`：前车预约第 2 格 → 后车停在原格；释放预约后继续前进。
+
+### 验证
+
+- `cargo test --workspace --locked --exclude openflex-gui`：**505 passed**（0 failed）。
+- core/model `clippy` 0、`fmt` 干净；v0.87.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.86.0 — 2026-11-19
 
 ### 桌面 GUI
