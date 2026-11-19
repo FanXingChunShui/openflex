@@ -9,6 +9,8 @@
   行格式与 `openflex run --trace` 一致（`simulate_traced` 同一序列化路径）。
   此前桌面版的“事件日志”只记录 GUI 自己步进过的事件，看不到完整事件流。
 - 新增 `trace_export_lines_match_the_cli_jsonl` 测试（GUI 18 项）。
+- **运行耗时**：`Run` 结束的状态栏改为 `Run finished in X.XXs: N completed, M objects · K items/s`，
+  通道随之携带 `Instant::elapsed()`；此前只报完成数，看不出这次跑得快还是慢。
 
 ## v1.25.0 — 2026-11-20
 

@@ -1422,7 +1422,7 @@ struct OpenFlexApp {
     report: Option<SimReport>,
     baseline: Option<SimReport>,
     show_compare: bool,
-    report_rx: Option<Receiver<Result<SimReport, String>>>,
+    report_rx: Option<Receiver<(Result<SimReport, String>, std::time::Duration)>>,
     report_running: bool,
     exp_start: f32,
     exp_step: f32,
@@ -3581,6 +3581,7 @@ idle,busy,blocked,down\n",
         self.report_running = true;
         self.status = "Running a full replication…".into();
         let parallel = self.parallel_runs;
+        let started = std::time::Instant::now();
         std::thread::spawn(move || {
             // Replications are independent, so running them on all cores is
             // bit-identical to the sequential loop (task-59).
@@ -3590,7 +3591,7 @@ idle,busy,blocked,down\n",
                 openflex_core::run_model(model)
             }
             .map_err(|error| error.to_string());
-            let _ = tx.send(result);
+            let _ = tx.send((result, started.elapsed()));
         });
     }
 
@@ -3599,17 +3600,25 @@ idle,busy,blocked,down\n",
             return;
         };
         match rx.try_recv() {
-            Ok(Ok(report)) => {
+            Ok((Ok(report), elapsed)) => {
+                // Wall-clock duration plus events/second gives a feel for the
+                // run cost that a bare completed-count cannot.
+                let seconds = elapsed.as_secs_f64();
+                let completed = report.completed.mean.max(0.0);
                 self.status = format!(
-                    "Run finished: {:.1} completed, {} objects",
-                    report.completed.mean,
-                    report.objects.len()
+                    "Run finished in {seconds:.2}s: {completed:.0} completed, {} objects{}",
+                    report.objects.len(),
+                    if seconds > 0.0 && completed > 0.0 {
+                        format!(" · {:.0} items/s", completed / seconds)
+                    } else {
+                        String::new()
+                    }
                 );
                 self.report = Some(report);
                 self.report_running = false;
                 self.report_rx = None;
             }
-            Ok(Err(error)) => {
+            Ok((Err(error), _)) => {
                 self.error = Some(error);
                 self.status = "Run failed".into();
                 self.report_running = false;
