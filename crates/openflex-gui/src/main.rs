@@ -6853,12 +6853,13 @@ impl eframe::App for OpenFlexApp {
                 if let Some(colour) = self.heatmap_fill(&object.name) {
                     fill = colour;
                 }
+                // Selection states: the primary selection is lightened a lot,
+                // the rest of the selection a little, everything else keeps its
+                // state/heatmap colour. Hue order is preserved in every case.
                 if selected {
-                    // Selected objects keep their state/heatmap colour but get a
-                    // bright warm fill so the selection is unmistakable.
                     fill = shade_light(fill, 0.35);
                 } else if in_selection {
-                    fill = OpenFlexApp::shade(fill, 0.25);
+                    fill = shade_light(fill, 0.16);
                 }
                 let rotation = object.rot.unwrap_or(0.0) as f32;
                 let box_rect = Self::draw_object_shape(
