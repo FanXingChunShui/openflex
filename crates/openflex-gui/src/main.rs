@@ -4553,11 +4553,22 @@ impl eframe::App for OpenFlexApp {
                     });
                 ui.separator();
                 ui.horizontal(|ui| {
+                    // "+ Add object" row: kind picker, optional name, primary Add.
                     egui::ComboBox::from_id_salt("new-kind")
-                        .selected_text(self.new_kind.clone())
+                        .selected_text(
+                            egui::RichText::new(self.new_kind.clone()).small(),
+                        )
+                        .width(120.0)
                         .show_ui(ui, |ui| {
                             for kind in KINDS {
-                                if ui.selectable_label(self.new_kind == *kind, *kind).clicked() {
+                                let selected = self.new_kind == *kind;
+                                if ui
+                                    .selectable_label(
+                                        selected,
+                                        egui::RichText::new(*kind).small(),
+                                    )
+                                    .clicked()
+                                {
                                     self.new_kind = (*kind).to_string();
                                 }
                             }
@@ -4565,9 +4576,9 @@ impl eframe::App for OpenFlexApp {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.new_name)
                             .hint_text("name (optional)")
-                            .desired_width(110.0),
+                            .desired_width(96.0),
                     );
-                    if ui.button("Add").clicked() {
+                    if primary_button(ui, !self.new_kind.is_empty(), "Add") {
                         let kind = self.new_kind.clone();
                         self.add_object(&kind);
                     }
@@ -4752,66 +4763,146 @@ impl eframe::App for OpenFlexApp {
                 }
                 if !self.selection.is_empty() {
                     ui.separator();
-                    ui.label(
-                            egui::RichText::new(format!(
-                                "{} objects selected",
-                                self.selection.len()
-                            ))
-                            .strong()
-                            .color(palette::AMBER),
-                        );
+                    // Selection header: amber count + a one-line hint.
                     ui.horizontal(|ui| {
-                        if ui.small_button("Align X").clicked() {
-                            self.batch_align(true);
+                        ui.label(
+                            egui::RichText::new(format!("{}", self.selection.len()))
+                                .size(16.0_f32)
+                                .strong()
+                                .color(palette::AMBER),
+                        );
+                        ui.label(
+                            egui::RichText::new(if self.selection.len() == 1 {
+                                "object selected"
+                            } else {
+                                "objects selected"
+                            })
+                            .small()
+                            .color(palette::TEXT_DIM),
+                        );
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                ui.label(
+                                    egui::RichText::new("DUP/COPY · DEL")
+                                        .size(9.0_f32)
+                                        .color(palette::TEXT_DIM.gamma_multiply(0.7)),
+                                );
+                            },
+                        );
+                    });
+                    // Align / distribute / arrange group.
+                    ui.horizontal_wrapped(|ui| {
+                        for (label, action) in [
+                            ("Align X", 0u8),
+                            ("Align Y", 1),
+                            ("Dist X", 2),
+                            ("Dist Y", 3),
+                            ("Grid", 4),
+                        ] {
+                            let button = egui::Button::new(
+                                egui::RichText::new(label).small().color(palette::TEXT),
+                            )
+                            .fill(palette::CARD)
+                            .stroke(egui::Stroke::new(1.0_f32, palette::STROKE))
+                            .rounding(egui::Rounding::same(5.0_f32))
+                            .min_size(egui::vec2(0.0, 20.0));
+                            if ui.add(button).clicked() {
+                                match action {
+                                    0 => self.batch_align(true),
+                                    1 => self.batch_align(false),
+                                    2 => self.batch_distribute(true),
+                                    3 => self.batch_distribute(false),
+                                    _ => self.batch_grid(4.0),
+                                }
+                            }
                         }
-                        if ui.small_button("Align Y").clicked() {
-                            self.batch_align(false);
-                        }
-                        if ui.small_button("Distribute X").clicked() {
-                            self.batch_distribute(true);
-                        }
-                        if ui.small_button("Distribute Y").clicked() {
-                            self.batch_distribute(false);
-                        }
-                        if ui.small_button("Grid 4").clicked() {
-                            self.batch_grid(4.0);
-                        }
-                        if ui.small_button("Duplicate").clicked() {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Duplicate")
+                                        .small()
+                                        .color(palette::TEXT),
+                                )
+                                .fill(palette::CARD)
+                                .stroke(egui::Stroke::new(1.0_f32, palette::STROKE))
+                                .rounding(egui::Rounding::same(5.0_f32)),
+                            )
+                            .clicked()
+                        {
                             self.duplicate_selection();
                         }
-                        if ui.small_button("Delete").clicked() {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Delete")
+                                        .small()
+                                        .color(egui::Color32::from_rgb(240, 150, 130)),
+                                )
+                                .fill(palette::CARD)
+                                .stroke(egui::Stroke::new(
+                                    1.0_f32,
+                                    egui::Color32::from_rgb(120, 70, 60),
+                                ))
+                                .rounding(egui::Rounding::same(5.0_f32)),
+                            )
+                            .clicked()
+                        {
                             self.batch_delete();
                         }
-                        if ui.small_button("Clear").clicked() {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Clear")
+                                        .small()
+                                        .color(palette::TEXT_DIM),
+                                )
+                                .fill(egui::Color32::TRANSPARENT)
+                                .rounding(egui::Rounding::same(5.0_f32)),
+                            )
+                            .clicked()
+                        {
                             self.selection.clear();
                             self.status = "Selection cleared".into();
                         }
                     });
+                    ui.add_space(2.0);
+                    // Transform group: move and rotate share one compact row.
                     ui.horizontal(|ui| {
-                        ui.label("move by");
+                        ui.label(
+                            egui::RichText::new("MOVE")
+                                .size(9.0_f32)
+                                .color(palette::TEXT_DIM),
+                        );
                         ui.add(
                             egui::DragValue::new(&mut self.batch_dx)
                                 .speed(0.5)
-                                .prefix("dx "),
+                                .prefix("dx ")
+                                .max_decimals(1),
                         );
                         ui.add(
                             egui::DragValue::new(&mut self.batch_dy)
                                 .speed(0.5)
-                                .prefix("dy "),
+                                .prefix("dy ")
+                                .max_decimals(1),
                         );
-                        if ui.small_button("Apply").clicked() {
+                        if ui.small_button("Go").clicked() {
                             self.batch_move();
                         }
                     });
                     ui.horizontal(|ui| {
-                        ui.label("rotate to");
+                        ui.label(
+                            egui::RichText::new("ROT")
+                                .size(9.0_f32)
+                                .color(palette::TEXT_DIM),
+                        );
                         ui.add(
                             egui::DragValue::new(&mut self.batch_rot)
                                 .speed(15.0)
                                 .range(-360.0..=360.0)
                                 .suffix("°"),
                         );
-                        if ui.small_button("Apply").clicked() {
+                        if ui.small_button("Go").clicked() {
                             self.batch_rotate();
                         }
                     });
