@@ -3386,23 +3386,7 @@ idle,busy,blocked,down\n",
             .iter()
             .filter_map(|index| model.objects.get(*index).map(|object| object.name.clone()))
             .collect();
-        self.snapshot();
-        let mut copy = model.clone();
-        copy.objects.retain(|object| !names.contains(&object.name));
-        copy.connections.retain(|connection| {
-            !names.contains(&connection.from) && !names.contains(&connection.to)
-        });
-        match copy.validate() {
-            Ok(()) => {
-                self.model = Some(Box::leak(Box::new(copy)));
-                self.selection.clear();
-                self.selected = None;
-                self.form = None;
-                self.status = format!("Deleted {} object(s)", names.len());
-                self.error = None;
-            }
-            Err(error) => self.error = Some(error.to_string()),
-        }
+        self.delete_objects(&names);
     }
 
     fn new_handle(&mut self) -> bool {
@@ -3720,6 +3704,117 @@ idle,busy,blocked,down\n",
                 self.error = Some(error.to_string());
                 self.rename_text = old_name;
             }
+        }
+    }
+
+    /// Removes `home` / `charger` / `dispatcher` … references to a deleted
+    /// object from a JSON tree, the same way `openflex studio` does.
+    fn clean_references(value: &mut serde_json::Value, name: &str) -> usize {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut cleaned = 0;
+                let keys: Vec<String> = map.keys().cloned().collect();
+                for key in keys {
+                    let remove = matches!(
+                        key.as_str(),
+                        "home"
+                            | "charger"
+                            | "dispatcher"
+                            | "home_floor"
+                            | "setup_operator"
+                            | "process_operator"
+                    ) && map.get(&key).and_then(|value| value.as_str()) == Some(name);
+                    if remove {
+                        map.remove(&key);
+                        cleaned += 1;
+                    } else if let Some(child) = map.get_mut(&key) {
+                        cleaned += Self::clean_references(child, name);
+                    }
+                }
+                cleaned
+            }
+            serde_json::Value::Array(items) => items
+                .iter_mut()
+                .map(|item| Self::clean_references(item, name))
+                .sum(),
+            _ => 0,
+        }
+    }
+
+    /// Deletes `names` from the model, dropping their connections **and** the
+    /// parameter references that would otherwise keep `validate()` failing.
+    fn delete_objects(&mut self, names: &[String]) {
+        let Some(model) = self.model else {
+            return;
+        };
+        if names.is_empty() {
+            return;
+        }
+        self.snapshot();
+        let mut copy = model.clone();
+        copy.objects.retain(|object| !names.contains(&object.name));
+        copy.connections.retain(|connection| {
+            !names.contains(&connection.from) && !names.contains(&connection.to)
+        });
+        // References inside params (home/charger/operator/network targets).
+        let json = match serde_json::to_value(&copy) {
+            Ok(json) => json,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                return;
+            }
+        };
+        let mut json = json;
+        let mut cleaned = 0;
+        for name in names {
+            if let Some(objects) = json.get_mut("objects").and_then(|o| o.as_array_mut()) {
+                for object in objects {
+                    if let Some(params) = object.get_mut("params") {
+                        cleaned += Self::clean_references(params, name);
+                    }
+                }
+            }
+            // Network edges that pointed at the deleted node.
+            if let Some(objects) = json.get_mut("objects").and_then(|o| o.as_array_mut()) {
+                for object in objects {
+                    if let Some(edges) = object
+                        .get_mut("params")
+                        .and_then(|params| params.get_mut("network"))
+                        .and_then(|network| network.as_array_mut())
+                    {
+                        edges.retain(|edge| {
+                            let from = edge.get("from").and_then(|v| v.as_str());
+                            let to = edge.get("to").and_then(|v| v.as_str());
+                            from != Some(name.as_str()) && to != Some(name.as_str())
+                        });
+                    }
+                }
+            }
+        }
+        let patched: Model = match serde_json::from_value(json) {
+            Ok(model) => model,
+            Err(error) => {
+                self.error = Some(format!("could not delete: {error}"));
+                return;
+            }
+        };
+        match patched.validate() {
+            Ok(()) => {
+                self.model = Some(Box::leak(Box::new(patched)));
+                self.selection.clear();
+                self.selected = None;
+                self.form = None;
+                self.status = if cleaned > 0 {
+                    format!(
+                        "Deleted {} object(s), cleaned {cleaned} reference(s)",
+                        names.len()
+                    )
+                } else {
+                    format!("Deleted {} object(s)", names.len())
+                };
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
         }
     }
 
@@ -7530,23 +7625,7 @@ impl eframe::App for OpenFlexApp {
                             self.context_menu_open = None;
                         }
                         if ui.button("Delete object").clicked() {
-                            if let Some(model) = self.model {
-                                let mut copy = model.clone();
-                                copy.objects.retain(|object| object.name != name);
-                                copy.connections.retain(|connection| {
-                                    connection.from != name && connection.to != name
-                                });
-                                match copy.validate() {
-                                    Ok(()) => {
-                                        self.model = Some(Box::leak(Box::new(copy)));
-                                        self.selected = None;
-                                        self.form = None;
-                                        self.status = format!("Deleted {name}");
-                                        self.error = None;
-                                    }
-                                    Err(error) => self.error = Some(error.to_string()),
-                                }
-                            }
+                            self.delete_objects(std::slice::from_ref(&name));
                             self.context_menu_open = None;
                         }
                         ui.horizontal(|ui| {
@@ -7722,6 +7801,38 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn delete_cleans_dangling_references() {
+        // Mirror of the studio behaviour: deleting a dispatcher must drop the
+        // home/charger/operator references that would keep validate() failing.
+        let mut json = serde_json::json!({
+            "objects": [
+                {"name": "D", "kind": "dispatcher", "params": {}},
+                {"name": "A", "kind": "agv", "params": {
+                    "home": "D", "charger": "D",
+                    "network": [{"from": "D", "to": "A", "distance": 5.0}]
+                }}
+            ]
+        });
+        let mut cleaned = 0;
+        if let Some(objects) = json.get_mut("objects").and_then(|o| o.as_array_mut()) {
+            for object in objects {
+                if let Some(params) = object.get_mut("params") {
+                    cleaned += OpenFlexApp::clean_references(params, "D");
+                }
+            }
+        }
+        let params = serde_json::to_string(&json["objects"][1]["params"]).expect("json");
+        assert_eq!(cleaned, 2, "home + charger: {params}");
+        assert!(!params.contains("\"home\""), "home survived: {params}");
+        assert!(
+            !params.contains("\"charger\""),
+            "charger survived: {params}"
+        );
+        // Network edges are cleaned separately by delete_objects.
+        assert!(params.contains("\"network\""), "edges stay: {params}");
     }
 
     #[test]
