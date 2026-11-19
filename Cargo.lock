@@ -1980,7 +1980,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "openflex-cli"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1997,7 +1997,7 @@ dependencies = [
 
 [[package]]
 name = "openflex-core"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "getrandom 0.2.17",
  "openflex-model",
@@ -2012,7 +2012,7 @@ dependencies = [
 
 [[package]]
 name = "openflex-gui"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eframe",
  "egui",
@@ -2024,7 +2024,7 @@ dependencies = [
 
 [[package]]
 name = "openflex-model"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "rhai",
  "serde",
@@ -2035,7 +2035,7 @@ dependencies = [
 
 [[package]]
 name = "openflex-report"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "openflex-core",
  "openflex-model",

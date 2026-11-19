@@ -2331,6 +2331,54 @@ impl OpenFlexApp {
         }
     }
 
+    /// Selects every object in the model.
+    fn select_all(&mut self) {
+        let Some(model) = self.model else {
+            return;
+        };
+        self.selection = (0..model.objects.len()).collect();
+        self.status = format!("{} object(s) selected", self.selection.len());
+    }
+
+    /// Copies the selected objects with unique names, offset positions and the
+    /// same parameters (connections are not duplicated).
+    fn duplicate_selection(&mut self) {
+        let Some(model) = self.model else {
+            return;
+        };
+        if self.selection.is_empty() {
+            return;
+        }
+        self.snapshot();
+        let mut copy = model.clone();
+        let mut added = 0;
+        for index in self.selection.clone() {
+            let Some(source) = model.objects.get(index) else {
+                continue;
+            };
+            let base = source.name.clone();
+            let mut suffix = 2;
+            let mut name = format!("{base}_{suffix}");
+            while copy.objects.iter().any(|object| object.name == name) {
+                suffix += 1;
+                name = format!("{base}_{suffix}");
+            }
+            let mut object = source.clone();
+            object.name = name;
+            object.pos = [object.pos[0] + 2.0, object.pos[1] + 2.0];
+            copy.objects.push(object);
+            added += 1;
+        }
+        match copy.validate() {
+            Ok(()) => {
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.status = format!("Duplicated {added} object(s)");
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
     fn batch_align(&mut self, along_x: bool) {
         let Some(model) = self.model else {
             return;
@@ -3738,6 +3786,9 @@ impl eframe::App for OpenFlexApp {
                         if ui.small_button("Grid 4").clicked() {
                             self.batch_grid(4.0);
                         }
+                        if ui.small_button("Duplicate").clicked() {
+                            self.duplicate_selection();
+                        }
                         if ui.small_button("Delete").clicked() {
                             self.batch_delete();
                         }
@@ -4596,6 +4647,8 @@ impl eframe::App for OpenFlexApp {
                             ("Space", "play / pause"),
                             ("R", "reset the run"),
                             ("F1", "toggle this dialog"),
+                            ("Ctrl/Cmd + A", "select every object"),
+                            ("Ctrl/Cmd + D", "duplicate the selection"),
                             ("drag", "rotate the camera"),
                             ("wheel", "zoom"),
                             ("click", "select an object"),
@@ -4649,14 +4702,18 @@ impl eframe::App for OpenFlexApp {
             }
         }
         // Keyboard shortcuts.
+        // Editing a text field must not trigger the global undo/save shortcuts.
+        let typing = ctx.wants_keyboard_input();
         ctx.input_mut(|input| {
-            if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z) {
+            if !typing && input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z) {
                 self.restore();
             }
-            if input.consume_key(
-                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
-                egui::Key::Z,
-            ) {
+            if !typing
+                && input.consume_key(
+                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                    egui::Key::Z,
+                )
+            {
                 self.redo_once();
             }
             if input.consume_key(egui::Modifiers::COMMAND, egui::Key::S) {
@@ -4669,7 +4726,7 @@ impl eframe::App for OpenFlexApp {
                 self.new_model();
             }
             // Space toggles play/pause; R resets; F1 shows the short help.
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::Space) {
+            if !typing && input.consume_key(egui::Modifiers::NONE, egui::Key::Space) {
                 if self.running && !self.paused {
                     if let Some(handle) = self.handle.as_mut() {
                         let _ = handle.pause();
@@ -4683,11 +4740,17 @@ impl eframe::App for OpenFlexApp {
                     self.paused = false;
                 }
             }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::R) {
+            if !typing && input.consume_key(egui::Modifiers::NONE, egui::Key::R) {
                 self.reset_run();
             }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::F1) {
+            if !typing && input.consume_key(egui::Modifiers::NONE, egui::Key::F1) {
                 self.show_help = !self.show_help;
+            }
+            if !typing && input.consume_key(egui::Modifiers::COMMAND, egui::Key::A) {
+                self.select_all();
+            }
+            if !typing && input.consume_key(egui::Modifiers::COMMAND, egui::Key::D) {
+                self.duplicate_selection();
             }
         });
 
