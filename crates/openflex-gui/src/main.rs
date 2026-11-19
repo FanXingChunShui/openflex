@@ -6297,13 +6297,30 @@ impl eframe::App for OpenFlexApp {
                             .size(9.0_f32)
                             .color(palette::TEXT_DIM),
                     );
-                    if ui.small_button("set").clicked() {
+                    // "set"/"save" need a current report; "load" needs a file.
+                    if ui
+                        .add_enabled(self.report.is_some(), egui::Button::new(egui::RichText::new("set").small()))
+                        .clicked()
+                    {
                         set_baseline = true;
                     }
-                    if ui.small_button("save").clicked() {
+                    if ui
+                        .add_enabled(
+                            self.baseline.is_some(),
+                            egui::Button::new(egui::RichText::new("save").small()),
+                        )
+                        .clicked()
+                    {
                         save_baseline = true;
                     }
-                    if ui.small_button("load").clicked() {
+                    if ui
+                        .add_enabled(
+                            self.path.is_some(),
+                            egui::Button::new(egui::RichText::new("load").small()),
+                        )
+                        .on_hover_text("reads <model>.baseline.json")
+                        .clicked()
+                    {
                         load_baseline = true;
                     }
                     if self.baseline.is_some() {
