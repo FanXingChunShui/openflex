@@ -5242,28 +5242,66 @@ impl eframe::App for OpenFlexApp {
                     );
                 }
                 if !self.opt_rows.is_empty() {
-                    let columns = if self.opt_secondary_stay { 3 } else { 2 };
+                    // rank + variables + completed (+ max stay)
+                    let columns = if self.opt_secondary_stay { 4 } else { 3 };
                     egui::Grid::new("opt-grid")
                         .striped(true)
                         .num_columns(columns)
                         .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new("#").small().color(palette::TEXT_DIM),
+                            );
                             ui.strong("variables");
                             ui.strong("completed");
                             if self.opt_secondary_stay {
                                 ui.strong("max stay");
                             }
                             ui.end_row();
-                            for (values, score, second) in self.opt_rows.iter().take(12) {
+                            let front: Vec<usize> = if self.opt_secondary_stay {
+                                OpenFlexApp::pareto_front(&self.opt_rows)
+                            } else {
+                                Vec::new()
+                            };
+                            for (rank, (values, score, second)) in
+                                self.opt_rows.iter().take(12).enumerate()
+                            {
+                                let on_front = front.contains(&rank);
+                                let rank_colour = if rank == 0 {
+                                    palette::AMBER
+                                } else if on_front {
+                                    palette::OK
+                                } else {
+                                    palette::TEXT_DIM
+                                };
                                 ui.label(
-                                    values
-                                        .iter()
-                                        .map(|value| format!("{value:.3}"))
-                                        .collect::<Vec<_>>()
-                                        .join(" / "),
+                                    egui::RichText::new(format!("{:>2}", rank + 1))
+                                        .small()
+                                        .monospace()
+                                        .color(rank_colour),
                                 );
-                                ui.label(format!("{score:.1}"));
+                                ui.label(
+                                    egui::RichText::new(
+                                        values
+                                            .iter()
+                                            .map(|value| format!("{value:.3}"))
+                                            .collect::<Vec<_>>()
+                                            .join(" / "),
+                                    )
+                                    .monospace()
+                                    .small(),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("{score:.1}"))
+                                        .strong()
+                                        .color(if on_front { palette::OK } else { palette::TEXT }),
+                                );
                                 if self.opt_secondary_stay {
-                                    ui.label(format!("{second:.1}"));
+                                    ui.label(
+                                        egui::RichText::new(format!("{second:.1}"))
+                                            .monospace()
+                                            .small()
+                                            .color(palette::TEXT_DIM),
+                                    );
                                 }
                                 ui.end_row();
                             }
