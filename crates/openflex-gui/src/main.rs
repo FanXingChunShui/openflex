@@ -4711,6 +4711,8 @@ impl eframe::App for OpenFlexApp {
                             ("drag", "rotate the camera"),
                             ("wheel", "zoom"),
                             ("click", "select an object"),
+                            ("→", "step the simulation forward"),
+                            ("↑ / ↓", "increase / decrease the step size"),
                         ] {
                             ui.strong(key);
                             ui.label(action);
@@ -4763,6 +4765,8 @@ impl eframe::App for OpenFlexApp {
         // Keyboard shortcuts.
         // Editing a text field must not trigger the global undo/save shortcuts.
         let typing = ctx.wants_keyboard_input();
+        let mut step_forward = false;
+        let mut step_delta = 0.0_f32;
         ctx.input_mut(|input| {
             if !typing && input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z) {
                 self.restore();
@@ -4811,7 +4815,24 @@ impl eframe::App for OpenFlexApp {
             if !typing && input.consume_key(egui::Modifiers::COMMAND, egui::Key::D) {
                 self.duplicate_selection();
             }
+            // Right arrow steps the simulation by the current step size.
+            if !typing && input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight) {
+                step_forward = true;
+            }
+            // Up/Down adjust the step size without touching the canvas zoom.
+            if !typing && input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
+                step_delta = 1.0;
+            }
+            if !typing && input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
+                step_delta = -1.0;
+            }
         });
+        if step_delta != 0.0 {
+            self.step_size = (self.step_size + step_delta).clamp(0.1, 1000.0);
+        }
+        if step_forward {
+            self.advance(self.step_size as f64);
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let Some(model) = self.model else {
