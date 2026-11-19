@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### 桌面 GUI（功能补齐）
+
+- **真实 trace**：工具栏 `STATE` 组新增 `Trace run`——用 `simulate_traced()` 完整跑一次并把引擎事件流留在内存，
+  状态栏报告事件数（截断时注明）与完成件数；`Export trace` 写出 `<model>.trace.jsonl`，
+  行格式与 `openflex run --trace` 一致（`simulate_traced` 同一序列化路径）。
+  此前桌面版的“事件日志”只记录 GUI 自己步进过的事件，看不到完整事件流。
+- 新增 `trace_export_lines_match_the_cli_jsonl` 测试（GUI 18 项）。
+
 ## v1.25.0 — 2026-11-20
 
 本轮把桌面 GUI 从「能看到」补到「能改、能存、不丢状态」：新增**对象重命名**、**安全删除**、**全局表预览**与**检查点删除**，并修掉一批会静默失败或残留状态的问题。

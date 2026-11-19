@@ -1404,6 +1404,8 @@ struct OpenFlexApp {
     model_seed: String,
     model_replications: u32,
     model_unit: u8,
+    /// Trace of the last `Trace run` (full event stream from the engine).
+    trace: Option<openflex_core::TraceLog>,
     checkpoint_dir: String,
     checkpoint_status: String,
     layout_presets: Vec<LayoutPreset>,
@@ -1508,6 +1510,7 @@ impl OpenFlexApp {
             model_seed: "1".into(),
             model_replications: 1,
             model_unit: 0,
+            trace: None,
             checkpoint_dir: "checkpoints".into(),
             checkpoint_status: String::new(),
             layout_presets: Vec::new(),
@@ -3508,6 +3511,67 @@ idle,busy,blocked,down\n",
         }
     }
 
+    /// Runs one replication with the engine trace enabled and keeps the event
+    /// stream, so the whole run can be inspected or exported (the interactive
+    /// event log only records what the GUI itself stepped through).
+    fn start_trace_run(&mut self) {
+        let Some(model) = self.model else {
+            return;
+        };
+        let config = SimConfig {
+            stop_time: model.run.stop_time,
+            warmup: model.run.warmup,
+            seed: model.run.seed,
+        };
+        match openflex_core::simulate_traced(model, &config, 0) {
+            Ok((result, trace)) => {
+                let truncated = trace.truncated;
+                self.trace = Some(trace);
+                self.status = format!(
+                    "Traced {} event(s){}{}",
+                    self.trace.as_ref().map(|trace| trace.len()).unwrap_or(0),
+                    if truncated { " (truncated)" } else { "" },
+                    if result.items_completed > 0 {
+                        format!(" · {} item(s) completed", result.items_completed)
+                    } else {
+                        String::new()
+                    }
+                );
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    /// Writes the traced events as JSONL next to the model.
+    fn export_trace(&mut self) {
+        let Some(trace) = self.trace.as_ref() else {
+            self.error = Some("run Trace first".into());
+            return;
+        };
+        let mut text = String::new();
+        for event in &trace.events {
+            match serde_json::to_string(event) {
+                Ok(line) => {
+                    text.push_str(&line);
+                    text.push('\n');
+                }
+                Err(error) => {
+                    self.error = Some(format!("could not serialise an event: {error}"));
+                    return;
+                }
+            }
+        }
+        let path = self.report_path("trace.jsonl");
+        match std::fs::write(&path, text) {
+            Ok(()) => {
+                self.status = format!("Trace written to {}", path.display());
+                self.error = None;
+            }
+            Err(error) => self.error = Some(format!("could not write trace: {error}")),
+        }
+    }
+
     fn start_report(&mut self) {
         let Some(model) = self.model else {
             return;
@@ -4642,6 +4706,20 @@ impl eframe::App for OpenFlexApp {
                     }
                     ui.separator();
                     tool_group(ui, "STATE");
+                    if ui
+                        .add_enabled(self.model.is_some(), egui::Button::new("Trace run"))
+                        .on_hover_text("run once with the engine trace enabled")
+                        .clicked()
+                    {
+                        self.start_trace_run();
+                    }
+                    if ui
+                        .add_enabled(self.trace.is_some(), egui::Button::new("Export trace"))
+                        .on_hover_text("write <model>.trace.jsonl")
+                        .clicked()
+                    {
+                        self.export_trace();
+                    }
                     if ui
                         .add_enabled(self.model.is_some(), egui::Button::new("Save checkpoint"))
                         .clicked()
@@ -7934,6 +8012,28 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn trace_export_lines_match_the_cli_jsonl() {
+        // The GUI writes one `serde_json::to_string(&TraceEvent)` per line, the
+        // same shape `openflex run --trace` produces, so both files are
+        // interchangeable.
+        let model = builtin_example("mm1").expect("example");
+        let config = SimConfig {
+            stop_time: 20.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = openflex_core::simulate_traced(&model, &config, 0).expect("trace");
+        assert!(!trace.events.is_empty(), "the run should record events");
+        let line = serde_json::to_string(&trace.events[0]).expect("json");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("round trip");
+        for key in ["time", "seq", "event", "object"] {
+            assert!(value.get(key).is_some(), "missing {key} in {line}");
+        }
+        // data/message are skipped when empty, so a minimal line has 4 keys.
+        assert!(line.starts_with('{') && line.ends_with('}'), "{line}");
     }
 
     #[test]
