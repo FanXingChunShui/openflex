@@ -6096,12 +6096,29 @@ impl eframe::App for OpenFlexApp {
                 ui.separator();
                 panel_heading(ui, "Experiment");
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.exp_mode_param, false, "stop-time");
-                    ui.radio_value(&mut self.exp_mode_param, true, "parameter");
+                    for (value, name) in [(false, "stop-time"), (true, "parameter")] {
+                        let selected = self.exp_mode_param == value;
+                        let button = egui::Button::new(
+                            egui::RichText::new(name).small().color(if selected {
+                                egui::Color32::from_rgb(14, 18, 26)
+                            } else {
+                                palette::TEXT
+                            }),
+                        )
+                        .fill(if selected { palette::ACCENT_HI } else { palette::CARD })
+                        .rounding(egui::Rounding::same(5.0_f32));
+                        if ui.add(button).clicked() && !selected {
+                            self.exp_mode_param = value;
+                        }
+                    }
                 });
                 if self.exp_mode_param {
                     ui.horizontal(|ui| {
-                        ui.label("path");
+                        ui.label(
+                            egui::RichText::new("PATH")
+                                .size(9.0_f32)
+                                .color(palette::TEXT_DIM),
+                        );
                         ui.add(
                             egui::TextEdit::singleline(&mut self.exp_path)
                                 .hint_text("objects/0/params/process_time/value")
@@ -6110,15 +6127,38 @@ impl eframe::App for OpenFlexApp {
                     });
                 }
                 ui.horizontal(|ui| {
-                    ui.label("start");
+                    ui.label(
+                        egui::RichText::new("START")
+                            .size(9.0_f32)
+                            .color(palette::TEXT_DIM),
+                    );
                     ui.add(egui::DragValue::new(&mut self.exp_start).speed(10.0));
-                    ui.label("step");
+                    ui.label(
+                        egui::RichText::new("STEP")
+                            .size(9.0_f32)
+                            .color(palette::TEXT_DIM),
+                    );
                     ui.add(egui::DragValue::new(&mut self.exp_step).speed(10.0));
-                    ui.label("runs");
+                    ui.label(
+                        egui::RichText::new("RUNS")
+                            .size(9.0_f32)
+                            .color(palette::TEXT_DIM),
+                    );
                     ui.add(
                         egui::DragValue::new(&mut self.exp_count)
                             .speed(1.0)
                             .range(1..=20),
+                    );
+                    ui.label(
+                        egui::RichText::new("REPS")
+                            .size(9.0_f32)
+                            .color(palette::TEXT_DIM),
+                    )
+                    .on_hover_text("replications per scenario (adds a 95% CI to every row)");
+                    ui.add(
+                        egui::DragValue::new(&mut self.exp_reps)
+                            .speed(1.0)
+                            .range(1..=50),
                     );
                 });
                 if ui

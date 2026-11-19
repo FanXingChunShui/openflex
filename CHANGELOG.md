@@ -9,6 +9,8 @@
   行格式与 `openflex run --trace` 一致（`simulate_traced` 同一序列化路径）。
   此前桌面版的“事件日志”只记录 GUI 自己步进过的事件，看不到完整事件流。
 - 新增 `trace_export_lines_match_the_cli_jsonl` 测试（GUI 18 项）。
+- **实验面板控件**：`stop-time/parameter` 改分段按钮，`PATH/START/STEP/RUNS/REPS` 统一成大写标签；
+  **补回丢失的 `REPS` 输入框**（字段与逻辑一直在，控件在某次重排中被挤掉，导致复现次数无法设置）。
 - **流程块控件**：`+create/delay/assign/decision/transfer/sink` 改为**按块类型着色的胶囊按钮**（与画布同一套配色），
   块列表改为等宽胶囊并内嵌 `x`，`Apply process flow` 改主按钮。
 - **内置文件浏览器**：工具栏新增 `Browse…`，打开一个原生窗口列出当前目录（文件夹在前、`.ofm` 在后，忽略隐藏与非模型文件），
