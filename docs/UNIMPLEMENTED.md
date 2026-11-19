@@ -35,7 +35,7 @@
 
 | # | 功能 | 现状 | 缺口 | 工作量 |
 |---|---|---|---|---|
-| 18 | **交互式运行控制** | 原生句柄 step/pause/resume/state/snapshot + 逐事件 step_event/next_event + Studio Step Event/事件列表 | 无 trace 回放/实时时钟速度 | S |
+| 18 | **交互式运行控制** | 原生句柄 step/pause/resume/state/snapshot + 逐事件 step_event/next_event + Studio Step Event/事件列表 + Studio/桌面 GUI 的时钟速度滑块（0.25–8×）与事件日志跳转 | — | S |
 | 19 | **检查点多复现/续跑 trace** | 多复现检查点 + manifest（SHA-256/history/keep）+ `from_json_verified` + Studio 恢复面板 | 续跑段 trace、从 manifest 自动读取摘要验证 | S |
 | 20 | **统计高级方法** | t 区间/Little、`--batch-means`（系统级批均值 CI）、`--timeseries` | 无方差缩减/自相关处理/每对象批均值；时间序列为区间平均 | M |
 | 21 | **Experimenter UI** | CLI `experiment` + Studio Experimenter（场景×复现对比表） | 无场景对比图表/参数选择器 | S |

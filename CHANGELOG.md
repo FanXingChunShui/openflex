@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.11.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **播放速度滑块**：工具栏新增 `Speed`（0.25–8×，对数）。`Play` 时每帧推进 `step_size × speed` 的模型时间，
+  帧间隔按速度调整（16–240 ms），与 Studio 的 animation speed 对齐；仿真本身仍按完整步长推进，不影响结果。
+
+### 文档
+
+- `docs/UNIMPLEMENTED.md` 第 18 项（交互式运行控制）标记完成：桌面 GUI 与 Studio 均有时钟速度、事件步进/跳转。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**516 passed / 0 failed**；clippy 0、fmt 干净、启动无 panic。
+
 ## v1.10.0 — 2026-11-19
 
 ### 示例与文档

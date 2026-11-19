@@ -1038,6 +1038,7 @@ struct OpenFlexApp {
     running: bool,
     paused: bool,
     step_size: f32,
+    play_speed: f32,
     report: Option<SimReport>,
     baseline: Option<SimReport>,
     show_compare: bool,
@@ -1131,6 +1132,7 @@ impl OpenFlexApp {
             running: false,
             paused: false,
             step_size: 10.0,
+            play_speed: 1.0,
             report: None,
             baseline: None,
             show_compare: false,
@@ -3497,9 +3499,13 @@ impl eframe::App for OpenFlexApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         if self.running && !self.paused {
-            let step = self.step_size.max(0.1) as f64;
+            // Playback speed multiplies the model time advanced per frame,
+            // mirroring FlexSim's run-speed slider without changing the
+            // simulation itself (the engine always sees whole steps).
+            let step = (self.step_size.max(0.1) * self.play_speed.max(0.1)) as f64;
             self.advance(step);
-            ctx.request_repaint_after(std::time::Duration::from_millis(60));
+            let frame_ms = (60.0 / self.play_speed.clamp(0.25, 8.0)).max(16.0);
+            ctx.request_repaint_after(std::time::Duration::from_millis(frame_ms as u64));
         }
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
@@ -3653,6 +3659,12 @@ impl eframe::App for OpenFlexApp {
                     egui::DragValue::new(&mut self.step_size)
                         .speed(1.0)
                         .range(0.1..=1000.0),
+                );
+                ui.label("Speed");
+                ui.add(
+                    egui::Slider::new(&mut self.play_speed, 0.25..=8.0)
+                        .logarithmic(true)
+                        .suffix("×"),
                 );
                 ui.separator();
                 if ui.button("Iso").clicked() {
