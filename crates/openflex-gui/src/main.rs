@@ -1626,6 +1626,9 @@ impl OpenFlexApp {
                 self.model_seed = "1".into();
                 self.model_replications = 1;
                 self.model_unit = 0;
+                // Centre the starter pipeline so it is visible immediately.
+                self.selection.clear();
+                self.frame_selection();
                 self.status = "New model".into();
                 self.error = None;
             }
