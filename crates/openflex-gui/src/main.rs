@@ -1386,6 +1386,8 @@ struct OpenFlexApp {
     params_text: String,
     show_json: bool,
     form_dirty: bool,
+    /// Working copy of the selected object's name for in-place editing.
+    rename_text: String,
     /// The in-memory model has been modified since the last save.
     model_dirty: bool,
     new_from: String,
@@ -1490,6 +1492,7 @@ impl OpenFlexApp {
             params_text: String::new(),
             show_json: false,
             form_dirty: false,
+            rename_text: String::new(),
             model_dirty: false,
             new_from: String::new(),
             new_to: String::new(),
@@ -3644,6 +3647,7 @@ idle,busy,blocked,down\n",
         };
         let object = &model.objects[index];
         self.form_dirty = false;
+        self.rename_text = object.name.clone();
         self.selected = Some(index);
         self.selection = vec![index];
         self.form = Some(EditForm::from_object(object));
@@ -3654,6 +3658,82 @@ idle,busy,blocked,down\n",
             .and_then(|value| value.get("process_flow").cloned())
             .map(|flow| serde_json::to_string_pretty(&flow).unwrap_or_default())
             .unwrap_or_default();
+    }
+
+    /// Renames the selected object, rewriting every reference to it
+    /// (connections, home/charger/network targets, process-flow links).
+    fn rename_object(&mut self, new_name: String) {
+        let (Some(model), Some(index)) = (self.model, self.selected) else {
+            return;
+        };
+        let old_name = model.objects[index].name.clone();
+        if new_name == old_name || new_name.trim().is_empty() {
+            self.rename_text = old_name;
+            return;
+        }
+        if model.objects.iter().any(|object| object.name == new_name) {
+            self.error = Some(format!("an object named {new_name} already exists"));
+            self.rename_text = old_name;
+            return;
+        }
+        self.snapshot();
+        let mut copy = model.clone();
+        copy.objects[index].name = new_name.clone();
+        let json = match serde_json::to_value(&copy) {
+            Ok(json) => json,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                return;
+            }
+        };
+        // Rewrite every string that referenced the old name.
+        let patched = Self::rewrite_name(json, &old_name, &new_name);
+        let renamed: Model = match serde_json::from_value(patched) {
+            Ok(model) => model,
+            Err(error) => {
+                self.error = Some(format!("could not rename: {error}"));
+                self.rename_text = old_name;
+                return;
+            }
+        };
+        match renamed.validate() {
+            Ok(()) => {
+                self.model = Some(Box::leak(Box::new(renamed)));
+                self.form = self
+                    .model
+                    .map(|model| EditForm::from_object(&model.objects[index]));
+                self.rename_text = new_name.clone();
+                self.form_dirty = false;
+                self.status = format!("Renamed {old_name} to {new_name}");
+                self.error = None;
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                self.rename_text = old_name;
+            }
+        }
+    }
+
+    /// Replaces every string equal to `old` with `new` inside a JSON tree
+    /// (object names, connection endpoints, home/charger/network references).
+    fn rewrite_name(value: serde_json::Value, old: &str, new: &str) -> serde_json::Value {
+        match value {
+            serde_json::Value::String(text) if text == old => {
+                serde_json::Value::String(new.to_string())
+            }
+            serde_json::Value::Array(items) => serde_json::Value::Array(
+                items
+                    .into_iter()
+                    .map(|item| Self::rewrite_name(item, old, new))
+                    .collect(),
+            ),
+            serde_json::Value::Object(map) => serde_json::Value::Object(
+                map.into_iter()
+                    .map(|(key, item)| (key, Self::rewrite_name(item, old, new)))
+                    .collect(),
+            ),
+            other => other,
+        }
     }
 
     fn apply_form(&mut self) {
@@ -5013,23 +5093,35 @@ impl eframe::App for OpenFlexApp {
                     });
                 ui.separator();
                 let mut form_changed = false;
+                let mut pending_rename: Option<String> = None;
                 if let (Some(model), Some(index), Some(form)) =
                     (self.model, self.selected, self.form.as_mut())
                 {
                     let name = model.objects[index].name.clone();
                     let kind = form.kind;
-                    // Object header: kind-coloured chip + name + kind tag.
+                    // Object header: kind dot + editable name + kind tag.
+                    let mut rename_to: Option<String> = None;
                     ui.horizontal(|ui| {
                         let (dot, _) =
                             ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                         ui.painter()
                             .circle_filled(dot.center(), 4.2, Self::kind_color(kind));
-                        ui.label(
-                            egui::RichText::new(&name)
-                                .size(15.0_f32)
-                                .strong()
-                                .color(palette::TEXT),
+                        // The name is edited in place: Enter or losing focus
+                        // commits it, Esc restores the old value.
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut self.rename_text)
+                                .desired_width(150.0)
+                                .font(egui::TextStyle::Body)
+                                .text_color(palette::TEXT),
                         );
+                        // Enter or losing focus commits, Esc reverts.
+                        let escaped = response.lost_focus()
+                            && ui.input(|input| input.key_pressed(egui::Key::Escape));
+                        if escaped {
+                            self.rename_text = name.clone();
+                        } else if response.lost_focus() && self.rename_text.trim() != name {
+                            rename_to = Some(self.rename_text.trim().to_string());
+                        }
                         egui::Frame::none()
                             .fill(palette::CARD)
                             .stroke(egui::Stroke::new(1.0_f32, palette::STROKE))
@@ -5043,6 +5135,7 @@ impl eframe::App for OpenFlexApp {
                                 );
                             });
                     });
+                    pending_rename = rename_to;
                     // Position row: labelled monospace fields on one line.
                     ui.horizontal(|ui| {
                         ui.label(
@@ -5180,6 +5273,9 @@ impl eframe::App for OpenFlexApp {
                             );
                         });
                     }
+                }
+                if let Some(new_name) = pending_rename {
+                    self.rename_object(new_name);
                 }
                 if !self.selection.is_empty() {
                     ui.separator();
@@ -7133,6 +7229,7 @@ impl eframe::App for OpenFlexApp {
                             self.selected = Some(first);
                             if let Some(model) = self.model {
                                 let object = &model.objects[first];
+                                self.rename_text = object.name.clone();
                                 self.form = Some(EditForm::from_object(object));
                                 self.params_text = serde_json::to_string_pretty(&object.params)
                                     .unwrap_or_else(|_| "{}".into());
@@ -7616,6 +7713,29 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn rename_rewrites_every_reference() {
+        // Object names appear in connections, home/charger/network targets and
+        // process-flow blocks; renaming must patch all of them.
+        let json = serde_json::json!({
+            "objects": [
+                {"name": "A", "kind": "dispatcher", "params": {}},
+                {"name": "B", "kind": "agv", "params": {"home": "A", "charger": "A",
+                  "network": [{"from": "A", "to": "B"}]}}
+            ],
+            "connections": [{"from": "A", "to": "B"}],
+            "process_flow": {"blocks": [{"id": "t", "type": "transfer", "to": "A"}]}
+        });
+        let patched = OpenFlexApp::rewrite_name(json, "A", "Dispatch");
+        let text = serde_json::to_string(&patched).expect("json");
+        assert!(text.contains("\"Dispatch\""), "{text}");
+        assert!(!text.contains("\"A\""), "old name still present: {text}");
+        // Unrelated strings stay untouched.
+        let untouched =
+            OpenFlexApp::rewrite_name(serde_json::json!({"name": "Alpha"}), "A", "Dispatch");
+        assert_eq!(untouched["name"], serde_json::json!("Alpha"));
     }
 
     #[test]
