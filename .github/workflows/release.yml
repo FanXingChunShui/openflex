@@ -725,6 +725,9 @@ jobs:
           archives="$(ls *.tar.gz *.zip 2>/dev/null | wc -l | tr -d ' ')"
           if [ "$archives" -lt 3 ]; then
             echo "::error::expected at least 3 platform archives (macOS, Linux, Windows), found ${archives}"
+            echo "--- downloaded artifact tree (a cancelled upstream job leaves it short) ---"
+            find . -maxdepth 2 -type f | LC_ALL=C sort | head -40
+            echo "--- re-run the failed jobs of this workflow once the runners free up ---"
             exit 1
           fi
 
