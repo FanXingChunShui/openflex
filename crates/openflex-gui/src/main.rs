@@ -6923,13 +6923,19 @@ impl eframe::App for OpenFlexApp {
             {
                 self.redo_once();
             }
-            if input.consume_key(egui::Modifiers::COMMAND, egui::Key::S) {
+            if !typing && input.consume_key(egui::Modifiers::COMMAND, egui::Key::S) {
                 self.save();
             }
-            if input.consume_key(egui::Modifiers::COMMAND, egui::Key::O) {
-                self.load(PathBuf::from(self.path_input.clone()));
+            // Open/New also skip while a text field has focus, so typing a
+            // path never accidentally opens or resets the model.
+            if !typing && input.consume_key(egui::Modifiers::COMMAND, egui::Key::O) {
+                if self.path_input.trim().is_empty() {
+                    self.status = "Type a model path first (or use Recent)".into();
+                } else {
+                    self.load(PathBuf::from(self.path_input.clone()));
+                }
             }
-            if input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
+            if !typing && input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
                 self.new_model();
             }
             // Space toggles play/pause; R resets; F1 shows the short help.
