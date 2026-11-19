@@ -286,6 +286,7 @@
         <button id="apply-batch-pos" type="button">Apply position/Z/rot</button>
       </div>
       <button id="revert-object" type="button">Revert</button>
+      <button id="duplicate-object" type="button" title="copy this object with a new name">Duplicate</button>
       <button id="delete-object" class="danger" type="button">Delete</button>
     </div>
 
@@ -1461,6 +1462,37 @@ async function addObject() {
     renderAll();
     recordHistory("add", `add ${kind}`);
     setStatus(`added ${response.added}`);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+async function duplicateObject() {
+  const object = state.model && state.model.objects[state.selected];
+  if (!object) return;
+  const copy = JSON.parse(JSON.stringify(object));
+  // Unique name: keep appending a counter until it is free.
+  const base = String(object.name || "object");
+  let suffix = 2;
+  while (state.model.objects.some(other => other.name === `${base}_${suffix}`)) suffix += 1;
+  copy.name = `${base}_${suffix}`;
+  const pos = Array.isArray(copy.pos) ? copy.pos : [0, 0];
+  copy.pos = [Number(pos[0] || 0) + 2, Number(pos[1] || 0)];
+  const model = JSON.parse(JSON.stringify(state.model));
+  model.objects.push(copy);
+  setStatus(`duplicating ${object.name}…`);
+  try {
+    const response = await api("/api/model", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(model),
+    });
+    state.model = response.model || model;
+    state.selected = state.model.objects.length - 1;
+    clearHistory();
+    renderAll();
+    recordHistory("duplicate", `duplicate ${object.name} as ${copy.name}`);
+    setStatus(`duplicated ${object.name} as ${copy.name}`);
   } catch (error) {
     setStatus(error.message, true);
   }
@@ -5125,6 +5157,7 @@ $("timeseries-chart").addEventListener("mousemove", updateTimeseriesTooltip);
 $("timeseries-chart").addEventListener("mouseleave", () => { $("timeseries-tooltip").hidden = true; });
 $("save-object").addEventListener("click", saveObject);
 $("revert-object").addEventListener("click", revertObject);
+$("duplicate-object").addEventListener("click", duplicateObject);
 $("delete-object").addEventListener("click", deleteObject);
 $("edit-params").addEventListener("focusin", beginEdit);
 $("edit-params").addEventListener("input", () => {
