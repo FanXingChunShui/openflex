@@ -3079,6 +3079,31 @@ impl OpenFlexApp {
         }
     }
 
+    fn set_connection_strategy(
+        &mut self,
+        index: usize,
+        strategy: Option<openflex_model::model::PortStrategy>,
+    ) {
+        let Some(model) = self.model else {
+            return;
+        };
+        self.snapshot();
+        let mut copy = model.clone();
+        if let Some(connection) = copy.connections.get_mut(index) {
+            connection.strategy = strategy;
+        } else {
+            return;
+        }
+        match copy.validate() {
+            Ok(()) => {
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.status = "Connection strategy updated".into();
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
     fn remove_connection(&mut self, index: usize) {
         if self.model.is_none() {
             return;
@@ -4538,6 +4563,8 @@ impl eframe::App for OpenFlexApp {
                 let Some(model) = self.model else {
                     return;
                 };
+                let mut set_strategy: Option<(usize, Option<openflex_model::model::PortStrategy>)> =
+                    None;
                 egui::ScrollArea::vertical()
                     .id_salt("connections")
                     .max_height(ui.available_height() * 0.32)
@@ -4548,16 +4575,66 @@ impl eframe::App for OpenFlexApp {
                                     .port
                                     .map(|port| format!(" :{port}"))
                                     .unwrap_or_default();
+                                let kind = match connection.kind {
+                                    Some(openflex_model::model::ConnectionKind::S) => "S",
+                                    _ => "A",
+                                };
+                                let strategy = match &connection.strategy {
+                                    Some(openflex_model::model::PortStrategy::RoundRobin) => " rr",
+                                    Some(openflex_model::model::PortStrategy::Random) => " random",
+                                    Some(openflex_model::model::PortStrategy::Hold) => " hold",
+                                    _ => "",
+                                };
                                 ui.label(format!(
-                                    "{} → {}{}",
+                                    "[{kind}] {}{}{}{strategy}",
                                     connection.from, connection.to, port
                                 ));
                                 if ui.small_button("✕").clicked() {
                                     self.remove_connection(index);
                                 }
+                                egui::ComboBox::from_id_salt(("conn-strategy", index))
+                                    .selected_text(match &connection.strategy {
+                                        Some(openflex_model::model::PortStrategy::RoundRobin) => {
+                                            "rr"
+                                        }
+                                        Some(openflex_model::model::PortStrategy::Random) => {
+                                            "random"
+                                        }
+                                        Some(openflex_model::model::PortStrategy::Hold) => "hold",
+                                        _ => "first",
+                                    })
+                                    .width(70.0)
+                                    .show_ui(ui, |ui| {
+                                        for (value, name) in [
+                                            (None, "first"),
+                                            (
+                                                Some(
+                                                    openflex_model::model::PortStrategy::RoundRobin,
+                                                ),
+                                                "rr",
+                                            ),
+                                            (
+                                                Some(openflex_model::model::PortStrategy::Random),
+                                                "random",
+                                            ),
+                                            (
+                                                Some(openflex_model::model::PortStrategy::Hold),
+                                                "hold",
+                                            ),
+                                        ] {
+                                            let current = connection.strategy.clone();
+                                            if ui.selectable_label(current == value, name).clicked()
+                                            {
+                                                set_strategy = Some((index, value));
+                                            }
+                                        }
+                                    });
                             });
                         }
                     });
+                if let Some((index, strategy)) = set_strategy {
+                    self.set_connection_strategy(index, strategy);
+                }
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.new_from)

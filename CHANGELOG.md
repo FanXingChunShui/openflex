@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.15.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **连接端口策略编辑**：连接列表每行新增策略下拉（`first` / `rr` / `random` / `hold`），改动经 `snapshot()` 入撤销栈与 `validate()`；
+  列表标签同时显示类型前缀 `[A]`/`[S]` 与策略后缀。
+- 新增 `set_connection_strategy()` 方法。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**516 passed / 0 failed**；clippy 0、fmt 干净、启动无 panic。
+
 ## v1.14.0 — 2026-11-19
 
 ### 桌面 GUI
