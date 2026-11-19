@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.22.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **可读性增强**：对象标签改为**深色描边 + 白色文字**，在热力图的红/黄填充上仍清晰；
+  盒内右下角新增**状态角标**（`idle` / `busy` / `blocked` / `down` / `off`），颜色不再是唯一状态线索（对齐 FlexSim 的标签与状态显示）。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**518 passed / 0 failed**；clippy 0、fmt 干净、启动无 panic。
+
 ## v1.21.0 — 2026-11-19
 
 ### 桌面 GUI

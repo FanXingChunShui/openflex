@@ -5638,13 +5638,48 @@ impl eframe::App for OpenFlexApp {
                         _ => object.name.clone(),
                     }
                 };
+                // Outline first so the caption stays readable on bright
+                // heatmap colours (FlexSim draws labels with a halo too).
+                let label_pos = box_rect.center_top() - egui::vec2(0.0, 4.0);
+                let font = egui::FontId::proportional(12.0);
+                for offset in [
+                    egui::vec2(-1.0, 0.0),
+                    egui::vec2(1.0, 0.0),
+                    egui::vec2(0.0, -1.0),
+                    egui::vec2(0.0, 1.0),
+                ] {
+                    painter.text(
+                        label_pos + offset,
+                        egui::Align2::CENTER_BOTTOM,
+                        &caption,
+                        font.clone(),
+                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160),
+                    );
+                }
                 painter.text(
-                    box_rect.center_top() - egui::vec2(0.0, 4.0),
+                    label_pos,
                     egui::Align2::CENTER_BOTTOM,
                     &caption,
-                    egui::FontId::proportional(12.0),
+                    font,
                     egui::Color32::WHITE,
                 );
+                // State badge: the engine state name in the box corner so the
+                // colour is not the only cue (accessibility + FlexSim parity).
+                if let Some(name) = live.and_then(|stats| stats.state).map(|state| match state {
+                    openflex_core::engine::State::Idle => "idle",
+                    openflex_core::engine::State::Busy => "busy",
+                    openflex_core::engine::State::Blocked => "blocked",
+                    openflex_core::engine::State::Down => "down",
+                    openflex_core::engine::State::OffShift => "off",
+                }) {
+                    painter.text(
+                        box_rect.right_bottom() - egui::vec2(3.0, 2.0),
+                        egui::Align2::RIGHT_BOTTOM,
+                        name,
+                        egui::FontId::proportional(9.0),
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 190),
+                    );
+                }
                 if response.clicked()
                     && let Some(pointer) = response.interact_pointer_pos()
                     && box_rect.expand(6.0).contains(pointer)
