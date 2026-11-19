@@ -1386,6 +1386,8 @@ struct OpenFlexApp {
     params_text: String,
     show_json: bool,
     form_dirty: bool,
+    /// The in-memory model has been modified since the last save.
+    model_dirty: bool,
     new_from: String,
     new_to: String,
     new_port: String,
@@ -1488,6 +1490,7 @@ impl OpenFlexApp {
             params_text: String::new(),
             show_json: false,
             form_dirty: false,
+            model_dirty: false,
             new_from: String::new(),
             new_to: String::new(),
             new_port: String::new(),
@@ -1583,6 +1586,7 @@ impl OpenFlexApp {
         };
         if let Ok(json) = model.to_json() {
             self.undo.push(json);
+            self.model_dirty = true;
             if self.undo.len() > 50 {
                 self.undo.remove(0);
             }
@@ -1817,6 +1821,8 @@ impl OpenFlexApp {
                 self.path_input = path.display().to_string();
                 self.remember_recent(&path);
                 self.error = None;
+                self.model_dirty = false;
+                self.form_dirty = false;
                 self.selected = None;
                 self.form = None;
                 self.params_text.clear();
@@ -1836,7 +1842,10 @@ impl OpenFlexApp {
         };
         match model.to_json() {
             Ok(text) => match std::fs::write(&path, text) {
-                Ok(()) => self.status = format!("Saved {}", path.display()),
+                Ok(()) => {
+                    self.model_dirty = false;
+                    self.status = format!("Saved {}", path.display());
+                }
                 Err(error) => self.error = Some(format!("could not write: {error}")),
             },
             Err(error) => self.error = Some(format!("could not serialise: {error}")),
@@ -4275,6 +4284,17 @@ impl eframe::App for OpenFlexApp {
                             .strong()
                             .color(palette::ACCENT_HI),
                     );
+                    // A dot after the brand means "the model differs from what
+                    // is on disk".
+                    if self.model_dirty {
+                        ui.label(
+                            egui::RichText::new("*")
+                                .size(15.0_f32)
+                                .strong()
+                                .color(palette::AMBER),
+                        )
+                        .on_hover_text("unsaved model changes");
+                    }
                     ui.separator();
                     tool_group(ui, "FILE");
                     ui.add(egui::TextEdit::singleline(&mut self.path_input).desired_width(280.0));

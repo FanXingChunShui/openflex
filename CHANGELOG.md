@@ -9,6 +9,8 @@
 
 - **选中态**：选中对象不再覆盖为固定琥珀色，而是把当前状态/热力色**提亮 35%**（`shade_light`），
   既看得出被选中，也保留状态含义；新增 `shade_light_keeps_a_selected_body_recognisable` 测试（GUI 14 项）。
+- **模型脏标记**：品牌名后出现琥珀 `*`（悬停「unsaved model changes」），由 `snapshot()` 置位、保存/加载清除；
+  与表单级 `unsaved edits` 区分「模型已改」与「当前对象表单未应用」。
 - **优化成本提示**：`Run` 旁显示 `~N runs` 预估评估次数（grid 按 `steps^变量数`、random 按样本数、genetic 按样本×步数）。
 - **采样上限**：时序采样最多 20 000 点（0.1s 间隔 × 1e6 时长会生成千万行并卡住 UI），
   触顶时状态栏提示「raise the interval」。
