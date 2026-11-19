@@ -6059,29 +6059,77 @@ impl eframe::App for OpenFlexApp {
                 .open(&mut open)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    egui::Grid::new("help-grid").num_columns(2).show(ui, |ui| {
-                        for (key, action) in [
-                            ("Ctrl/Cmd + O", "open a model"),
-                            ("Ctrl/Cmd + N", "new model"),
-                            ("Ctrl/Cmd + S", "save"),
-                            ("Ctrl/Cmd + Z", "undo"),
-                            ("Ctrl/Cmd + Shift + Z", "redo"),
-                            ("Space", "play / pause"),
-                            ("R", "reset the run"),
-                            ("F1", "toggle this dialog"),
-                            ("Ctrl/Cmd + A", "select every object"),
-                            ("Ctrl/Cmd + D", "duplicate the selection"),
-                            ("drag", "rotate the camera"),
-                            ("wheel", "zoom"),
-                            ("click", "select an object"),
-                            ("Right arrow", "step the simulation forward"),
-                            ("Up / Down", "increase / decrease the step size"),
-                        ] {
-                            ui.strong(key);
-                            ui.label(action);
-                            ui.end_row();
-                        }
-                    });
+                    ui.set_max_width(520.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Everything is reachable from the toolbar; these are the shortcuts.",
+                        )
+                        .small()
+                        .color(palette::TEXT_DIM),
+                    );
+                    ui.add_space(6.0);
+                    for (section, rows) in [
+                        (
+                            "FILE",
+                            &[
+                                ("Ctrl/Cmd + O", "open a model"),
+                                ("Ctrl/Cmd + N", "new model"),
+                                ("Ctrl/Cmd + S", "save"),
+                                ("Ctrl/Cmd + Z", "undo"),
+                                ("Ctrl/Cmd + Shift + Z", "redo"),
+                            ][..],
+                        ),
+                        (
+                            "RUN",
+                            &[
+                                ("Space", "play / pause"),
+                                ("R", "reset the run"),
+                                ("Right arrow", "step the simulation forward"),
+                                ("Up / Down", "increase / decrease the step size"),
+                            ][..],
+                        ),
+                        (
+                            "SELECT",
+                            &[
+                                ("Ctrl/Cmd + A", "select every object"),
+                                ("Ctrl/Cmd + D", "duplicate the selection"),
+                                ("click", "select an object"),
+                                ("drag on empty space", "marquee select"),
+                            ][..],
+                        ),
+                        (
+                            "VIEW",
+                            &[("drag", "rotate the camera"), ("wheel", "zoom")][..],
+                        ),
+                        ("HELP", &[("F1", "toggle this dialog")][..]),
+                    ] {
+                        panel_heading(ui, section);
+                        egui::Grid::new(("help-grid", section))
+                            .num_columns(2)
+                            .spacing([14.0, 3.0])
+                            .show(ui, |ui| {
+                                for (key, action) in rows {
+                                    // Key caps in a monospace chip read faster.
+                                    egui::Frame::none()
+                                        .fill(palette::CARD)
+                                        .stroke(egui::Stroke::new(1.0_f32, palette::STROKE))
+                                        .rounding(egui::Rounding::same(4.0_f32))
+                                        .inner_margin(egui::Margin::symmetric(5.0, 1.0))
+                                        .show(ui, |ui| {
+                                            ui.label(
+                                                egui::RichText::new(*key)
+                                                    .monospace()
+                                                    .small()
+                                                    .color(palette::ACCENT_HI),
+                                            );
+                                        });
+                                    ui.label(
+                                        egui::RichText::new(*action).small().color(palette::TEXT),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                    }
                 });
             if !open {
                 self.show_help = false;
