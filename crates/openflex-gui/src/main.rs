@@ -25,6 +25,7 @@ fn main() -> eframe::Result<()> {
     let model = std::env::args().nth(1);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_icon(app_icon())
             .with_inner_size([1360.0, 860.0])
             .with_min_inner_size([960.0, 640.0])
             .with_title("OpenFlex"),
@@ -33,8 +34,54 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "OpenFlex",
         options,
-        Box::new(move |_cc| Ok(Box::new(OpenFlexApp::new(model)) as Box<dyn eframe::App>)),
+        Box::new(move |cc| {
+            apply_theme(&cc.egui_ctx);
+            Ok(Box::new(OpenFlexApp::new(model)) as Box<dyn eframe::App>)
+        }),
     )
+}
+
+/// Builds a 64×64 RGBA icon (a rounded indigo square with a light "O") so the
+/// window and the bundle get an icon without shipping a binary asset.
+fn app_icon() -> egui::IconData {
+    const SIZE: u32 = 64;
+    let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
+    let centre = (SIZE as f32 - 1.0) / 2.0;
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = (x as f32 - centre) / centre;
+            let dy = (y as f32 - centre) / centre;
+            let radius = (dx * dx + dy * dy).sqrt();
+            let offset = ((y * SIZE + x) * 4) as usize;
+            let inside_box = radius < 0.92;
+            let ring = (radius - 0.55).abs() < 0.16;
+            let (r, g, b, a) = if !inside_box {
+                (0, 0, 0, 0)
+            } else if ring {
+                (245, 226, 160, 255)
+            } else {
+                (67, 84, 170, 255)
+            };
+            rgba[offset] = r;
+            rgba[offset + 1] = g;
+            rgba[offset + 2] = b;
+            rgba[offset + 3] = a;
+        }
+    }
+    egui::IconData {
+        rgba,
+        width: SIZE,
+        height: SIZE,
+    }
+}
+
+/// Applies the dark visual style used across the app.
+fn apply_theme(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::dark();
+    visuals.panel_fill = egui::Color32::from_rgb(24, 27, 33);
+    visuals.window_fill = egui::Color32::from_rgb(30, 34, 41);
+    visuals.extreme_bg_color = egui::Color32::from_rgb(18, 22, 28);
+    ctx.set_visuals(visuals);
 }
 
 fn decode<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, String> {
@@ -5352,6 +5399,16 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn app_icon_is_opaque_in_the_middle_and_transparent_outside() {
+        let icon = app_icon();
+        assert_eq!(icon.width, 64);
+        assert_eq!(icon.rgba.len(), (64 * 64 * 4) as usize);
+        let centre = ((32 * 64 + 32) * 4) as usize;
+        assert_eq!(icon.rgba[centre + 3], 255, "centre is opaque");
+        assert_eq!(icon.rgba[3], 0, "corner is transparent");
     }
 
     #[test]
