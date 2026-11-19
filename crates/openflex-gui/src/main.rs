@@ -4450,24 +4450,49 @@ idle,busy,blocked,down\n",
                 ObjectKind::Queue => (40.0, 16.0),
                 _ => (34.0, 20.0),
             };
-            let body = egui::Rect::from_center_size(base, egui::vec2(w, h) * zoom);
             let rim = if selected {
                 egui::Stroke::new(1.8_f32, egui::Color32::from_rgb(255, 226, 168))
             } else {
                 egui::Stroke::new(1.0_f32, OpenFlexApp::shade(fill, -0.45))
             };
+            // Rotation matters in a floor plan, so the footprint is rotated by
+            // drawing a polygon instead of an axis-aligned rectangle.
+            if rotation.rem_euclid(360.0).abs() > 0.5 {
+                let half = egui::vec2(w, h) * zoom * 0.5;
+                let (sin, cos) = rotation.to_radians().sin_cos();
+                let rotate = |offset: egui::Vec2| {
+                    base + egui::vec2(
+                        offset.x * cos - offset.y * sin,
+                        offset.x * sin + offset.y * cos,
+                    )
+                };
+                let corners = vec![
+                    rotate(egui::vec2(-half.x, -half.y)),
+                    rotate(egui::vec2(half.x, -half.y)),
+                    rotate(egui::vec2(half.x, half.y)),
+                    rotate(egui::vec2(-half.x, half.y)),
+                ];
+                painter.add(egui::Shape::convex_polygon(
+                    corners.clone(),
+                    fill,
+                    egui::Stroke::NONE,
+                ));
+                for pair in [[0, 1], [1, 2], [2, 3], [3, 0]] {
+                    painter.line_segment([corners[pair[0]], corners[pair[1]]], rim);
+                }
+                return egui::Rect::from_points(&corners);
+            }
+            let body = egui::Rect::from_center_size(base, egui::vec2(w, h) * zoom);
             painter.rect_filled(body, (3.0 * zoom).max(2.0), fill);
             painter.rect_stroke(body, (3.0 * zoom).max(2.0), rim);
-            if (rotation.rem_euclid(360.0) - 0.0).abs() < 1.0 {
-                // A north tick marks orientation without any 3D cue.
-                painter.line_segment(
-                    [
-                        body.center_top(),
-                        body.center_top() + egui::vec2(0.0, 3.0 * zoom),
-                    ],
-                    egui::Stroke::new(1.0_f32, OpenFlexApp::shade(fill, 0.5)),
-                );
-            }
+            // A north tick marks orientation without any 3D cue.
+            painter.line_segment(
+                [
+                    body.center_top(),
+                    body.center_top() + egui::vec2(0.0, 3.0 * zoom),
+                ],
+                egui::Stroke::new(1.0_f32, OpenFlexApp::shade(fill, 0.5)),
+            );
             return body;
         }
         // Selected bodies get a warm ring; the rest use a dark hairline so the
