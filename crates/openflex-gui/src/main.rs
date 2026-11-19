@@ -157,6 +157,14 @@ mod palette {
     pub const ACCENT_HI: Color32 = Color32::from_rgb(138, 160, 255);
     pub const AMBER: Color32 = Color32::from_rgb(245, 190, 100);
     pub const OK: Color32 = Color32::from_rgb(96, 200, 150);
+
+    // Engine state colours: one source of truth for the canvas fill, the
+    // legend and the per-object state bar in the report table.
+    pub const ST_BUSY: Color32 = Color32::from_rgb(214, 96, 70);
+    pub const ST_BLOCKED: Color32 = Color32::from_rgb(224, 168, 66);
+    pub const ST_IDLE: Color32 = Color32::from_rgb(84, 168, 116);
+    pub const ST_DOWN: Color32 = Color32::from_rgb(126, 126, 138);
+    pub const ST_OFF: Color32 = Color32::from_rgb(82, 84, 96);
 }
 
 /// Applies the polished dark theme: rounded widgets, an indigo accent,
@@ -3699,20 +3707,20 @@ idle,busy,blocked,down\n",
         // Prefer the instantaneous state reported by the engine (task-145).
         if let Some(state) = stats.state {
             return match state {
-                openflex_core::engine::State::Busy => egui::Color32::from_rgb(214, 96, 70),
-                openflex_core::engine::State::Blocked => egui::Color32::from_rgb(214, 160, 60),
-                openflex_core::engine::State::Down => egui::Color32::from_rgb(120, 120, 120),
-                openflex_core::engine::State::OffShift => egui::Color32::from_rgb(80, 80, 90),
-                openflex_core::engine::State::Idle => egui::Color32::from_rgb(80, 160, 110),
+                openflex_core::engine::State::Busy => palette::ST_BUSY,
+                openflex_core::engine::State::Blocked => palette::ST_BLOCKED,
+                openflex_core::engine::State::Down => palette::ST_DOWN,
+                openflex_core::engine::State::OffShift => palette::ST_OFF,
+                openflex_core::engine::State::Idle => palette::ST_IDLE,
             };
         }
         let times = &stats.state_times;
         let entries = [
-            (times.busy, egui::Color32::from_rgb(214, 96, 70)),
-            (times.blocked, egui::Color32::from_rgb(214, 160, 60)),
-            (times.down, egui::Color32::from_rgb(120, 120, 120)),
-            (times.off_shift, egui::Color32::from_rgb(80, 80, 90)),
-            (times.idle, egui::Color32::from_rgb(80, 160, 110)),
+            (times.busy, palette::ST_BUSY),
+            (times.blocked, palette::ST_BLOCKED),
+            (times.down, palette::ST_DOWN),
+            (times.off_shift, palette::ST_OFF),
+            (times.idle, palette::ST_IDLE),
         ];
         let mut best = entries[4];
         for entry in entries.iter() {
@@ -5525,13 +5533,48 @@ impl eframe::App for OpenFlexApp {
                                 ui.strong("±CI");
                                 ui.end_row();
                                 for (name, stats) in &report.objects {
-                                    ui.label(name).on_hover_text(format!(
-                                        "idle {:.0}% · busy {:.0}% · blocked {:.0}% · down {:.0}%",
-                                        stats.idle_fraction.mean * 100.0,
-                                        stats.busy_fraction.mean * 100.0,
-                                        stats.blocked_fraction.mean * 100.0,
-                                        stats.down_fraction.mean * 100.0
-                                    ));
+                                    ui.horizontal(|ui| {
+                                        // A 4-segment bar (busy/blocked/idle/down)
+                                        // makes the dominant state visible without
+                                        // reading the tooltip.
+                                        let (bar, _) = ui.allocate_exact_size(
+                                            egui::vec2(34.0, 8.0),
+                                            egui::Sense::hover(),
+                                        );
+                                        ui.painter().rect_filled(bar, 2.0, palette::ST_OFF);
+                                        let segments = [
+                                            (stats.busy_fraction.mean, palette::ST_BUSY),
+                                            (stats.blocked_fraction.mean, palette::ST_BLOCKED),
+                                            (stats.idle_fraction.mean, palette::ST_IDLE),
+                                            (stats.down_fraction.mean, palette::ST_DOWN),
+                                        ];
+                                        let total: f64 =
+                                            segments.iter().map(|(value, _)| *value).sum::<f64>()
+                                                .max(1e-9);
+                                        let mut left = bar.left();
+                                        for (value, colour) in segments {
+                                            let width = (bar.width() as f64 * value / total) as f32;
+                                            if width <= 0.0 {
+                                                continue;
+                                            }
+                                            ui.painter().rect_filled(
+                                                egui::Rect::from_min_size(
+                                                    egui::pos2(left, bar.top()),
+                                                    egui::vec2(width, bar.height()),
+                                                ),
+                                                0.0,
+                                                colour,
+                                            );
+                                            left += width;
+                                        }
+                                        ui.label(name).on_hover_text(format!(
+                                            "idle {:.0}% · busy {:.0}% · blocked {:.0}% · down {:.0}%",
+                                            stats.idle_fraction.mean * 100.0,
+                                            stats.busy_fraction.mean * 100.0,
+                                            stats.blocked_fraction.mean * 100.0,
+                                            stats.down_fraction.mean * 100.0
+                                        ));
+                                    });
                                     ui.label(format!("{:.0}", stats.input_count.mean));
                                     ui.label(format!("{:.0}", stats.output_count.mean));
                                     ui.label(format!("{:.1}", stats.avg_content.mean));
@@ -6141,16 +6184,23 @@ impl eframe::App for OpenFlexApp {
             }
             ui.horizontal(|ui| {
                 let legend = [
-                    ("busy", egui::Color32::from_rgb(214, 96, 70)),
-                    ("blocked", egui::Color32::from_rgb(214, 160, 60)),
-                    ("idle", egui::Color32::from_rgb(80, 160, 110)),
-                    ("down", egui::Color32::from_rgb(120, 120, 120)),
+                    ("busy", palette::ST_BUSY),
+                    ("blocked", palette::ST_BLOCKED),
+                    ("idle", palette::ST_IDLE),
+                    ("down", palette::ST_DOWN),
                 ];
-                for (name, color) in legend {
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 2.0, color);
-                    ui.label(egui::RichText::new(name).small());
-                }
+                ui.horizontal_wrapped(|ui| {
+                    for (name, color) in legend {
+                        let (rect, _) = ui
+                            .allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
+                        ui.painter().rect_filled(rect, 2.0, color);
+                        ui.label(
+                            egui::RichText::new(name)
+                                .small()
+                                .color(palette::TEXT_DIM),
+                        );
+                    }
+                });
                 ui.separator();
                 if self.heatmap != 0 {
                     ui.separator();
