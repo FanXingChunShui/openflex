@@ -2623,6 +2623,53 @@ idle,busy,blocked,down\n",
         }
     }
 
+    /// Frames the current selection: centres the camera on its midpoint and
+    /// zooms so the group spans roughly half of the view.
+    fn frame_selection(&mut self) {
+        let Some(model) = self.model else {
+            return;
+        };
+        let indices = if self.selection.is_empty() {
+            (0..model.objects.len()).collect::<Vec<_>>()
+        } else {
+            self.selection.clone()
+        };
+        if indices.is_empty() {
+            return;
+        }
+        let points: Vec<[f64; 2]> = indices
+            .iter()
+            .filter(|index| **index < model.objects.len())
+            .map(|index| model.objects[*index].pos)
+            .collect();
+        if points.is_empty() {
+            return;
+        }
+        let (centre, zoom) = Self::frame_maths(&points);
+        self.focus = centre;
+        self.zoom = zoom;
+        self.status = format!("Framed {} object(s)", indices.len());
+    }
+
+    /// Camera centre and zoom that frame `points` (12 units span the canvas at
+    /// zoom 1, clamped to 0.15…4 so tiny and huge models stay usable).
+    fn frame_maths(points: &[[f64; 2]]) -> ([f32; 2], f32) {
+        let (mut min, mut max) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+        for pos in points {
+            min[0] = min[0].min(pos[0]);
+            min[1] = min[1].min(pos[1]);
+            max[0] = max[0].max(pos[0]);
+            max[1] = max[1].max(pos[1]);
+        }
+        let centre = [
+            ((min[0] + max[0]) / 2.0) as f32,
+            ((min[1] + max[1]) / 2.0) as f32,
+        ];
+        let span = (max[0] - min[0]).max(max[1] - min[1]).max(1.0);
+        let zoom = (12.0 / span as f32).clamp(0.15, 4.0);
+        (centre, zoom)
+    }
+
     /// Selects every object in the model.
     fn select_all(&mut self) {
         let Some(model) = self.model else {
@@ -3874,6 +3921,13 @@ impl eframe::App for OpenFlexApp {
                         .suffix("×"),
                 );
                 ui.separator();
+                if ui
+                    .add_enabled(self.model.is_some(), egui::Button::new("Fit"))
+                    .on_hover_text("frame the selection (or the whole model)")
+                    .clicked()
+                {
+                    self.frame_selection();
+                }
                 if ui.button("Iso").clicked() {
                     self.yaw = -0.6;
                     self.pitch = 0.5;
@@ -5624,6 +5678,10 @@ impl eframe::App for OpenFlexApp {
                             }
                             self.context_menu_open = None;
                         }
+                        if ui.button("Frame selection").clicked() {
+                            self.frame_selection();
+                            self.context_menu_open = None;
+                        }
                         if ui.button("Reset position").clicked() {
                             if let (Some(index), Some(model)) = (self.selected, self.model) {
                                 let mut copy = model.clone();
@@ -5803,6 +5861,20 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn frame_maths_centres_and_zooms_for_a_span() {
+        // A 24 x 4 group should centre and zoom out; a 2 x 2 group zooms in.
+        let (centre, zoom) = OpenFlexApp::frame_maths(&[[0.0, 0.0], [24.0, 4.0]]);
+        assert_eq!(centre, [12.0, 2.0]);
+        assert!((zoom - 0.5).abs() < 1e-6, "got {zoom}");
+        let (centre, zoom) = OpenFlexApp::frame_maths(&[[0.0, 0.0], [2.0, 2.0]]);
+        assert_eq!(centre, [1.0, 1.0]);
+        assert!((zoom - 4.0).abs() < 1e-6, "zoom is clamped, got {zoom}");
+        // A single point keeps a sane zoom instead of dividing by zero.
+        let (_, zoom) = OpenFlexApp::frame_maths(&[[5.0, 5.0]]);
+        assert!(zoom.is_finite() && zoom > 0.0);
     }
 
     #[test]

@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.21.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **Fit / Frame selection**：工具栏 `Fit` 按钮与右键菜单 `Frame selection` 按当前选中对象（无选中则全模型）的中点居中，
+  并按跨度自动缩放（0.15–4×，12 单位跨度对应 1×）；逻辑抽为纯函数 `frame_maths` 并新增测试。
+- GUI 测试增至 **10 项**。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**518 passed / 0 failed**；clippy 0、fmt 干净、启动无 panic。
+
 ## v1.20.0 — 2026-11-19
 
 ### 桌面 GUI
