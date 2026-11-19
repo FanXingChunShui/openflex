@@ -1327,6 +1327,12 @@ impl EditForm {
 
 type SeriesPoint = (String, f64, f64, f64); // object, content, throughput, utilization
 
+/// One scenario row of the experiment table: `(value, completed mean, ci95)`.
+type ExpRow = (f64, f64, f64);
+
+/// Result delivered by the experiment worker: the rows plus how long it took.
+type ExpResult = (Vec<ExpRow>, std::time::Duration);
+
 /// One stored layout preset: a name plus the `(position, object name)` pairs.
 type LayoutPreset = (String, Vec<([f64; 2], String)>);
 
@@ -1427,8 +1433,8 @@ struct OpenFlexApp {
     exp_start: f32,
     exp_step: f32,
     exp_count: u32,
-    exp_rows: Vec<(f64, f64, f64)>, // (value, completed mean, ci95)
-    exp_rx: Option<Receiver<Vec<(f64, f64, f64)>>>,
+    exp_rows: Vec<ExpRow>,
+    exp_rx: Option<Receiver<ExpResult>>,
     exp_running: bool,
     exp_mode_param: bool,
     exp_path: String,
@@ -3456,6 +3462,7 @@ idle,busy,blocked,down\n",
         self.exp_rx = Some(rx);
         self.exp_running = true;
         self.status = format!("Experiment: {count} runs…");
+        let started = std::time::Instant::now();
         std::thread::spawn(move || {
             let mut rows = Vec::new();
             for index in 0..count {
@@ -3488,7 +3495,7 @@ idle,busy,blocked,down\n",
                     rows.push((value, report.completed.mean, report.completed.ci95));
                 }
             }
-            let _ = tx.send(rows);
+            let _ = tx.send((rows, started.elapsed()));
         });
     }
 
@@ -3497,8 +3504,17 @@ idle,busy,blocked,down\n",
             return;
         };
         match rx.try_recv() {
-            Ok(rows) => {
-                self.status = format!("Experiment finished: {} runs", rows.len());
+            Ok((rows, elapsed)) => {
+                let seconds = elapsed.as_secs_f64();
+                self.status = format!(
+                    "Experiment finished in {seconds:.2}s: {} runs ({:.2}s each)",
+                    rows.len(),
+                    if rows.is_empty() {
+                        0.0
+                    } else {
+                        seconds / rows.len() as f64
+                    }
+                );
                 self.exp_rows = rows;
                 self.exp_running = false;
                 self.exp_rx = None;
