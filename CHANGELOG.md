@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.98.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **模型设置面板**：左侧新增 `Model settings`——模型名、时间单位（seconds/minutes/hours/days）、
+  `run.stop_time` / `warmup` / `seed` / `replications`，`Apply settings` 经 `validate()` 写回并重置句柄与报告；
+  加载/新建模型时字段自动同步。
+
+### 验证
+
+- 工作区 **507 passed / 0 failed**；GUI 编译、clippy 0、fmt 干净、启动无 panic。
+- v0.98.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.97.0 — 2026-11-19
 
 ### 桌面 GUI

@@ -17,6 +17,7 @@ cargo build -p openflex-gui --release
 | Studio 帮助 | 工具栏 `?` 按钮弹出快捷键面板（拖拽/滚轮/框选/方向键微调/撤销/保存/播放/删除，`data-help-panel`） |
 | Studio 复制 | 浏览器 Studio 对象操作区新增 `Duplicate`（深拷贝参数、自动 `_2` 后缀命名、位置偏移 +2，经 `/api/model` 保存并入历史） |
 | 对象菜单 | 3D 视图**右键对象**：Focus camera（居中）、Reset position（z 归零）、**旋转 -15°/+15°/0°**（写 `Object.rot`，入撤销栈）、Delete object（删除并清理连接），均走校验 |
+| 模型设置 | 左侧 `Model settings` 折叠区：name、time_unit（seconds/minutes/hours/days）、run.stop_time/warmup/seed/replications，`Apply settings` 经校验写回并重置当前运行 |
 | 模型树 | **新增对象**（kind 下拉 28 种 + 可选名字，自动编号与安全默认参数，右侧自动摆放）、按 kind 分组（可折叠）、名称/kind 过滤、点击选中 |
 | 多选与批量 | 3D 视图**拖框多选**（Shift 追加），选中集合高亮；批量 **Align X/Y**（以首个为基准）、**Distribute X/Y**（首末之间等距分布，≥3 个）、**Grid 4**（方形网格排布）、
 **Delete**（清理连接）、**按 dx/dy 移动**、**统一设置 rot°**、**Clear** |

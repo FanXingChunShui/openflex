@@ -970,6 +970,12 @@ struct OpenFlexApp {
     sim_state: Option<SimulationState>,
     event_log: Vec<EventEntry>,
     heatmap: u8,
+    model_name: String,
+    model_stop: f32,
+    model_warmup: f32,
+    model_seed: String,
+    model_replications: u32,
+    model_unit: u8,
     running: bool,
     paused: bool,
     step_size: f32,
@@ -1051,6 +1057,12 @@ impl OpenFlexApp {
             sim_state: None,
             event_log: Vec::new(),
             heatmap: 0,
+            model_name: String::new(),
+            model_stop: 300.0,
+            model_warmup: 0.0,
+            model_seed: "1".into(),
+            model_replications: 1,
+            model_unit: 0,
             running: false,
             paused: false,
             step_size: 10.0,
@@ -1210,6 +1222,12 @@ impl OpenFlexApp {
                 self.sim_state = None;
                 self.undo.clear();
                 self.redo.clear();
+                self.model_name = "untitled".into();
+                self.model_stop = 300.0;
+                self.model_warmup = 0.0;
+                self.model_seed = "1".into();
+                self.model_replications = 1;
+                self.model_unit = 0;
                 self.status = "New model".into();
                 self.error = None;
             }
@@ -1239,6 +1257,17 @@ impl OpenFlexApp {
                     model.objects.len(),
                     model.run.stop_time
                 );
+                self.model_name = model.name.clone();
+                self.model_stop = model.run.stop_time as f32;
+                self.model_warmup = model.run.warmup as f32;
+                self.model_seed = model.run.seed.to_string();
+                self.model_replications = model.run.replications.max(1);
+                self.model_unit = match model.time_unit {
+                    openflex_model::TimeUnit::Seconds => 0,
+                    openflex_model::TimeUnit::Minutes => 1,
+                    openflex_model::TimeUnit::Hours => 2,
+                    openflex_model::TimeUnit::Days => 3,
+                };
                 self.model = Some(Box::leak(Box::new(model)));
                 self.path = Some(path.clone());
                 self.path_input = path.display().to_string();
@@ -1846,6 +1875,45 @@ impl OpenFlexApp {
                 }
             }
             Err(error) => self.error = Some(format!("could not serialise report: {error}")),
+        }
+    }
+
+    /// Writes the model-level settings (name, run configuration, time unit).
+    fn apply_model_settings(&mut self) {
+        let Some(model) = self.model else {
+            return;
+        };
+        let seed: u64 = match self.model_seed.trim().parse() {
+            Ok(seed) => seed,
+            Err(error) => {
+                self.error = Some(format!("invalid seed: {error}"));
+                return;
+            }
+        };
+        let mut copy = model.clone();
+        if !self.model_name.trim().is_empty() {
+            copy.name = self.model_name.trim().to_string();
+        }
+        copy.run.stop_time = (self.model_stop as f64).max(1.0);
+        copy.run.warmup = (self.model_warmup as f64).max(0.0);
+        copy.run.seed = seed;
+        copy.run.replications = self.model_replications.max(1);
+        copy.time_unit = match self.model_unit {
+            1 => openflex_model::TimeUnit::Minutes,
+            2 => openflex_model::TimeUnit::Hours,
+            3 => openflex_model::TimeUnit::Days,
+            _ => openflex_model::TimeUnit::Seconds,
+        };
+        match copy.validate() {
+            Ok(()) => {
+                self.status = format!("Model settings applied (stop {})", copy.run.stop_time);
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.handle = None;
+                self.sim_state = None;
+                self.report = None;
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
         }
     }
 
@@ -3073,6 +3141,73 @@ impl eframe::App for OpenFlexApp {
                             .desired_width(110.0),
                     );
                 });
+                egui::CollapsingHeader::new("Model settings")
+                    .id_salt("model-settings")
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("name");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.model_name)
+                                    .desired_width(150.0),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("unit");
+                            egui::ComboBox::from_id_salt("model-unit")
+                                .selected_text(
+                                    ["seconds", "minutes", "hours", "days"]
+                                        .get(self.model_unit as usize)
+                                        .copied()
+                                        .unwrap_or("seconds"),
+                                )
+                                .show_ui(ui, |ui| {
+                                    for (value, name) in [
+                                        (0u8, "seconds"),
+                                        (1, "minutes"),
+                                        (2, "hours"),
+                                        (3, "days"),
+                                    ] {
+                                        if ui
+                                            .selectable_label(self.model_unit == value, name)
+                                            .clicked()
+                                        {
+                                            self.model_unit = value;
+                                        }
+                                    }
+                                });
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("stop");
+                            ui.add(
+                                egui::DragValue::new(&mut self.model_stop)
+                                    .speed(10.0)
+                                    .range(1.0..=1.0e9),
+                            );
+                            ui.label("warmup");
+                            ui.add(
+                                egui::DragValue::new(&mut self.model_warmup)
+                                    .speed(1.0)
+                                    .range(0.0..=1.0e9),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("seed");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.model_seed)
+                                    .desired_width(110.0),
+                            );
+                            ui.label("reps");
+                            ui.add(
+                                egui::DragValue::new(&mut self.model_replications)
+                                    .speed(1.0)
+                                    .range(1..=1000),
+                            );
+                        });
+                        if ui.button("Apply settings").clicked() {
+                            self.apply_model_settings();
+                        }
+                    });
+                ui.separator();
                 ui.horizontal(|ui| {
                     egui::ComboBox::from_id_salt("new-kind")
                         .selected_text(self.new_kind.clone())
