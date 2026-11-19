@@ -4463,6 +4463,24 @@ impl eframe::App for OpenFlexApp {
                             .small()
                             .color(palette::TEXT_DIM),
                     );
+                    if self.report_running || self.exp_running || self.series_running {
+                        // Tiny arc spinner while a background thread works.
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                        let t = ctx.input(|input| input.time) as f32;
+                        let centre = rect.center();
+                        let radius = 4.2;
+                        for step in 0..8u8 {
+                            let angle = t * 1.8 + step as f32 * std::f32::consts::TAU / 8.0;
+                            let alpha = 40 + step * 26;
+                            ui.painter().circle_filled(
+                                centre + egui::vec2(angle.cos(), angle.sin()) * radius,
+                                1.3,
+                                egui::Color32::from_rgba_unmultiplied(150, 180, 240, alpha),
+                            );
+                        }
+                        ctx.request_repaint();
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(state) = self.sim_state.as_ref() {
                             ui.label(
