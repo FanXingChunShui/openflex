@@ -1946,6 +1946,90 @@ impl OpenFlexApp {
         }
     }
 
+    /// Spreads the selection evenly between its first and last element along
+    /// the chosen axis (a compact FlexSim-style "distribute/space evenly").
+    fn batch_distribute(&mut self, along_x: bool) {
+        let Some(model) = self.model else {
+            return;
+        };
+        if self.selection.len() < 3 {
+            self.error = Some("distribute needs at least three objects".into());
+            return;
+        }
+        let mut indices = self.selection.clone();
+        indices.sort_by(|left, right| {
+            let a = model.objects[*left].pos;
+            let b = model.objects[*right].pos;
+            let (a, b) = if along_x { (a[0], b[0]) } else { (a[1], b[1]) };
+            a.total_cmp(&b)
+        });
+        let first = if along_x {
+            model.objects[indices[0]].pos[0]
+        } else {
+            model.objects[indices[0]].pos[1]
+        };
+        let last = if along_x {
+            model.objects[*indices.last().expect("non-empty")].pos[0]
+        } else {
+            model.objects[*indices.last().expect("non-empty")].pos[1]
+        };
+        let step = (last - first) / (indices.len() - 1) as f64;
+        self.snapshot();
+        let mut copy = model.clone();
+        for (position, index) in indices.iter().enumerate() {
+            let value = first + step * position as f64;
+            if along_x {
+                copy.objects[*index].pos[0] = value;
+            } else {
+                copy.objects[*index].pos[1] = value;
+            }
+        }
+        match copy.validate() {
+            Ok(()) => {
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.status = format!(
+                    "Distributed {} object(s) along {}",
+                    self.selection.len(),
+                    if along_x { "X" } else { "Y" }
+                );
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    /// Lays the selection out on a square-ish grid with `spacing` units.
+    fn batch_grid(&mut self, spacing: f64) {
+        let Some(model) = self.model else {
+            return;
+        };
+        if self.selection.len() < 2 {
+            self.error = Some("grid layout needs at least two objects".into());
+            return;
+        }
+        let count = self.selection.len();
+        let columns = (count as f64).sqrt().ceil() as usize;
+        let origin = model.objects[self.selection[0]].pos;
+        self.snapshot();
+        let mut copy = model.clone();
+        for (position, index) in self.selection.clone().into_iter().enumerate() {
+            let column = position % columns;
+            let row = position / columns;
+            copy.objects[index].pos = [
+                origin[0] + column as f64 * spacing,
+                origin[1] + row as f64 * spacing,
+            ];
+        }
+        match copy.validate() {
+            Ok(()) => {
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.status = format!("Grid layout for {count} object(s) @ {spacing}");
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
     fn batch_move(&mut self) {
         let Some(model) = self.model else {
             return;
@@ -3035,6 +3119,15 @@ impl eframe::App for OpenFlexApp {
                         }
                         if ui.small_button("Align Y").clicked() {
                             self.batch_align(false);
+                        }
+                        if ui.small_button("Distribute X").clicked() {
+                            self.batch_distribute(true);
+                        }
+                        if ui.small_button("Distribute Y").clicked() {
+                            self.batch_distribute(false);
+                        }
+                        if ui.small_button("Grid 4").clicked() {
+                            self.batch_grid(4.0);
                         }
                         if ui.small_button("Delete").clicked() {
                             self.batch_delete();
