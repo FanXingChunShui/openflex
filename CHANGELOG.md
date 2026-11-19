@@ -9,6 +9,8 @@
 
 - **选中态**：选中对象不再覆盖为固定琥珀色，而是把当前状态/热力色**提亮 35%**（`shade_light`），
   既看得出被选中，也保留状态含义；新增 `shade_light_keeps_a_selected_body_recognisable` 测试（GUI 14 项）。
+- **采样上限**：时序采样最多 20 000 点（0.1s 间隔 × 1e6 时长会生成千万行并卡住 UI），
+  触顶时状态栏提示「raise the interval」。
 - **未保存标记持久化**：`unsaved edits` 改为持久标志（`form_dirty`），Apply / Apply JSON / 切换选中才清除，
   不再只在一帧内闪烁。
 - **参数 JSON 编辑器**：实时解析校验，非法时输入框描红并提示 `invalid JSON — check the brackets`，

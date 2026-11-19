@@ -2005,9 +2005,12 @@ impl OpenFlexApp {
                 seed: model.run.seed,
             };
             let mut rows = Vec::new();
+            // Cap the sample count: a 0.1 s interval on a 1e6 s run would
+            // otherwise allocate ten million rows and stall the UI thread.
+            let max_samples = 20_000usize;
             if let Ok(mut handle) = SimulationHandle::new(model, &config, 0) {
                 let mut now = 0.0;
-                while now < stop - 1e-9 {
+                while now < stop - 1e-9 && rows.len() < max_samples {
                     now = (now + interval).min(stop);
                     if handle.step_until(now).is_err() {
                         break;
@@ -2038,7 +2041,15 @@ impl OpenFlexApp {
         };
         match rx.try_recv() {
             Ok(rows) => {
-                self.status = format!("Time series: {} samples", rows.len());
+                let capped = rows.len() >= 20_000;
+                self.status = if capped {
+                    format!(
+                        "Time series: {} samples (capped — raise the interval to see the whole run)",
+                        rows.len()
+                    )
+                } else {
+                    format!("Time series: {} samples", rows.len())
+                };
                 self.series = rows;
                 self.series_running = false;
                 self.series_rx = None;
