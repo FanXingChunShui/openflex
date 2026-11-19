@@ -3910,12 +3910,14 @@ idle,busy,blocked,down\n",
         rotation: f32,
         depth: f32,
     ) -> egui::Rect {
+        // Selected bodies get a warm ring; the rest use a dark hairline so the
+        // shape reads against the canvas without looking outlined in black.
         let outline = egui::Stroke::new(
-            1.0_f32,
+            if selected { 1.6_f32 } else { 1.0_f32 },
             if selected {
-                egui::Color32::from_rgb(255, 235, 190)
+                egui::Color32::from_rgb(255, 226, 168)
             } else {
-                egui::Color32::from_rgb(16, 20, 26)
+                egui::Color32::from_rgba_unmultiplied(10, 13, 18, 210)
             },
         );
         // Rotation is applied to the footprint: a rotated box keeps its size
@@ -3935,6 +3937,12 @@ idle,busy,blocked,down\n",
                 let body = egui::Rect::from_center_size(
                     base + egui::vec2(0.0, 2.0 * zoom),
                     egui::vec2(w, h),
+                );
+                // Contact shadow so the body sits on the floor plane.
+                painter.rect_filled(
+                    body.translate(egui::vec2(0.0, 3.0 * zoom)),
+                    (body.height() / 2.0).max(2.0),
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 70),
                 );
                 painter.rect_filled(body, 2.0, fill);
                 painter.rect_stroke(body, 2.0, outline);
