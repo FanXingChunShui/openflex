@@ -6141,10 +6141,27 @@ impl eframe::App for OpenFlexApp {
                 .open(&mut open)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    ui.label("Path");
-                    ui.add(egui::TextEdit::singleline(&mut self.save_as).desired_width(360.0));
+                    ui.set_max_width(460.0);
+                    ui.label(
+                        egui::RichText::new("Save the model as a .ofm file")
+                            .small()
+                            .color(palette::TEXT_DIM),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("PATH")
+                            .size(10.0_f32)
+                            .strong()
+                            .color(palette::TEXT_DIM),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.save_as)
+                            .desired_width(f32::INFINITY)
+                            .font(egui::TextStyle::Monospace),
+                    );
+                    ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() {
+                        if primary_button(ui, true, "Save") {
                             let path = PathBuf::from(self.save_as.clone());
                             let text = match self.model.and_then(|model| model.to_json().ok()) {
                                 Some(text) => text,
