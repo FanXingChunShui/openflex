@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.94.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **实时校验**：对象参数表单下方调用 `validate_collect` 显示当前模型的问题列表（`location: message`，最多 20 条），
+  Apply 之前即可发现错误。
+- **数值范围约束**：`queue.max_content`（1…1e6）、`conveyor.speed`（0…1000）、`conveyor.length`（0…1e5）加上滑框范围，
+  避免意外输入负数或极端值。
+
+### 验证
+
+- 工作区 **507 passed / 0 failed**；GUI 编译、clippy 0、fmt 干净、启动无 panic。
+- v0.94.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.93.0 — 2026-11-19
 
 ### 桌面 GUI

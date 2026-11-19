@@ -500,6 +500,7 @@ impl EditForm {
                     .add(
                         egui::DragValue::new(&mut p.max_content)
                             .speed(1.0)
+                            .range(1..=1_000_000)
                             .prefix("max content "),
                     )
                     .changed();
@@ -2985,6 +2986,35 @@ impl eframe::App for OpenFlexApp {
                         }
                         ui.checkbox(&mut self.show_json, "JSON");
                     });
+                    // Live validation: the model is checked against the same
+                    // rules the CLI uses, so problems show up before Apply.
+                    if let Some(model) = self.model {
+                        let issues = openflex_model::validate_collect(model);
+                        if !issues.is_empty() {
+                            ui.separator();
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} validation issue(s)",
+                                    issues.len()
+                                ))
+                                .color(egui::Color32::from_rgb(220, 120, 90)),
+                            );
+                            egui::ScrollArea::vertical()
+                                .id_salt("issues")
+                                .max_height(90.0)
+                                .show(ui, |ui| {
+                                    for issue in issues.iter().take(20) {
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{}: {}",
+                                                issue.location, issue.message
+                                            ))
+                                            .small(),
+                                        );
+                                    }
+                                });
+                        }
+                    }
                     if self.show_json {
                         ui.add(
                             egui::TextEdit::multiline(&mut self.params_text)
