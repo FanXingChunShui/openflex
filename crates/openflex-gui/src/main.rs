@@ -4163,7 +4163,7 @@ impl eframe::App for OpenFlexApp {
         self.poll_experiment();
         self.poll_timeseries();
         self.poll_optimize();
-        if self.report_running || self.exp_running {
+        if self.report_running || self.exp_running || self.series_running || self.opt_running {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         if self.running && !self.paused {
@@ -4463,7 +4463,11 @@ impl eframe::App for OpenFlexApp {
                             .small()
                             .color(palette::TEXT_DIM),
                     );
-                    if self.report_running || self.exp_running || self.series_running {
+                    if self.report_running
+                        || self.exp_running
+                        || self.series_running
+                        || self.opt_running
+                    {
                         // Tiny arc spinner while a background thread works.
                         let (rect, _) =
                             ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
