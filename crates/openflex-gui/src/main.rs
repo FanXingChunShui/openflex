@@ -4302,11 +4302,30 @@ impl eframe::App for OpenFlexApp {
                         } else {
                             0.0
                         };
-                        ui.add(
-                            egui::ProgressBar::new(progress as f32)
-                                .desired_width(140.0)
-                                .text(format!("{:.1}/{:.1}", state.now, model.run.stop_time)),
-                        );
+                        // Slim progress bar coloured by run state (amber while
+                        // playing, green when complete).
+                        let fill = if progress >= 0.999 {
+                            palette::OK
+                        } else {
+                            palette::ACCENT
+                        };
+                        ui.scope(|ui| {
+                            ui.visuals_mut().selection.bg_fill = fill;
+                            ui.add(
+                                egui::ProgressBar::new(progress as f32)
+                                    .desired_width(150.0)
+                                    .desired_height(10.0)
+                                    .fill(fill.gamma_multiply(0.85))
+                                    .text(
+                                        egui::RichText::new(format!(
+                                            "{:.1} / {:.1}",
+                                            state.now, model.run.stop_time
+                                        ))
+                                        .size(10.0_f32)
+                                        .color(palette::TEXT),
+                                    ),
+                            );
+                        });
                     }
                     ui.separator();
                     tool_group(ui, "STATE");
