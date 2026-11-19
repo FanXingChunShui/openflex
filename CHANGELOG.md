@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.17.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **空状态引导**：未加载模型时显示 `New model` 与三个内置示例（`mm1` / `routing` / `batch-queue`）按钮；
+  `load_example()` 先找 `examples/`（相对仓库与 bundle 的四种路径），找不到则用**编译进二进制**的内置模型，
+  因此安装版没有示例目录也能立刻试用。
+- 新增单元测试 `builtin_examples_parse_and_validate`（GUI 测试增至 9 项）。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**517 passed / 0 failed**；clippy 0、fmt 干净、启动无 panic。
+
 ## v1.16.0 — 2026-11-19
 
 ### 桌面 GUI

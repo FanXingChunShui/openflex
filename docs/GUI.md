@@ -20,6 +20,7 @@ cargo build -p openflex-gui --release
 | 布局预设 | 左侧 `Layout presets (n)`：输入名字 `Save` 保存当前所有对象位置，点击名称即应用（入撤销栈），`✕` 删除；存于模型旁的 `<model>.layout.json` |
 | 视图导出 | 工具栏 `Export view SVG` 用与画布相同的投影（含旋转、热力色）输出 `<model>.view.svg`，可直接进文档或版本库 |
 | 模型设置 | 左侧 `Model settings` 折叠区：name、time_unit（seconds/minutes/hours/days）、run.stop_time/warmup/seed/replications，`Apply settings` 经校验写回并重置当前运行 |
+| 空状态引导 | 未加载模型时给出 `New model` 与三个内置示例（`mm1`/`routing`/`batch-queue`）一键打开；内置示例编译进二进制，无 `examples/` 目录时也可用 |
 | 模型树 | **新增对象**（kind 下拉 28 种 + 可选名字，自动编号与安全默认参数，右侧自动摆放）、按 kind 分组（可折叠）、名称/kind 过滤、每行显示 `(x, y)` 与旋转角、组内 `select all`、点击选中 |
 | 多选与批量 | 3D 视图**拖框多选**（Shift 追加），选中集合高亮；批量 **Align X/Y**（以首个为基准）、**Distribute X/Y**（首末之间等距分布，≥3 个）、**Grid 4**（方形网格排布）、
 **Duplicate**（复制选中，唯一命名）、**Delete**（清理连接）、**按 dx/dy 移动**、**统一设置 rot°**、**Clear** |

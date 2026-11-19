@@ -21,6 +21,72 @@ use openflex_model::model::{
     ObjectKind, ObjectParams, QueueOrder, RackPickPolicy, RackType, ValveOpeningCurve,
 };
 
+/// Built-in examples compiled into the binary, used when no `examples/`
+/// directory sits next to the executable (installed builds).
+fn builtin_example(name: &str) -> Option<Model> {
+    let json = match name {
+        "mm1" => {
+            r#"{
+  "format": "openflex-model", "version": 1, "name": "mm1",
+  "description": "M/M/1 queue: exponential arrivals and service",
+  "run": {"stop_time": 1000.0, "warmup": 0.0, "seed": 1, "replications": 1},
+  "objects": [
+    {"name": "Source1", "kind": "source", "pos": [-6.0, 0.0], "params": {"interarrival": {"distribution": "exponential", "mean": 5.0}}},
+    {"name": "Queue1", "kind": "queue", "pos": [-2.0, 0.0], "params": {"max_content": 1000}},
+    {"name": "Processor1", "kind": "processor", "pos": [2.0, 0.0], "params": {"process_time": {"distribution": "exponential", "mean": 4.0}}},
+    {"name": "Sink1", "kind": "sink", "pos": [6.0, 0.0], "params": {}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Queue1"},
+    {"from": "Queue1", "to": "Processor1"},
+    {"from": "Processor1", "to": "Sink1"}
+  ]
+}"#
+        }
+        "routing" => {
+            r#"{
+  "format": "openflex-model", "version": 1, "name": "routing",
+  "description": "One queue feeding two processors with round-robin routing",
+  "run": {"stop_time": 600.0, "warmup": 0.0, "seed": 7, "replications": 1},
+  "objects": [
+    {"name": "Source1", "kind": "source", "pos": [-8.0, 0.0], "params": {"interarrival": {"distribution": "exponential", "mean": 4.0}}},
+    {"name": "Queue1", "kind": "queue", "pos": [-4.0, 0.0], "params": {"max_content": 1000}},
+    {"name": "Processor1", "kind": "processor", "pos": [0.0, 2.0], "params": {"process_time": {"distribution": "constant", "value": 6.0}}},
+    {"name": "Processor2", "kind": "processor", "pos": [0.0, -2.0], "params": {"process_time": {"distribution": "constant", "value": 6.0}}},
+    {"name": "Sink1", "kind": "sink", "pos": [4.0, 0.0], "params": {}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Queue1"},
+    {"from": "Queue1", "to": "Processor1", "strategy": {"type": "round_robin"}},
+    {"from": "Queue1", "to": "Processor2", "strategy": {"type": "round_robin"}},
+    {"from": "Processor1", "to": "Sink1"},
+    {"from": "Processor2", "to": "Sink1"}
+  ]
+}"#
+        }
+        "batch-queue" => {
+            r#"{
+  "format": "openflex-model", "version": 1, "name": "batch-queue",
+  "description": "Queue releases items in batches of five",
+  "run": {"stop_time": 600.0, "warmup": 0.0, "seed": 3, "replications": 1},
+  "objects": [
+    {"name": "Source1", "kind": "source", "pos": [-6.0, 0.0], "params": {"interarrival": {"distribution": "constant", "value": 1.0}}},
+    {"name": "Queue1", "kind": "queue", "pos": [-2.0, 0.0], "params": {"max_content": 1000, "batch_size": 5}},
+    {"name": "Processor1", "kind": "processor", "pos": [2.0, 0.0], "params": {"process_time": {"distribution": "constant", "value": 10.0}}},
+    {"name": "Sink1", "kind": "sink", "pos": [6.0, 0.0], "params": {}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Queue1"},
+    {"from": "Queue1", "to": "Processor1"},
+    {"from": "Processor1", "to": "Sink1"}
+  ]
+}"#
+        }
+        _ => return None,
+    };
+    Model::from_json(json).ok()
+}
+
 fn main() -> eframe::Result<()> {
     let model = std::env::args().nth(1);
     let options = eframe::NativeOptions {
@@ -1347,6 +1413,38 @@ impl OpenFlexApp {
             }
             Err(error) => self.error = Some(format!("could not create a model: {error}")),
         }
+    }
+
+    /// Loads a model shipped with the repository (`examples/**`), trying the
+    /// usual relative locations so the GUI works from the repo or a bundle.
+    fn load_example(&mut self, name: &str) {
+        let candidates = [
+            format!("examples/{name}.ofm"),
+            format!("examples/objects/{name}.ofm"),
+            format!("../examples/{name}.ofm"),
+            format!("../examples/objects/{name}.ofm"),
+        ];
+        for candidate in candidates {
+            let path = PathBuf::from(&candidate);
+            if path.exists() {
+                self.load(path);
+                return;
+            }
+        }
+        // Fall back to the built-in demo model when nothing is on disk.
+        if let Some(model) = crate::builtin_example(name) {
+            self.model = Some(Box::leak(Box::new(model)));
+            self.path = None;
+            self.handle = None;
+            self.sim_state = None;
+            self.report = None;
+            self.selection.clear();
+            self.selected = None;
+            self.form = None;
+            self.status = format!("Loaded built-in example: {name}");
+            return;
+        }
+        self.error = Some(format!("example {name} was not found next to the binary"));
     }
 
     fn remember_recent(&mut self, path: &PathBuf) {
@@ -3943,7 +4041,24 @@ impl eframe::App for OpenFlexApp {
                 });
                 ui.separator();
                 let Some(model) = self.model else {
-                    ui.label("No model loaded.");
+                    ui.label(
+                        egui::RichText::new("No model loaded").color(egui::Color32::from_gray(180)),
+                    );
+                    ui.label(
+                        egui::RichText::new(
+                            "Start with File ▸ New, File ▸ Open, or a bundled example:",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                    if ui.button("New model").clicked() {
+                        self.new_model();
+                    }
+                    for example in ["mm1", "routing", "batch-queue"] {
+                        if ui.button(format!("Open example: {example}")).clicked() {
+                            self.load_example(example);
+                        }
+                    }
                     return;
                 };
                 let needle = self.search.to_lowercase();
@@ -5647,6 +5762,18 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn builtin_examples_parse_and_validate() {
+        for name in ["mm1", "routing", "batch-queue"] {
+            let model = builtin_example(name).unwrap_or_else(|| panic!("{name} missing"));
+            model
+                .validate()
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert!(!model.objects.is_empty(), "{name} has no objects");
+        }
+        assert!(builtin_example("nope").is_none());
     }
 
     #[test]
