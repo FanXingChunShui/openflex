@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.1.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **单元测试**：为 GUI 增加 7 项 `#[cfg(test)]` 测试（`set_json_number` 合法/非法路径、`parse_params` 变体、`heat_colour` 色带与夹紧、
+  `shade` 明暗、`pareto_front` 非支配点、`EventEntry` 日志格式）。
+- **修复**：`set_json_number` 只改写数值/空值叶子，避免优化器路径误覆盖对象或数组。
+- **CI**：`gui (ubuntu-22.04)` job 增加 `cargo test -p openflex-gui` 步骤。
+
+### 验证
+
+- `cargo test --workspace --locked`（**含 GUI**）：**514 passed / 0 failed**。
+- GUI clippy 0、fmt 干净；v1.1.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v1.00.0 — 2026-11-19
 
 ### 桌面 GUI

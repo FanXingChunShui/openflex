@@ -77,11 +77,15 @@ fn set_json_number(root: &mut serde_json::Value, path: &str, value: f64) -> bool
     let last = parts[parts.len() - 1];
     match current {
         serde_json::Value::Object(map) => {
-            if !map.contains_key(last) {
-                return false;
+            match map.get(last) {
+                // Only numeric slots are writable; overwriting an object or an
+                // array would silently destroy part of the model.
+                Some(serde_json::Value::Number(_)) | Some(serde_json::Value::Null) => {
+                    map.insert(last.to_string(), serde_json::json!(value));
+                    true
+                }
+                _ => false,
             }
-            map.insert(last.to_string(), serde_json::json!(value));
-            true
         }
         _ => false,
     }
@@ -2817,7 +2821,7 @@ impl OpenFlexApp {
         } else {
             0.0
         };
-        Some(Self::heat_colour(normalised))
+        Some(OpenFlexApp::heat_colour(normalised))
     }
 
     fn state_fill(stats: &openflex_core::stats::ObjectStats) -> egui::Color32 {
@@ -2906,13 +2910,13 @@ impl OpenFlexApp {
                     body.left_top() + egui::vec2(0.0, -5.0 * zoom),
                     egui::vec2(w, 5.0 * zoom),
                 );
-                painter.rect_filled(top, 2.0, Self::shade(fill, 0.28));
+                painter.rect_filled(top, 2.0, OpenFlexApp::shade(fill, 0.28));
                 painter.rect_stroke(top, 2.0, outline);
                 // A small working light on the machine.
                 painter.circle_filled(
                     body.left_top() + egui::vec2(5.0 * zoom, 5.0 * zoom),
                     (2.2 * zoom).max(1.0),
-                    Self::shade(fill, 0.55),
+                    OpenFlexApp::shade(fill, 0.55),
                 );
                 body.union(top)
             }
@@ -2921,12 +2925,12 @@ impl OpenFlexApp {
                 let w = 56.0 * zoom;
                 let h = 12.0 * zoom;
                 let belt = egui::Rect::from_center_size(base, egui::vec2(w, h));
-                painter.rect_filled(belt, 3.0, Self::shade(fill, -0.15));
+                painter.rect_filled(belt, 3.0, OpenFlexApp::shade(fill, -0.15));
                 painter.rect_stroke(belt, 3.0, outline);
                 for side in [belt.left_top(), belt.left_bottom()] {
                     painter.line_segment(
                         [side, side + egui::vec2(w, 0.0)],
-                        egui::Stroke::new(1.6_f32, Self::shade(fill, 0.35)),
+                        egui::Stroke::new(1.6_f32, OpenFlexApp::shade(fill, 0.35)),
                     );
                 }
                 belt
@@ -2947,7 +2951,7 @@ impl OpenFlexApp {
                     let y = body.top() + body.height() * t;
                     painter.line_segment(
                         [egui::pos2(body.left(), y), egui::pos2(body.right(), y)],
-                        egui::Stroke::new(1.0_f32, Self::shade(fill, -0.3)),
+                        egui::Stroke::new(1.0_f32, OpenFlexApp::shade(fill, -0.3)),
                     );
                 }
                 body
@@ -2960,7 +2964,7 @@ impl OpenFlexApp {
                 painter.circle_filled(
                     base + egui::vec2(-radius * 0.3, -radius * 0.3),
                     radius * 0.42,
-                    Self::shade(fill, 0.3),
+                    OpenFlexApp::shade(fill, 0.3),
                 );
                 egui::Rect::from_center_size(base, egui::vec2(radius * 2.0, radius * 2.0))
             }
@@ -2981,7 +2985,7 @@ impl OpenFlexApp {
                         egui::vec2(size.x, 3.0 * zoom),
                     ),
                     2.0,
-                    Self::shade(fill, 0.3),
+                    OpenFlexApp::shade(fill, 0.3),
                 );
                 body
             }
@@ -2999,7 +3003,7 @@ impl OpenFlexApp {
                     body.left_bottom() - egui::vec2(0.0, size.y * 0.45),
                     body.right_bottom(),
                 );
-                painter.rect_filled(liquid, 0.0, Self::shade(fill, 0.35));
+                painter.rect_filled(liquid, 0.0, OpenFlexApp::shade(fill, 0.35));
                 body
             }
             // Everything else: the classic box with a lit top edge.
@@ -3010,7 +3014,7 @@ impl OpenFlexApp {
                 painter.rect_stroke(body, 3.0, outline);
                 painter.line_segment(
                     [body.left_top(), body.right_top()],
-                    egui::Stroke::new(1.4_f32, Self::shade(fill, 0.4)),
+                    egui::Stroke::new(1.4_f32, OpenFlexApp::shade(fill, 0.4)),
                 );
                 body
             }
@@ -3044,7 +3048,7 @@ impl OpenFlexApp {
         // Side face: extrude the front edge downwards.
         let side = egui::vec2(0.0, lift);
         let front: Vec<egui::Pos2> = corners.iter().map(|point| *point + side).collect();
-        let side_color = Self::shade(fill, -0.35);
+        let side_color = OpenFlexApp::shade(fill, -0.35);
         painter.add(egui::Shape::convex_polygon(
             vec![corners[2], corners[3], front[3], front[2]],
             side_color,
@@ -3052,7 +3056,7 @@ impl OpenFlexApp {
         ));
         let right_side = egui::Shape::convex_polygon(
             vec![corners[1], corners[2], front[2], front[1]],
-            Self::shade(fill, -0.2),
+            OpenFlexApp::shade(fill, -0.2),
             egui::Stroke::NONE,
         );
         painter.add(right_side);
@@ -3060,7 +3064,7 @@ impl OpenFlexApp {
         painter.add(egui::Shape::convex_polygon(
             front.to_vec(),
             egui::Color32::TRANSPARENT,
-            egui::Stroke::new(stroke.width, Self::shade(fill, -0.45)),
+            egui::Stroke::new(stroke.width, OpenFlexApp::shade(fill, -0.45)),
         ));
         egui::Rect::from_points(&[
             corners[0], corners[1], corners[2], corners[3], front[0], front[1], front[2], front[3],
@@ -3970,7 +3974,7 @@ impl eframe::App for OpenFlexApp {
                         });
                 }
                 if self.opt_secondary_stay && !self.opt_rows.is_empty() {
-                    let front = Self::pareto_front(&self.opt_rows);
+                    let front = OpenFlexApp::pareto_front(&self.opt_rows);
                     let (response, painter) = ui.allocate_painter(
                         egui::vec2(ui.available_width(), 130.0),
                         egui::Sense::hover(),
@@ -4695,7 +4699,7 @@ impl eframe::App for OpenFlexApp {
                 if selected {
                     fill = egui::Color32::from_rgb(255, 190, 80);
                 } else if in_selection {
-                    fill = Self::shade(fill, 0.25);
+                    fill = OpenFlexApp::shade(fill, 0.25);
                 }
                 let rotation = object.rot.unwrap_or(0.0) as f32;
                 let box_rect = Self::draw_object_shape(
@@ -4851,9 +4855,9 @@ impl eframe::App for OpenFlexApp {
                         ))
                         .small(),
                     );
-                    let green = Self::heat_colour(0.0);
-                    let yellow = Self::heat_colour(0.5);
-                    let red = Self::heat_colour(1.0);
+                    let green = OpenFlexApp::heat_colour(0.0);
+                    let yellow = OpenFlexApp::heat_colour(0.5);
+                    let red = OpenFlexApp::heat_colour(1.0);
                     for colour in [green, yellow, red] {
                         let (rect, _) =
                             ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
@@ -4869,5 +4873,107 @@ impl eframe::App for OpenFlexApp {
                 );
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_json_number_updates_nested_paths() {
+        let mut value = serde_json::json!({
+            "objects": [
+                {"params": {"process_time": {"value": 1.0}}}
+            ]
+        });
+        assert!(set_json_number(
+            &mut value,
+            "objects/0/params/process_time/value",
+            4.5
+        ));
+        assert_eq!(
+            value["objects"][0]["params"]["process_time"]["value"],
+            serde_json::json!(4.5)
+        );
+    }
+
+    #[test]
+    fn set_json_number_rejects_unknown_or_invalid_paths() {
+        let mut value = serde_json::json!({"objects": [{"params": {}}]});
+        assert!(!set_json_number(
+            &mut value,
+            "objects/0/params/missing",
+            1.0
+        ));
+        assert!(!set_json_number(&mut value, "objects/x/params", 1.0));
+        assert!(!set_json_number(&mut value, "", 1.0));
+        // A leaf that is an object (not a number slot) is not replaced.
+        assert!(!set_json_number(&mut value, "objects", 1.0));
+    }
+
+    #[test]
+    fn parse_params_builds_the_right_variant() {
+        let params = parse_params(ObjectKind::Queue, serde_json::json!({"max_content": 7}))
+            .expect("queue params");
+        match params {
+            ObjectParams::Queue(queue) => assert_eq!(queue.max_content, 7),
+            other => panic!("unexpected variant: {other:?}"),
+        }
+        assert!(parse_params(ObjectKind::Queue, serde_json::json!({"nonsense": 1})).is_err());
+    }
+
+    #[test]
+    fn heat_colour_spans_green_yellow_red() {
+        let green = OpenFlexApp::heat_colour(0.0);
+        let yellow = OpenFlexApp::heat_colour(0.5);
+        let red = OpenFlexApp::heat_colour(1.0);
+        assert!(green.g() > green.r(), "low values should be green");
+        assert!(
+            yellow.r() > 200 && yellow.g() > 150,
+            "mid values are yellow"
+        );
+        assert!(red.r() > red.g(), "high values should be red");
+        // Out-of-range inputs clamp instead of wrapping.
+        assert_eq!(OpenFlexApp::heat_colour(-1.0), green);
+        assert_eq!(OpenFlexApp::heat_colour(2.0), red);
+    }
+
+    #[test]
+    fn shade_lightens_and_darkens() {
+        let base = egui::Color32::from_rgb(100, 100, 100);
+        let lighter = OpenFlexApp::shade(base, 0.5);
+        let darker = OpenFlexApp::shade(base, -0.5);
+        assert!(lighter.r() > base.r());
+        assert!(darker.r() < base.r());
+        assert_eq!(OpenFlexApp::shade(base, 0.0), base);
+    }
+
+    #[test]
+    fn pareto_front_keeps_non_dominated_points() {
+        let rows = vec![
+            (vec![1.0], 10.0, 3.0), // best secondary, lower score
+            (vec![2.0], 12.0, 4.0), // best score
+            (vec![3.0], 9.0, 6.0),  // dominated by row 0
+            (vec![4.0], 12.0, 5.0), // dominated by row 1
+        ];
+        let front = OpenFlexApp::pareto_front(&rows);
+        assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn event_entry_formats_the_log_line() {
+        let entry = EventEntry {
+            time: 1.5,
+            kind: "arrive".into(),
+            object: Some("Queue1".into()),
+        };
+        assert_eq!(entry.line(), "t=1.500 arrive [Queue1]");
+        let plain = EventEntry {
+            time: 2.0,
+            kind: "flow".into(),
+            object: None,
+        };
+        assert_eq!(plain.line(), "t=2.000 flow");
     }
 }

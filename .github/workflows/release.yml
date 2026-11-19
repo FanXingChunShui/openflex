@@ -563,6 +563,12 @@ jobs:
             | tar -xz -C "$HOME/.local/bin" nfpm
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      - name: Test GUI
+        if: matrix.kind == 'linux'
+        env:
+          CARGO_INCREMENTAL: "0"
+        run: cargo test --locked -p openflex-gui
+
       - name: Build GUI
         if: matrix.kind != 'macos'
         env:
