@@ -9,6 +9,9 @@
   行格式与 `openflex run --trace` 一致（`simulate_traced` 同一序列化路径）。
   此前桌面版的“事件日志”只记录 GUI 自己步进过的事件，看不到完整事件流。
 - 新增 `trace_export_lines_match_the_cli_jsonl` 测试（GUI 18 项）。
+- **校验问题可点击**：`validate_collect` 的每条问题都带定位，点击即选中对应对象（`objects.<name>.…` 解析为名称，
+  索引式定位不误判）；截断时提示剩余条数，模型无问题时显示绿色 `model is valid`。
+  新增 `issue_locations_map_to_object_names` 测试（GUI 20 项）。
 - **实验面板控件**：`stop-time/parameter` 改分段按钮，`PATH/START/STEP/RUNS/REPS` 统一成大写标签；
   **补回丢失的 `REPS` 输入框**（字段与逻辑一直在，控件在某次重排中被挤掉，导致复现次数无法设置）。
 - **流程块控件**：`+create/delay/assign/decision/transfer/sink` 改为**按块类型着色的胶囊按钮**（与画布同一套配色），

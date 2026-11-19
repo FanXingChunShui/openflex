@@ -1850,6 +1850,16 @@ impl OpenFlexApp {
         }
     }
 
+    /// Object name a validation `location` refers to, when it points at one
+    /// (`objects.<name>.<field>` → `<name>`).
+    fn issue_target(location: &str) -> Option<String> {
+        location
+            .strip_prefix("objects.")
+            .and_then(|rest| rest.split('.').next())
+            .filter(|name| !name.is_empty() && !name.chars().all(|c| c.is_ascii_digit()))
+            .map(str::to_string)
+    }
+
     fn load(&mut self, path: PathBuf) {
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
@@ -5560,7 +5570,9 @@ impl eframe::App for OpenFlexApp {
                         );
                     });
                     // Live validation: the model is checked against the same
-                    // rules the CLI uses, so problems show up before Apply.
+                    // rules the CLI uses. Each issue is clickable and selects
+                    // the object it belongs to (locations look like
+                    // `objects.<name>.<field>`).
                     if let Some(model) = self.model {
                         let issues = openflex_model::validate_collect(model);
                         if !issues.is_empty() {
@@ -5570,22 +5582,69 @@ impl eframe::App for OpenFlexApp {
                                     "{} validation issue(s)",
                                     issues.len()
                                 ))
-                                .color(egui::Color32::from_rgb(220, 120, 90)),
+                                .strong()
+                                .color(egui::Color32::from_rgb(226, 116, 96)),
                             );
+                            let mut jump: Option<String> = None;
                             egui::ScrollArea::vertical()
                                 .id_salt("issues")
-                                .max_height(90.0)
+                                .max_height(110.0)
                                 .show(ui, |ui| {
                                     for issue in issues.iter().take(20) {
+                                        let target =
+                                            Self::issue_target(&issue.location);
+                                        let label = format!(
+                                            "{}: {}",
+                                            issue.location, issue.message
+                                        );
+                                        let response = ui
+                                            .add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(label)
+                                                        .small()
+                                                        .color(palette::TEXT),
+                                                )
+                                                .sense(egui::Sense::click()),
+                                            )
+                                            .on_hover_text(
+                                                "click to select the object involved",
+                                            );
+                                        if response.clicked()
+                                            && let Some(target) = target.clone()
+                                        {
+                                            jump = Some(target);
+                                        }
+                                        if response.hovered() {
+                                            response
+                                                .ctx
+                                                .set_cursor_icon(egui::CursorIcon::PointingHand);
+                                        }
+                                    }
+                                    if issues.len() > 20 {
                                         ui.label(
                                             egui::RichText::new(format!(
-                                                "{}: {}",
-                                                issue.location, issue.message
+                                                "… {} more",
+                                                issues.len() - 20
                                             ))
-                                            .small(),
+                                            .size(9.0_f32)
+                                            .color(palette::TEXT_DIM),
                                         );
                                     }
                                 });
+                            if let Some(target) = jump
+                                && let Some(model) = self.model
+                                && let Some(index) =
+                                    model.objects.iter().position(|o| o.name == target)
+                            {
+                                self.select(index);
+                            }
+                        } else {
+                            ui.separator();
+                            ui.label(
+                                egui::RichText::new("model is valid")
+                                    .small()
+                                    .color(palette::OK),
+                            );
                         }
                     }
                     if self.show_json {
@@ -8262,6 +8321,23 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn issue_locations_map_to_object_names() {
+        assert_eq!(
+            OpenFlexApp::issue_target("objects.Charger1.charger").as_deref(),
+            Some("Charger1")
+        );
+        assert_eq!(
+            OpenFlexApp::issue_target("objects.Agv1.network[0].from").as_deref(),
+            Some("Agv1")
+        );
+        // Model-level locations do not name an object.
+        assert_eq!(OpenFlexApp::issue_target("run.stop_time"), None);
+        assert_eq!(OpenFlexApp::issue_target("objects"), None);
+        // Index-style locations are not names.
+        assert_eq!(OpenFlexApp::issue_target("objects.3.charger"), None);
     }
 
     #[test]
