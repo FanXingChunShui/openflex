@@ -9,6 +9,8 @@
   行格式与 `openflex run --trace` 一致（`simulate_traced` 同一序列化路径）。
   此前桌面版的“事件日志”只记录 GUI 自己步进过的事件，看不到完整事件流。
 - 新增 `trace_export_lines_match_the_cli_jsonl` 测试（GUI 18 项）。
+- **形体区分**：队列改画成**带分隔线的托盘**、调度器为**带三条辐条的枢纽**、资源为**带四个刻度的圆站台**、
+  电梯为**带轿厢的井道**，均带接触阴影；此前这四类都退化成同一个通用方块。
 - **产物清单**：右侧新增 `Outputs (n)` 折叠区，列出本次会话写出的文件（文件名、大小 B/KiB/MiB、完整路径悬停、
   文件已删除时转暗），可 `Clear list`。报告 CSV/JSON、对比 CSV、时序 CSV、基线 JSON、trace JSONL、视图 SVG
   七条导出路径都接入 `remember_output()`。新增 `format_bytes_switches_units` 测试（GUI 22 项）。

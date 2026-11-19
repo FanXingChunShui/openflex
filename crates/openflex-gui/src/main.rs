@@ -4577,6 +4577,71 @@ idle,busy,blocked,down\n",
                 painter.rect_filled(liquid, 0.0, OpenFlexApp::shade(fill, 0.35));
                 body
             }
+            // Queues: a tray with three slot dividers, so a queue reads as
+            // "waiting line" rather than a generic block.
+            ObjectKind::Queue => {
+                let size = egui::vec2(40.0, 16.0) * zoom;
+                let body = egui::Rect::from_center_size(base, size);
+                painter.rect_filled(body, 3.0, OpenFlexApp::shade(fill, -0.12));
+                painter.rect_stroke(body, 3.0, outline);
+                for fraction in [0.33_f32, 0.66] {
+                    let x = body.left() + body.width() * fraction;
+                    painter.line_segment(
+                        [
+                            egui::pos2(x, body.top() + 2.0),
+                            egui::pos2(x, body.bottom() - 2.0),
+                        ],
+                        egui::Stroke::new(1.0_f32, OpenFlexApp::shade(fill, 0.35)),
+                    );
+                }
+                body
+            }
+            // Dispatchers: a hub with three short spokes (it hands out tasks).
+            ObjectKind::Dispatcher => {
+                let radius = 11.0 * zoom;
+                painter.circle_filled(base + egui::vec2(0.0, 3.0 * zoom), radius, palette::SHADOW);
+                painter.circle_filled(base, radius, fill);
+                painter.circle_stroke(base, radius, outline);
+                for step in 0..3 {
+                    let angle = std::f32::consts::TAU * step as f32 / 3.0 - 0.5;
+                    let dir = egui::vec2(angle.cos(), angle.sin());
+                    painter.line_segment(
+                        [base + dir * radius * 0.45, base + dir * radius * 1.5],
+                        egui::Stroke::new(1.6_f32, OpenFlexApp::shade(fill, 0.45)),
+                    );
+                }
+                egui::Rect::from_center_size(base, egui::vec2(radius * 3.0, radius * 3.0))
+            }
+            // Resources: a round station with four tick marks (capacity pool).
+            ObjectKind::Resource => {
+                let radius = 12.0 * zoom;
+                painter.circle_filled(base + egui::vec2(0.0, 3.0 * zoom), radius, palette::SHADOW);
+                painter.circle_filled(base, radius, fill);
+                painter.circle_stroke(base, radius, outline);
+                for step in 0..4 {
+                    let angle = std::f32::consts::TAU * step as f32 / 4.0;
+                    let dir = egui::vec2(angle.cos(), angle.sin());
+                    painter.line_segment(
+                        [base + dir * radius * 0.55, base + dir * radius * 0.9],
+                        egui::Stroke::new(1.2_f32, OpenFlexApp::shade(fill, 0.4)),
+                    );
+                }
+                egui::Rect::from_center_size(base, egui::vec2(radius * 2.0, radius * 2.0))
+            }
+            // Elevators: a tall shaft with a cabin block inside.
+            ObjectKind::Elevator => {
+                let size = egui::vec2(18.0, 30.0) * zoom;
+                let body = egui::Rect::from_center_size(base, size);
+                painter.rect_filled(body, 3.0, OpenFlexApp::shade(fill, -0.25));
+                painter.rect_stroke(body, 3.0, outline);
+                let cabin = egui::Rect::from_center_size(
+                    body.center() + egui::vec2(0.0, -size.y * 0.18),
+                    egui::vec2(size.x * 0.62, size.y * 0.34),
+                );
+                painter.rect_filled(cabin, 2.0, fill);
+                painter.rect_stroke(cabin, 2.0, outline);
+                body
+            }
             // Everything else: the classic box with a lit top edge.
             _ => {
                 let size = egui::vec2(38.0, 18.0) * zoom;
