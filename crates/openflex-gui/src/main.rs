@@ -976,6 +976,8 @@ struct OpenFlexApp {
     model_seed: String,
     model_replications: u32,
     model_unit: u8,
+    checkpoint_dir: String,
+    checkpoint_status: String,
     running: bool,
     paused: bool,
     step_size: f32,
@@ -1063,6 +1065,8 @@ impl OpenFlexApp {
             model_seed: "1".into(),
             model_replications: 1,
             model_unit: 0,
+            checkpoint_dir: "checkpoints".into(),
+            checkpoint_status: String::new(),
             running: false,
             paused: false,
             step_size: 10.0,
@@ -1875,6 +1879,99 @@ impl OpenFlexApp {
                 }
             }
             Err(error) => self.error = Some(format!("could not serialise report: {error}")),
+        }
+    }
+
+    /// Saves the current simulation state as a checkpoint JSON file.
+    fn save_checkpoint(&mut self) {
+        if self.handle.is_none() && !self.new_handle() {
+            return;
+        }
+        let Some(handle) = self.handle.as_ref() else {
+            return;
+        };
+        let checkpoint = handle.snapshot();
+        let text = match checkpoint.to_json() {
+            Ok(text) => text,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                return;
+            }
+        };
+        let dir = if self.checkpoint_dir.trim().is_empty() {
+            "checkpoints".to_string()
+        } else {
+            self.checkpoint_dir.trim().to_string()
+        };
+        if let Err(error) = std::fs::create_dir_all(&dir) {
+            self.error = Some(format!("could not create {dir}: {error}"));
+            return;
+        }
+        let name = format!("checkpoint-{:.2}.json", handle.now());
+        let path = std::path::Path::new(&dir).join(name);
+        match std::fs::write(&path, text) {
+            Ok(()) => {
+                self.checkpoint_status = format!("saved {}", path.display());
+                self.status = self.checkpoint_status.clone();
+                self.error = None;
+            }
+            Err(error) => self.error = Some(format!("could not write checkpoint: {error}")),
+        }
+    }
+
+    /// Loads the newest checkpoint from the directory into a fresh handle.
+    fn load_checkpoint(&mut self) {
+        let dir = if self.checkpoint_dir.trim().is_empty() {
+            "checkpoints".to_string()
+        } else {
+            self.checkpoint_dir.trim().to_string()
+        };
+        let mut entries: Vec<std::path::PathBuf> = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+                .collect(),
+            Err(error) => {
+                self.error = Some(format!("could not read {dir}: {error}"));
+                return;
+            }
+        };
+        entries.sort();
+        let Some(path) = entries.last().cloned() else {
+            self.error = Some(format!("no checkpoints in {dir}"));
+            return;
+        };
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                self.error = Some(format!("could not read {}: {error}", path.display()));
+                return;
+            }
+        };
+        let checkpoint = match openflex_core::Checkpoint::from_json_verified(&text, None) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                return;
+            }
+        };
+        // A checkpoint restores into a handle for the same model.
+        self.handle = None;
+        if !self.new_handle() {
+            return;
+        }
+        let Some(handle) = self.handle.as_mut() else {
+            return;
+        };
+        match handle.restore(&checkpoint) {
+            Ok(()) => {
+                self.sim_state = Some(handle.state());
+                self.checkpoint_status = format!("restored {}", path.display());
+                self.status = self.checkpoint_status.clone();
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
         }
     }
 
@@ -3060,6 +3157,24 @@ impl eframe::App for OpenFlexApp {
                             .text(format!("{:.1}/{:.1}", state.now, model.run.stop_time)),
                     );
                 }
+                ui.separator();
+                if ui
+                    .add_enabled(self.model.is_some(), egui::Button::new("Save checkpoint"))
+                    .clicked()
+                {
+                    self.save_checkpoint();
+                }
+                if ui
+                    .add_enabled(self.model.is_some(), egui::Button::new("Load checkpoint"))
+                    .clicked()
+                {
+                    self.load_checkpoint();
+                }
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.checkpoint_dir)
+                        .hint_text("checkpoints/")
+                        .desired_width(110.0),
+                );
                 ui.separator();
                 ui.label("Step");
                 ui.add(

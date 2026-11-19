@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.99.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **检查点保存/恢复**：工具栏 `Save checkpoint` 把当前 `SimulationHandle::snapshot()` 写入
+  `<checkpoint dir>/checkpoint-<time>.json`；`Load checkpoint` 读取该目录最新文件，
+  经 `Checkpoint::from_json_verified`（SHA-256 自校验）后恢复到新句柄并刷新视图。
+
+### 验证
+
+- 工作区 **507 passed / 0 failed**；GUI 编译、clippy 0、fmt 干净、启动无 panic。
+- v0.99.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.98.0 — 2026-11-19
 
 ### 桌面 GUI
