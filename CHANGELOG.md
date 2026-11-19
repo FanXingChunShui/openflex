@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.10.0 — 2026-11-19
+
+### 示例与文档
+
+- **新增 `examples/objects/person-reserve.ofm`**：两人同走廊、各自 `grid_step` + `grid_reserve: 2`，
+  跟随者提前让行；`openflex run` 实测 6 件完成、两人都参与（Person1/2 各 in 3）。
+- 新增回归测试 `crates/openflex-core/tests/person_reserve_example.rs`（示例可解析、可跑、不卡死）。
+- `docs/UNIMPLEMENTED.md` 第 2、3 行按当前实现更新（Person：逐格 + 预约等待；AGV：多桩/排队策略/防死锁/network 行驶）。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**516 passed / 0 failed**；clippy 0、fmt 干净。
+
 ## v1.9.0 — 2026-11-19
 
 ### 桌面 GUI

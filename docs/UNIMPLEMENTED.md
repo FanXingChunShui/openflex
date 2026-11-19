@@ -9,8 +9,8 @@
 | # | 功能 | 现状 | 缺口 | 工作量 |
 |---|---|---|---|---|
 | 1 | **Fluid 真实压力/温度/密度** | ✅ 压差驱动 pipe 流量（`flow = k·Δp`，`k` 由 `flow_rate` 标定）、tank `p=ρ·g·h`（density/gravity 参数）、valve 压差滞回 `pressure_open/close` 自动重开、pipe `temperature` 黏度修正、背压与 `pressure` 报告；示例 fluid-pressure/fluid-backpressure | 无多相流/泵特性曲线/可压缩效应；**管满背压已接线（v0.90.0）** | L |
-| 2 | **Person 人群模型** | ✅ `grid` 8 邻接 Dijkstra（对角 √2、禁切角）、局部密度（邻格 -15%、同格 -50%，下限 40%）、全局速度折减；示例 person-avoidance/person-grid | 无个体路径重规划/排队避让、无动态障碍、无楼梯/电梯换乘、无社会力模型 | L |
-| 3 | **AGV 交通控制** | transporter alias + 电池；✅ 取货段途中耗尽就地停车充电并 `TransportResume` 续跑、同节点占用等待（0.5 步重试）；示例 agv-traffic/agv-battery | 无单向路网边/路网节点图、无充电桩容量/排队、无完整死锁避免、不搬运 flow item | L |
+| 2 | **Person 人群模型** | ✅ `grid` 8 邻接 Dijkstra（对角 √2、禁切角）、局部密度折减、逐格移动（pickup + 回程）、同格/预约格等待（`grid_reserve` 多格预约，小 id 先行）；示例 person-avoidance/person-grid | 无个体路径重规划、无动态障碍、无楼梯/电梯换乘、无社会力模型 | M |
+| 3 | **AGV 交通控制** | transporter alias + 电池 + 有向路网 + 全程扣电/续跑；✅ 充电桩容量排队（FIFO/lowest_battery/longest_waiting）、多桩就近选择、network 行驶、节点等待 3 轮升级（防死锁）；示例 agv-traffic/agv-battery/agv-charging | 逐段途中扣电（当前到站结算）、不搬运 flow item、无完整路由预约 | M |
 | 4 | **电梯门控** | 门开/关时间、超载、井道互斥、召唤/方向 + **门态统计（opening/closing；门开停留未单列）** | 无对向调度/多轿厢群控 | S |
 | 5 | **Conveyor 曲线与完整合流** | 直线带、PhotoEye/Station/Join（入口轮转）；✅ 可选 `curve: {radius, angle}`，按弧长计入行程时间（速度不变） | 无 3D 转弯几何/多段曲线/斜坡、无 Join 的 slug/gap 精细策略、无 Merge Controller、无电机/转盘/Transfers、PhotoEye 无遮挡持续状态/计数 | L |
 | 6 | **Rack 货位精细放置** | (level,aisle,bay) 分配 + 行走时间 + pick_policy | 无空位查表/并发取货、无 SKU/批次策略 | S |

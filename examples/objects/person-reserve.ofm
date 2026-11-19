@@ -1,0 +1,115 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "person-reserve",
+  "description": "Two people walking the same corridor; each reserves two cells ahead (grid_reserve) so the follower yields early instead of colliding",
+  "time_unit": "seconds",
+  "run": {
+    "stop_time": 120.0,
+    "warmup": 0.0,
+    "seed": 1,
+    "replications": 1
+  },
+  "grid": {
+    "width": 10,
+    "height": 3,
+    "cell_size": 1.0
+  },
+  "objects": [
+    {
+      "name": "Source1",
+      "kind": "source",
+      "pos": [
+        0.5,
+        1.5
+      ],
+      "params": {
+        "interarrival": {
+          "distribution": "constant",
+          "value": 12.0
+        },
+        "max_arrivals": 6,
+        "first_arrival": 0.0
+      }
+    },
+    {
+      "name": "Processor1",
+      "kind": "processor",
+      "pos": [
+        8.5,
+        1.5
+      ],
+      "params": {
+        "process_time": {
+          "distribution": "constant",
+          "value": 8.0
+        },
+        "process_operator": "Dispatcher1"
+      }
+    },
+    {
+      "name": "Sink1",
+      "kind": "sink",
+      "pos": [
+        9.5,
+        1.5
+      ],
+      "params": {}
+    },
+    {
+      "name": "Dispatcher1",
+      "kind": "dispatcher",
+      "pos": [
+        0.5,
+        1.5
+      ],
+      "params": {}
+    },
+    {
+      "name": "Person1",
+      "kind": "person",
+      "pos": [
+        0.5,
+        1.5
+      ],
+      "params": {
+        "speed": 1.0,
+        "home": "Dispatcher1",
+        "grid_step": true,
+        "grid_reserve": 2
+      }
+    },
+    {
+      "name": "Person2",
+      "kind": "person",
+      "pos": [
+        0.5,
+        1.5
+      ],
+      "params": {
+        "speed": 1.0,
+        "home": "Dispatcher1",
+        "grid_step": true,
+        "grid_reserve": 2
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "Source1",
+      "to": "Processor1"
+    },
+    {
+      "from": "Processor1",
+      "to": "Sink1"
+    },
+    {
+      "from": "Dispatcher1",
+      "to": "Person1"
+    },
+    {
+      "from": "Dispatcher1",
+      "to": "Person2"
+    }
+  ]
+}
