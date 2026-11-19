@@ -3009,6 +3009,74 @@ impl OpenFlexApp {
         center + egui::vec2(rx, ry * sin_pitch - z * cos_pitch)
     }
 
+    /// Writes the current layout/state as an SVG snapshot (same projection as
+    /// the canvas, including rotation and the heatmap colours).
+    fn export_svg(&mut self) {
+        let Some(model) = self.model else {
+            return;
+        };
+        let width = 1024.0_f32;
+        let height = 768.0_f32;
+        let center = egui::pos2(width / 2.0, height / 2.0);
+        let scale = (width.min(height) / 12.0) * self.zoom;
+        let mut svg = String::new();
+        svg.push_str(&format!(
+            r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+<rect width="{width}" height="{height}" fill="#12161c"/>
+"##
+        ));
+        for connection in &model.connections {
+            let (Some(from), Some(to)) =
+                (model.object(&connection.from), model.object(&connection.to))
+            else {
+                continue;
+            };
+            let a = self.project(from.pos, 0.0, center, scale);
+            let b = self.project(to.pos, 0.0, center, scale);
+            svg.push_str(&format!(
+                r##"<line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="#5a7896" stroke-width="1.2"/>
+"##,
+                a.x, a.y, b.x, b.y
+            ));
+        }
+        for object in &model.objects {
+            let point = self.project(object.pos, object.z, center, scale);
+            let base = match self.heatmap_fill(&object.name) {
+                Some(colour) => colour,
+                None => Self::kind_color(object.kind),
+            };
+            let rot = object.rot.unwrap_or(0.0);
+            let (r, g, b) = (base.r(), base.g(), base.b());
+            let (x, y) = (point.x, point.y);
+            let w = 38.0 * self.zoom;
+            let h = 18.0 * self.zoom;
+            let name = &object.name;
+            svg.push_str(&format!(
+                "<g transform=\"rotate({rot:.1} {x:.1} {y:.1})\">\
+<rect x=\"{rx:.1}\" y=\"{ry:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"4\" fill=\"#{r:02x}{g:02x}{b:02x}\" stroke=\"#14181e\"/>\
+</g>\
+<text x=\"{x:.1}\" y=\"{ty:.1}\" fill=\"#ffffff\" font-size=\"11\" text-anchor=\"middle\" font-family=\"sans-serif\">{name}</text>\n",
+                rx = x - w / 2.0,
+                ry = y - h / 2.0,
+                ty = y - 12.0 * self.zoom,
+            ));
+        }
+        svg.push_str("</svg>\n");
+        let path = self
+            .path
+            .as_ref()
+            .map(|path| path.with_extension("view.svg"))
+            .unwrap_or_else(|| std::path::PathBuf::from("openflex-view.svg"));
+        match std::fs::write(&path, svg) {
+            Ok(()) => {
+                self.status = format!("View exported to {}", path.display());
+                self.error = None;
+            }
+            Err(error) => self.error = Some(format!("could not write SVG: {error}")),
+        }
+    }
+
     /// Fill colour of an object while a simulation is running: the dominant
     /// state (busy/blocked/down/off-shift/idle) wins over the kind colour.
     /// Green → yellow → red ramp used by the report heatmap.
@@ -3363,6 +3431,12 @@ impl eframe::App for OpenFlexApp {
                 }
                 if ui.button("Help").clicked() {
                     self.show_help = !self.show_help;
+                }
+                if ui
+                    .add_enabled(self.model.is_some(), egui::Button::new("Export view SVG"))
+                    .clicked()
+                {
+                    self.export_svg();
                 }
                 if ui
                     .add_enabled(!self.undo.is_empty(), egui::Button::new("Undo"))

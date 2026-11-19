@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.7.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **视图导出 SVG**：工具栏 `Export view SVG` 以画布相同的投影（相机角度/缩放/旋转/热力色/连接线）生成
+  `<model>.view.svg`，便于把当前视图贴进文档或提交到版本库。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**514 passed / 0 failed**；clippy 0、fmt 干净、启动无 panic。
+- v1.7.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v1.6.0 — 2026-11-19
 
 ### 桌面 GUI
