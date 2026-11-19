@@ -5764,7 +5764,24 @@ impl eframe::App for OpenFlexApp {
                         .map(|(_, _, second)| *second)
                         .fold(0.0_f64, f64::max)
                         .max(1e-9);
-                    for (index, (_, score, second)) in self.opt_rows.iter().enumerate() {
+                    // Quarter guides make the cloud readable as a scatter plot.
+                    for step in 1..4 {
+                        let y = rect.bottom()
+                            - 6.0
+                            - (rect.height() - 12.0) * step as f32 / 4.0;
+                        painter.line_segment(
+                            [egui::pos2(rect.left() + 6.0, y), egui::pos2(rect.right() - 6.0, y)],
+                            egui::Stroke::new(
+                                1.0_f32,
+                                egui::Color32::from_rgba_unmultiplied(120, 145, 180, 24),
+                            ),
+                        );
+                    }
+                    // Dominated points first so the front is drawn on top.
+                    let mut order: Vec<usize> = (0..self.opt_rows.len()).collect();
+                    order.sort_by_key(|index| front.contains(index));
+                    for index in order {
+                        let (_, score, second) = &self.opt_rows[index];
                         let x = rect.left()
                             + 6.0
                             + (rect.width() - 12.0) * (*second / max_second) as f32;
@@ -5773,23 +5790,48 @@ impl eframe::App for OpenFlexApp {
                             - (rect.height() - 12.0) * (*score / max_score) as f32;
                         let point = egui::pos2(x, y);
                         let on_front = front.contains(&index);
+                        let colour = if on_front {
+                            palette::AMBER
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(128, 148, 172, 190)
+                        };
+                        let radius = if on_front { 4.2 } else { 2.6 };
                         painter.circle_filled(
-                            point,
-                            if on_front { 4.0 } else { 2.5 },
-                            if on_front {
-                                egui::Color32::from_rgb(255, 190, 80)
-                            } else {
-                                egui::Color32::from_rgb(110, 130, 150)
-                            },
+                            point + egui::vec2(0.0, 1.0),
+                            radius + 0.8,
+                            palette::SHADOW,
                         );
+                        painter.circle_filled(point, radius, colour);
+                        if on_front {
+                            painter.circle_stroke(
+                                point,
+                                radius + 2.0,
+                                egui::Stroke::new(1.0_f32, palette::AMBER.gamma_multiply(0.6)),
+                            );
+                        }
                     }
+                    // Axis captions in the canvas corners.
+                    painter.text(
+                        rect.left_bottom() + egui::vec2(8.0, -4.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        "max stay ->",
+                        egui::FontId::proportional(9.0),
+                        palette::TEXT_DIM,
+                    );
+                    painter.text(
+                        rect.left_top() + egui::vec2(8.0, 4.0),
+                        egui::Align2::LEFT_TOP,
+                        "^ completed",
+                        egui::FontId::proportional(9.0),
+                        palette::TEXT_DIM,
+                    );
                     ui.label(
                         egui::RichText::new(format!(
-                            "Pareto front: {} of {} points (x = max stay, y = completed)",
+                            "Pareto front: {} of {} points",
                             front.len(),
                             self.opt_rows.len()
                         ))
-                        .weak()
+                        .color(palette::TEXT_DIM)
                         .small(),
                     );
                 }
