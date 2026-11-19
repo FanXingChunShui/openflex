@@ -101,6 +101,7 @@ fn main() -> eframe::Result<()> {
         "OpenFlex",
         options,
         Box::new(move |cc| {
+            install_cjk_font(&cc.egui_ctx);
             apply_theme(&cc.egui_ctx);
             Ok(Box::new(OpenFlexApp::new(model)) as Box<dyn eframe::App>)
         }),
@@ -165,6 +166,43 @@ mod palette {
     pub const ST_IDLE: Color32 = Color32::from_rgb(84, 168, 116);
     pub const ST_DOWN: Color32 = Color32::from_rgb(126, 126, 138);
     pub const ST_OFF: Color32 = Color32::from_rgb(82, 84, 96);
+}
+
+/// Registers a system CJK font as a fallback so Chinese object names and
+/// messages render as text instead of tofu boxes. Returns the family list used
+/// for both the proportional and monospace stacks.
+fn install_cjk_font(ctx: &egui::Context) {
+    const CANDIDATES: &[&str] = &[
+        // macOS
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+        // Linux
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        // Windows
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+    ];
+    let Some(bytes) = CANDIDATES.iter().find_map(|path| std::fs::read(path).ok()) else {
+        return;
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts
+        .font_data
+        .insert("system-cjk".to_owned(), egui::FontData::from_owned(bytes));
+    // Append as a fallback: Latin text keeps the crisp default face, CJK (and
+    // any glyph the default lacks) comes from the system font.
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("system-cjk".to_owned());
+    }
+    ctx.set_fonts(fonts);
 }
 
 /// Applies the polished dark theme: rounded widgets, an indigo accent,
@@ -6413,6 +6451,21 @@ mod tests {
             assert!(!model.objects.is_empty(), "{name} has no objects");
         }
         assert!(builtin_example("nope").is_none());
+    }
+
+    #[test]
+    fn cjk_font_candidates_are_absolute_paths() {
+        // The installer must never depend on the working directory.
+        for path in [
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "C:/Windows/Fonts/msyh.ttc",
+        ] {
+            assert!(
+                path.starts_with('/') || path.chars().nth(1) == Some(':'),
+                "{path} is not absolute"
+            );
+        }
     }
 
     #[test]
