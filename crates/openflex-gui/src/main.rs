@@ -4732,17 +4732,67 @@ impl eframe::App for OpenFlexApp {
                     (self.model, self.selected, self.form.as_mut())
                 {
                     let name = model.objects[index].name.clone();
+                    let kind = form.kind;
+                    // Object header: kind-coloured chip + name + kind tag.
                     ui.horizontal(|ui| {
-                        ui.heading(name);
-                        ui.label(format!("({})", form.kind.as_str()));
+                        let (dot, _) =
+                            ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                        ui.painter()
+                            .circle_filled(dot.center(), 4.2, Self::kind_color(kind));
+                        ui.label(
+                            egui::RichText::new(&name)
+                                .size(15.0_f32)
+                                .strong()
+                                .color(palette::TEXT),
+                        );
+                        egui::Frame::none()
+                            .fill(palette::CARD)
+                            .stroke(egui::Stroke::new(1.0_f32, palette::STROKE))
+                            .rounding(egui::Rounding::same(9.0_f32))
+                            .inner_margin(egui::Margin::symmetric(6.0, 1.0))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(kind.as_str())
+                                        .size(10.0_f32)
+                                        .color(palette::TEXT_DIM),
+                                );
+                            });
                     });
+                    // Position row: labelled monospace fields on one line.
                     ui.horizontal(|ui| {
-                        ui.label("x");
-                        ui.add(egui::DragValue::new(&mut form.pos[0]).speed(1.0));
-                        ui.label("y");
-                        ui.add(egui::DragValue::new(&mut form.pos[1]).speed(1.0));
-                        ui.label("z");
-                        ui.add(egui::DragValue::new(&mut form.z).speed(0.1));
+                        ui.label(
+                            egui::RichText::new("x")
+                                .size(10.0_f32)
+                                .monospace()
+                                .color(palette::TEXT_DIM),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut form.pos[0])
+                                .speed(1.0)
+                                .max_decimals(2),
+                        );
+                        ui.label(
+                            egui::RichText::new("y")
+                                .size(10.0_f32)
+                                .monospace()
+                                .color(palette::TEXT_DIM),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut form.pos[1])
+                                .speed(1.0)
+                                .max_decimals(2),
+                        );
+                        ui.label(
+                            egui::RichText::new("z")
+                                .size(10.0_f32)
+                                .monospace()
+                                .color(palette::TEXT_DIM),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut form.z)
+                                .speed(0.1)
+                                .max_decimals(2),
+                        );
                     });
                     ui.separator();
                     egui::ScrollArea::vertical()
