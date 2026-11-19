@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.2.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **命名布局预设**：左侧 `Layout presets (n)` 面板可保存当前对象布局为命名预设、点击名称一键应用（入撤销栈）、`✕` 删除；
+  预设持久化在模型旁的 `<model>.layout.json` 边车文件，随模型目录一起管理。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**514 passed / 0 failed**；GUI clippy 0、fmt 干净。
+- v1.2.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v1.1.0 — 2026-11-19
 
 ### 桌面 GUI

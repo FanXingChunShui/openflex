@@ -912,6 +912,9 @@ impl EditForm {
 
 type SeriesPoint = (String, f64, f64, f64); // object, content, throughput, utilization
 
+/// One stored layout preset: a name plus the `(position, object name)` pairs.
+type LayoutPreset = (String, Vec<([f64; 2], String)>);
+
 /// One row of the GUI event log (also used as a replay checkpoint marker).
 #[derive(Clone)]
 struct EventEntry {
@@ -982,6 +985,8 @@ struct OpenFlexApp {
     model_unit: u8,
     checkpoint_dir: String,
     checkpoint_status: String,
+    layout_presets: Vec<LayoutPreset>,
+    preset_name: String,
     checkpoint_files: Vec<(String, f64)>, // (file name, model time)
     running: bool,
     paused: bool,
@@ -1072,6 +1077,8 @@ impl OpenFlexApp {
             model_unit: 0,
             checkpoint_dir: "checkpoints".into(),
             checkpoint_status: String::new(),
+            layout_presets: Vec::new(),
+            preset_name: String::new(),
             checkpoint_files: Vec::new(),
             running: false,
             paused: false,
@@ -1267,6 +1274,7 @@ impl OpenFlexApp {
                     model.objects.len(),
                     model.run.stop_time
                 );
+                self.load_presets();
                 self.model_name = model.name.clone();
                 self.model_stop = model.run.stop_time as f32;
                 self.model_warmup = model.run.warmup as f32;
@@ -1886,6 +1894,138 @@ impl OpenFlexApp {
             }
             Err(error) => self.error = Some(format!("could not serialise report: {error}")),
         }
+    }
+
+    /// Sidecar file that stores the named layout presets of the open model.
+    fn preset_path(&self) -> Option<std::path::PathBuf> {
+        self.path
+            .as_ref()
+            .map(|path| path.with_extension("layout.json"))
+    }
+
+    fn load_presets(&mut self) {
+        self.layout_presets.clear();
+        let Some(path) = self.preset_path() else {
+            return;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return;
+        };
+        let Some(entries) = value.get("presets").and_then(|p| p.as_array()) else {
+            return;
+        };
+        for entry in entries {
+            let Some(name) = entry.get("name").and_then(|n| n.as_str()) else {
+                continue;
+            };
+            let Some(objects) = entry.get("objects").and_then(|o| o.as_array()) else {
+                continue;
+            };
+            let positions = objects
+                .iter()
+                .filter_map(|object| {
+                    let object_name = object.get("name")?.as_str()?.to_string();
+                    let pos = object.get("pos")?.as_array()?;
+                    let x = pos.first()?.as_f64()?;
+                    let y = pos.get(1)?.as_f64()?;
+                    Some(([x, y], object_name))
+                })
+                .collect();
+            self.layout_presets.push((name.to_string(), positions));
+        }
+    }
+
+    fn save_presets(&mut self) {
+        let Some(path) = self.preset_path() else {
+            return;
+        };
+        let presets: Vec<serde_json::Value> = self
+            .layout_presets
+            .iter()
+            .map(|(name, objects)| {
+                serde_json::json!({
+                    "name": name,
+                    "objects": objects
+                        .iter()
+                        .map(|(pos, object)| serde_json::json!({"name": object, "pos": pos}))
+                        .collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        let text = serde_json::json!({ "presets": presets }).to_string();
+        match std::fs::write(&path, text) {
+            Ok(()) => {
+                self.status = format!("Layout presets written to {}", path.display());
+                self.error = None;
+            }
+            Err(error) => self.error = Some(format!("could not write presets: {error}")),
+        }
+    }
+
+    fn store_layout_preset(&mut self) {
+        let Some(model) = self.model else {
+            return;
+        };
+        let name = if self.preset_name.trim().is_empty() {
+            format!("preset{}", self.layout_presets.len() + 1)
+        } else {
+            self.preset_name.trim().to_string()
+        };
+        let objects: Vec<([f64; 2], String)> = model
+            .objects
+            .iter()
+            .map(|object| (object.pos, object.name.clone()))
+            .collect();
+        self.layout_presets
+            .retain(|(existing, _)| existing != &name);
+        self.layout_presets.push((name.clone(), objects));
+        self.save_presets();
+        self.preset_name.clear();
+        self.status = format!("Saved layout preset '{name}'");
+    }
+
+    fn apply_layout_preset(&mut self, name: &str) {
+        let Some(model) = self.model else {
+            return;
+        };
+        let Some((_, objects)) = self
+            .layout_presets
+            .iter()
+            .find(|(existing, _)| existing == name)
+            .cloned()
+        else {
+            return;
+        };
+        self.snapshot();
+        let mut copy = model.clone();
+        let mut applied = 0;
+        for (pos, object_name) in objects {
+            if let Some(index) = copy
+                .objects
+                .iter()
+                .position(|object| object.name == object_name)
+            {
+                copy.objects[index].pos = pos;
+                applied += 1;
+            }
+        }
+        match copy.validate() {
+            Ok(()) => {
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.status = format!("Applied preset '{name}' to {applied} object(s)");
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    fn delete_layout_preset(&mut self, name: &str) {
+        self.layout_presets.retain(|(existing, _)| existing != name);
+        self.save_presets();
+        self.status = format!("Deleted preset '{name}'");
     }
 
     /// Re-reads the checkpoint directory for the list panel.
@@ -3331,6 +3471,42 @@ impl eframe::App for OpenFlexApp {
                             .hint_text("filter")
                             .desired_width(110.0),
                     );
+                });
+                egui::CollapsingHeader::new(format!(
+                    "Layout presets ({})",
+                    self.layout_presets.len()
+                ))
+                .id_salt("layout-presets")
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.preset_name)
+                                .hint_text("preset name")
+                                .desired_width(130.0),
+                        );
+                        if ui.small_button("Save").clicked() {
+                            self.store_layout_preset();
+                        }
+                    });
+                    let names: Vec<String> = self
+                        .layout_presets
+                        .iter()
+                        .map(|(name, _)| name.clone())
+                        .collect();
+                    let mut delete: Option<String> = None;
+                    for name in names {
+                        ui.horizontal(|ui| {
+                            if ui.small_button(&name).clicked() {
+                                self.apply_layout_preset(&name);
+                            }
+                            if ui.small_button("✕").clicked() {
+                                delete = Some(name.clone());
+                            }
+                        });
+                    }
+                    if let Some(name) = delete {
+                        self.delete_layout_preset(&name);
+                    }
                 });
                 egui::CollapsingHeader::new("Model settings")
                     .id_salt("model-settings")
