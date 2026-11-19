@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.5.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **基线持久化**：报告面板新增 `Save baseline` / `Load baseline`，把基线写为 `<model>.baseline.json`
+  （完整 `SimReport`），重开应用后可继续对比；与已有的 `Set baseline` / `Compare` / `Export compare CSV` 配合使用。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**514 passed / 0 failed**；clippy 0、fmt 干净、启动无 panic。
+- v1.5.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v1.4.0 — 2026-11-19
 
 ### 桌面 GUI

@@ -1880,6 +1880,43 @@ impl OpenFlexApp {
         }
     }
 
+    fn save_baseline_json(&mut self) {
+        let Some(baseline) = self.baseline.as_ref() else {
+            self.error = Some("capture a baseline first".into());
+            return;
+        };
+        match serde_json::to_string_pretty(baseline) {
+            Ok(text) => {
+                let path = self.report_path("baseline.json");
+                match std::fs::write(&path, text) {
+                    Ok(()) => self.status = format!("Baseline written to {}", path.display()),
+                    Err(error) => self.error = Some(format!("could not write baseline: {error}")),
+                }
+            }
+            Err(error) => self.error = Some(format!("could not serialise baseline: {error}")),
+        }
+    }
+
+    fn load_baseline_json(&mut self) {
+        let path = self.report_path("baseline.json");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                self.error = Some(format!("could not read {}: {error}", path.display()));
+                return;
+            }
+        };
+        match serde_json::from_str::<SimReport>(&text) {
+            Ok(report) => {
+                self.baseline = Some(report);
+                self.show_compare = true;
+                self.status = format!("Baseline loaded from {}", path.display());
+                self.error = None;
+            }
+            Err(error) => self.error = Some(format!("invalid baseline JSON: {error}")),
+        }
+    }
+
     fn export_report_json(&mut self) {
         let Some(report) = self.report.as_ref() else {
             return;
@@ -4495,6 +4532,8 @@ impl eframe::App for OpenFlexApp {
                 let mut export_json = false;
                 let mut set_baseline = false;
                 let mut export_compare = false;
+                let mut save_baseline = false;
+                let mut load_baseline = false;
                 ui.horizontal(|ui| {
                     if ui.small_button("Export report CSV").clicked() {
                         export_csv = true;
@@ -4504,6 +4543,12 @@ impl eframe::App for OpenFlexApp {
                     }
                     if ui.small_button("Set baseline").clicked() {
                         set_baseline = true;
+                    }
+                    if ui.small_button("Save baseline").clicked() {
+                        save_baseline = true;
+                    }
+                    if ui.small_button("Load baseline").clicked() {
+                        load_baseline = true;
                     }
                     if self.baseline.is_some()
                         && ui.selectable_label(self.show_compare, "Compare").clicked()
@@ -4519,6 +4564,12 @@ impl eframe::App for OpenFlexApp {
                 }
                 if export_compare {
                     self.export_compare_csv();
+                }
+                if save_baseline {
+                    self.save_baseline_json();
+                }
+                if load_baseline {
+                    self.load_baseline_json();
                 }
                 if export_csv {
                     self.export_report_csv();
