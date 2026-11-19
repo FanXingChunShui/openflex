@@ -2276,7 +2276,10 @@ impl OpenFlexApp {
             .map(|path| path.with_extension("timeseries.csv"))
             .unwrap_or_else(|| PathBuf::from("openflex-timeseries.csv"));
         match std::fs::write(&path, text) {
-            Ok(()) => self.status = format!("Time series written to {}", path.display()),
+            Ok(()) => {
+                self.status = format!("Time series written to {}", path.display());
+                self.error = None;
+            }
             Err(error) => self.error = Some(format!("could not write time series: {error}")),
         }
     }
@@ -2372,7 +2375,10 @@ impl OpenFlexApp {
         }
         let path = self.report_path("compare.csv");
         match std::fs::write(&path, text) {
-            Ok(()) => self.status = format!("Comparison written to {}", path.display()),
+            Ok(()) => {
+                self.status = format!("Comparison written to {}", path.display());
+                self.error = None;
+            }
             Err(error) => self.error = Some(format!("could not write comparison: {error}")),
         }
     }
@@ -2414,7 +2420,10 @@ idle,busy,blocked,down\n",
         }
         let path = self.report_path("report.csv");
         match std::fs::write(&path, text) {
-            Ok(()) => self.status = format!("Report CSV written to {}", path.display()),
+            Ok(()) => {
+                self.status = format!("Report CSV written to {}", path.display());
+                self.error = None;
+            }
             Err(error) => self.error = Some(format!("could not write report CSV: {error}")),
         }
     }
