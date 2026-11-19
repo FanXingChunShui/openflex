@@ -1183,6 +1183,7 @@ impl OpenFlexApp {
             opt_running: false,
             replay_index: None,
         };
+        app.load_recent();
         if let Some(path) = model {
             app.load(PathBuf::from(path));
         }
@@ -1305,6 +1306,49 @@ impl OpenFlexApp {
         self.recent.retain(|item| item != path);
         self.recent.insert(0, path.clone());
         self.recent.truncate(8);
+        self.save_recent();
+    }
+
+    /// Where the recent-file list is stored (per-user config directory).
+    fn recent_config_path() -> Option<std::path::PathBuf> {
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config"))
+            })
+            .or_else(|| std::env::var_os("APPDATA").map(std::path::PathBuf::from))?;
+        Some(base.join("openflex").join("recent.json"))
+    }
+
+    fn load_recent(&mut self) {
+        let Some(path) = Self::recent_config_path() else {
+            return;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let Ok(values) = serde_json::from_str::<Vec<String>>(&text) else {
+            return;
+        };
+        self.recent = values.into_iter().map(std::path::PathBuf::from).collect();
+        self.recent.truncate(8);
+    }
+
+    fn save_recent(&self) {
+        let Some(path) = Self::recent_config_path() else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let values: Vec<String> = self
+            .recent
+            .iter()
+            .map(|item| item.display().to_string())
+            .collect();
+        if let Ok(text) = serde_json::to_string(&values) {
+            let _ = std::fs::write(&path, text);
+        }
     }
 
     fn load(&mut self, path: PathBuf) {

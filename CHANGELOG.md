@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.9.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **最近文件持久化**：`Recent` 列表写入 `~/.config/openflex/recent.json`（尊重 `XDG_CONFIG_HOME`、Windows 用 `APPDATA`），
+  启动时自动加载；菜单项显示文件名并对悬停显示完整路径，新增 `Clear recent`。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**515 passed / 0 failed**；clippy 0、fmt 干净。
+- 实机启动后确认 `~/.config/openflex/recent.json` 已写入。
+- v1.9.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v1.8.0 — 2026-11-19
 
 ### 桌面 GUI

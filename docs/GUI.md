@@ -12,7 +12,7 @@ cargo build -p openflex-gui --release
 
 | 区域 | 功能 |
 |---|---|
-| 文件 | **New**（生成 source→queue→processor→sink 模板）、Open（路径输入）、Save、**Save as…**、**Recent 最近 8 个**、加载时校验 |
+| 文件 | **New**（生成 source→queue→processor→sink 模板）、Open（路径输入）、Save、**Save as…**、**Recent 最近 8 个（持久化到 `~/.config/openflex/recent.json`，含 hover 全路径与 Clear recent）**、加载时校验 |
 | 快捷键 | `Ctrl/Cmd+A` 全选、`Ctrl/Cmd+D` 复制选中（自动 `_2` 命名 + 偏移）、`Ctrl/Cmd+O` 打开、`Ctrl/Cmd+N` 新建、`Ctrl/Cmd+S` 保存、`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 重做、`Space` 播放/暂停、`R` 重置、`F1` 快捷键帮助对话框、`→` 步进、`↑/↓` 调整步长 |
 | Studio 帮助 | 工具栏 `?` 按钮弹出快捷键面板（拖拽/滚轮/框选/方向键微调/撤销/保存/播放/删除，`data-help-panel`） |
 | Studio 复制 | 浏览器 Studio 对象操作区新增 `Duplicate`（深拷贝参数、自动 `_2` 后缀命名、位置偏移 +2，经 `/api/model` 保存并入历史） |
