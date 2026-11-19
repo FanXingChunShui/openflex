@@ -5056,6 +5056,88 @@ impl eframe::App for OpenFlexApp {
                         }
                     });
                 ui.separator();
+                egui::CollapsingHeader::new(format!(
+                    "Global tables ({})",
+                    self.model.map(|model| model.global_tables.len()).unwrap_or(0)
+                ))
+                .id_salt("global-tables")
+                .show(ui, |ui| {
+                    let Some(model) = self.model else {
+                        return;
+                    };
+                    if model.global_tables.is_empty() {
+                        empty_state(
+                            ui,
+                            "No global tables",
+                            "Tables live in the model JSON (global_tables).",
+                        );
+                        return;
+                    }
+                    // Read-only preview: name, shape and the first rows. Editing
+                    // stays in the JSON so the whole table can be pasted in.
+                    for (name, table) in &model.global_tables {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(name)
+                                    .strong()
+                                    .color(palette::ACCENT_HI),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} x {}",
+                                    table.rows.len(),
+                                    table.width()
+                                ))
+                                .small()
+                                .monospace()
+                                .color(palette::TEXT_DIM),
+                            );
+                        });
+                        if !table.columns.is_empty() {
+                            ui.horizontal_wrapped(|ui| {
+                                for column in &table.columns {
+                                    egui::Frame::none()
+                                        .fill(palette::CARD)
+                                        .stroke(egui::Stroke::new(1.0_f32, palette::STROKE))
+                                        .rounding(egui::Rounding::same(4.0_f32))
+                                        .inner_margin(egui::Margin::symmetric(5.0, 1.0))
+                                        .show(ui, |ui| {
+                                            ui.label(
+                                                egui::RichText::new(column)
+                                                    .size(10.0_f32)
+                                                    .color(palette::TEXT_DIM),
+                                            );
+                                        });
+                                }
+                            });
+                        }
+                        for row in table.rows.iter().take(4) {
+                            ui.label(
+                                egui::RichText::new(
+                                    row.iter()
+                                        .map(|cell| format!("{cell:?}"))
+                                        .collect::<Vec<_>>()
+                                        .join("  "),
+                                )
+                                .small()
+                                .monospace()
+                                .color(palette::TEXT),
+                            );
+                        }
+                        if table.rows.len() > 4 {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "… {} more row(s)",
+                                    table.rows.len() - 4
+                                ))
+                                .size(9.0_f32)
+                                .color(palette::TEXT_DIM),
+                            );
+                        }
+                        ui.add_space(2.0);
+                    }
+                });
+                ui.separator();
                 ui.horizontal(|ui| {
                     // "+ Add object" row: kind picker, optional name, primary Add.
                     egui::ComboBox::from_id_salt("new-kind")
