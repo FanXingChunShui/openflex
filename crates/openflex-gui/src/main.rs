@@ -6629,10 +6629,27 @@ impl eframe::App for OpenFlexApp {
                 };
                 let start = self.project(from.pos, 0.0, center, scale);
                 let end = self.project(to.pos, 0.0, center, scale);
+                // Two-pass line: a wide translucent halo plus a crisp core, so
+                // the routing reads clearly over the grid.
                 painter.line_segment(
                     [start, end],
-                    egui::Stroke::new(1.2_f32, egui::Color32::from_rgb(90, 120, 150)),
+                    egui::Stroke::new(3.4_f32, egui::Color32::from_rgba_unmultiplied(70, 104, 150, 60)),
                 );
+                painter.line_segment(
+                    [start, end],
+                    egui::Stroke::new(1.3_f32, egui::Color32::from_rgb(112, 150, 190)),
+                );
+                // Small arrow head pointing at the downstream object.
+                let dir = (end - start).normalized();
+                if dir.length_sq() > 0.0 {
+                    let tip = end - dir * (10.0 * self.zoom).max(4.0);
+                    let normal = egui::vec2(-dir.y, dir.x) * (3.6 * self.zoom).max(1.8);
+                    painter.add(egui::Shape::convex_polygon(
+                        vec![tip + dir * 5.0, tip + normal, tip - normal],
+                        egui::Color32::from_rgb(126, 164, 202),
+                        egui::Stroke::NONE,
+                    ));
+                }
             }
             // Marquee selection: drag on empty space to select a rectangle of
             // objects (Shift adds to the current selection).
