@@ -978,6 +978,7 @@ struct OpenFlexApp {
     model_unit: u8,
     checkpoint_dir: String,
     checkpoint_status: String,
+    checkpoint_files: Vec<(String, f64)>, // (file name, model time)
     running: bool,
     paused: bool,
     step_size: f32,
@@ -1067,6 +1068,7 @@ impl OpenFlexApp {
             model_unit: 0,
             checkpoint_dir: "checkpoints".into(),
             checkpoint_status: String::new(),
+            checkpoint_files: Vec::new(),
             running: false,
             paused: false,
             step_size: 10.0,
@@ -1882,6 +1884,75 @@ impl OpenFlexApp {
         }
     }
 
+    /// Re-reads the checkpoint directory for the list panel.
+    fn refresh_checkpoints(&mut self) {
+        let dir = if self.checkpoint_dir.trim().is_empty() {
+            "checkpoints".to_string()
+        } else {
+            self.checkpoint_dir.trim().to_string()
+        };
+        self.checkpoint_files.clear();
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        let mut files: Vec<(String, f64)> = entries
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+            .filter_map(|path| {
+                let name = path.file_name()?.to_string_lossy().into_owned();
+                let text = std::fs::read_to_string(&path).ok()?;
+                let time = serde_json::from_str::<serde_json::Value>(&text)
+                    .ok()
+                    .and_then(|value| value.get("now").and_then(|now| now.as_f64()))
+                    .unwrap_or(f64::NAN);
+                Some((name, time))
+            })
+            .collect();
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+        self.checkpoint_files = files;
+    }
+
+    /// Loads one specific checkpoint file from the configured directory.
+    fn load_checkpoint_file(&mut self, file: &str) {
+        let dir = if self.checkpoint_dir.trim().is_empty() {
+            "checkpoints".to_string()
+        } else {
+            self.checkpoint_dir.trim().to_string()
+        };
+        let path = std::path::Path::new(&dir).join(file);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                self.error = Some(format!("could not read {}: {error}", path.display()));
+                return;
+            }
+        };
+        let checkpoint = match openflex_core::Checkpoint::from_json_verified(&text, None) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                return;
+            }
+        };
+        self.handle = None;
+        if !self.new_handle() {
+            return;
+        }
+        let Some(handle) = self.handle.as_mut() else {
+            return;
+        };
+        match handle.restore(&checkpoint) {
+            Ok(()) => {
+                self.sim_state = Some(handle.state());
+                self.checkpoint_status = format!("restored {file}");
+                self.status = self.checkpoint_status.clone();
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
     /// Saves the current simulation state as a checkpoint JSON file.
     fn save_checkpoint(&mut self) {
         if self.handle.is_none() && !self.new_handle() {
@@ -1914,6 +1985,7 @@ impl OpenFlexApp {
                 self.checkpoint_status = format!("saved {}", path.display());
                 self.status = self.checkpoint_status.clone();
                 self.error = None;
+                self.refresh_checkpoints();
             }
             Err(error) => self.error = Some(format!("could not write checkpoint: {error}")),
         }
@@ -4122,6 +4194,32 @@ impl eframe::App for OpenFlexApp {
                     });
                 }
                 ui.separator();
+                egui::CollapsingHeader::new(format!(
+                    "Checkpoints ({})",
+                    self.checkpoint_files.len()
+                ))
+                .id_salt("checkpoints")
+                .show(ui, |ui| {
+                    if ui.button("Refresh list").clicked() {
+                        self.refresh_checkpoints();
+                    }
+                    if self.checkpoint_files.is_empty() {
+                        ui.label("No checkpoints saved yet.");
+                        return;
+                    }
+                    for (file, time) in self.checkpoint_files.clone() {
+                        ui.horizontal(|ui| {
+                            let label = if time.is_nan() {
+                                file.clone()
+                            } else {
+                                format!("{file}  t={time:.2}")
+                            };
+                            if ui.small_button(label).clicked() {
+                                self.load_checkpoint_file(&file);
+                            }
+                        });
+                    }
+                });
                 let mut jump: Option<f64> = None;
                 egui::CollapsingHeader::new(format!("Events ({})", self.event_log.len()))
                     .id_salt("event-log")

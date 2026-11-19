@@ -26,7 +26,7 @@ cargo build -p openflex-gui --release
 | 对象编辑 | `x/y/z` 拖拽数值、**按 kind 的参数表单**（Distribution 类型下拉 + 数值：source/queue/processor/conveyor/resource/transporter/person/robot/crane/asrs/agv）、Apply 校验后提交；JSON 高级模式（复选框） |
 | 连接编辑 | 列表 + 删除、from/to/port 添加（校验后原子替换模型） |
 | 3D 视图 | 透视投影、**地面网格**、对象地面阴影、按 kind 着色、连接线、选中高亮、拖拽旋转、滚轮缩放、点击选中、**相机预设 Iso/Top/Front/Side**、**按 kind 的几何体与明暗**（机台带顶板与指示灯、传送带带方向箭头、货架分层、源/汇圆鼓、人员/车辆胶囊、流体罐带液位、其余盒体）、**可旋转 footprint + 侧面挤出**（右键对象菜单 -15°/+15°/0°，写入 `Object.rot` 并随模型保存）、右侧挤出面模拟立体感 |
-| 检查点 | 工具栏 `Save checkpoint` / `Load checkpoint` + 目录输入：保存 `SimulationHandle::snapshot()` 为 `<dir>/checkpoint-<time>.json`，恢复时读取该目录最新文件并经 `Checkpoint::from_json_verified` 校验 |
+| 检查点 | 右侧 `Checkpoints (n)` 面板列出目录内文件与模型时间，点击任意项即恢复该检查点；工具栏另有 `Save checkpoint` / `Load checkpoint`（最新）与目录输入：保存 `SimulationHandle::snapshot()` 为 `<dir>/checkpoint-<time>.json`，恢复时读取该目录最新文件并经 `Checkpoint::from_json_verified` 校验 |
 | 运行 | `Run`（后台线程跑完整复现出报告）、`Step`（按 step 推进）、**`Step event`（逐事件推进并记录到事件日志）**、`Play`/`Pause`/`Resume`（`SimulationHandle`）、`Reset`、**进度条**、实时 `t`/created/completed |
 | 事件日志 | 右侧可折叠面板显示最近 200 条 `t / event / object`（`Step event` 或 `Play` 时填充，自动滚到底部）；**点击任一行可跳转到该事件的模型时间**（重建句柄并推进到该时刻） |
 | Studio trace 跳转 | Studio 的 trace 列表行可点击，把时间轴滑块移到该事件时间并同步 nearest 提示 |
