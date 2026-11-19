@@ -39,6 +39,7 @@ cargo build -p openflex-gui --release
 | 运行 | `Run`（后台线程跑完整复现出报告）、`Step`（按 step 推进）、**`Step event`（逐事件推进并记录到事件日志）**、`Play`/`Pause`/`Resume`（`SimulationHandle`）、`Reset`、**进度条**、实时 `t`/created/completed |
 | 事件日志 | 右侧可折叠面板显示最近 200 条 `t / event / object`（`Step event` 或 `Play` 时填充，自动滚到底部）；**点击任一行可跳转到该事件的模型时间**（重建句柄并推进到该时刻） |
 | Studio trace 跳转 | Studio 的 trace 列表行可点击，把时间轴滑块移到该事件时间并同步 nearest 提示 |
+| 指标卡片 | 报告顶部 2×2 卡片：COMPLETED（含 ±CI）、CREATED、AVG WIP、AVG UTIL |
 | 状态配色 | `palette::ST_*` 单一来源；报告表每行名前有四段状态条（busy/blocked/idle/down），图例自动换行 |
 | 指标热力图 | 工具栏 `Heatmap` 下拉（off/utilization/throughput/WIP）按报告给对象着色（绿→黄→红），左下角显示色带与当前指标 |
 | 实时可视化 | 鼠标悬停对象弹**提示气泡**：名称 + kind/内容量/状态/利用率 |

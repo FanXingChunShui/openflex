@@ -26,6 +26,8 @@
   GUI 测试共 **12 项**。
 
 - **状态配色统一**：`palette::ST_BUSY/ST_BLOCKED/ST_IDLE/ST_DOWN/ST_OFF` 成为画布填充、图例与表格的唯一来源。
+- **指标卡片**：报告区顶部改为 2×2 卡片（`COMPLETED` 含 ±CI、`CREATED`、`AVG WIP`、`AVG UTIL`），
+  深色卡底 + 细描边 + 大号数值，取代原来的一行小字。
 - **报告表状态条**：每个对象名前新增 34×8 的**四段堆叠条**（busy/blocked/idle/down），不用读 tooltip 就能看出主导状态；
   图例改为自动换行、使用暗色文字。
 

@@ -286,6 +286,30 @@ fn primary_button(ui: &mut egui::Ui, enabled: bool, text: &str) -> bool {
     ui.add_enabled(enabled, button).clicked()
 }
 
+/// A small metric card: dim caption above, large value below, hairline border.
+fn metric_card(ui: &mut egui::Ui, caption: &str, value: &str, accent: egui::Color32) {
+    let width = (ui.available_width() - 8.0) / 2.0;
+    egui::Frame::none()
+        .fill(palette::CARD)
+        .stroke(egui::Stroke::new(1.0_f32, palette::STROKE))
+        .rounding(egui::Rounding::same(8.0_f32))
+        .inner_margin(egui::Margin::symmetric(9.0, 6.0))
+        .show(ui, |ui| {
+            ui.set_width(width.max(80.0));
+            ui.label(
+                egui::RichText::new(caption)
+                    .size(10.0_f32)
+                    .color(palette::TEXT_DIM),
+            );
+            ui.label(
+                egui::RichText::new(value)
+                    .size(19.0_f32)
+                    .strong()
+                    .color(accent),
+            );
+        });
+}
+
 /// A dim upper-case label that names the toolbar group that follows.
 fn tool_group(ui: &mut egui::Ui, text: &str) {
     ui.add_space(2.0);
@@ -5540,10 +5564,49 @@ impl eframe::App for OpenFlexApp {
                 let Some(report) = self.report.as_ref() else {
                     return;
                 };
-                ui.label(format!(
-                    "Completed: {:.1} ± {:.1}   Created: {:.1}",
-                    report.completed.mean, report.completed.ci95, report.created.mean
-                ));
+                ui.horizontal(|ui| {
+                    let completed = if report.completed.ci95 > 0.0 {
+                        format!("{:.1} ±{:.1}", report.completed.mean, report.completed.ci95)
+                    } else {
+                        format!("{:.0}", report.completed.mean)
+                    };
+                    metric_card(ui, "COMPLETED", &completed, palette::AMBER);
+                    metric_card(
+                        ui,
+                        "CREATED",
+                        &format!("{:.0}", report.created.mean),
+                        palette::ACCENT_HI,
+                    );
+                });
+                ui.horizontal(|ui| {
+                    let wip: f64 = report
+                        .objects
+                        .values()
+                        .map(|stats| stats.avg_content.mean)
+                        .sum();
+                    metric_card(
+                        ui,
+                        "AVG WIP",
+                        &format!("{wip:.1}"),
+                        palette::TEXT,
+                    );
+                    let util: f64 = if report.objects.is_empty() {
+                        0.0
+                    } else {
+                        report
+                            .objects
+                            .values()
+                            .map(|stats| stats.utilization.mean)
+                            .sum::<f64>()
+                            / report.objects.len() as f64
+                    };
+                    metric_card(
+                        ui,
+                        "AVG UTIL",
+                        &format!("{:.0}%", util * 100.0),
+                        palette::OK,
+                    );
+                });
                 ui.separator();
                 let (response, painter) = ui.allocate_painter(
                     egui::vec2(ui.available_width(), 130.0),
