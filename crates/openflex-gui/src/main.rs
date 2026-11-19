@@ -5077,14 +5077,46 @@ impl eframe::App for OpenFlexApp {
                         }
                     }
                     if self.show_json {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.params_text)
-                                .code_editor()
-                                .desired_rows(8),
-                        );
-                        if ui.button("Apply JSON").clicked() {
-                            self.apply_json();
-                        }
+                        // Live JSON validity hint: parse on edit, colour the
+                        // frame green/red so a typo is obvious before Apply.
+                        let valid = self.params_text.trim().is_empty()
+                            || serde_json::from_str::<serde_json::Value>(&self.params_text).is_ok();
+                        let frame = if valid {
+                            egui::Frame::none()
+                        } else {
+                            egui::Frame::none()
+                                .stroke(egui::Stroke::new(
+                                    1.0_f32,
+                                    egui::Color32::from_rgb(180, 80, 70),
+                                ))
+                                .rounding(egui::Rounding::same(4.0_f32))
+                        };
+                        frame.show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut self.params_text)
+                                    .code_editor()
+                                    .desired_rows(8)
+                                    .desired_width(f32::INFINITY),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            if primary_button(ui, valid, "Apply JSON") {
+                                self.apply_json();
+                            }
+                            ui.label(
+                                egui::RichText::new(if valid {
+                                    "valid JSON"
+                                } else {
+                                    "invalid JSON — check the brackets"
+                                })
+                                .size(10.0_f32)
+                                .color(if valid {
+                                    palette::OK
+                                } else {
+                                    egui::Color32::from_rgb(226, 116, 96)
+                                }),
+                            );
+                        });
                     }
                 }
                 if !self.selection.is_empty() {
