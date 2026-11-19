@@ -273,6 +273,17 @@ fn apply_theme(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
+/// Human-readable size for the outputs list (bytes / KiB / MiB).
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
 /// Collects the slash-separated paths of every numeric leaf inside `value`,
 /// which is what the optimiser can perturb (`objects/0/params/…`).
 fn numeric_paths(value: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
@@ -1475,6 +1486,8 @@ struct OpenFlexApp {
     show_browser: bool,
     show_path_picker: bool,
     path_candidates: Vec<String>,
+    /// Files written this session: (path, bytes), newest first.
+    outputs: Vec<(std::path::PathBuf, u64)>,
     browser_dir: std::path::PathBuf,
     browser_entries: Vec<(String, bool)>, // (name, is_dir)
     browser_error: Option<String>,
@@ -1586,6 +1599,7 @@ impl OpenFlexApp {
             show_browser: false,
             show_path_picker: false,
             path_candidates: Vec::new(),
+            outputs: Vec::new(),
             browser_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             browser_entries: Vec::new(),
             browser_error: None,
@@ -2435,6 +2449,7 @@ impl OpenFlexApp {
             .unwrap_or_else(|| PathBuf::from("openflex-timeseries.csv"));
         match std::fs::write(&path, text) {
             Ok(()) => {
+                self.remember_output(&path);
                 self.status = format!("Time series written to {}", path.display());
                 self.error = None;
             }
@@ -2458,6 +2473,15 @@ impl OpenFlexApp {
             }
         }
         front
+    }
+
+    /// Remembers an artefact written next to the model (path + byte size), so
+    /// the Outputs panel can show what this session produced.
+    fn remember_output(&mut self, path: &std::path::Path) {
+        let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+        self.outputs.retain(|(existing, _)| existing != path);
+        self.outputs.insert(0, (path.to_path_buf(), size));
+        self.outputs.truncate(12);
     }
 
     fn report_path(&self, extension: &str) -> PathBuf {
@@ -2534,6 +2558,7 @@ impl OpenFlexApp {
         let path = self.report_path("compare.csv");
         match std::fs::write(&path, text) {
             Ok(()) => {
+                self.remember_output(&path);
                 self.status = format!("Comparison written to {}", path.display());
                 self.error = None;
             }
@@ -2579,6 +2604,7 @@ idle,busy,blocked,down\n",
         let path = self.report_path("report.csv");
         match std::fs::write(&path, text) {
             Ok(()) => {
+                self.remember_output(&path);
                 self.status = format!("Report CSV written to {}", path.display());
                 self.error = None;
             }
@@ -2595,7 +2621,10 @@ idle,busy,blocked,down\n",
             Ok(text) => {
                 let path = self.report_path("baseline.json");
                 match std::fs::write(&path, text) {
-                    Ok(()) => self.status = format!("Baseline written to {}", path.display()),
+                    Ok(()) => {
+                        self.remember_output(&path);
+                        self.status = format!("Baseline written to {}", path.display());
+                    }
                     Err(error) => self.error = Some(format!("could not write baseline: {error}")),
                 }
             }
@@ -2631,7 +2660,10 @@ idle,busy,blocked,down\n",
             Ok(text) => {
                 let path = self.report_path("report.json");
                 match std::fs::write(&path, text) {
-                    Ok(()) => self.status = format!("Report JSON written to {}", path.display()),
+                    Ok(()) => {
+                        self.remember_output(&path);
+                        self.status = format!("Report JSON written to {}", path.display());
+                    }
                     Err(error) => {
                         self.error = Some(format!("could not write report JSON: {error}"))
                     }
@@ -3676,6 +3708,7 @@ idle,busy,blocked,down\n",
         let path = self.report_path("trace.jsonl");
         match std::fs::write(&path, text) {
             Ok(()) => {
+                self.remember_output(&path);
                 self.status = format!("Trace written to {}", path.display());
                 self.error = None;
             }
@@ -4293,6 +4326,7 @@ idle,busy,blocked,down\n",
             .unwrap_or_else(|| std::path::PathBuf::from("openflex-view.svg"));
         match std::fs::write(&path, svg) {
             Ok(()) => {
+                self.remember_output(&path);
                 self.status = format!("View exported to {}", path.display());
                 self.error = None;
             }
@@ -7101,6 +7135,57 @@ impl eframe::App for OpenFlexApp {
                     self.jump_to_event(time);
                 }
                 ui.separator();
+                egui::CollapsingHeader::new(format!("Outputs ({})", self.outputs.len()))
+                    .id_salt("outputs")
+                    .show(ui, |ui| {
+                        if self.outputs.is_empty() {
+                            empty_state(
+                                ui,
+                                "Nothing written yet",
+                                "Exports land next to the model and are listed here.",
+                            );
+                            return;
+                        }
+                        let mut clear = false;
+                        for (path, size) in self.outputs.clone() {
+                            ui.horizontal(|ui| {
+                                let name = path
+                                    .file_name()
+                                    .map(|name| name.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| path.display().to_string());
+                                let exists = path.exists();
+                                ui.label(
+                                    egui::RichText::new(name)
+                                        .small()
+                                        .monospace()
+                                        .color(if exists {
+                                            palette::TEXT
+                                        } else {
+                                            palette::TEXT_DIM.gamma_multiply(0.6)
+                                        }),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            egui::RichText::new(format_bytes(size))
+                                                .size(9.0_f32)
+                                                .color(palette::TEXT_DIM),
+                                        );
+                                    },
+                                );
+                            })
+                            .response
+                            .on_hover_text(path.display().to_string());
+                        }
+                        if ui.small_button("Clear list").clicked() {
+                            clear = true;
+                        }
+                        if clear {
+                            self.outputs.clear();
+                        }
+                    });
+                ui.separator();
                 panel_heading(ui, "Report");
                 if self.report.is_none() {
                     empty_state(
@@ -8435,6 +8520,15 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn format_bytes_switches_units() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1024), "1.0 KiB");
+        assert_eq!(format_bytes(1536), "1.5 KiB");
+        assert_eq!(format_bytes(3 * 1024 * 1024), "3.0 MiB");
     }
 
     #[test]

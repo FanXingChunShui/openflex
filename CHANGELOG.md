@@ -9,6 +9,9 @@
   行格式与 `openflex run --trace` 一致（`simulate_traced` 同一序列化路径）。
   此前桌面版的“事件日志”只记录 GUI 自己步进过的事件，看不到完整事件流。
 - 新增 `trace_export_lines_match_the_cli_jsonl` 测试（GUI 18 项）。
+- **产物清单**：右侧新增 `Outputs (n)` 折叠区，列出本次会话写出的文件（文件名、大小 B/KiB/MiB、完整路径悬停、
+  文件已删除时转暗），可 `Clear list`。报告 CSV/JSON、对比 CSV、时序 CSV、基线 JSON、trace JSONL、视图 SVG
+  七条导出路径都接入 `remember_output()`。新增 `format_bytes_switches_units` 测试（GUI 22 项）。
 - **优化字段选择器**：优化面板新增 `pick field`，列出模型里**所有数值叶子**（`objects/<n>/params/…`，忽略字符串与布尔），
   点击即填入最后一个变量的路径，不再需要手打斜杠路径。`numeric_paths()` + `numeric_paths_finds_every_number` 测试（GUI 21 项）。
 - **校验问题可点击**：`validate_collect` 的每条问题都带定位，点击即选中对应对象（`objects.<name>.…` 解析为名称，
