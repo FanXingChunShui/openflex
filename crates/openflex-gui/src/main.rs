@@ -17,7 +17,9 @@ use openflex_core::run_model;
 use openflex_core::stats::SimReport;
 use openflex_model::Distribution;
 use openflex_model::Model;
-use openflex_model::model::{ObjectKind, ObjectParams};
+use openflex_model::model::{
+    ObjectKind, ObjectParams, QueueOrder, RackPickPolicy, RackType, ValveOpeningCurve,
+};
 
 fn main() -> eframe::Result<()> {
     let model = std::env::args().nth(1);
@@ -425,6 +427,36 @@ fn optional_string(ui: &mut egui::Ui, label: &str, value: &mut Option<String>) -
     changed
 }
 
+/// Small combo box for a serde-style enum rendered as its `snake_case` name.
+fn enum_picker<T: Copy + PartialEq + std::fmt::Debug>(
+    ui: &mut egui::Ui,
+    id: &str,
+    label: &str,
+    current: T,
+    choices: &[(T, &str)],
+) -> Option<T> {
+    let text = choices
+        .iter()
+        .find(|(value, _)| *value == current)
+        .map(|(_, name)| *name)
+        .unwrap_or("?");
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        ui.label(label);
+        egui::ComboBox::from_id_salt(id)
+            .selected_text(text)
+            .show_ui(ui, |ui| {
+                for (value, name) in choices {
+                    if ui.selectable_label(*value == current, *name).clicked() && *value != current
+                    {
+                        picked = Some(*value);
+                    }
+                }
+            });
+    });
+    picked
+}
+
 struct EditForm {
     kind: ObjectKind,
     pos: [f32; 2],
@@ -479,6 +511,36 @@ impl EditForm {
                             .prefix("batch max wait "),
                     )
                     .changed();
+                {
+                    let label = match &p.order {
+                        QueueOrder::Fifo => "fifo".to_string(),
+                        QueueOrder::Lifo => "lifo".to_string(),
+                        QueueOrder::Priority => "priority".to_string(),
+                        QueueOrder::ByLabel(name) => format!("by_label({name})"),
+                    };
+                    ui.horizontal(|ui| {
+                        ui.label("order");
+                        egui::ComboBox::from_id_salt("queue-order")
+                            .selected_text(label)
+                            .show_ui(ui, |ui| {
+                                for (value, name) in [
+                                    (QueueOrder::Fifo, "fifo"),
+                                    (QueueOrder::Lifo, "lifo"),
+                                    (QueueOrder::Priority, "priority"),
+                                ] {
+                                    if ui.selectable_label(p.order == value, name).clicked()
+                                        && p.order != value
+                                    {
+                                        p.order = value;
+                                        changed = true;
+                                    }
+                                }
+                                if matches!(p.order, QueueOrder::ByLabel(_)) {
+                                    ui.label("by_label(…) — edit via JSON");
+                                }
+                            });
+                    });
+                }
             }
             ObjectParams::Processor(p) => {
                 changed |= distribution_editor(ui, "setup time", &mut p.setup_time);
@@ -586,10 +648,35 @@ impl EditForm {
                 changed |= optional_u32(ui, "channels", &mut p.channels);
                 changed |= optional_u32(ui, "depth", &mut p.depth);
                 changed |= optional_u32(ui, "aisles", &mut p.aisles);
-                ui.label(format!(
-                    "rack type / pick policy: edit via JSON ({:?} / {:?})",
-                    p.rack_type, p.pick_policy
-                ));
+                if let Some(value) = enum_picker(
+                    ui,
+                    "rack-type",
+                    "rack type",
+                    p.rack_type,
+                    &[
+                        (RackType::Floor, "floor"),
+                        (RackType::Gravity, "gravity"),
+                        (RackType::PushBack, "push_back"),
+                        (RackType::DriveIn, "drive_in"),
+                    ],
+                ) {
+                    p.rack_type = value;
+                    changed = true;
+                }
+                if let Some(value) = enum_picker(
+                    ui,
+                    "rack-pick",
+                    "pick policy",
+                    p.pick_policy,
+                    &[
+                        (RackPickPolicy::Fifo, "fifo"),
+                        (RackPickPolicy::LevelOrder, "level_order"),
+                        (RackPickPolicy::Nearest, "nearest"),
+                    ],
+                ) {
+                    p.pick_policy = value;
+                    changed = true;
+                }
             }
             ObjectParams::Elevator(p) => {
                 changed |= ui
@@ -728,6 +815,19 @@ impl EditForm {
                             .prefix("ratio "),
                     )
                     .changed();
+                if let Some(value) = enum_picker(
+                    ui,
+                    "valve-curve",
+                    "open curve",
+                    p.open_curve.unwrap_or_default(),
+                    &[
+                        (ValveOpeningCurve::Linear, "linear"),
+                        (ValveOpeningCurve::EqualPercentage, "equal_percentage"),
+                    ],
+                ) {
+                    p.open_curve = Some(value);
+                    changed = true;
+                }
                 changed |= optional_f64(ui, "pressure threshold", &mut p.pressure_threshold);
                 changed |= optional_f64(ui, "pressure open", &mut p.pressure_open);
                 changed |= optional_f64(ui, "opening", &mut p.opening);

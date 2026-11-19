@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.93.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **枚举型参数改为下拉**：新增通用 `enum_picker` 辅助；
+  - `rack`：rack type（floor/gravity/push_back/drive_in）与 pick policy（fifo/level_order/nearest）；
+  - `queue`：order（fifo/lifo/priority；`by_label` 仍走 JSON）；
+  - `fluid_valve`：open curve（linear/equal_percentage）。
+
+### 验证
+
+- 工作区 **507 passed / 0 failed**；GUI 编译、clippy 0、fmt 干净、启动无 panic。
+- v0.93.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.92.0 — 2026-11-19
 
 ### 桌面 GUI / Studio 回放打磨
