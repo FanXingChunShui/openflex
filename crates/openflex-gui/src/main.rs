@@ -4418,9 +4418,25 @@ impl eframe::App for OpenFlexApp {
                         });
                     if let Some(state) = self.sim_state.as_ref() {
                         ui.separator();
-                        ui.label(format!("t = {:.2}", state.now));
-                        ui.label(format!("created {}", state.items_created));
-                        ui.label(format!("completed {}", state.items_completed));
+                        // Live counters as compact labelled pairs (t / in / out),
+                        // monospace so the digits do not jitter while playing.
+                        for (label, value) in [
+                            ("t", format!("{:.1}", state.now)),
+                            ("in", state.items_created.to_string()),
+                            ("out", state.items_completed.to_string()),
+                        ] {
+                            ui.label(
+                                egui::RichText::new(label)
+                                    .size(9.0_f32)
+                                    .color(palette::TEXT_DIM),
+                            );
+                            ui.label(
+                                egui::RichText::new(value)
+                                    .small()
+                                    .monospace()
+                                    .color(palette::TEXT),
+                            );
+                        }
                     }
                 });
             });
