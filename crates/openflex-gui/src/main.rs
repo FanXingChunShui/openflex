@@ -757,7 +757,7 @@ fn optional_string(ui: &mut egui::Ui, label: &str, value: &mut Option<String>) -
     let mut text = value.clone().unwrap_or_default();
     let mut changed = false;
     ui.horizontal(|ui| {
-        ui.label(label);
+        ui.label(egui::RichText::new(label).small().color(palette::TEXT_DIM));
         if ui
             .add(egui::TextEdit::singleline(&mut text).desired_width(150.0))
             .changed()
