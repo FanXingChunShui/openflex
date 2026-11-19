@@ -3999,12 +3999,18 @@ idle,busy,blocked,down\n",
             // Sources / sinks: a drum.
             ObjectKind::Source | ObjectKind::Sink => {
                 let radius = 13.0 * zoom;
+                painter.circle_filled(
+                    base + egui::vec2(0.0, 3.0 * zoom),
+                    radius,
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 70),
+                );
                 painter.circle_filled(base, radius, fill);
                 painter.circle_stroke(base, radius, outline);
+                // Specular dot: a small bright spot up and to the left.
                 painter.circle_filled(
-                    base + egui::vec2(-radius * 0.3, -radius * 0.3),
-                    radius * 0.42,
-                    OpenFlexApp::shade(fill, 0.3),
+                    base + egui::vec2(-radius * 0.32, -radius * 0.34),
+                    radius * 0.34,
+                    OpenFlexApp::shade(fill, 0.42),
                 );
                 egui::Rect::from_center_size(base, egui::vec2(radius * 2.0, radius * 2.0))
             }
@@ -4017,8 +4023,13 @@ idle,busy,blocked,down\n",
             | ObjectKind::AsrsVehicle => {
                 let size = egui::vec2(26.0, 14.0) * zoom;
                 let body = egui::Rect::from_center_size(base, size);
-                painter.rect_filled(body, 6.0, fill);
-                painter.rect_stroke(body, 6.0, outline);
+                painter.rect_filled(
+                    body.translate(egui::vec2(0.0, 3.0 * zoom)),
+                    body.height() / 2.0,
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 70),
+                );
+                painter.rect_filled(body, body.height() / 2.0, fill);
+                painter.rect_stroke(body, body.height() / 2.0, outline);
                 painter.rect_filled(
                     egui::Rect::from_min_size(
                         body.left_top() + egui::vec2(0.0, -3.0 * zoom),
