@@ -5942,17 +5942,40 @@ impl eframe::App for OpenFlexApp {
             if scroll != 0.0 {
                 self.zoom = (self.zoom * (1.0 + scroll * 0.001)).clamp(0.2, 6.0);
             }
-            // Ground grid (z = 0 plane).
+            // Soft vignette: a lighter pool in the middle of the canvas gives
+            // the flat dark background some depth.
+            let mut shade = 0.0_f32;
+            while shade < 1.0 {
+                let inset = shade * rect.width().min(rect.height()) * 0.55;
+                painter.rect_stroke(
+                    rect.shrink(inset),
+                    0.0,
+                    egui::Stroke::new(
+                        rect.width().min(rect.height()) * 0.03,
+                        egui::Color32::from_rgba_unmultiplied(60, 76, 100, 3),
+                    ),
+                );
+                shade += 0.06;
+            }
+            // Ground grid (z = 0 plane), faded with distance from the focus so
+            // the horizon does not compete with the objects.
             let grid = 20;
             let step = 5.0;
+            let fade = |line: i32| -> egui::Color32 {
+                let distance = (line.abs() as f32 / grid as f32).clamp(0.0, 1.0);
+                let alpha = (1.0 - distance).powf(0.6);
+                let base = if line == 0 { 96 } else { 62 };
+                egui::Color32::from_rgba_unmultiplied(
+                    base,
+                    base + 8,
+                    base + 22,
+                    (alpha * if line == 0 { 150.0 } else { 95.0 }) as u8,
+                )
+            };
             for line in -grid..=grid {
                 let offset = line as f64 * step;
                 let extent = grid as f64 * step;
-                let color = if line == 0 {
-                    egui::Color32::from_rgb(70, 80, 95)
-                } else {
-                    egui::Color32::from_rgb(38, 44, 54)
-                };
+                let color = fade(line);
                 let a = self.project([offset, -extent], 0.0, center, scale);
                 let b = self.project([offset, extent], 0.0, center, scale);
                 let c = self.project([-extent, offset], 0.0, center, scale);
