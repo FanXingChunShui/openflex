@@ -286,6 +286,28 @@ fn primary_button(ui: &mut egui::Ui, enabled: bool, text: &str) -> bool {
     ui.add_enabled(enabled, button).clicked()
 }
 
+/// Empty-state placeholder used by the panels before any data exists.
+fn empty_state(ui: &mut egui::Ui, title: &str, hint: &str) {
+    ui.add_space(6.0);
+    egui::Frame::none()
+        .fill(palette::CARD.gamma_multiply(0.5))
+        .stroke(egui::Stroke::new(1.0_f32, palette::STROKE))
+        .rounding(egui::Rounding::same(8.0_f32))
+        .inner_margin(egui::Margin::symmetric(10.0, 10.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.vertical_centered(|ui| {
+                ui.label(egui::RichText::new(title).strong().color(palette::TEXT_DIM));
+                ui.label(
+                    egui::RichText::new(hint)
+                        .small()
+                        .color(palette::TEXT_DIM.gamma_multiply(0.8)),
+                );
+            });
+        });
+    ui.add_space(6.0);
+}
+
 /// A small metric card: dim caption above, large value below, hairline border.
 fn metric_card(ui: &mut egui::Ui, caption: &str, value: &str, accent: egui::Color32) {
     let width = (ui.available_width() - 8.0) / 2.0;
@@ -5575,7 +5597,11 @@ impl eframe::App for OpenFlexApp {
                         self.refresh_checkpoints();
                     }
                     if self.checkpoint_files.is_empty() {
-                        ui.label("No checkpoints saved yet.");
+                        empty_state(
+                            ui,
+                            "No checkpoints yet",
+                            "Run the model, then use Save checkpoint in the toolbar.",
+                        );
                         return;
                     }
                     for (file, time) in self.checkpoint_files.clone() {
@@ -5596,7 +5622,11 @@ impl eframe::App for OpenFlexApp {
                     .id_salt("event-log")
                     .show(ui, |ui| {
                         if self.event_log.is_empty() {
-                            ui.label("Use Step event or Play to fill the log.");
+                            empty_state(
+                                ui,
+                                "The event log is empty",
+                                "Press Step event or Play to record the next events.",
+                            );
                             return;
                         }
                         egui::ScrollArea::vertical()
@@ -5620,7 +5650,11 @@ impl eframe::App for OpenFlexApp {
                 panel_heading(ui, "Report");
                 ui.separator();
                 if self.report.is_none() {
-                    ui.label("Run the model to see statistics.");
+                    empty_state(
+                        ui,
+                        "No results yet",
+                        "Press Run for the full replication, or Play to watch it live.",
+                    );
                     return;
                 }
                 let mut export_csv = false;
