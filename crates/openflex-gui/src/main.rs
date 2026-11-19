@@ -6645,6 +6645,18 @@ impl eframe::App for OpenFlexApp {
                         );
                         return;
                     }
+                    let dir_label = if self.checkpoint_dir.trim().is_empty() {
+                        "checkpoints".to_string()
+                    } else {
+                        self.checkpoint_dir.trim().to_string()
+                    };
+                    ui.label(
+                        egui::RichText::new(format!("folder: {dir_label}"))
+                            .size(9.0_f32)
+                            .monospace()
+                            .color(palette::TEXT_DIM),
+                    );
+                    let mut delete: Option<String> = None;
                     for (file, time) in self.checkpoint_files.clone() {
                         ui.horizontal(|ui| {
                             let label = if time.is_nan() {
@@ -6652,10 +6664,49 @@ impl eframe::App for OpenFlexApp {
                             } else {
                                 format!("{file}  t={time:.2}")
                             };
-                            if ui.small_button(label).clicked() {
+                            let button = egui::Button::new(
+                                egui::RichText::new(label).small().monospace(),
+                            )
+                            .fill(palette::CARD)
+                            .stroke(egui::Stroke::new(1.0_f32, palette::STROKE))
+                            .rounding(egui::Rounding::same(5.0_f32));
+                            if ui.add(button).clicked() {
                                 self.load_checkpoint_file(&file);
                             }
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("x")
+                                            .small()
+                                            .color(egui::Color32::from_rgb(226, 140, 120)),
+                                    )
+                                    .fill(egui::Color32::TRANSPARENT)
+                                    .rounding(egui::Rounding::same(4.0_f32)),
+                                )
+                                .on_hover_text("delete this checkpoint file")
+                                .clicked()
+                            {
+                                delete = Some(file.clone());
+                            }
                         });
+                    }
+                    if let Some(file) = delete {
+                        let dir = if self.checkpoint_dir.trim().is_empty() {
+                            "checkpoints".to_string()
+                        } else {
+                            self.checkpoint_dir.trim().to_string()
+                        };
+                        let path = std::path::Path::new(&dir).join(&file);
+                        match std::fs::remove_file(&path) {
+                            Ok(()) => {
+                                self.status = format!("Deleted {}", path.display());
+                                self.refresh_checkpoints();
+                            }
+                            Err(error) => {
+                                self.error =
+                                    Some(format!("could not delete {}: {error}", path.display()))
+                            }
+                        }
                     }
                 });
                 let mut jump: Option<f64> = None;
