@@ -6429,11 +6429,15 @@ impl eframe::App for OpenFlexApp {
                             egui::Grid::new("compare-grid")
                                 .striped(true)
                                 .num_columns(4)
+                                .spacing([10.0, 3.0])
                                 .show(ui, |ui| {
-                                    ui.strong("Object");
-                                    ui.strong("Util base");
-                                    ui.strong("Util now");
-                                    ui.strong("Δ");
+                                    for header in ["Object", "before", "after", "delta"] {
+                                        ui.label(
+                                            egui::RichText::new(header)
+                                                .strong()
+                                                .color(palette::TEXT_DIM),
+                                        );
+                                    }
                                     ui.end_row();
                                     for (name, current) in &report.objects {
                                         let Some(base) = baseline.objects.get(name) else {
@@ -6441,20 +6445,43 @@ impl eframe::App for OpenFlexApp {
                                         };
                                         let delta =
                                             current.utilization.mean - base.utilization.mean;
-                                        let color = if delta > 0.005 {
-                                            egui::Color32::from_rgb(90, 200, 130)
+                                        let (colour, arrow) = if delta > 0.005 {
+                                            (palette::OK, "+")
                                         } else if delta < -0.005 {
-                                            egui::Color32::from_rgb(220, 100, 90)
+                                            (egui::Color32::from_rgb(226, 116, 96), "-")
                                         } else {
-                                            egui::Color32::from_gray(160)
+                                            (palette::TEXT_DIM, "=")
                                         };
                                         ui.label(name);
-                                        ui.label(format!("{:.0}%", base.utilization.mean * 100.0));
-                                        ui.label(format!(
-                                            "{:.0}%",
-                                            current.utilization.mean * 100.0
-                                        ));
-                                        ui.colored_label(color, format!("{:+.1}%", delta * 100.0));
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{:.0}%",
+                                                base.utilization.mean * 100.0
+                                            ))
+                                            .monospace()
+                                            .small()
+                                            .color(palette::TEXT_DIM),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{:.0}%",
+                                                current.utilization.mean * 100.0
+                                            ))
+                                            .monospace()
+                                            .small()
+                                            .color(palette::TEXT),
+                                        );
+                                        // Arrow + number: direction is readable
+                                        // without relying on colour alone.
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{arrow}{:+.1}%",
+                                                delta * 100.0
+                                            ))
+                                            .monospace()
+                                            .small()
+                                            .color(colour),
+                                        );
                                         ui.end_row();
                                     }
                                 });
