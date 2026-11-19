@@ -42,6 +42,7 @@ cargo build -p openflex-gui --release
 | 指标卡片 | 报告顶部 2×2 卡片：COMPLETED（含 ±CI）、CREATED、AVG WIP、AVG UTIL |
 | 状态配色 | `palette::ST_*` 单一来源；报告表每行名前有四段状态条（busy/blocked/idle/down），图例自动换行 |
 | 图表样式 | 时间序列：参考线 + 面积填充 + 末点数值；Process Flow：按块类型着色 + 阴影 + 选中高亮 |
+| 图表细节 | 利用率柱：圆角柱 + 50/100% 参考线 + 柱顶百分比 + hover 显示对象名；Pareto：四分之一参考线 + 前沿光晕环 + 轴标注 |
 | 指标热力图 | 工具栏 `Heatmap` 下拉（off/utilization/throughput/WIP）按报告给对象着色（绿→黄→红），左下角显示色带与当前指标 |
 | 实时可视化 | 鼠标悬停对象弹**提示气泡**：名称 + kind/内容量/状态/利用率 |
 | 实时可视化 | 对象标签带**深色描边**（热力色/亮色下仍可读），盒内右下角显示**状态角标**（idle/busy/blocked/down/off），颜色不再是唯一线索 |
