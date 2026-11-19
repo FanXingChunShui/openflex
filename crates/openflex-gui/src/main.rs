@@ -310,14 +310,17 @@ fn empty_state(ui: &mut egui::Ui, title: &str, hint: &str) {
 
 /// A small metric card: dim caption above, large value below, hairline border.
 fn metric_card(ui: &mut egui::Ui, caption: &str, value: &str, accent: egui::Color32) {
-    let width = (ui.available_width() - 8.0) / 2.0;
+    // Two cards per row share the panel width minus the item spacing.
+    let spacing = ui.spacing().item_spacing.x;
+    let width = ((ui.available_width() - spacing) / 2.0).max(70.0);
     egui::Frame::none()
         .fill(palette::CARD)
         .stroke(egui::Stroke::new(1.0_f32, palette::STROKE))
         .rounding(egui::Rounding::same(8.0_f32))
         .inner_margin(egui::Margin::symmetric(9.0, 6.0))
         .show(ui, |ui| {
-            ui.set_width(width.max(80.0));
+            ui.set_min_width(width);
+            ui.set_max_width(width);
             ui.label(
                 egui::RichText::new(caption)
                     .size(10.0_f32)
@@ -4077,26 +4080,35 @@ idle,busy,blocked,down\n",
     }
 
     fn kind_color(kind: ObjectKind) -> egui::Color32 {
+        // A calm, evenly-spaced hue wheel per object family: sources green,
+        // storage teal, machines indigo, transport amber, fluid cyan, the rest
+        // slate. Values sit around the same lightness so no kind shouts.
         match kind {
-            ObjectKind::Source => egui::Color32::from_rgb(70, 150, 100),
-            ObjectKind::Sink => egui::Color32::from_rgb(140, 80, 140),
+            ObjectKind::Source => egui::Color32::from_rgb(74, 156, 110),
+            ObjectKind::Sink => egui::Color32::from_rgb(150, 96, 158),
             ObjectKind::Processor | ObjectKind::MultiProcessor => {
-                egui::Color32::from_rgb(70, 120, 200)
+                egui::Color32::from_rgb(86, 124, 196)
             }
-            ObjectKind::Queue | ObjectKind::Rack => egui::Color32::from_rgb(90, 160, 190),
-            ObjectKind::Conveyor | ObjectKind::Escalator => egui::Color32::from_rgb(180, 150, 90),
+            ObjectKind::Combiner
+            | ObjectKind::Separator
+            | ObjectKind::Merge
+            | ObjectKind::Split => egui::Color32::from_rgb(104, 132, 186),
+            ObjectKind::Queue | ObjectKind::Rack => egui::Color32::from_rgb(84, 158, 176),
+            ObjectKind::Conveyor | ObjectKind::Escalator => egui::Color32::from_rgb(176, 148, 88),
             ObjectKind::Transporter
             | ObjectKind::Person
             | ObjectKind::Agv
             | ObjectKind::Robot
             | ObjectKind::Crane
-            | ObjectKind::AsrsVehicle => egui::Color32::from_rgb(200, 130, 90),
+            | ObjectKind::AsrsVehicle => egui::Color32::from_rgb(198, 132, 88),
+            ObjectKind::Dispatcher | ObjectKind::Resource => egui::Color32::from_rgb(160, 122, 172),
+            ObjectKind::Elevator => egui::Color32::from_rgb(132, 138, 168),
             ObjectKind::FluidTank
             | ObjectKind::FluidPipe
             | ObjectKind::FluidValve
             | ObjectKind::FluidGenerator
-            | ObjectKind::FluidSink => egui::Color32::from_rgb(90, 180, 170),
-            _ => egui::Color32::from_rgb(120, 130, 140),
+            | ObjectKind::FluidSink => egui::Color32::from_rgb(92, 176, 172),
+            _ => egui::Color32::from_rgb(124, 136, 152),
         }
     }
 }
