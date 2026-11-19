@@ -575,12 +575,18 @@ fn distribution_editor(ui: &mut egui::Ui, label: &str, dist: &mut Distribution) 
     let mut changed = false;
     let current = distribution_name(dist);
     ui.horizontal(|ui| {
-        ui.label(label);
+        // Dim label + fixed-width picker keeps every distribution row aligned.
+        ui.label(egui::RichText::new(label).small().color(palette::TEXT_DIM));
         egui::ComboBox::from_id_salt(format!("dist-{label}"))
-            .selected_text(current)
+            .selected_text(egui::RichText::new(current).small())
+            .width(118.0)
             .show_ui(ui, |ui| {
                 for name in DIST_CHOICES {
-                    if ui.selectable_label(current == *name, *name).clicked() && current != *name {
+                    if ui
+                        .selectable_label(current == *name, egui::RichText::new(*name).small())
+                        .clicked()
+                        && current != *name
+                    {
                         *dist = make_distribution(name);
                         changed = true;
                     }
