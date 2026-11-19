@@ -4581,14 +4581,48 @@ impl eframe::App for OpenFlexApp {
             });
 
         if let Some(error) = self.error.clone() {
-            egui::TopBottomPanel::top("error").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.colored_label(egui::Color32::from_rgb(200, 60, 60), error);
-                    if ui.button("Dismiss").clicked() {
-                        self.error = None;
-                    }
+            // A tinted banner with an accent rail reads as an alert, not as a
+            // second toolbar row.
+            egui::TopBottomPanel::top("error")
+                .frame(
+                    egui::Frame::side_top_panel(&ctx.style())
+                        .fill(egui::Color32::from_rgb(46, 24, 24))
+                        .stroke(egui::Stroke::new(
+                            1.0_f32,
+                            egui::Color32::from_rgb(120, 60, 56),
+                        ))
+                        .inner_margin(egui::Margin::symmetric(10.0, 5.0)),
+                )
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        let (rail, _) =
+                            ui.allocate_exact_size(egui::vec2(3.0, 16.0), egui::Sense::hover());
+                        ui.painter()
+                            .rect_filled(rail, 1.5, egui::Color32::from_rgb(226, 116, 96));
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(&error)
+                                .small()
+                                .color(egui::Color32::from_rgb(255, 205, 195)),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("Dismiss")
+                                            .small()
+                                            .color(egui::Color32::from_rgb(255, 220, 210)),
+                                    )
+                                    .fill(egui::Color32::TRANSPARENT)
+                                    .rounding(egui::Rounding::same(5.0_f32)),
+                                )
+                                .clicked()
+                            {
+                                self.error = None;
+                            }
+                        });
+                    });
                 });
-            });
         }
 
         egui::SidePanel::left("objects")
