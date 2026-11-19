@@ -22,13 +22,13 @@
 class Openflex < Formula
   desc "Clean-room, cross-platform discrete-event simulation engine and CLI"
   homepage "https://github.com/FanXingChunShui/openflex"
-  version "1.3.0"
+  version "1.4.0"
   license any_of: ["MIT", "Apache-2.0"]
 
   # macOS releases ship a universal (arm64 + x86_64) archive.
   on_macos do
     url "https://github.com/FanXingChunShui/openflex/releases/download/v#{version}/openflex-#{version}-universal-apple-darwin.tar.gz"
-    sha256 "038fed43cbbeb7897dac7045aa94f0155562631936f50fd6f40e05cf4799d0c9"
+    sha256 "34828b1fff801f9aa301e37c4a81c365f20ab733caff8bd9992ebf7c1a505db3"
   end
 
   # Linux releases are arch-specific; switch to the -musl archives if you need
@@ -36,10 +36,10 @@ class Openflex < Formula
   on_linux do
     if Hardware::CPU.arm?
       url "https://github.com/FanXingChunShui/openflex/releases/download/v#{version}/openflex-#{version}-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "e10a49215a5dc1af36423279f9bda12ca2b97a7a96d87a9eb6f86e082817a693"
+      sha256 "22b4664e20dbc70e273bb69ba48267da45df9af9db30ed9413101b41de7abb97"
     else
       url "https://github.com/FanXingChunShui/openflex/releases/download/v#{version}/openflex-#{version}-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "10ec843eaab467c76de5bb119d23f1ac358bcdab62f45e1cd9c72d8518eb9e80"
+      sha256 "a9b2b4e943e5afef580ecdab9d67c2914b10dfaf165ba6c597bb6b89c8f735d9"
     end
   end
 
