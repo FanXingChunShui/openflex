@@ -18,6 +18,8 @@
   completed 加粗并按是否在前沿着色。
 - **时间序列控件**：三个指标改为**分段按钮**（选中=靛蓝底深色字），对象选择改为**胶囊 chip**（选中=琥珀描边），
   取代裸 radio 与 selectable_label。
+- **报告导出区**：拆成 `EXPORT`（CSV / JSON / compare CSV）与 `BASELINE`（set / save / load / compare）两行，
+  `compare` 改为选中态分段按钮。
 - **流程默认栅格**：由每行 3 块改为 4 块、间距 140×64，较长的流程横向铺开而不是过早换行。
 - **Apply 行**：`Apply` 改主按钮，编辑后出现琥珀 `unsaved edits` 提示，`JSON` 开关右对齐并带悬停说明。
 - **对象属性头部**：类型色圆点 + 大号名称 + 圆角 kind 标签；`x/y/z` 改为等宽轴标签 + 两位小数拖动框。
