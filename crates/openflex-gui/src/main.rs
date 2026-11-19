@@ -269,6 +269,35 @@ fn apply_theme(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
+/// A primary (accent-filled) toolbar button, used for the actions that start
+/// or stop a run so they stand out from the secondary tools.
+fn primary_button(ui: &mut egui::Ui, enabled: bool, text: &str) -> bool {
+    let button = egui::Button::new(
+        egui::RichText::new(text)
+            .strong()
+            .color(egui::Color32::from_rgb(14, 18, 26)),
+    )
+    .fill(if enabled {
+        palette::ACCENT_HI
+    } else {
+        palette::CARD
+    })
+    .rounding(egui::Rounding::same(6.0_f32));
+    ui.add_enabled(enabled, button).clicked()
+}
+
+/// A dim upper-case label that names the toolbar group that follows.
+fn tool_group(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(2.0);
+    ui.label(
+        egui::RichText::new(text)
+            .size(10.0_f32)
+            .strong()
+            .color(palette::TEXT_DIM.gamma_multiply(0.9)),
+    );
+    ui.add_space(2.0);
+}
+
 /// Small coloured heading used by the side panels.
 fn panel_heading(ui: &mut egui::Ui, text: &str) {
     ui.add_space(2.0);
@@ -4048,6 +4077,7 @@ impl eframe::App for OpenFlexApp {
                             .color(palette::ACCENT_HI),
                     );
                     ui.separator();
+                    tool_group(ui, "FILE");
                     ui.add(egui::TextEdit::singleline(&mut self.path_input).desired_width(280.0));
                     if ui.button("Open").clicked() && !self.path_input.is_empty() {
                         self.load(PathBuf::from(self.path_input.clone()));
@@ -4102,13 +4132,8 @@ impl eframe::App for OpenFlexApp {
                         });
                     }
                     ui.separator();
-                    if ui
-                        .add_enabled(
-                            self.model.is_some() && !self.report_running,
-                            egui::Button::new("Run"),
-                        )
-                        .clicked()
-                    {
+                    tool_group(ui, "RUN");
+                    if primary_button(ui, self.model.is_some() && !self.report_running, "Run") {
                         self.start_report();
                     }
                     if ui
@@ -4149,12 +4174,10 @@ impl eframe::App for OpenFlexApp {
                         self.paused = false;
                         self.status = "Resumed".into();
                     }
-                    if ui
-                        .add_enabled(self.model.is_some(), egui::Button::new("Play"))
-                        .clicked()
-                    {
+                    if primary_button(ui, self.model.is_some(), "Play") {
                         self.running = true;
                         self.paused = false;
+                        self.status = "Playing".into();
                     }
                     if ui.button("Reset").clicked() {
                         self.reset_run();
@@ -4172,6 +4195,7 @@ impl eframe::App for OpenFlexApp {
                         );
                     }
                     ui.separator();
+                    tool_group(ui, "STATE");
                     if ui
                         .add_enabled(self.model.is_some(), egui::Button::new("Save checkpoint"))
                         .clicked()
@@ -4203,6 +4227,7 @@ impl eframe::App for OpenFlexApp {
                             .suffix("×"),
                     );
                     ui.separator();
+                    tool_group(ui, "VIEW");
                     if ui
                         .add_enabled(self.model.is_some(), egui::Button::new("Fit"))
                         .on_hover_text("frame the selection (or the whole model)")

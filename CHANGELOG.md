@@ -7,6 +7,7 @@
 - **配色与主题**：新增 `palette`（BG/PANEL/CARD/CANVAS/STROKE/TEXT/TEXT_DIM/ACCENT/ACCENT_HI/AMBER/OK），
   圆角（6–8px）、细描边、hover/active 高亮环、选中对比色、等宽 hint；面板/工具栏/画布分层配色，内容区最深。
 - **底部状态栏**：运行状态圆点（运行=绿、后台任务=琥珀、空闲=空心灰）、消息、右侧当前时间 `t=…` 与品牌色标题。
+- **工具栏分组**：`FILE` / `RUN` / `STATE` / `VIEW` 大写小标签分隔，`Run` 与 `Play` 改为**主按钮**（琥珀底+深色字）。
 - **面板标题**：左/右面板改用大写字距小标题（`MODEL TREE` / `CONNECTIONS` / `REPORT` …）+ 细分隔线。
 - **面板宽度**：左 330px（可拖 260–560）、右 360px（300–620），参数表单不再被挤压。
 - **中文字体**：`install_cjk_font()` 按 macOS/Linux/Windows 候选路径加载系统 CJK 字体作为**回退族**，
