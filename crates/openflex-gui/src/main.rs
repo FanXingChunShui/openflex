@@ -4631,23 +4631,44 @@ impl eframe::App for OpenFlexApp {
                             .show(ui, |ui| {
                                 for index in indices.clone() {
                                     let object = &model.objects[index];
-                                    let label = format!(
-                                        "{}  ({:.0}, {:.0}){}",
-                                        object.name,
-                                        object.pos[0],
-                                        object.pos[1],
-                                        object
-                                            .rot
-                                            .map(|rot| format!("  {rot:.0}°"))
-                                            .unwrap_or_default()
-                                    );
-                                    if ui
-                                        .selectable_label(
-                                            self.selected == Some(index),
-                                            label,
-                                        )
-                                        .clicked()
-                                    {
+                                    // Row: kind dot · name · dimmed coordinates.
+                                    // Coordinates are right-aligned so names
+                                    // stay readable instead of being pushed.
+                                    let selected = self.selected == Some(index);
+                                    let mut clicked = false;
+                                    ui.horizontal(|ui| {
+                                        let (dot, _) = ui.allocate_exact_size(
+                                            egui::vec2(8.0, 8.0),
+                                            egui::Sense::hover(),
+                                        );
+                                        ui.painter().circle_filled(
+                                            dot.center(),
+                                            3.4,
+                                            Self::kind_color(object.kind),
+                                        );
+                                        clicked = ui
+                                            .selectable_label(selected, &object.name)
+                                            .clicked();
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                let rot = object
+                                                    .rot
+                                                    .map(|rot| format!("  {rot:.0}°"))
+                                                    .unwrap_or_default();
+                                                ui.label(
+                                                    egui::RichText::new(format!(
+                                                        "({:.0}, {:.0}){rot}",
+                                                        object.pos[0], object.pos[1]
+                                                    ))
+                                                    .small()
+                                                    .monospace()
+                                                    .color(palette::TEXT_DIM),
+                                                );
+                                            },
+                                        );
+                                    });
+                                    if clicked {
                                         self.select(index);
                                     }
                                 }
