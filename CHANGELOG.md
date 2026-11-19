@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.96.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **指标热力图**：工具栏 `Heatmap` 下拉（off / utilization / throughput / WIP），运行后按报告值给对象着色
+  （utilization 直接 0..1，其余按当前最大值归一），使用绿→黄→红三段插值；画布左下角显示色带与当前指标。
+
+### 验证
+
+- 工作区 **507 passed / 0 failed**；GUI 编译、clippy 0、fmt 干净、启动无 panic。
+- v0.96.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.95.0 — 2026-11-19
 
 ### 桌面 GUI

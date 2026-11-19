@@ -27,6 +27,7 @@ cargo build -p openflex-gui --release
 | 运行 | `Run`（后台线程跑完整复现出报告）、`Step`（按 step 推进）、**`Step event`（逐事件推进并记录到事件日志）**、`Play`/`Pause`/`Resume`（`SimulationHandle`）、`Reset`、**进度条**、实时 `t`/created/completed |
 | 事件日志 | 右侧可折叠面板显示最近 200 条 `t / event / object`（`Step event` 或 `Play` 时填充，自动滚到底部）；**点击任一行可跳转到该事件的模型时间**（重建句柄并推进到该时刻） |
 | Studio trace 跳转 | Studio 的 trace 列表行可点击，把时间轴滑块移到该事件时间并同步 nearest 提示 |
+| 指标热力图 | 工具栏 `Heatmap` 下拉（off/utilization/throughput/WIP）按报告给对象着色（绿→黄→红），左下角显示色带与当前指标 |
 | 实时可视化 | 对象按**瞬时状态**着色（busy 红 / blocked 橙 / idle 绿 / down 灰 / off-shift 深灰）、`[n]` 显示瞬时持有件数、**对象上方 item 圆点**、**执行器（transporter/person/AGV/robot/crane/asrs/elevator）按引擎实时位置绘制**、状态图例 |
 | Process Flow | **可视化节点画布**（块画成圆角矩形、拖拽移动、点击两个块建立连接、选中高亮）+ 块 JSON 编辑、`+create/delay/assign/decision/transfer/sink` 快速加块、块列表删除（连带清理连接）、from/to 连接、`Apply process flow` |
 | 实验 | **stop-time 扫描**与**参数扫描**（JSON path，起点/步长/次数）→ 后台逐次运行，柱状图 + 值/completed 表 |

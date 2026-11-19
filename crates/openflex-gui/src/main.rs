@@ -934,6 +934,7 @@ struct OpenFlexApp {
     handle: Option<SimulationHandle<'static>>,
     sim_state: Option<SimulationState>,
     event_log: Vec<EventEntry>,
+    heatmap: u8,
     running: bool,
     paused: bool,
     step_size: f32,
@@ -1014,6 +1015,7 @@ impl OpenFlexApp {
             handle: None,
             sim_state: None,
             event_log: Vec::new(),
+            heatmap: 0,
             running: false,
             paused: false,
             step_size: 10.0,
@@ -2497,6 +2499,50 @@ impl OpenFlexApp {
 
     /// Fill colour of an object while a simulation is running: the dominant
     /// state (busy/blocked/down/off-shift/idle) wins over the kind colour.
+    /// Green → yellow → red ramp used by the report heatmap.
+    fn heat_colour(value: f64) -> egui::Color32 {
+        let t = value.clamp(0.0, 1.0) as f32;
+        if t < 0.5 {
+            let k = t / 0.5;
+            egui::Color32::from_rgb(
+                (22.0 + (250.0 - 22.0) * k) as u8,
+                163,
+                (74.0 + (204.0 - 74.0) * k) as u8,
+            )
+        } else {
+            let k = (t - 0.5) / 0.5;
+            egui::Color32::from_rgb(
+                (250.0 + (220.0 - 250.0) * k) as u8,
+                (204.0 + (38.0 - 204.0) * k) as u8,
+                (21.0 + (38.0 - 21.0) * k) as u8,
+            )
+        }
+    }
+
+    /// Colour of an object under the selected heatmap metric.
+    fn heatmap_fill(&self, name: &str) -> Option<egui::Color32> {
+        if self.heatmap == 0 {
+            return None;
+        }
+        let report = self.report.as_ref()?;
+        let metric = |stats: &openflex_core::stats::ObjectAggregate| match self.heatmap {
+            2 => stats.throughput.mean.max(0.0),
+            3 => stats.avg_content.mean.max(0.0),
+            _ => stats.utilization.mean.clamp(0.0, 1.0),
+        };
+        let values: Vec<f64> = report.objects.values().map(metric).collect();
+        let max = values.iter().copied().fold(0.0_f64, f64::max);
+        let current = report.objects.get(name).map(metric)?;
+        let normalised = if self.heatmap == 1 {
+            current
+        } else if max > 0.0 {
+            current / max
+        } else {
+            0.0
+        };
+        Some(Self::heat_colour(normalised))
+    }
+
     fn state_fill(stats: &openflex_core::stats::ObjectStats) -> egui::Color32 {
         // Prefer the instantaneous state reported by the engine (task-145).
         if let Some(state) = stats.state {
@@ -2934,6 +2980,27 @@ impl eframe::App for OpenFlexApp {
                     self.pitch = 0.05;
                     self.zoom = 1.0;
                 }
+                ui.separator();
+                ui.label("Heatmap");
+                egui::ComboBox::from_id_salt("heatmap")
+                    .selected_text(match self.heatmap {
+                        1 => "utilization",
+                        2 => "throughput",
+                        3 => "WIP",
+                        _ => "off",
+                    })
+                    .show_ui(ui, |ui| {
+                        for (value, name) in [
+                            (0u8, "off"),
+                            (1, "utilization"),
+                            (2, "throughput"),
+                            (3, "WIP"),
+                        ] {
+                            if ui.selectable_label(self.heatmap == value, name).clicked() {
+                                self.heatmap = value;
+                            }
+                        }
+                    });
                 if let Some(state) = self.sim_state.as_ref() {
                     ui.separator();
                     ui.label(format!("t = {:.2}", state.now));
@@ -4234,6 +4301,9 @@ impl eframe::App for OpenFlexApp {
                     Some(stats) => Self::state_fill(stats),
                     None => Self::kind_color(object.kind),
                 };
+                if let Some(colour) = self.heatmap_fill(&object.name) {
+                    fill = colour;
+                }
                 if selected {
                     fill = egui::Color32::from_rgb(255, 190, 80);
                 } else if in_selection {
@@ -4378,6 +4448,29 @@ impl eframe::App for OpenFlexApp {
                     let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                     ui.painter().rect_filled(rect, 2.0, color);
                     ui.label(egui::RichText::new(name).small());
+                }
+                ui.separator();
+                if self.heatmap != 0 {
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "heatmap: {}",
+                            match self.heatmap {
+                                1 => "utilization",
+                                2 => "throughput",
+                                _ => "WIP",
+                            }
+                        ))
+                        .small(),
+                    );
+                    let green = Self::heat_colour(0.0);
+                    let yellow = Self::heat_colour(0.5);
+                    let red = Self::heat_colour(1.0);
+                    for colour in [green, yellow, red] {
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                        ui.painter().rect_filled(rect, 2.0, colour);
+                    }
                 }
                 ui.separator();
                 ui.label(
