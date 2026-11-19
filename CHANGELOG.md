@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.14.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **连接类型 A/S**：新建连接的工具栏增加 `A`/`S` 下拉；`S` 写入 `ConnectionKind::S`（资源链路，不占输出端口、不参与物流路由），
+  连接列表以 `[A]` / `[S]` 前缀显示，避免只有 A 连接可编辑的缺口。
+
+### 文档
+
+- `docs/UNIMPLEMENTED.md` 第 12 项更新：A/S 语义已双向可用，仅剩 Pull 的按端口条件策略。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**516 passed / 0 failed**；clippy 0、fmt 干净、启动无 panic。
+
 ## v1.13.0 — 2026-11-19
 
 ### 桌面 GUI

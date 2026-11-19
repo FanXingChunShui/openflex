@@ -1020,6 +1020,7 @@ struct OpenFlexApp {
     new_from: String,
     new_to: String,
     new_port: String,
+    new_conn_kind: u8,
     handle: Option<SimulationHandle<'static>>,
     sim_state: Option<SimulationState>,
     event_log: Vec<EventEntry>,
@@ -1116,6 +1117,7 @@ impl OpenFlexApp {
             new_from: String::new(),
             new_to: String::new(),
             new_port: String::new(),
+            new_conn_kind: 0,
             handle: None,
             sim_state: None,
             event_log: Vec::new(),
@@ -3061,7 +3063,11 @@ impl OpenFlexApp {
             port,
             strategy: None,
             flow_rate: None,
-            kind: None,
+            kind: if self.new_conn_kind == 1 {
+                Some(openflex_model::model::ConnectionKind::S)
+            } else {
+                None
+            },
         });
         match copy.validate() {
             Ok(()) => {
@@ -4568,6 +4574,22 @@ impl eframe::App for OpenFlexApp {
                             .hint_text("port")
                             .desired_width(46.0),
                     );
+                    egui::ComboBox::from_id_salt("new-conn-kind")
+                        .selected_text(match self.new_conn_kind {
+                            1 => "S",
+                            _ => "A",
+                        })
+                        .width(46.0)
+                        .show_ui(ui, |ui| {
+                            for (value, name) in [(0u8, "A"), (1, "S")] {
+                                if ui
+                                    .selectable_label(self.new_conn_kind == value, name)
+                                    .clicked()
+                                {
+                                    self.new_conn_kind = value;
+                                }
+                            }
+                        });
                     if ui.button("Add").clicked() {
                         self.add_connection();
                     }

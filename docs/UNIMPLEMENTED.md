@@ -19,7 +19,7 @@
 | 9 | **全局表（Global Table）** | schema/校验/访问器 + 表达式 `table(...)` 只读访问 | 写入/表驱动参数更新未支持 | S |
 | 10 | **完整任务序列** | `task_sequence` 条件分支/自定义时长/优先级/抢占/恢复延迟/逐段事件；**已知简化：额外段在收尾阶段（`settle_task`）逐段调度，未插入 load/unload 之间**（当前行为由 `crates/openflex-core/tests/task_sequence_timeline.rs` 固定） | 无物理载货量 | S |
 | 11 | **完整触发器集合** | OnCreate/Entry/Exit/Receive/Message/Breakdown/Repair/PhotoEye | 无 OnContentChange/OnStateChange/OnDraw/OnReset/OnStop/OnResume 等 | M |
-| 12 | **A/S 连接与 Pull 细节** | 基础 Pull（strategy/requirement） | 无 A/S 连接端口语义、无 Pull 的完整策略（按端口条件等） | S–M |
+| 12 | **A/S 连接与 Pull 细节** | A 连接参与路由、S 连接作为资源链路不占端口；桌面 GUI 新增连接时可选 A/S 并在列表中标注；Pull（strategy/requirement）已实现 | Pull 的按端口条件策略仍缺 | S |
 | 13 | **Processor 故障细节** | 立即打断+补足剩余时间、MTBF/MTTR、first_failure_time、状态计时 | 无故障期间操作员释放策略、无 Down Behavior 动作复用 | S |
 
 ## 2. Process Flow 与脚本
