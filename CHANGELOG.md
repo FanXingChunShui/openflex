@@ -9,6 +9,7 @@
 
 - **选中态**：选中对象不再覆盖为固定琥珀色，而是把当前状态/热力色**提亮 35%**（`shade_light`），
   既看得出被选中，也保留状态含义；新增 `shade_light_keeps_a_selected_body_recognisable` 测试（GUI 14 项）。
+- **新建模型即脏**：`New` 生成的文档从未落盘，因此立即点亮 `*` 并提示 `New model — not saved yet`。
 - **撤销/重做计入脏标记**：撤销或重做同样改变文档内容，会点亮品牌后的 `*`。
 - **模型脏标记**：品牌名后出现琥珀 `*`（悬停「unsaved model changes」），由 `snapshot()` 置位、保存/加载清除；
   与表单级 `unsaved edits` 区分「模型已改」与「当前对象表单未应用」。

@@ -1691,7 +1691,9 @@ impl OpenFlexApp {
                 // Centre the starter pipeline so it is visible immediately.
                 self.selection.clear();
                 self.frame_selection();
-                self.status = "New model".into();
+                // A fresh document has never been written, so prompt a save.
+                self.model_dirty = true;
+                self.status = "New model — not saved yet".into();
                 self.error = None;
             }
             Err(error) => self.error = Some(format!("could not create a model: {error}")),
