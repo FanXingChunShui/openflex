@@ -273,6 +273,35 @@ fn apply_theme(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
+thread_local! {
+    /// Footprint polygon of the last flat-mode object drawn, for hit-testing.
+    static FLAT_FOOTPRINT: std::cell::RefCell<Option<Vec<egui::Pos2>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Point-in-convex-polygon test (`corners` in order). Used so clicking a
+/// rotated 2D footprint hits the right object instead of its bounding box.
+fn point_in_polygon(point: egui::Pos2, corners: &[egui::Pos2]) -> bool {
+    if corners.len() < 3 {
+        return false;
+    }
+    let mut sign = 0.0_f32;
+    for index in 0..corners.len() {
+        let a = corners[index];
+        let b = corners[(index + 1) % corners.len()];
+        let cross = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
+        if cross.abs() < 1e-3 {
+            continue;
+        }
+        if sign == 0.0 {
+            sign = cross.signum();
+        } else if sign != cross.signum() {
+            return false;
+        }
+    }
+    true
+}
+
 /// Human-readable size for the outputs list (bytes / KiB / MiB).
 fn format_bytes(bytes: u64) -> String {
     if bytes < 1024 {
@@ -4480,6 +4509,8 @@ idle,busy,blocked,down\n",
                 for pair in [[0, 1], [1, 2], [2, 3], [3, 0]] {
                     painter.line_segment([corners[pair[0]], corners[pair[1]]], rim);
                 }
+                // Remember the polygon so hit-testing follows the rotated shape.
+                FLAT_FOOTPRINT.with(|slot| *slot.borrow_mut() = Some(corners.clone()));
                 return egui::Rect::from_points(&corners);
             }
             let body = egui::Rect::from_center_size(base, egui::vec2(w, h) * zoom);
@@ -8295,6 +8326,7 @@ impl eframe::App for OpenFlexApp {
                     fill = shade_light(fill, 0.16);
                 }
                 let rotation = object.rot.unwrap_or(0.0) as f32;
+                FLAT_FOOTPRINT.with(|slot| *slot.borrow_mut() = None);
                 let box_rect = Self::draw_object_shape_mode(
                     &painter,
                     object.kind,
@@ -8432,7 +8464,12 @@ impl eframe::App for OpenFlexApp {
                 }
                 if response.clicked()
                     && let Some(pointer) = response.interact_pointer_pos()
-                    && box_rect.expand(6.0).contains(pointer)
+                    && (box_rect.expand(6.0).contains(pointer)
+                        || FLAT_FOOTPRINT.with(|slot| {
+                            slot.borrow()
+                                .as_ref()
+                                .is_some_and(|corners| point_in_polygon(pointer, corners))
+                        }))
                 {
                     self.select(index);
                 }
@@ -8668,6 +8705,25 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn point_in_polygon_handles_rotated_footprints() {
+        // A diamond (square rotated 45°): its centre and inner points hit, the
+        // corners of the bounding box do not.
+        let corners = vec![
+            egui::pos2(50.0, 0.0),
+            egui::pos2(100.0, 50.0),
+            egui::pos2(50.0, 100.0),
+            egui::pos2(0.0, 50.0),
+        ];
+        assert!(point_in_polygon(egui::pos2(50.0, 50.0), &corners));
+        assert!(point_in_polygon(egui::pos2(50.0, 20.0), &corners));
+        assert!(!point_in_polygon(egui::pos2(2.0, 2.0), &corners));
+        assert!(!point_in_polygon(egui::pos2(98.0, 98.0), &corners));
+        assert!(!point_in_polygon(egui::pos2(200.0, 50.0), &corners));
+        // Degenerate input is rejected rather than panicking.
+        assert!(!point_in_polygon(egui::pos2(0.0, 0.0), &[]));
     }
 
     #[test]

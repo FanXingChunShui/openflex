@@ -9,6 +9,8 @@
   行格式与 `openflex run --trace` 一致（`simulate_traced` 同一序列化路径）。
   此前桌面版的“事件日志”只记录 GUI 自己步进过的事件，看不到完整事件流。
 - 新增 `trace_export_lines_match_the_cli_jsonl` 测试（GUI 18 项）。
+- **平面模式命中测试**：旋转后的平面足迹用**多边形命中**（`point_in_polygon`）代替轴对齐包围盒，
+  斜放的对象不会再“点这块选中那块”；新增 `point_in_polygon_handles_rotated_footprints` 测试（GUI 23 项）。
 - **平面模式支持旋转**：2D 模式下对象按其 `rot` 画成**旋转多边形**（此前被忽略），北向刻度只在未旋转时绘制
   （原判定写成了恒真，等于每个对象都画刻度）。
 - **平面 2D 模式**：工具栏新增 `2D on/off` 切换——关闭高度的**俯视平面**渲染（圆角底板 + 深色描边 + 北向刻度），
