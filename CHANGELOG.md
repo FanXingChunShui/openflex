@@ -18,6 +18,7 @@
   completed 加粗并按是否在前沿着色。
 - **时间序列控件**：三个指标改为**分段按钮**（选中=靛蓝底深色字），对象选择改为**胶囊 chip**（选中=琥珀描边），
   取代裸 radio 与 selectable_label。
+- **模型设置面板**：`NAME` / `UNIT` / `STOP` / `WARMUP` / `SEED` / `REPS` 统一为大写字距标签，`Apply settings` 改主按钮。
 - **报告导出区**：拆成 `EXPORT`（CSV / JSON / compare CSV）与 `BASELINE`（set / save / load / compare）两行，
   `compare` 改为选中态分段按钮。
 - **流程默认栅格**：由每行 3 块改为 4 块、间距 140×64，较长的流程横向铺开而不是过早换行。

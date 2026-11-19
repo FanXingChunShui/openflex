@@ -4526,15 +4526,22 @@ impl eframe::App for OpenFlexApp {
                 egui::CollapsingHeader::new("Model settings")
                     .id_salt("model-settings")
                     .show(ui, |ui| {
+                        let axis = |ui: &mut egui::Ui, text: &str| {
+                            ui.label(
+                                egui::RichText::new(text)
+                                    .size(9.0_f32)
+                                    .color(palette::TEXT_DIM),
+                            );
+                        };
                         ui.horizontal(|ui| {
-                            ui.label("name");
+                            axis(ui, "NAME");
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.model_name)
-                                    .desired_width(150.0),
+                                    .desired_width(160.0),
                             );
                         });
                         ui.horizontal(|ui| {
-                            ui.label("unit");
+                            axis(ui, "UNIT");
                             egui::ComboBox::from_id_salt("model-unit")
                                 .selected_text(
                                     ["seconds", "minutes", "hours", "days"]
@@ -4559,13 +4566,21 @@ impl eframe::App for OpenFlexApp {
                                 });
                         });
                         ui.horizontal(|ui| {
-                            ui.label("stop");
+                            ui.label(
+                                egui::RichText::new("STOP")
+                                    .size(9.0_f32)
+                                    .color(palette::TEXT_DIM),
+                            );
                             ui.add(
                                 egui::DragValue::new(&mut self.model_stop)
                                     .speed(10.0)
                                     .range(1.0..=1.0e9),
                             );
-                            ui.label("warmup");
+                            ui.label(
+                                egui::RichText::new("WARMUP")
+                                    .size(9.0_f32)
+                                    .color(palette::TEXT_DIM),
+                            );
                             ui.add(
                                 egui::DragValue::new(&mut self.model_warmup)
                                     .speed(1.0)
@@ -4573,19 +4588,28 @@ impl eframe::App for OpenFlexApp {
                             );
                         });
                         ui.horizontal(|ui| {
-                            ui.label("seed");
+                            ui.label(
+                                egui::RichText::new("SEED")
+                                    .size(9.0_f32)
+                                    .color(palette::TEXT_DIM),
+                            );
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.model_seed)
                                     .desired_width(110.0),
                             );
-                            ui.label("reps");
+                            ui.label(
+                                egui::RichText::new("REPS")
+                                    .size(9.0_f32)
+                                    .color(palette::TEXT_DIM),
+                            );
                             ui.add(
                                 egui::DragValue::new(&mut self.model_replications)
                                     .speed(1.0)
                                     .range(1..=1000),
                             );
                         });
-                        if ui.button("Apply settings").clicked() {
+                        ui.add_space(2.0);
+                        if primary_button(ui, true, "Apply settings") {
                             self.apply_model_settings();
                         }
                     });
