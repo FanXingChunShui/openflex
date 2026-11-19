@@ -5743,19 +5743,36 @@ impl eframe::App for OpenFlexApp {
                     }
                     ui.checkbox(&mut self.opt_secondary_stay, "2nd: max stay");
                 });
-                if ui
-                    .add_enabled(
-                        self.model.is_some() && !self.opt_running,
-                        egui::Button::new(if self.opt_running {
-                            "Optimising…"
-                        } else {
-                            "Run"
-                        }),
-                    )
-                    .clicked()
-                {
-                    self.start_optimize();
-                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            self.model.is_some() && !self.opt_running,
+                            egui::Button::new(if self.opt_running {
+                                "Optimising…"
+                            } else {
+                                "Run"
+                            }),
+                        )
+                        .clicked()
+                    {
+                        self.start_optimize();
+                    }
+                    // Show how many model evaluations a run will cost before
+                    // the user commits to it.
+                    let evaluations = match self.opt_mode {
+                        0 => (self.opt_steps.clamp(2, 50) as u64).pow(self.opt_vars.len().max(1) as u32),
+                        1 => self.opt_samples.clamp(2, 300) as u64,
+                        _ => {
+                            (self.opt_samples.clamp(2, 300) as u64)
+                                * (self.opt_steps.clamp(2, 50) as u64).max(1)
+                        }
+                    };
+                    ui.label(
+                        egui::RichText::new(format!("~{evaluations} runs"))
+                            .size(10.0_f32)
+                            .color(palette::TEXT_DIM),
+                    );
+                });
                 if let Some((values, score, second)) = self.opt_best.as_ref() {
                     let vars = values
                         .iter()
