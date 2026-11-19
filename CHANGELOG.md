@@ -13,6 +13,12 @@
 
 - `cargo test --workspace --locked`（含 GUI）：**517 passed / 0 failed**；clippy 0、fmt 干净、启动无 panic。
 
+### 发布修复
+
+- Linux GUI job 因 `azure.archive.ubuntu.com` 暂时不可达导致 apt 失败，release 只发出 13 个资产；
+  release workflow 的 apt 步骤改为 **4 次重试 + `Acquire::Retries=5`**，重跑该 job 后补齐
+  `openflex-gui_1.17.0_amd64.deb` 与 `openflex-gui-1.17.0-1.x86_64.rpm`，并重算 `SHA256SUMS.txt`，14 项全部校验通过。
+
 ## v1.16.0 — 2026-11-19
 
 ### 桌面 GUI
