@@ -370,14 +370,27 @@ fn tool_group(ui: &mut egui::Ui, text: &str) {
 
 /// Small coloured heading used by the side panels.
 fn panel_heading(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(3.0);
+    // Accent bar + letterspaced caption: a section header that reads as a
+    // header without a heavy rule under it.
+    ui.horizontal(|ui| {
+        let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, 14.0), egui::Sense::hover());
+        ui.painter().rect_filled(bar, 1.5, palette::ACCENT);
+        ui.add_space(4.0);
+        let spaced: String = text
+            .to_uppercase()
+            .chars()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        ui.label(
+            egui::RichText::new(spaced)
+                .size(10.0)
+                .strong()
+                .color(palette::TEXT),
+        );
+    });
     ui.add_space(2.0);
-    ui.label(
-        egui::RichText::new(text.to_uppercase())
-            .size(11.0)
-            .strong()
-            .color(palette::TEXT_DIM),
-    );
-    ui.add_space(1.0);
     ui.separator();
 }
 
