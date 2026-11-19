@@ -273,6 +273,14 @@ fn apply_theme(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
+/// Lightens `color` towards white by `amount` (0…1) so a selected body keeps
+/// its meaning (state/heatmap) while clearly reading as selected.
+fn shade_light(color: egui::Color32, amount: f32) -> egui::Color32 {
+    let t = amount.clamp(0.0, 1.0);
+    let mix = |channel: u8| (channel as f32 + (255.0 - channel as f32) * t).round() as u8;
+    egui::Color32::from_rgb(mix(color.r()), mix(color.g()), mix(color.b()))
+}
+
 /// A primary (accent-filled) toolbar button, used for the actions that start
 /// or stop a run so they stand out from the secondary tools.
 fn primary_button(ui: &mut egui::Ui, enabled: bool, text: &str) -> bool {
@@ -6846,7 +6854,9 @@ impl eframe::App for OpenFlexApp {
                     fill = colour;
                 }
                 if selected {
-                    fill = egui::Color32::from_rgb(255, 190, 80);
+                    // Selected objects keep their state/heatmap colour but get a
+                    // bright warm fill so the selection is unmistakable.
+                    fill = shade_light(fill, 0.35);
                 } else if in_selection {
                     fill = OpenFlexApp::shade(fill, 0.25);
                 }
@@ -7178,6 +7188,22 @@ mod tests {
         // Out-of-range inputs clamp instead of wrapping.
         assert_eq!(OpenFlexApp::heat_colour(-1.0), green);
         assert_eq!(OpenFlexApp::heat_colour(2.0), red);
+    }
+
+    #[test]
+    fn shade_light_keeps_a_selected_body_recognisable() {
+        // Lightening keeps the hue order (a busy red stays reddish) and never
+        // clips back to the original value.
+        let busy = palette::ST_BUSY;
+        let lit = shade_light(busy, 0.35);
+        assert!(lit.r() >= busy.r() && lit.g() >= busy.g() && lit.b() >= busy.b());
+        assert!(lit.r() > lit.g(), "the red hue survives lightening");
+        assert_eq!(shade_light(busy, 0.0), busy);
+        // Fully lightening saturates to white.
+        assert_eq!(
+            shade_light(busy, 1.0),
+            egui::Color32::from_rgb(255, 255, 255)
+        );
     }
 
     #[test]
