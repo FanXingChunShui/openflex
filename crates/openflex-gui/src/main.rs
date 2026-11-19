@@ -273,6 +273,31 @@ fn apply_theme(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
+/// Collects the slash-separated paths of every numeric leaf inside `value`,
+/// which is what the optimiser can perturb (`objects/0/params/…`).
+fn numeric_paths(value: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Number(_) => out.push(prefix.to_string()),
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                let next = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}/{key}")
+                };
+                numeric_paths(child, &next, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                let next = format!("{prefix}/{index}");
+                numeric_paths(child, &next, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Minimal XML escaping for text placed in the exported SVG.
 fn xml_escape(text: &str) -> String {
     text.replace('&', "&amp;")
@@ -1448,6 +1473,8 @@ struct OpenFlexApp {
     show_save_as: bool,
     /// Built-in file browser (no system dialog dependency on Linux CI).
     show_browser: bool,
+    show_path_picker: bool,
+    path_candidates: Vec<String>,
     browser_dir: std::path::PathBuf,
     browser_entries: Vec<(String, bool)>, // (name, is_dir)
     browser_error: Option<String>,
@@ -1557,6 +1584,8 @@ impl OpenFlexApp {
             save_as: String::new(),
             show_save_as: false,
             show_browser: false,
+            show_path_picker: false,
+            path_candidates: Vec::new(),
             browser_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             browser_entries: Vec::new(),
             browser_error: None,
@@ -6363,6 +6392,29 @@ impl eframe::App for OpenFlexApp {
                             high: 10.0,
                         });
                     }
+                    // Picking a field beats typing a slash path by hand.
+                    if ui
+                        .add_enabled(self.model.is_some(), egui::Button::new("pick field"))
+                        .on_hover_text("choose a numeric parameter to optimise")
+                        .clicked()
+                    {
+                        self.show_path_picker = true;
+                        self.path_candidates.clear();
+                        if let Some(model) = self.model
+                            && let Ok(json) = serde_json::to_value(model)
+                            && let Some(objects) =
+                                json.get("objects").and_then(|o| o.as_array())
+                        {
+                            for (index, object) in objects.iter().enumerate() {
+                                if let Some(params) = object.get("params") {
+                                    let prefix = format!("objects/{index}/params");
+                                    numeric_paths(params, &prefix, &mut self.path_candidates);
+                                }
+                            }
+                        }
+                        self.path_candidates.sort();
+                        self.path_candidates.dedup();
+                    }
                     ui.label("steps");
                     ui.add(
                         egui::DragValue::new(&mut self.opt_steps)
@@ -7494,6 +7546,68 @@ impl eframe::App for OpenFlexApp {
                 self.show_help = false;
             }
         }
+        if self.show_path_picker {
+            let mut open = true;
+            egui::Window::new("Pick a numeric field")
+                .open(&mut open)
+                .resizable(true)
+                .default_width(520.0)
+                .show(ctx, |ui| {
+                    if self.path_candidates.is_empty() {
+                        empty_state(
+                            ui,
+                            "No numeric fields",
+                            "This model has no numeric parameter to optimise.",
+                        );
+                    }
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} numeric field(s) — click to fill the last variable",
+                            self.path_candidates.len()
+                        ))
+                        .size(10.0_f32)
+                        .color(palette::TEXT_DIM),
+                    );
+                    let mut chosen: Option<String> = None;
+                    egui::ScrollArea::vertical()
+                        .id_salt("path-picker")
+                        .max_height(320.0)
+                        .show(ui, |ui| {
+                            for path in &self.path_candidates {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new(path)
+                                                .small()
+                                                .monospace()
+                                                .color(palette::TEXT),
+                                        )
+                                        .fill(egui::Color32::TRANSPARENT)
+                                        .rounding(egui::Rounding::same(4.0_f32)),
+                                    )
+                                    .clicked()
+                                {
+                                    chosen = Some(path.clone());
+                                }
+                            }
+                        });
+                    if let Some(path) = chosen {
+                        if let Some(last) = self.opt_vars.last_mut() {
+                            last.path = path;
+                        } else {
+                            self.opt_vars.push(OptVar {
+                                path,
+                                low: 1.0,
+                                high: 10.0,
+                            });
+                        }
+                        self.show_path_picker = false;
+                    }
+                });
+            if !open {
+                self.show_path_picker = false;
+            }
+        }
         if self.show_browser {
             let mut open = true;
             egui::Window::new("Open model")
@@ -8321,6 +8435,30 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn numeric_paths_finds_every_number() {
+        let params = serde_json::json!({
+            "process_time": {"distribution": "constant", "value": 4.0},
+            "interarrival": {"distribution": "exponential", "mean": 5.0},
+            "max_content": 100,
+            "label": "fast",
+            "flags": [true, 2.5]
+        });
+        let mut paths = Vec::new();
+        numeric_paths(&params, "objects/0/params", &mut paths);
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                "objects/0/params/flags/1",
+                "objects/0/params/interarrival/mean",
+                "objects/0/params/max_content",
+                "objects/0/params/process_time/value",
+            ],
+            "strings and booleans must not be offered: {paths:?}"
+        );
     }
 
     #[test]
