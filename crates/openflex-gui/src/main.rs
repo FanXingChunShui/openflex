@@ -4443,11 +4443,44 @@ impl eframe::App for OpenFlexApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     panel_heading(ui, "Model tree");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.search)
-                            .hint_text("filter")
-                            .desired_width(110.0),
-                    );
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.search)
+                                .hint_text("filter by name or kind")
+                                .desired_width(160.0),
+                        );
+                        if !self.search.is_empty()
+                            && ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("x")
+                                            .small()
+                                            .color(palette::TEXT_DIM),
+                                    )
+                                    .fill(egui::Color32::TRANSPARENT)
+                                    .rounding(egui::Rounding::same(4.0_f32)),
+                                )
+                                .clicked()
+                        {
+                            self.search.clear();
+                        }
+                        if let Some(model) = self.model {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{} objects",
+                                            model.objects.len()
+                                        ))
+                                        .small()
+                                        .monospace()
+                                        .color(palette::TEXT_DIM),
+                                    );
+                                },
+                            );
+                        }
+                    });
                 });
                 egui::CollapsingHeader::new(format!(
                     "Layout presets ({})",
