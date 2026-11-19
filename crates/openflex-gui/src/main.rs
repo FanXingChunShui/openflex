@@ -273,6 +273,15 @@ fn apply_theme(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
+/// Minimal XML escaping for text placed in the exported SVG.
+fn xml_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 /// Lightens `color` towards white by `amount` (0…1) so a selected body keeps
 /// its meaning (state/heatmap) while clearly reading as selected.
 fn shade_light(color: egui::Color32, amount: f32) -> egui::Color32 {
@@ -3768,8 +3777,16 @@ idle,busy,blocked,down\n",
         svg.push_str(&format!(
             r##"<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
-<rect width="{width}" height="{height}" fill="#12161c"/>
-"##
+<defs>
+  <radialGradient id="glow" cx="50%" cy="50%" r="62%">
+    <stop offset="0%" stop-color="#1d2734"/>
+    <stop offset="100%" stop-color="#0b0e13"/>
+  </radialGradient>
+</defs>
+<rect width="{width}" height="{height}" fill="url(#glow)"/>
+<text x="20" y="30" fill="#8fa3bd" font-size="13" font-family="sans-serif">{title}</text>
+"##,
+            title = xml_escape(&model.name)
         ));
         for connection in &model.connections {
             let (Some(from), Some(to)) =
@@ -3780,10 +3797,27 @@ idle,busy,blocked,down\n",
             let a = self.project(from.pos, 0.0, center, scale);
             let b = self.project(to.pos, 0.0, center, scale);
             svg.push_str(&format!(
-                r##"<line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="#5a7896" stroke-width="1.2"/>
+                r##"<line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="#5a7896" stroke-width="2.4" stroke-opacity="0.35"/>
+<line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="#86a6c8" stroke-width="1.2"/>
 "##,
-                a.x, a.y, b.x, b.y
+                a.x, a.y, b.x, b.y, a.x, a.y, b.x, b.y
             ));
+            // Arrow head a few pixels before the target box.
+            let dir = (b - a).normalized();
+            if dir.length_sq() > 0.0 {
+                let tip = b - dir * 12.0;
+                let normal = egui::vec2(-dir.y, dir.x) * 4.0;
+                svg.push_str(&format!(
+                    r##"<polygon points="{:.1},{:.1} {:.1},{:.1} {:.1},{:.1}" fill="#86a6c8"/>
+"##,
+                    tip.x + dir.x * 5.0,
+                    tip.y + dir.y * 5.0,
+                    tip.x + normal.x,
+                    tip.y + normal.y,
+                    tip.x - normal.x,
+                    tip.y - normal.y
+                ));
+            }
         }
         for object in &model.objects {
             let point = self.project(object.pos, object.z, center, scale);
@@ -3796,15 +3830,21 @@ idle,busy,blocked,down\n",
             let (x, y) = (point.x, point.y);
             let w = 38.0 * self.zoom;
             let h = 18.0 * self.zoom;
-            let name = &object.name;
+            // Names go through the escaper so `&`/`<` in a model cannot break
+            // the XML; the caption sits on a dark plate like the on-screen chip.
+            let name = xml_escape(&object.name);
+            let label_w = (object.name.chars().count() as f32 * 6.2 + 10.0).max(24.0);
             svg.push_str(&format!(
                 "<g transform=\"rotate({rot:.1} {x:.1} {y:.1})\">\
 <rect x=\"{rx:.1}\" y=\"{ry:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"4\" fill=\"#{r:02x}{g:02x}{b:02x}\" stroke=\"#14181e\"/>\
 </g>\
-<text x=\"{x:.1}\" y=\"{ty:.1}\" fill=\"#ffffff\" font-size=\"11\" text-anchor=\"middle\" font-family=\"sans-serif\">{name}</text>\n",
+<rect x=\"{px:.1}\" y=\"{py:.1}\" width=\"{label_w:.1}\" height=\"15\" rx=\"7.5\" fill=\"#0e121a\" fill-opacity=\"0.82\" stroke=\"#7a8ea9\" stroke-opacity=\"0.45\"/>\
+<text x=\"{x:.1}\" y=\"{ty:.1}\" fill=\"#ffffff\" font-size=\"10.5\" text-anchor=\"middle\" font-family=\"sans-serif\">{name}</text>\n",
                 rx = x - w / 2.0,
                 ry = y - h / 2.0,
-                ty = y - 12.0 * self.zoom,
+                px = x - label_w / 2.0,
+                py = y - 12.0 * self.zoom - 12.0,
+                ty = y - 12.0 * self.zoom - 1.0,
             ));
         }
         svg.push_str("</svg>\n");
@@ -7344,6 +7384,15 @@ mod tests {
             assert!(!model.objects.is_empty(), "{name} has no objects");
         }
         assert!(builtin_example("nope").is_none());
+    }
+
+    #[test]
+    fn xml_escape_protects_svg_text() {
+        assert_eq!(xml_escape("A&B"), "A&amp;B");
+        assert_eq!(xml_escape("<x>"), "&lt;x&gt;");
+        assert_eq!(xml_escape("say \"hi\""), "say &quot;hi&quot;");
+        assert_eq!(xml_escape("it's"), "it&apos;s");
+        assert_eq!(xml_escape("plain"), "plain");
     }
 
     #[test]
