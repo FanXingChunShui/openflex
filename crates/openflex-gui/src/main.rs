@@ -6007,29 +6007,52 @@ impl eframe::App for OpenFlexApp {
                 let mut export_compare = false;
                 let mut save_baseline = false;
                 let mut load_baseline = false;
+                // Two tidy rows: exports, then baseline actions.
                 ui.horizontal(|ui| {
-                    if ui.small_button("Export report CSV").clicked() {
+                    ui.label(
+                        egui::RichText::new("EXPORT")
+                            .size(9.0_f32)
+                            .color(palette::TEXT_DIM),
+                    );
+                    if ui.small_button("CSV").clicked() {
                         export_csv = true;
                     }
-                    if ui.small_button("Export report JSON").clicked() {
+                    if ui.small_button("JSON").clicked() {
                         export_json = true;
                     }
-                    if ui.small_button("Set baseline").clicked() {
+                    if self.baseline.is_some() && ui.small_button("compare CSV").clicked() {
+                        export_compare = true;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("BASELINE")
+                            .size(9.0_f32)
+                            .color(palette::TEXT_DIM),
+                    );
+                    if ui.small_button("set").clicked() {
                         set_baseline = true;
                     }
-                    if ui.small_button("Save baseline").clicked() {
+                    if ui.small_button("save").clicked() {
                         save_baseline = true;
                     }
-                    if ui.small_button("Load baseline").clicked() {
+                    if ui.small_button("load").clicked() {
                         load_baseline = true;
                     }
-                    if self.baseline.is_some()
-                        && ui.selectable_label(self.show_compare, "Compare").clicked()
-                    {
-                        self.show_compare = !self.show_compare;
-                    }
-                    if self.baseline.is_some() && ui.small_button("Export compare CSV").clicked() {
-                        export_compare = true;
+                    if self.baseline.is_some() {
+                        let selected = self.show_compare;
+                        let button = egui::Button::new(
+                            egui::RichText::new("compare").small().color(if selected {
+                                egui::Color32::from_rgb(14, 18, 26)
+                            } else {
+                                palette::TEXT
+                            }),
+                        )
+                        .fill(if selected { palette::ACCENT_HI } else { palette::CARD })
+                        .rounding(egui::Rounding::same(5.0_f32));
+                        if ui.add(button).clicked() {
+                            self.show_compare = !self.show_compare;
+                        }
                     }
                 });
                 if set_baseline {
