@@ -6318,31 +6318,65 @@ impl eframe::App for OpenFlexApp {
                 );
                 let rect = response.rect;
                 painter.rect_filled(rect, 0.0, palette::CANVAS);
-                let entries: Vec<f64> = report
+                // Utilisation bars: rounded columns with a gridline at 50/100 %,
+                // the value printed above each bar when there is room.
+                let entries: Vec<(String, f64)> = report
                     .objects
-                    .values()
-                    .map(|stats| stats.utilization.mean.clamp(0.0, 1.0))
+                    .iter()
+                    .map(|(name, stats)| (name.clone(), stats.utilization.mean.clamp(0.0, 1.0)))
                     .collect();
                 if !entries.is_empty() {
+                    for fraction in [0.5_f32, 1.0] {
+                        let y = rect.bottom() - 4.0 - (rect.height() - 8.0) * fraction;
+                        painter.line_segment(
+                            [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+                            egui::Stroke::new(
+                                1.0_f32,
+                                egui::Color32::from_rgba_unmultiplied(120, 145, 180, 26),
+                            ),
+                        );
+                    }
                     let width = rect.width() / entries.len() as f32;
-                    for (position, utilization) in entries.iter().enumerate() {
+                    let show_values = width >= 34.0;
+                    for (position, (name, utilization)) in entries.iter().enumerate() {
                         let height = (rect.height() - 8.0) * (*utilization as f32);
                         let bar = egui::Rect::from_min_max(
                             egui::pos2(
-                                rect.left() + position as f32 * width + 2.0,
+                                rect.left() + position as f32 * width + 2.5,
                                 rect.bottom() - 4.0 - height,
                             ),
                             egui::pos2(
-                                rect.left() + (position as f32 + 1.0) * width - 2.0,
+                                rect.left() + (position as f32 + 1.0) * width - 2.5,
                                 rect.bottom() - 4.0,
                             ),
                         );
-                        let color = egui::Color32::from_rgb(
-                            (60.0 + 180.0 * *utilization as f32) as u8,
-                            140,
-                            (200.0 - 120.0 * *utilization as f32) as u8,
-                        );
-                        painter.rect_filled(bar, 2.0, color);
+                        painter.rect_filled(bar, 3.0, Self::heat_colour(*utilization));
+                        if show_values {
+                            painter.text(
+                                egui::pos2(bar.center().x, bar.top() - 1.0),
+                                egui::Align2::CENTER_BOTTOM,
+                                format!("{:.0}", utilization * 100.0),
+                                egui::FontId::proportional(9.0),
+                                palette::TEXT_DIM,
+                            );
+                        }
+                        // Hovering a bar names the object (the chart has no axis).
+                        if let Some(pointer) = response.hover_pos()
+                            && bar.expand2(egui::vec2(width * 0.5, 4.0)).contains(pointer)
+                        {
+                            painter.rect_stroke(
+                                bar,
+                                3.0,
+                                egui::Stroke::new(1.2_f32, palette::ACCENT_HI),
+                            );
+                            painter.text(
+                                egui::pos2(bar.center().x, bar.bottom() + 2.0),
+                                egui::Align2::CENTER_TOP,
+                                name,
+                                egui::FontId::proportional(9.0),
+                                palette::TEXT,
+                            );
+                        }
                     }
                 }
                 ui.separator();
