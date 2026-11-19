@@ -6280,7 +6280,14 @@ impl eframe::App for OpenFlexApp {
                     if ui.small_button("JSON").clicked() {
                         export_json = true;
                     }
-                    if self.baseline.is_some() && ui.small_button("compare CSV").clicked() {
+                    // The compare export only exists once a baseline is captured.
+                    if ui
+                        .add_enabled(
+                            self.baseline.is_some(),
+                            egui::Button::new(egui::RichText::new("compare CSV").small()),
+                        )
+                        .clicked()
+                    {
                         export_compare = true;
                     }
                 });
