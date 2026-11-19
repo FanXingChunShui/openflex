@@ -4728,6 +4728,7 @@ impl eframe::App for OpenFlexApp {
                         }
                     });
                 ui.separator();
+                let mut form_changed = false;
                 if let (Some(model), Some(index), Some(form)) =
                     (self.model, self.selected, self.form.as_mut())
                 {
@@ -4799,13 +4800,27 @@ impl eframe::App for OpenFlexApp {
                         .id_salt("form")
                         .max_height(ui.available_height() * 0.55)
                         .show(ui, |ui| {
-                            form.show(ui);
+                            form_changed = form.show(ui);
                         });
                     ui.horizontal(|ui| {
-                        if ui.button("Apply").clicked() {
+                        if primary_button(ui, true, "Apply") {
                             self.apply_form();
                         }
-                        ui.checkbox(&mut self.show_json, "JSON");
+                        // A "dirty" hint appears as soon as a field is edited.
+                        if form_changed {
+                            ui.label(
+                                egui::RichText::new("unsaved edits")
+                                    .size(10.0_f32)
+                                    .color(palette::AMBER),
+                            );
+                        }
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                ui.checkbox(&mut self.show_json, "JSON")
+                                    .on_hover_text("edit the raw parameter JSON");
+                            },
+                        );
                     });
                     // Live validation: the model is checked against the same
                     // rules the CLI uses, so problems show up before Apply.
