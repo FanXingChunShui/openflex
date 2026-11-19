@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.23.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **悬停提示**：鼠标停在对象上弹出气泡，显示名称与 `kind / content / state / util`（无运行数据时显示 kind），
+  与状态角标、标签描边互补，不必点开表单即可查看实时状态。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**518 passed / 0 failed**；clippy 0、fmt 干净、启动无 panic。
+
 ## v1.22.0 — 2026-11-19
 
 ### 桌面 GUI

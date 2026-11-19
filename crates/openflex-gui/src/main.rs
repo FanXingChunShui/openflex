@@ -5536,6 +5536,8 @@ impl eframe::App for OpenFlexApp {
                 );
             }
             let mut context_target: Option<usize> = None;
+            let pointer_pos = response.hover_pos();
+            let mut hovered_info: Option<(String, String)> = None;
             for (index, object) in model.objects.iter().enumerate() {
                 let live = self
                     .sim_state
@@ -5680,6 +5682,30 @@ impl eframe::App for OpenFlexApp {
                         egui::Color32::from_rgba_unmultiplied(255, 255, 255, 190),
                     );
                 }
+                if let Some(pointer) = pointer_pos
+                    && box_rect.expand(4.0).contains(pointer)
+                {
+                    let summary = match live {
+                        Some(stats) => format!(
+                            "{}\ncontent {} · state {} · util {:.0}%",
+                            object.kind.as_str(),
+                            stats.content,
+                            stats
+                                .state
+                                .map(|state| match state {
+                                    openflex_core::engine::State::Idle => "idle",
+                                    openflex_core::engine::State::Busy => "busy",
+                                    openflex_core::engine::State::Blocked => "blocked",
+                                    openflex_core::engine::State::Down => "down",
+                                    openflex_core::engine::State::OffShift => "off shift",
+                                })
+                                .unwrap_or("—"),
+                            stats.utilization * 100.0
+                        ),
+                        None => object.kind.as_str().to_string(),
+                    };
+                    hovered_info = Some((object.name.clone(), summary));
+                }
                 if response.clicked()
                     && let Some(pointer) = response.interact_pointer_pos()
                     && box_rect.expand(6.0).contains(pointer)
@@ -5692,6 +5718,21 @@ impl eframe::App for OpenFlexApp {
                 {
                     context_target = Some(index);
                 }
+            }
+            if let Some((name, summary)) = hovered_info {
+                egui::show_tooltip_at_pointer(
+                    ctx,
+                    egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("object-tooltip")),
+                    egui::Id::new("object-tooltip-anchor"),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new(&name)
+                                .strong()
+                                .color(egui::Color32::from_rgb(255, 210, 120)),
+                        );
+                        ui.label(egui::RichText::new(summary).small());
+                    },
+                );
             }
             if let Some(index) = context_target {
                 let name = model.objects[index].name.clone();
