@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.20.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **报告表扩展**：对象统计表新增 `Thru`（吞吐/时间单位）与 `±CI`（吞吐的 95% 半宽）两列；
+  对象名悬停显示 `idle / busy / blocked / down` 四态占比，与 CLI 报告同口径。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**517 passed / 0 failed**；clippy 0、fmt 干净、启动无 panic。
+
 ## v1.19.0 — 2026-11-19
 
 ### 桌面 GUI

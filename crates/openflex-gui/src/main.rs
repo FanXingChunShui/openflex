@@ -5139,7 +5139,7 @@ impl eframe::App for OpenFlexApp {
                     .show(ui, |ui| {
                         egui::Grid::new("stats-grid")
                             .striped(true)
-                            .num_columns(6)
+                            .num_columns(8)
                             .show(ui, |ui| {
                                 ui.strong("Object");
                                 ui.strong("In");
@@ -5147,14 +5147,24 @@ impl eframe::App for OpenFlexApp {
                                 ui.strong("WIP");
                                 ui.strong("Stay");
                                 ui.strong("Util");
+                                ui.strong("Thru");
+                                ui.strong("±CI");
                                 ui.end_row();
                                 for (name, stats) in &report.objects {
-                                    ui.label(name);
+                                    ui.label(name).on_hover_text(format!(
+                                        "idle {:.0}% · busy {:.0}% · blocked {:.0}% · down {:.0}%",
+                                        stats.idle_fraction.mean * 100.0,
+                                        stats.busy_fraction.mean * 100.0,
+                                        stats.blocked_fraction.mean * 100.0,
+                                        stats.down_fraction.mean * 100.0
+                                    ));
                                     ui.label(format!("{:.0}", stats.input_count.mean));
                                     ui.label(format!("{:.0}", stats.output_count.mean));
                                     ui.label(format!("{:.1}", stats.avg_content.mean));
                                     ui.label(format!("{:.1}", stats.avg_stay_time.mean));
                                     ui.label(format!("{:.0}%", stats.utilization.mean * 100.0));
+                                    ui.label(format!("{:.2}", stats.throughput.mean));
+                                    ui.label(format!("±{:.3}", stats.throughput.ci95));
                                     ui.end_row();
                                 }
                             });
