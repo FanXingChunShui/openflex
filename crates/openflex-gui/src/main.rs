@@ -2865,6 +2865,19 @@ idle,busy,blocked,down\n",
         self.status = format!("Framed {} object(s)", indices.len());
     }
 
+    /// Diagram colour for one Process Flow block type.
+    fn flow_kind_colour(kind: &str) -> egui::Color32 {
+        match kind {
+            "source" | "create" => egui::Color32::from_rgb(58, 132, 106),
+            "delay" => egui::Color32::from_rgb(150, 116, 58),
+            "assign" => egui::Color32::from_rgb(96, 96, 158),
+            "decision" => egui::Color32::from_rgb(148, 92, 128),
+            "sink" => egui::Color32::from_rgb(96, 104, 122),
+            "transfer" => egui::Color32::from_rgb(70, 108, 150),
+            _ => egui::Color32::from_rgb(78, 96, 132),
+        }
+    }
+
     /// Camera centre and zoom that frame `points` **in projected space**, so
     /// the current camera rotation cannot push labels outside the viewport.
     /// `canvas` is the smaller side of the drawing area in pixels.
@@ -4864,19 +4877,65 @@ impl eframe::App for OpenFlexApp {
                             for (id, rect) in &rects {
                                 let selected = self.flow_selected.as_ref() == Some(id);
                                 let pending = self.flow_pending.as_ref() == Some(id);
+                                // Type colour comes from the block type so the
+                                // canvas reads like a diagram, not a grey grid.
+                                let kind = self
+                                    .flow_value()
+                                    .and_then(|flow| {
+                                        flow.get("blocks")?.as_array()?.iter().find_map(|block| {
+                                            (block.get("id")?.as_str()? == id)
+                                                .then(|| block.get("type")?.as_str())
+                                                .flatten()
+                                                .map(str::to_string)
+                                        })
+                                    })
+                                    .unwrap_or_default();
+                                let base = Self::flow_kind_colour(&kind);
                                 let fill = if selected || pending {
-                                    egui::Color32::from_rgb(255, 190, 80)
+                                    palette::AMBER
                                 } else {
-                                    egui::Color32::from_rgb(70, 100, 140)
+                                    base
                                 };
-                                painter.rect_filled(*rect, 6.0, fill);
+                                // Drop shadow keeps the node off the background.
+                                painter.rect_filled(
+                                    rect.translate(egui::vec2(0.0, 2.0)),
+                                    (6.0 * zoom).max(3.0),
+                                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 90),
+                                );
+                                painter.rect_filled(*rect, (6.0 * zoom).max(3.0), fill);
+                                painter.rect_stroke(
+                                    *rect,
+                                    (6.0 * zoom).max(3.0),
+                                    egui::Stroke::new(
+                                        1.0_f32,
+                                        if selected || pending {
+                                            egui::Color32::from_rgb(255, 236, 190)
+                                        } else {
+                                            palette::STROKE
+                                        },
+                                    ),
+                                );
+                                let text_colour = if selected || pending {
+                                    egui::Color32::from_rgb(26, 20, 10)
+                                } else {
+                                    egui::Color32::WHITE
+                                };
                                 painter.text(
                                     rect.center(),
                                     egui::Align2::CENTER_CENTER,
                                     id,
-                                    egui::FontId::proportional(13.0),
-                                    egui::Color32::WHITE,
+                                    egui::FontId::proportional((13.0 * zoom).max(9.0)),
+                                    text_colour,
                                 );
+                                if !kind.is_empty() && zoom > 0.6 {
+                                    painter.text(
+                                        rect.left_top() + egui::vec2(6.0 * zoom, 4.0 * zoom),
+                                        egui::Align2::LEFT_TOP,
+                                        kind,
+                                        egui::FontId::proportional((9.0 * zoom).max(7.0)),
+                                        text_colour.gamma_multiply(0.75),
+                                    );
+                                }
                             }
                             ui.horizontal(|ui| {
                                 ui.label(
@@ -5415,16 +5474,68 @@ impl eframe::App for OpenFlexApp {
                         let y = rect.bottom() - 6.0 - (rect.height() - 12.0) * (value / max) as f32;
                         points.push(egui::pos2(x, y));
                     }
+                    // Horizontal guides at 25/50/75 % keep the scale readable.
+                    for step in 1..4 {
+                        let y = rect.bottom() - 6.0 - (rect.height() - 12.0) * step as f32 / 4.0;
+                        painter.line_segment(
+                            [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+                            egui::Stroke::new(
+                                1.0_f32,
+                                egui::Color32::from_rgba_unmultiplied(120, 140, 170, 28),
+                            ),
+                        );
+                    }
+                    // Filled area under the line gives the series some body.
+                    if points.len() > 1 {
+                        let mut area = points.clone();
+                        area.push(egui::pos2(
+                            points.last().map(|p| p.x).unwrap_or(rect.left()),
+                            rect.bottom() - 6.0,
+                        ));
+                        area.push(egui::pos2(
+                            points.first().map(|p| p.x).unwrap_or(rect.left()),
+                            rect.bottom() - 6.0,
+                        ));
+                        painter.add(egui::Shape::convex_polygon(
+                            area,
+                            egui::Color32::from_rgba_unmultiplied(80, 150, 210, 46),
+                            egui::Stroke::NONE,
+                        ));
+                    }
                     for pair in points.windows(2) {
                         painter.line_segment(
                             [pair[0], pair[1]],
-                            egui::Stroke::new(1.6_f32, egui::Color32::from_rgb(120, 200, 240)),
+                            egui::Stroke::new(1.8_f32, egui::Color32::from_rgb(126, 196, 244)),
+                        );
+                    }
+                    // Last point marker + value badge.
+                    if let Some(last) = points.last().copied() {
+                        painter.circle_filled(last, 2.8, egui::Color32::from_rgb(190, 226, 255));
+                        painter.text(
+                            last + egui::vec2(-4.0, -6.0),
+                            egui::Align2::RIGHT_BOTTOM,
+                            format!("{:.1}", {
+                                let row = self.series.last().map(|(_, row)| row);
+                                row.and_then(|row| {
+                                    row.iter()
+                                        .find(|(name, ..)| *name == self.series_object)
+                                        .map(value_of)
+                                })
+                                .unwrap_or(0.0)
+                            }),
+                            egui::FontId::proportional(10.0),
+                            egui::Color32::from_rgb(200, 228, 250),
                         );
                     }
                     ui.label(
-                        egui::RichText::new(format!("{} · max {:.1}", self.series_object, max))
-                            .weak()
-                            .small(),
+                        egui::RichText::new(format!(
+                            "{} · max {:.1} · {} samples",
+                            self.series_object,
+                            max,
+                            self.series.len()
+                        ))
+                        .color(palette::TEXT_DIM)
+                        .small(),
                     );
                     // Replay marker: a vertical line at the current sample.
                     if let Some(index) = self.replay_index
