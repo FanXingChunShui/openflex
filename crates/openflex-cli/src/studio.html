@@ -2475,7 +2475,7 @@ function renderTraceList() {
   const startIndex = state.tracePage * pageSize;
   const visible = filtered.slice(startIndex, startIndex + pageSize);
   list.innerHTML = visible.map(event =>
-    `<div class="trace-row" data-trace-time="${event.time}">
+    `<div class="trace-row" data-trace-time="${event.time}" data-trace-jump="${event.time}">
       <span>t=${Number(event.time).toFixed(3)}</span>
       <span>${escapeText(event.event || "")}</span>
       <span>${escapeText(event.object || "")}</span>
@@ -2507,6 +2507,16 @@ function showTraceAt(value) {
   document.querySelectorAll(".trace-row").forEach(row => {
     const time = Number(row.dataset.traceTime);
     row.classList.toggle("current", Math.abs(time - current.time) < 1e-9);
+    if (!row.dataset.jumpBound) {
+      row.dataset.jumpBound = "1";
+      row.addEventListener("click", () => {
+        const slider = $("timeline");
+        const target = Number(row.dataset.traceJump);
+        if (!slider || !Number.isFinite(target)) return;
+        slider.value = String(target);
+        showTraceAt(target);
+      });
+    }
   });
 }
 

@@ -3514,6 +3514,16 @@ impl eframe::App for OpenFlexApp {
                             .weak()
                             .small(),
                     );
+                    // Replay marker: a vertical line at the current sample.
+                    if let Some(index) = self.replay_index
+                        && index < total
+                    {
+                        let x = rect.left() + rect.width() * index as f32 / total as f32;
+                        painter.line_segment(
+                            [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                            egui::Stroke::new(1.4_f32, egui::Color32::from_rgb(255, 190, 80)),
+                        );
+                    }
                     let last = self.series.len().saturating_sub(1);
                     let mut index = self.replay_index.unwrap_or(last);
                     ui.horizontal(|ui| {

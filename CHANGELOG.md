@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.92.0 — 2026-11-19
+
+### 桌面 GUI / Studio 回放打磨
+
+- **桌面 GUI**：时间序列图上用琥珀竖线标出当前 `Replay` 采样位置，与对象 `[n]` 标签联动。
+- **浏览器 Studio**：trace 列表行可点击（`data-trace-jump`），点击即把时间轴滑块移到该事件时间并刷新 nearest 提示。
+
+### 验证
+
+- `node --check` 通过；工作区 **507 passed / 0 failed**；GUI/CLI clippy 0、fmt 干净。
+- v0.92.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.91.0 — 2026-11-19
 
 ### 浏览器 Studio
