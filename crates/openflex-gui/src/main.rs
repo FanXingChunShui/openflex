@@ -5478,19 +5478,49 @@ impl eframe::App for OpenFlexApp {
                         self.series_object = first.clone();
                     }
                     ui.horizontal(|ui| {
-                        ui.radio_value(&mut self.series_metric, 0, "WIP");
-                        ui.radio_value(&mut self.series_metric, 1, "throughput");
-                        ui.radio_value(&mut self.series_metric, 2, "utilization");
+                        // A segmented control reads better than three radios.
+                        for (value, name) in
+                            [(0u8, "WIP"), (1, "throughput"), (2, "utilization")]
+                        {
+                            let selected = self.series_metric == value;
+                            let button = egui::Button::new(
+                                egui::RichText::new(name).color(if selected {
+                                    egui::Color32::from_rgb(14, 18, 26)
+                                } else {
+                                    palette::TEXT
+                                }),
+                            )
+                            .fill(if selected { palette::ACCENT_HI } else { palette::CARD })
+                            .rounding(egui::Rounding::same(5.0_f32));
+                            if ui.add(button).clicked() && !selected {
+                                self.series_metric = value;
+                            }
+                        }
                         if ui.small_button("Export CSV").clicked() {
                             self.export_series_csv();
                         }
                     });
                     ui.horizontal_wrapped(|ui| {
                         for name in &names {
-                            if ui
-                                .selectable_label(&self.series_object == name, name)
-                                .clicked()
-                            {
+                            let selected = &self.series_object == name;
+                            let button = egui::Button::new(
+                                egui::RichText::new(name).color(if selected {
+                                    palette::AMBER
+                                } else {
+                                    palette::TEXT_DIM
+                                }),
+                            )
+                            .fill(if selected {
+                                palette::CARD
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            })
+                            .stroke(egui::Stroke::new(
+                                1.0_f32,
+                                if selected { palette::AMBER } else { palette::STROKE },
+                            ))
+                            .rounding(egui::Rounding::same(11.0_f32));
+                            if ui.add(button).clicked() && !selected {
                                 self.series_object = name.clone();
                             }
                         }
