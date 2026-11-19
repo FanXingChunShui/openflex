@@ -5145,18 +5145,55 @@ impl eframe::App for OpenFlexApp {
                         );
                         painter.rect_filled(bar, 2.0, egui::Color32::from_rgb(90, 150, 210));
                     }
+                    // The best scenario is highlighted in the table as well.
+                    let best = self
+                        .exp_rows
+                        .iter()
+                        .enumerate()
+                        .max_by(|a, b| a.1.1.total_cmp(&b.1.1))
+                        .map(|(index, _)| index);
                     egui::Grid::new("exp-grid")
                         .striped(true)
                         .num_columns(3)
                         .show(ui, |ui| {
-                            ui.strong("value");
-                            ui.strong("completed");
-                            ui.strong("± CI95");
+                            ui.label(
+                                egui::RichText::new("value").strong().color(palette::TEXT_DIM),
+                            );
+                            ui.label(
+                                egui::RichText::new("completed")
+                                    .strong()
+                                    .color(palette::TEXT_DIM),
+                            );
+                            ui.label(
+                                egui::RichText::new("± CI95").strong().color(palette::TEXT_DIM),
+                            );
                             ui.end_row();
-                            for (value, completed, ci) in &self.exp_rows {
-                                ui.label(format!("{value:.1}"));
-                                ui.label(format!("{completed:.1}"));
-                                ui.label(format!("{ci:.1}"));
+                            for (index, (value, completed, ci)) in
+                                self.exp_rows.iter().enumerate()
+                            {
+                                let top = best == Some(index);
+                                let colour = if top { palette::OK } else { palette::TEXT };
+                                ui.label(
+                                    egui::RichText::new(if top {
+                                        format!("{value:.1} *")
+                                    } else {
+                                        format!("{value:.1}")
+                                    })
+                                    .monospace()
+                                    .small()
+                                    .color(colour),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("{completed:.1}"))
+                                        .strong()
+                                        .color(colour),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("{ci:.1}"))
+                                        .monospace()
+                                        .small()
+                                        .color(palette::TEXT_DIM),
+                                );
                                 ui.end_row();
                             }
                         });
@@ -5164,9 +5201,21 @@ impl eframe::App for OpenFlexApp {
                 ui.separator();
                 panel_heading(ui, "Optimise");
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.opt_mode, 0, "grid");
-                    ui.radio_value(&mut self.opt_mode, 1, "random");
-                    ui.radio_value(&mut self.opt_mode, 2, "genetic");
+                    for (value, name) in [(0u8, "grid"), (1, "random"), (2, "genetic")] {
+                        let selected = self.opt_mode == value;
+                        let button = egui::Button::new(
+                            egui::RichText::new(name).color(if selected {
+                                egui::Color32::from_rgb(14, 18, 26)
+                            } else {
+                                palette::TEXT
+                            }),
+                        )
+                        .fill(if selected { palette::ACCENT_HI } else { palette::CARD })
+                        .rounding(egui::Rounding::same(5.0_f32));
+                        if ui.add(button).clicked() && !selected {
+                            self.opt_mode = value;
+                        }
+                    }
                 });
                 let mut remove: Option<usize> = None;
                 for index in 0..self.opt_vars.len() {
