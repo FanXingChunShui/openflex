@@ -5989,12 +5989,27 @@ impl eframe::App for OpenFlexApp {
                                 );
                             });
                         }
-                        ui.label("Blocks (JSON; add/remove below)");
+                        ui.label(
+                            egui::RichText::new("BLOCKS")
+                                .size(9.0_f32)
+                                .color(palette::TEXT_DIM),
+                        );
+                        // Block chips in their diagram colours, matching the
+                        // canvas so the two views use one vocabulary.
                         ui.horizontal_wrapped(|ui| {
                             for kind in
                                 ["create", "delay", "assign", "decision", "transfer", "sink"]
                             {
-                                if ui.small_button(format!("+{kind}")).clicked() {
+                                let colour = Self::flow_kind_colour(kind);
+                                let button = egui::Button::new(
+                                    egui::RichText::new(format!("+ {kind}"))
+                                        .small()
+                                        .color(egui::Color32::WHITE),
+                                )
+                                .fill(colour.gamma_multiply(0.85))
+                                .stroke(egui::Stroke::new(1.0_f32, palette::STROKE))
+                                .rounding(egui::Rounding::same(10.0_f32));
+                                if ui.add(button).clicked() {
                                     self.add_flow_block(kind);
                                 }
                             }
@@ -6017,14 +6032,39 @@ impl eframe::App for OpenFlexApp {
                                     })
                                     .collect();
                                 let mut remove: Option<String> = None;
-                                for id in ids {
-                                    ui.horizontal(|ui| {
-                                        ui.label(&id);
-                                        if ui.small_button("x").clicked() {
-                                            remove = Some(id.clone());
-                                        }
-                                    });
-                                }
+                                ui.horizontal_wrapped(|ui| {
+                                    for id in ids {
+                                        egui::Frame::none()
+                                            .fill(palette::CARD)
+                                            .stroke(egui::Stroke::new(1.0_f32, palette::STROKE))
+                                            .rounding(egui::Rounding::same(9.0_f32))
+                                            .inner_margin(egui::Margin::symmetric(6.0, 1.0))
+                                            .show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(&id)
+                                                            .small()
+                                                            .monospace()
+                                                            .color(palette::TEXT),
+                                                    );
+                                                    if ui
+                                                        .add(
+                                                            egui::Button::new(
+                                                                egui::RichText::new("x")
+                                                                    .small()
+                                                                    .color(palette::TEXT_DIM),
+                                                            )
+                                                            .fill(egui::Color32::TRANSPARENT)
+                                                            .rounding(egui::Rounding::same(3.0_f32)),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        remove = Some(id.clone());
+                                                    }
+                                                });
+                                            });
+                                    }
+                                });
                                 if let Some(id) = remove {
                                     self.remove_flow_block(&id);
                                 }
@@ -6049,7 +6089,7 @@ impl eframe::App for OpenFlexApp {
                                 self.add_flow_connection();
                             }
                         });
-                        if ui.button("Apply process flow").clicked() {
+                        if primary_button(ui, true, "Apply process flow") {
                             self.apply_flow();
                         }
                     });
