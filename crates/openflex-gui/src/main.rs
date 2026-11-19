@@ -1598,6 +1598,8 @@ impl OpenFlexApp {
         let Some(json) = self.undo.pop() else {
             return false;
         };
+        // Undo changes the document relative to the file on disk.
+        self.model_dirty = true;
         match Model::from_json(&json) {
             Ok(model) => {
                 if let Some(current) = self.model
@@ -1624,6 +1626,7 @@ impl OpenFlexApp {
         let Some(json) = self.redo.pop() else {
             return false;
         };
+        self.model_dirty = true;
         match Model::from_json(&json) {
             Ok(model) => {
                 if let Some(current) = self.model
