@@ -716,27 +716,40 @@ fn distribution_editor(ui: &mut egui::Ui, label: &str, dist: &mut Distribution) 
     changed
 }
 
+/// Optional integer field: one checkbox-on-the-row plus an inline value, so
+/// enabling a field does not reflow the whole form.
 fn optional_u32(ui: &mut egui::Ui, label: &str, value: &mut Option<u32>) -> bool {
-    let mut enabled = value.is_some();
-    let mut changed = ui.checkbox(&mut enabled, label).changed();
-    if changed {
-        *value = if enabled { Some(1) } else { None };
-    }
-    if let Some(inner) = value {
-        changed |= ui.add(egui::DragValue::new(inner).speed(1.0)).changed();
-    }
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        let mut enabled = value.is_some();
+        if ui.checkbox(&mut enabled, label).changed() {
+            *value = if enabled { Some(1) } else { None };
+            changed = true;
+        }
+        if let Some(inner) = value.as_mut() {
+            changed |= ui
+                .add(egui::DragValue::new(inner).speed(1.0).max_decimals(0))
+                .changed();
+        }
+    });
     changed
 }
 
+/// Optional float field, same layout as [`optional_u32`].
 fn optional_f64(ui: &mut egui::Ui, label: &str, value: &mut Option<f64>) -> bool {
-    let mut enabled = value.is_some();
-    let mut changed = ui.checkbox(&mut enabled, label).changed();
-    if changed {
-        *value = if enabled { Some(1.0) } else { None };
-    }
-    if let Some(inner) = value {
-        changed |= ui.add(egui::DragValue::new(inner).speed(0.1)).changed();
-    }
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        let mut enabled = value.is_some();
+        if ui.checkbox(&mut enabled, label).changed() {
+            *value = if enabled { Some(1.0) } else { None };
+            changed = true;
+        }
+        if let Some(inner) = value.as_mut() {
+            changed |= ui
+                .add(egui::DragValue::new(inner).speed(0.1).max_decimals(3))
+                .changed();
+        }
+    });
     changed
 }
 

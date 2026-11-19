@@ -18,6 +18,7 @@
   completed 加粗并按是否在前沿着色。
 - **时间序列控件**：三个指标改为**分段按钮**（选中=靛蓝底深色字），对象选择改为**胶囊 chip**（选中=琥珀描边），
   取代裸 radio 与 selectable_label。
+- **可选字段布局**：`optional_u32` / `optional_f64` 改为「复选框 + 同行数值框」，勾选时不再整表回流。
 - **分布编辑器**：标签转暗色小字，分布下拉固定 118px 宽，多行分布字段纵向对齐。
 - **模型设置面板**：`NAME` / `UNIT` / `STOP` / `WARMUP` / `SEED` / `REPS` 统一为大写字距标签，`Apply settings` 改主按钮。
 - **报告导出区**：拆成 `EXPORT`（CSV / JSON / compare CSV）与 `BASELINE`（set / save / load / compare）两行，
