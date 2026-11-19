@@ -6872,18 +6872,41 @@ impl eframe::App for OpenFlexApp {
                     rotation,
                     object.z as f32,
                 );
-                // Flow items held right now: small dots above the box.
+                // Flow items held right now: small dots above the box. Beyond
+                // eight items a "+N" chip summarises the rest so a full queue
+                // does not smear into a line of dots.
                 if let Some(stats) = live {
-                    let shown = stats.content.min(8) as usize;
+                    let content = stats.content;
+                    let shown = content.min(8) as usize;
                     for slot in 0..shown {
                         let offset = egui::vec2(
                             (slot as f32 - (shown as f32 - 1.0) * 0.5) * (7.0 * self.zoom),
                             -(20.0 * self.zoom),
                         );
+                        let centre = box_rect.center() + offset;
                         painter.circle_filled(
-                            box_rect.center() + offset,
-                            (2.6 * self.zoom).max(1.5),
-                            egui::Color32::from_rgb(240, 230, 190),
+                            centre + egui::vec2(0.0, 1.0),
+                            (2.8 * self.zoom).max(1.6),
+                            palette::SHADOW,
+                        );
+                        painter.circle_filled(
+                            centre,
+                            (2.4 * self.zoom).max(1.4),
+                            egui::Color32::from_rgb(244, 236, 200),
+                        );
+                    }
+                    if content > shown as u32 {
+                        painter.text(
+                            box_rect.center()
+                                + egui::vec2(
+                                    (shown as f32 - 1.0) * 3.5 * self.zoom
+                                        + 10.0 * self.zoom,
+                                    -(20.0 * self.zoom),
+                                ),
+                            egui::Align2::LEFT_CENTER,
+                            format!("+{}", content - shown as u32),
+                            egui::FontId::proportional((9.0 * self.zoom).max(7.0)),
+                            palette::AMBER,
                         );
                     }
                 }
