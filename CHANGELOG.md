@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.19.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **并行复现开关**：工具栏新增 `parallel` 复选框（默认开启）。`Run` 与实验扫描都用 `run_model_parallel(model, 0)`
+  在多核上跑独立复现，结果与串行逐位一致；关闭后走 `run_model` 串行路径。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**517 passed / 0 failed**；clippy 0、fmt 干净、启动无 panic。
+
 ## v1.18.0 — 2026-11-19
 
 ### 桌面 GUI

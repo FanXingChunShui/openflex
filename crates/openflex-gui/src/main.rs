@@ -1145,6 +1145,7 @@ struct OpenFlexApp {
     paused: bool,
     step_size: f32,
     play_speed: f32,
+    parallel_runs: bool,
     report: Option<SimReport>,
     baseline: Option<SimReport>,
     show_compare: bool,
@@ -1242,6 +1243,7 @@ impl OpenFlexApp {
             paused: false,
             step_size: 10.0,
             play_speed: 1.0,
+            parallel_runs: true,
             report: None,
             baseline: None,
             show_compare: false,
@@ -2917,6 +2919,7 @@ idle,busy,blocked,down\n",
         let sweep_params = self.exp_mode_param;
         let path = self.exp_path.clone();
         let reps = self.exp_reps.max(1);
+        let parallel = self.parallel_runs;
         let base_json = if sweep_params {
             match serde_json::to_value(&base) {
                 Ok(value) => Some(value),
@@ -2955,7 +2958,12 @@ idle,busy,blocked,down\n",
                 // FlexSim-style experimenter: every scenario runs `reps`
                 // independent replications and the table shows mean ± CI.
                 model.run.replications = reps;
-                if let Ok(report) = run_model(&model) {
+                let outcome = if parallel {
+                    openflex_core::run_model_parallel(&model, 0)
+                } else {
+                    openflex_core::run_model(&model)
+                };
+                if let Ok(report) = outcome {
                     rows.push((value, report.completed.mean, report.completed.ci95));
                 }
             }
@@ -2990,8 +2998,16 @@ idle,busy,blocked,down\n",
         self.report_rx = Some(rx);
         self.report_running = true;
         self.status = "Running a full replication…".into();
+        let parallel = self.parallel_runs;
         std::thread::spawn(move || {
-            let result = run_model(model).map_err(|error| error.to_string());
+            // Replications are independent, so running them on all cores is
+            // bit-identical to the sequential loop (task-59).
+            let result = if parallel {
+                openflex_core::run_model_parallel(model, 0)
+            } else {
+                openflex_core::run_model(model)
+            }
+            .map_err(|error| error.to_string());
             let _ = tx.send(result);
         });
     }
