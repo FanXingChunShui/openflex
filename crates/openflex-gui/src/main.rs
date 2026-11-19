@@ -1485,6 +1485,8 @@ struct OpenFlexApp {
     /// Built-in file browser (no system dialog dependency on Linux CI).
     show_browser: bool,
     show_path_picker: bool,
+    /// Flat 2D (floor-plan) rendering instead of extruded 3D bodies.
+    flat_view: bool,
     path_candidates: Vec<String>,
     /// Files written this session: (path, bytes), newest first.
     outputs: Vec<(std::path::PathBuf, u64)>,
@@ -1598,6 +1600,7 @@ impl OpenFlexApp {
             show_save_as: false,
             show_browser: false,
             show_path_picker: false,
+            flat_view: false,
             path_candidates: Vec::new(),
             outputs: Vec::new(),
             browser_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -4422,9 +4425,11 @@ idle,busy,blocked,down\n",
     }
 
     /// Draws a kind-specific 3D-ish body and returns the rectangle used for
-    /// hit-testing and labels.
+    /// Draws a kind-specific body and returns the rectangle used for hit
+    /// testing and labels. `flat` switches to a **top-down floor-plan** look
+    /// (no fake height), which the 2D toggle enables.
     #[allow(clippy::too_many_arguments)]
-    fn draw_object_shape(
+    fn draw_object_shape_mode(
         painter: &egui::Painter,
         kind: ObjectKind,
         base: egui::Pos2,
@@ -4433,7 +4438,38 @@ idle,busy,blocked,down\n",
         selected: bool,
         rotation: f32,
         depth: f32,
+        flat: bool,
     ) -> egui::Rect {
+        if flat {
+            // Top-down footprint: a rounded plate in the kind colour with a
+            // thin darker rim; height and shading are deliberately dropped so
+            // the layout reads like a floor plan.
+            let (w, h) = match kind {
+                ObjectKind::Conveyor | ObjectKind::Escalator => (56.0, 12.0),
+                ObjectKind::Elevator => (18.0, 30.0),
+                ObjectKind::Queue => (40.0, 16.0),
+                _ => (34.0, 20.0),
+            };
+            let body = egui::Rect::from_center_size(base, egui::vec2(w, h) * zoom);
+            let rim = if selected {
+                egui::Stroke::new(1.8_f32, egui::Color32::from_rgb(255, 226, 168))
+            } else {
+                egui::Stroke::new(1.0_f32, OpenFlexApp::shade(fill, -0.45))
+            };
+            painter.rect_filled(body, (3.0 * zoom).max(2.0), fill);
+            painter.rect_stroke(body, (3.0 * zoom).max(2.0), rim);
+            if (rotation.rem_euclid(360.0) - 0.0).abs() < 1.0 {
+                // A north tick marks orientation without any 3D cue.
+                painter.line_segment(
+                    [
+                        body.center_top(),
+                        body.center_top() + egui::vec2(0.0, 3.0 * zoom),
+                    ],
+                    egui::Stroke::new(1.0_f32, OpenFlexApp::shade(fill, 0.5)),
+                );
+            }
+            return body;
+        }
         // Selected bodies get a warm ring; the rest use a dark hairline so the
         // shape reads against the canvas without looking outlined in black.
         let outline = egui::Stroke::new(
@@ -5001,6 +5037,27 @@ impl eframe::App for OpenFlexApp {
                         self.yaw = -0.6;
                         self.pitch = 0.5;
                         self.zoom = 1.0;
+                    }
+                    let flat_label = if self.flat_view { "2D on" } else { "2D off" };
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new(flat_label).small()).fill(
+                                if self.flat_view {
+                                    palette::ACCENT_HI
+                                } else {
+                                    palette::CARD
+                                },
+                            ),
+                        )
+                        .on_hover_text("flat floor-plan rendering (no fake height)")
+                        .clicked()
+                    {
+                        self.flat_view = !self.flat_view;
+                        if self.flat_view {
+                            // A floor plan only makes sense from above.
+                            self.yaw = 0.0;
+                            self.pitch = 1.45;
+                        }
                     }
                     if ui.button("Top").clicked() {
                         self.yaw = 0.0;
@@ -8213,7 +8270,7 @@ impl eframe::App for OpenFlexApp {
                     fill = shade_light(fill, 0.16);
                 }
                 let rotation = object.rot.unwrap_or(0.0) as f32;
-                let box_rect = Self::draw_object_shape(
+                let box_rect = Self::draw_object_shape_mode(
                     &painter,
                     object.kind,
                     base,
@@ -8222,6 +8279,7 @@ impl eframe::App for OpenFlexApp {
                     selected,
                     rotation,
                     object.z as f32,
+                    self.flat_view,
                 );
                 // Flow items held right now: small dots above the box. Beyond
                 // eight items a "+N" chip summarises the rest so a full queue
