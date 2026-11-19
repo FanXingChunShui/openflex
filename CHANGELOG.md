@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.4.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **实验多复现**：实验面板新增 `reps`（1…50），每个场景以 `run.replications = reps` 运行，
+  结果表扩展为 `value / completed / ±CI95` 三列（含置信区间），柱状图仍按均值对比。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**514 passed / 0 failed**；clippy 0、fmt 干净、启动无 panic。
+- v1.4.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v1.3.0 — 2026-11-19
 
 ### 桌面 GUI

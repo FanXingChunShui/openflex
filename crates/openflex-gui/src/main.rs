@@ -999,11 +999,12 @@ struct OpenFlexApp {
     exp_start: f32,
     exp_step: f32,
     exp_count: u32,
-    exp_rows: Vec<(f64, f64)>,
-    exp_rx: Option<Receiver<Vec<(f64, f64)>>>,
+    exp_rows: Vec<(f64, f64, f64)>, // (value, completed mean, ci95)
+    exp_rx: Option<Receiver<Vec<(f64, f64, f64)>>>,
     exp_running: bool,
     exp_mode_param: bool,
     exp_path: String,
+    exp_reps: u32,
     smooth: std::collections::HashMap<String, [f32; 2]>,
     last_frame: f64,
     undo: Vec<String>,
@@ -1096,6 +1097,7 @@ impl OpenFlexApp {
             exp_running: false,
             exp_mode_param: false,
             exp_path: String::new(),
+            exp_reps: 1,
             smooth: std::collections::HashMap::new(),
             last_frame: 0.0,
             undo: Vec::new(),
@@ -2626,6 +2628,7 @@ impl OpenFlexApp {
         );
         let sweep_params = self.exp_mode_param;
         let path = self.exp_path.clone();
+        let reps = self.exp_reps.max(1);
         let base_json = if sweep_params {
             match serde_json::to_value(&base) {
                 Ok(value) => Some(value),
@@ -2661,8 +2664,11 @@ impl OpenFlexApp {
                 } else {
                     model.run.stop_time = value;
                 }
+                // FlexSim-style experimenter: every scenario runs `reps`
+                // independent replications and the table shows mean ± CI.
+                model.run.replications = reps;
                 if let Ok(report) = run_model(&model) {
-                    rows.push((value, report.completed.mean));
+                    rows.push((value, report.completed.mean, report.completed.ci95));
                 }
             }
             let _ = tx.send(rows);
@@ -4059,12 +4065,12 @@ impl eframe::App for OpenFlexApp {
                     let max = self
                         .exp_rows
                         .iter()
-                        .map(|(_, completed)| *completed)
+                        .map(|(_, completed, _)| *completed)
                         .fold(0.0_f64, f64::max)
                         .max(1.0);
                     let n = self.exp_rows.len().max(1);
                     let dx = rect.width() / n as f32;
-                    for (index, (_, completed)) in self.exp_rows.iter().enumerate() {
+                    for (index, (_, completed, _)) in self.exp_rows.iter().enumerate() {
                         let height = (rect.height() - 12.0) * (*completed / max) as f32;
                         let bar = egui::Rect::from_min_max(
                             egui::pos2(
@@ -4080,14 +4086,16 @@ impl eframe::App for OpenFlexApp {
                     }
                     egui::Grid::new("exp-grid")
                         .striped(true)
-                        .num_columns(2)
+                        .num_columns(3)
                         .show(ui, |ui| {
-                            ui.strong("stop");
+                            ui.strong("value");
                             ui.strong("completed");
+                            ui.strong("± CI95");
                             ui.end_row();
-                            for (stop, completed) in &self.exp_rows {
-                                ui.label(format!("{stop:.0}"));
+                            for (value, completed, ci) in &self.exp_rows {
+                                ui.label(format!("{value:.1}"));
                                 ui.label(format!("{completed:.1}"));
+                                ui.label(format!("{ci:.1}"));
                                 ui.end_row();
                             }
                         });
