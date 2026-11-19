@@ -166,6 +166,10 @@ mod palette {
     pub const ST_IDLE: Color32 = Color32::from_rgb(84, 168, 116);
     pub const ST_DOWN: Color32 = Color32::from_rgb(126, 126, 138);
     pub const ST_OFF: Color32 = Color32::from_rgb(82, 84, 96);
+
+    /// Soft contact shadow under every 3D body (alpha 70, premultiplied by the
+    /// constant constructor so it can live in a `const`).
+    pub const SHADOW: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 70);
 }
 
 /// Registers a system CJK font as a fallback so Chinese object names and
@@ -3942,7 +3946,7 @@ idle,busy,blocked,down\n",
                 painter.rect_filled(
                     body.translate(egui::vec2(0.0, 3.0 * zoom)),
                     (body.height() / 2.0).max(2.0),
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 70),
+                    palette::SHADOW,
                 );
                 painter.rect_filled(body, 2.0, fill);
                 painter.rect_stroke(body, 2.0, outline);
@@ -3999,11 +4003,7 @@ idle,busy,blocked,down\n",
             // Sources / sinks: a drum.
             ObjectKind::Source | ObjectKind::Sink => {
                 let radius = 13.0 * zoom;
-                painter.circle_filled(
-                    base + egui::vec2(0.0, 3.0 * zoom),
-                    radius,
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 70),
-                );
+                painter.circle_filled(base + egui::vec2(0.0, 3.0 * zoom), radius, palette::SHADOW);
                 painter.circle_filled(base, radius, fill);
                 painter.circle_stroke(base, radius, outline);
                 // Specular dot: a small bright spot up and to the left.
@@ -4026,7 +4026,7 @@ idle,busy,blocked,down\n",
                 painter.rect_filled(
                     body.translate(egui::vec2(0.0, 3.0 * zoom)),
                     body.height() / 2.0,
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 70),
+                    palette::SHADOW,
                 );
                 painter.rect_filled(body, body.height() / 2.0, fill);
                 painter.rect_stroke(body, body.height() / 2.0, outline);
@@ -6762,7 +6762,7 @@ impl eframe::App for OpenFlexApp {
                 painter.circle_filled(
                     ground + egui::vec2(0.0, 2.0),
                     (12.0 * self.zoom).max(3.0),
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 70),
+                    palette::SHADOW,
                 );
                 let base = self.project(world_pos, world_z, center, scale);
                 let selected = self.selected == Some(index);
