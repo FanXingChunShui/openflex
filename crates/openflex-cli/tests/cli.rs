@@ -2766,7 +2766,11 @@ fn studio_can_add_and_delete_objects_through_the_api() {
     let html = http_body(&http_get(&address, "/")).to_string();
     for marker in [
         "id=\"add-object\"",
+        "id=\"duplicate-object\"",
         "id=\"delete-object\"",
+        "id=\"show-help\"",
+        "data-help-panel=\"1\"",
+        "data-studio-help=\"1\"",
         "id=\"edit-process-flow\"",
         "id=\"save-flow\"",
         "id=\"speed\"",
