@@ -8,16 +8,16 @@ cargo build -p openflex-gui --release
 ./target/release/openflex-gui examples/mm1.ofm   # 也可以不带参数启动后在窗口内填路径
 ```
 
-## 当前能力（v0.51.0）
+## 当前能力（v1.24.0）
 
 | 区域 | 功能 |
 |---|---|
 | 文件 | **New**（生成 source→queue→processor→sink 模板）、Open（路径输入）、Save、**Save as…**、**Recent 最近 8 个（持久化到 `~/.config/openflex/recent.json`，含 hover 全路径与 Clear recent）**、加载时校验 |
-| 快捷键 | `Ctrl/Cmd+A` 全选、`Ctrl/Cmd+D` 复制选中（自动 `_2` 命名 + 偏移）、`Ctrl/Cmd+O` 打开、`Ctrl/Cmd+N` 新建、`Ctrl/Cmd+S` 保存、`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 重做、`Space` 播放/暂停、`R` 重置、`F1` 快捷键帮助对话框、`→` 步进、`↑/↓` 调整步长 |
+| 快捷键 | `Ctrl/Cmd+A` 全选、`Ctrl/Cmd+D` 复制选中（自动 `_2` 命名 + 偏移）、`Ctrl/Cmd+O` 打开、`Ctrl/Cmd+N` 新建、`Ctrl/Cmd+S` 保存、`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 重做、`Space` 播放/暂停、`R` 重置、`F1` 快捷键帮助对话框、右方向键步进、上/下方向键调整步长 |
 | Studio 帮助 | 工具栏 `?` 按钮弹出快捷键面板（拖拽/滚轮/框选/方向键微调/撤销/保存/播放/删除，`data-help-panel`） |
 | Studio 复制 | 浏览器 Studio 对象操作区新增 `Duplicate`（深拷贝参数、自动 `_2` 后缀命名、位置偏移 +2，经 `/api/model` 保存并入历史） |
 | 对象菜单 | 3D 视图**右键对象**：Focus camera（居中）、Reset position（z 归零）、**旋转 -15°/+15°/0°**（写 `Object.rot`，入撤销栈）、Delete object（删除并清理连接），均走校验 |
-| 布局预设 | 左侧 `Layout presets (n)`：输入名字 `Save` 保存当前所有对象位置，点击名称即应用（入撤销栈），`✕` 删除；存于模型旁的 `<model>.layout.json` |
+| 布局预设 | 左侧 `Layout presets (n)`：输入名字 `Save` 保存当前所有对象位置，点击名称即应用（入撤销栈），`x` 删除；存于模型旁的 `<model>.layout.json` |
 | 视图导出 | 工具栏 `Export view SVG` 用与画布相同的投影（含旋转、热力色）输出 `<model>.view.svg`，可直接进文档或版本库 |
 | 模型设置 | 左侧 `Model settings` 折叠区：name、time_unit（seconds/minutes/hours/days）、run.stop_time/warmup/seed/replications，`Apply settings` 经校验写回并重置当前运行 |
 | 空状态引导 | 未加载模型时给出 `New model` 与三个内置示例（`mm1`/`routing`/`batch-queue`）一键打开；内置示例编译进二进制，无 `examples/` 目录时也可用 |
