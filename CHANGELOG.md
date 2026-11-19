@@ -1,15 +1,18 @@
 # Changelog
 
-## Unreleased
+## v1.25.0 — 2026-11-20
+
+本轮把桌面 GUI 从「能看到」补到「能改、能存、不丢状态」：新增**对象重命名**、**安全删除**、**全局表预览**与**检查点删除**，并修掉一批会静默失败或残留状态的问题。
+发布节奏按要求保持**至少 3 小时一版**。
 
 ### 桌面 GUI（功能补齐）
 
 - **对象重命名**：属性面板头部名称**就地编辑**（Enter/失焦提交、Esc 还原）；`rename_object()` 经撤销栈、
   重名拒绝，`rewrite_name()` 改写全部引用（连接端点、`home`/`charger`/`network`、Process Flow 块），
-  随后 `validate()`。新增 `rename_rewrites_every_reference` 测试（GUI 16 项）。
+  随后 `validate()`。新增 `rename_rewrites_every_reference` 测试。
 - **安全删除**：新增 `delete_objects()`，删除对象时同步清理连接、`home`/`charger`/`dispatcher`/`*_operator`
   引用与 `network` 边；删除被引用对象不再因 `validate()` 失败而无反应，批量与右键删除共用该路径。
-  新增 `delete_cleans_dangling_references` 测试（GUI 17 项）。
+  新增 `delete_cleans_dangling_references` 测试。
 - **全局表只读预览**：左侧 `Global tables (n)` 折叠区显示 `行数 × 列数`、列名胶囊与前 4 行值，
   超出提示剩余行数；空模型给出 `Tables live in the model JSON`。
 - **检查点列表操作**：显示当前文件夹，检查点改为等宽胶囊按钮，新增 `x` 删除（带错误反馈）。
@@ -21,7 +24,7 @@
   圆鼓高光收敛为小亮点，车辆圆角改为全圆角，形体与地面有了接触感。
 
 - **选中态**：选中对象不再覆盖为固定琥珀色，而是把当前状态/热力色**提亮 35%**（`shade_light`），
-  既看得出被选中，也保留状态含义；新增 `shade_light_keeps_a_selected_body_recognisable` 测试（GUI 14 项）。
+  既看得出被选中，也保留状态含义；新增 `shade_light_keeps_a_selected_body_recognisable` 测试。
 - **快捷键守卫补全**：`Ctrl/Cmd+S`、`O`、`N` 在文本框聚焦时不再触发；路径为空时 `Ctrl+O` 给出提示而不是静默失败。
 - **Save 回退到另存为**：无路径的模型（`New`、内置示例）点 `Save` 会打开另存为对话框并预填 `<模型名>.ofm`，
   不再静默无响应；内置示例同时清空路径框并提示 `not saved yet`。
@@ -48,7 +51,7 @@
 - **对比表**：表头改暗色小字，数值等宽，delta 增加 `+/-/=` 方向符号（不只靠颜色区分），列名改为 before/after/delta。
 - **面板标题**：改为「3px 靛蓝竖条 + 字距放开的 10px 大写标题」，比原来的灰色小字更像章节标题。
 - **视图 SVG 导出**：改用与界面一致的径向渐变暗底、标题、双层连接线 + 箭头，对象名放进圆角底板并做 **XML 转义**
-  （新增 `xml_escape_protects_svg_text` 测试，GUI 15 项）。
+  （新增 `xml_escape_protects_svg_text` 测试）。
 - **物品点**：圆点加接触阴影、尺寸微调；超过 8 件时以琥珀 `+N` 标注余量，满队列不再拖成一条线。
 - **选区两级**：主选中提亮 35%、其余选中提亮 16%（都保留状态色），取代此前「主选中琥珀、其余压暗」的对照。
 - **实时计数**：工具栏的 `t / created / completed` 改为「暗色微标签 + 等宽数值」三组，播放时数字不抖动。
@@ -58,6 +61,14 @@
 - **流程画布背景**：改为随平移/缩放移动的**点阵网格**，画布高度 190→210px，并用 `with_clip_rect` 裁剪，节点不会溢出到侧栏。
 - **阴影常量**：接触阴影抽为 `palette::SHADOW`，机械/源汇/车辆/物品共用同一 alpha。
 - **连接线**：改为「宽而淡的光晕 + 细核心线」双层描边，末端加小箭头指向下游对象，路由在网格上更清晰。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**525 passed / 0 failed**。
+- GUI 单元测试共 **17 项**（取景、BFS 布局、内置示例、字体路径、热力色、明暗、Pareto、事件格式、XML 转义、
+  重命名引用、删除清理等）。
+- GUI `clippy` 0、`fmt` 干净；以 `mm1.ofm`、`routing.ofm`、`process-flow-transfer.ofm`、`agv-charging.ofm`、
+  `engine-integration.ofm`、中文模型与无参数共 7 种方式启动均无 panic。
 
 ## v1.24.0 — 2026-11-20
 
