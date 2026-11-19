@@ -1726,7 +1726,10 @@ impl OpenFlexApp {
             self.selection.clear();
             self.selected = None;
             self.form = None;
-            self.status = format!("Loaded built-in example: {name}");
+            // No file on disk: saving it will prompt for a path.
+            self.model_dirty = true;
+            self.path_input.clear();
+            self.status = format!("Loaded built-in example: {name} — not saved yet");
             return;
         }
         self.error = Some(format!("example {name} was not found next to the binary"));
@@ -1842,7 +1845,23 @@ impl OpenFlexApp {
     }
 
     fn save(&mut self) {
-        let (Some(path), Some(model)) = (self.path.clone(), self.model) else {
+        // A model that has never been written (New, built-in example) has no
+        // path yet: fall back to the Save-as dialog instead of doing nothing.
+        let Some(path) = self.path.clone() else {
+            if self.model.is_some() {
+                let suggested = if self.path_input.trim().is_empty() {
+                    self.model
+                        .map(|model| format!("{}.ofm", model.name))
+                        .unwrap_or_else(|| "untitled.ofm".to_string())
+                } else {
+                    self.path_input.clone()
+                };
+                self.save_as = suggested;
+                self.show_save_as = true;
+            }
+            return;
+        };
+        let Some(model) = self.model else {
             return;
         };
         match model.to_json() {
