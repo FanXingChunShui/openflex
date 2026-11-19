@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### 桌面 GUI（外观）
+
+- **配色与主题**：新增 `palette`（BG/PANEL/CARD/CANVAS/STROKE/TEXT/TEXT_DIM/ACCENT/ACCENT_HI/AMBER/OK），
+  圆角（6–8px）、细描边、hover/active 高亮环、选中对比色、等宽 hint；面板/工具栏/画布分层配色，内容区最深。
+- **底部状态栏**：运行状态圆点（运行=绿、后台任务=琥珀、空闲=空心灰）、消息、右侧当前时间 `t=…` 与品牌色标题。
+- **面板标题**：左/右面板改用大写字距小标题（`MODEL TREE` / `CONNECTIONS` / `REPORT` …）+ 细分隔线。
+- **面板宽度**：左 330px（可拖 260–560）、右 360px（300–620），参数表单不再被挤压。
+- **字形修复**：egui 默认字体缺 `✕ ● ○ ▸ → ↑↓`，改为 `x` / 绘制圆点 / `->` / `File >` / 方向键英文名，消除方框乱码。
+
+### 桌面 GUI（可读性与布局）
+
+- **自动布局**：新增 `Auto layout` 按钮与加载时检测——所有对象重叠在同一点时按连接顺序（BFS，源点优先、
+  孤立对象收尾）排成方阵，首次打开即清晰；工具栏手动可重排。
+- **加载后取景**：打开模型即 `frame_selection()`，并把请求延迟到画布尺寸测量后执行，避免首帧用错尺寸。
+- **投影空间取景**：`frame_maths_view()` 在 **yaw/pitch 投影后** 计算包围盒与反解焦点，旋转后再也不会裁掉标签；
+  留出 4 单位 padding 与 200px 边距，缩放钳制 0.15–2.5。
+- 新增测试：`framed_points_stay_inside_the_viewport`（4 组相机角 × 全部点落在视口内）、
+  `layout_order_is_breadth_first_from_the_sources`、`builtin_examples_parse_and_validate`、`frame_view_keeps_a_rotated_group_inside_the_canvas`。
+  GUI 测试共 **12 项**。
+
+### 说明
+
+- 为控制发布节奏，本轮改动只合入主干，**不发布**；下次发布窗口在上一版（v1.23.0）之后 ≥3 小时。
+
 ## v1.23.0 — 2026-11-19
 
 ### 桌面 GUI

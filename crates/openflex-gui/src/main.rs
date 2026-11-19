@@ -141,13 +141,99 @@ fn app_icon() -> egui::IconData {
     }
 }
 
-/// Applies the dark visual style used across the app.
+/// The app colour palette: a cool slate base with an indigo/amber accent pair.
+mod palette {
+    use egui::Color32;
+
+    pub const BG: Color32 = Color32::from_rgb(17, 20, 26);
+    pub const PANEL: Color32 = Color32::from_rgb(24, 28, 36);
+    pub const PANEL_HI: Color32 = Color32::from_rgb(31, 36, 46);
+    pub const CARD: Color32 = Color32::from_rgb(37, 43, 55);
+    pub const CANVAS: Color32 = Color32::from_rgb(13, 16, 21);
+    pub const STROKE: Color32 = Color32::from_rgb(52, 60, 76);
+    pub const TEXT: Color32 = Color32::from_rgb(226, 232, 240);
+    pub const TEXT_DIM: Color32 = Color32::from_rgb(148, 160, 178);
+    pub const ACCENT: Color32 = Color32::from_rgb(112, 138, 246);
+    pub const ACCENT_HI: Color32 = Color32::from_rgb(138, 160, 255);
+    pub const AMBER: Color32 = Color32::from_rgb(245, 190, 100);
+    pub const OK: Color32 = Color32::from_rgb(96, 200, 150);
+}
+
+/// Applies the polished dark theme: rounded widgets, an indigo accent,
+/// readable typography and a calmer canvas than the default egui grey.
 fn apply_theme(ctx: &egui::Context) {
+    use palette::*;
+
     let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = egui::Color32::from_rgb(24, 27, 33);
-    visuals.window_fill = egui::Color32::from_rgb(30, 34, 41);
-    visuals.extreme_bg_color = egui::Color32::from_rgb(18, 22, 28);
+    visuals.panel_fill = PANEL;
+    visuals.window_fill = PANEL_HI;
+    visuals.extreme_bg_color = CANVAS;
+    visuals.faint_bg_color = CARD;
+    visuals.code_bg_color = CANVAS;
+    visuals.window_stroke = egui::Stroke::new(1.0_f32, STROKE);
+    visuals.window_rounding = egui::Rounding::same(8.0_f32);
+    visuals.menu_rounding = egui::Rounding::same(8.0_f32);
+    visuals.selection.bg_fill = ACCENT.gamma_multiply(0.55);
+    visuals.selection.stroke = egui::Stroke::new(1.0_f32, ACCENT_HI);
+    visuals.hyperlink_color = ACCENT_HI;
+    visuals.override_text_color = Some(TEXT);
+
+    // Widgets: flat cards with a hairline stroke and a bright hover ring.
+    let widget = &mut visuals.widgets;
+    widget.noninteractive.bg_fill = PANEL;
+    widget.noninteractive.weak_bg_fill = PANEL;
+    widget.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, STROKE);
+    widget.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, TEXT_DIM);
+
+    widget.inactive.bg_fill = CARD;
+    widget.inactive.weak_bg_fill = CARD;
+    widget.inactive.bg_stroke = egui::Stroke::new(1.0_f32, STROKE);
+    widget.inactive.fg_stroke = egui::Stroke::new(1.0_f32, TEXT);
+    widget.inactive.rounding = egui::Rounding::same(6.0_f32);
+
+    widget.hovered.bg_fill = PANEL_HI;
+    widget.hovered.weak_bg_fill = PANEL_HI;
+    widget.hovered.bg_stroke = egui::Stroke::new(1.0_f32, ACCENT);
+    widget.hovered.fg_stroke = egui::Stroke::new(1.4_f32, egui::Color32::WHITE);
+    widget.hovered.rounding = egui::Rounding::same(6.0_f32);
+
+    widget.active.bg_fill = ACCENT.gamma_multiply(0.85);
+    widget.active.weak_bg_fill = ACCENT.gamma_multiply(0.7);
+    widget.active.bg_stroke = egui::Stroke::new(1.0_f32, ACCENT_HI);
+    widget.active.fg_stroke = egui::Stroke::new(1.4_f32, egui::Color32::WHITE);
+    widget.active.rounding = egui::Rounding::same(6.0_f32);
+
+    widget.open.bg_fill = PANEL_HI;
+    widget.open.weak_bg_fill = PANEL_HI;
+    widget.open.bg_stroke = egui::Stroke::new(1.0_f32, ACCENT);
+    widget.open.rounding = egui::Rounding::same(6.0_f32);
+
     ctx.set_visuals(visuals);
+
+    // Layout: a little more breathing room than the egui defaults.
+    let mut style = (*ctx.style()).clone();
+    style.spacing.item_spacing = egui::vec2(8.0_f32, 6.0_f32);
+    style.spacing.button_padding = egui::vec2(9.0_f32, 4.0_f32);
+    style.spacing.menu_margin = egui::Margin::same(8.0_f32);
+    style.spacing.indent = 16.0_f32;
+    style.spacing.slider_width = 120.0_f32;
+    style.spacing.interact_size.y = 22.0_f32;
+    style.visuals.widgets.inactive.rounding = egui::Rounding::same(6.0_f32);
+    style.visuals.striped = true;
+    ctx.set_style(style);
+}
+
+/// Small coloured heading used by the side panels.
+fn panel_heading(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(2.0);
+    ui.label(
+        egui::RichText::new(text.to_uppercase())
+            .size(11.0)
+            .strong()
+            .color(palette::TEXT_DIM),
+    );
+    ui.add_space(1.0);
+    ui.separator();
 }
 
 fn decode<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, String> {
@@ -1145,6 +1231,9 @@ struct OpenFlexApp {
     paused: bool,
     step_size: f32,
     play_speed: f32,
+    canvas_size: egui::Vec2,
+    canvas_measured: bool,
+    frame_pending: bool,
     parallel_runs: bool,
     report: Option<SimReport>,
     baseline: Option<SimReport>,
@@ -1243,6 +1332,9 @@ impl OpenFlexApp {
             paused: false,
             step_size: 10.0,
             play_speed: 1.0,
+            canvas_size: egui::Vec2::new(800.0, 640.0),
+            canvas_measured: false,
+            frame_pending: false,
             parallel_runs: true,
             report: None,
             baseline: None,
@@ -1526,7 +1618,19 @@ impl OpenFlexApp {
                     openflex_model::TimeUnit::Hours => 2,
                     openflex_model::TimeUnit::Days => 3,
                 };
+                // A model whose objects all sit on one point would draw as one
+                // pile; lay it out so the first view is readable.
+                let stacked = {
+                    let first = model.objects.first().map(|object| object.pos);
+                    first.is_some()
+                        && model.objects.len() > 1
+                        && model.objects.iter().all(|object| Some(object.pos) == first)
+                };
                 self.model = Some(Box::leak(Box::new(model)));
+                if stacked {
+                    self.auto_layout(true);
+                    self.status = format!("Loaded {}  ·  auto layout applied", path.display());
+                }
                 self.path = Some(path.clone());
                 self.path_input = path.display().to_string();
                 self.remember_recent(&path);
@@ -1951,7 +2055,7 @@ impl OpenFlexApp {
                 self.opt_best = rows.first().cloned();
                 self.status = match self.opt_best.as_ref() {
                     Some((values, score, _)) => format!(
-                        "Best: {} → completed {score:.1}",
+                        "Best: {} -> completed {score:.1}",
                         values
                             .iter()
                             .map(|value| format!("{value:.3}"))
@@ -2645,28 +2749,63 @@ idle,busy,blocked,down\n",
         if points.is_empty() {
             return;
         }
-        let (centre, zoom) = Self::frame_maths(&points);
+        if !self.canvas_measured {
+            // The first frame has not been painted yet, so the viewport size is
+            // unknown; remember the request and run it right after painting.
+            self.frame_pending = true;
+            return;
+        }
+        let (centre, zoom) = Self::frame_maths_view(
+            &points,
+            self.yaw,
+            self.pitch,
+            self.canvas_size.x.min(self.canvas_size.y),
+        );
         self.focus = centre;
         self.zoom = zoom;
         self.status = format!("Framed {} object(s)", indices.len());
     }
 
-    /// Camera centre and zoom that frame `points` (12 units span the canvas at
-    /// zoom 1, clamped to 0.15…4 so tiny and huge models stay usable).
-    fn frame_maths(points: &[[f64; 2]]) -> ([f32; 2], f32) {
-        let (mut min, mut max) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    /// Camera centre and zoom that frame `points` **in projected space**, so
+    /// the current camera rotation cannot push labels outside the viewport.
+    /// `canvas` is the smaller side of the drawing area in pixels.
+    fn frame_maths_view(points: &[[f64; 2]], yaw: f32, pitch: f32, canvas: f32) -> ([f32; 2], f32) {
+        let (sin_yaw, cos_yaw) = yaw.sin_cos();
+        let (sin_pitch, _cos_pitch) = pitch.sin_cos();
+        let mut min = [f32::INFINITY; 2];
+        let mut max = [f32::NEG_INFINITY; 2];
+        let mut sum = [0.0_f32; 2];
         for pos in points {
-            min[0] = min[0].min(pos[0]);
-            min[1] = min[1].min(pos[1]);
-            max[0] = max[0].max(pos[0]);
-            max[1] = max[1].max(pos[1]);
+            let x = pos[0] as f32;
+            let y = pos[1] as f32;
+            let rx = x * cos_yaw - y * sin_yaw;
+            let ry = (x * sin_yaw + y * cos_yaw) * sin_pitch;
+            min[0] = min[0].min(rx);
+            min[1] = min[1].min(ry);
+            max[0] = max[0].max(rx);
+            max[1] = max[1].max(ry);
+            sum[0] += rx;
+            sum[1] += ry;
         }
-        let centre = [
-            ((min[0] + max[0]) / 2.0) as f32,
-            ((min[1] + max[1]) / 2.0) as f32,
-        ];
-        let span = (max[0] - min[0]).max(max[1] - min[1]).max(1.0);
-        let zoom = (12.0 / span as f32).clamp(0.15, 4.0);
+        let count = points.len() as f32;
+        let centroid = [sum[0] / count, sum[1] / count];
+        // Invert the projection so the focus lands on the projected centroid.
+        //   rx =  x·cos - y·sin            X = rx
+        //   ry = (x·sin + y·cos)·sin(p)    R = ry / sin(p)
+        // → x =  X·cos + R·sin,  y = -X·sin + R·cos
+        let sin_pitch = sin_pitch.max(1e-3);
+        let x = centroid[0];
+        let r = centroid[1] / sin_pitch;
+        let centre = [x * cos_yaw + r * sin_yaw, -x * sin_yaw + r * cos_yaw];
+        // Pad by two units, then fit the group into the canvas with a margin
+        // that leaves room for the labels above the boxes.
+        // 4 units of padding plus 200 px of margin leave room for the object
+        // boxes and their captions, which sit outside the projected centre.
+        let padding = 4.0_f32;
+        let span = (max[0] - min[0]).max(max[1] - min[1]).max(1.0) + padding;
+        let usable = (canvas - 200.0).max(160.0);
+        // scale = canvas / 12 * zoom, and span * scale must fit `usable`.
+        let zoom = (usable * 12.0 / (span * canvas.max(1.0))).clamp(0.15, 2.5);
         (centre, zoom)
     }
 
@@ -2716,6 +2855,93 @@ idle,busy,blocked,down\n",
             }
             Err(error) => self.error = Some(error.to_string()),
         }
+    }
+
+    /// Places every object on a readable grid following the connection order
+    /// (breadth-first from the sources), used when a model has no positions.
+    fn auto_layout(&mut self, silent: bool) {
+        let Some(model) = self.model else {
+            return;
+        };
+        let order = Self::layout_order(model);
+        let columns = (order.len() as f64).sqrt().ceil().max(1.0) as usize;
+        let spacing = 6.0;
+        if !silent {
+            self.snapshot();
+        }
+        let mut copy = model.clone();
+        for (position, index) in order.iter().enumerate() {
+            let column = position % columns;
+            let row = position / columns;
+            copy.objects[*index].pos = [
+                (column as f64 - (columns as f64 - 1.0) / 2.0) * spacing,
+                (row as f64 - (order.len() / columns) as f64 / 2.0) * spacing,
+            ];
+        }
+        match copy.validate() {
+            Ok(()) => {
+                self.model = Some(Box::leak(Box::new(copy)));
+                if let Some(index) = self.selected {
+                    self.form = self
+                        .model
+                        .map(|model| EditForm::from_object(&model.objects[index]));
+                }
+                if !silent {
+                    self.status = format!("Auto layout applied to {} object(s)", order.len());
+                }
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    /// Object indices in breadth-first connection order (sources first, then
+    /// everything reachable, finally any isolated object).
+    fn layout_order(model: &Model) -> Vec<usize> {
+        let mut order: Vec<usize> = Vec::new();
+        let mut seen = vec![false; model.objects.len()];
+        let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+        // Roots start the walk: no incoming connection but at least one
+        // outgoing one (fully isolated objects come last instead).
+        for (index, object) in model.objects.iter().enumerate() {
+            let has_input = model
+                .connections
+                .iter()
+                .any(|connection| connection.to == object.name);
+            let has_output = model
+                .connections
+                .iter()
+                .any(|connection| connection.from == object.name);
+            if !has_input && has_output && !seen[index] {
+                seen[index] = true;
+                queue.push_back(index);
+            }
+        }
+        while let Some(index) = queue.pop_front() {
+            order.push(index);
+            let name = &model.objects[index].name;
+            for connection in &model.connections {
+                if &connection.from != name {
+                    continue;
+                }
+                if let Some(next) = model
+                    .objects
+                    .iter()
+                    .position(|object| object.name == connection.to)
+                    && !seen[next]
+                {
+                    seen[next] = true;
+                    queue.push_back(next);
+                }
+            }
+        }
+        // Isolated objects (no connections at all) come last.
+        for (index, used) in seen.iter().enumerate() {
+            if !used {
+                order.push(index);
+            }
+        }
+        order
     }
 
     fn batch_align(&mut self, along_x: bool) {
@@ -3762,221 +3988,295 @@ impl eframe::App for OpenFlexApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(frame_ms as u64));
         }
 
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.heading("OpenFlex");
-                ui.separator();
-                ui.add(egui::TextEdit::singleline(&mut self.path_input).desired_width(280.0));
-                if ui.button("Open").clicked() && !self.path_input.is_empty() {
-                    self.load(PathBuf::from(self.path_input.clone()));
-                }
-                if ui.button("Save").clicked() {
-                    self.save();
-                }
-                if ui.button("Save as…").clicked() {
-                    self.save_as = self.path_input.clone();
-                    self.show_save_as = true;
-                }
-                if ui.button("New").clicked() {
-                    self.new_model();
-                }
-                if ui.button("Help").clicked() {
-                    self.show_help = !self.show_help;
-                }
-                if ui
-                    .add_enabled(self.model.is_some(), egui::Button::new("Export view SVG"))
-                    .clicked()
-                {
-                    self.export_svg();
-                }
-                if ui
-                    .add_enabled(!self.undo.is_empty(), egui::Button::new("Undo"))
-                    .clicked()
-                {
-                    self.restore();
-                }
-                if ui
-                    .add_enabled(!self.redo.is_empty(), egui::Button::new("Redo"))
-                    .clicked()
-                {
-                    self.redo_once();
-                }
-                if !self.recent.is_empty() {
-                    ui.menu_button("Recent", |ui| {
-                        let items: Vec<PathBuf> = self.recent.clone();
-                        for item in items {
-                            if ui
-                                .button(
-                                    item.file_name()
-                                        .map(|name| name.to_string_lossy().into_owned())
-                                        .unwrap_or_default(),
-                                )
-                                .clicked()
-                            {
-                                self.load(item);
-                                ui.close_menu();
-                            }
-                        }
-                    });
-                }
-                ui.separator();
-                if ui
-                    .add_enabled(
-                        self.model.is_some() && !self.report_running,
-                        egui::Button::new("Run"),
-                    )
-                    .clicked()
-                {
-                    self.start_report();
-                }
-                if ui
-                    .add_enabled(self.model.is_some(), egui::Button::new("Step"))
-                    .clicked()
-                {
-                    self.advance(self.step_size as f64);
-                }
-                if ui
-                    .add_enabled(
-                        self.model.is_some() && !self.running,
-                        egui::Button::new("Step event"),
-                    )
-                    .clicked()
-                {
-                    self.step_event();
-                }
-                if ui
-                    .add_enabled(self.handle.is_some(), egui::Button::new("Pause"))
-                    .clicked()
-                {
-                    if let Some(handle) = self.handle.as_mut() {
-                        let _ = handle.pause();
-                    }
-                    self.paused = true;
-                    self.status = "Paused".into();
-                }
-                if ui
-                    .add_enabled(
-                        self.handle.is_some() && self.paused,
-                        egui::Button::new("Resume"),
-                    )
-                    .clicked()
-                {
-                    if let Some(handle) = self.handle.as_mut() {
-                        let _ = handle.resume();
-                    }
-                    self.paused = false;
-                    self.status = "Resumed".into();
-                }
-                if ui
-                    .add_enabled(self.model.is_some(), egui::Button::new("Play"))
-                    .clicked()
-                {
-                    self.running = true;
-                    self.paused = false;
-                }
-                if ui.button("Reset").clicked() {
-                    self.reset_run();
-                }
-                if let (Some(state), Some(model)) = (self.sim_state.as_ref(), self.model) {
-                    let progress = if model.run.stop_time > 0.0 {
-                        (state.now / model.run.stop_time).clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    };
-                    ui.add(
-                        egui::ProgressBar::new(progress as f32)
-                            .desired_width(140.0)
-                            .text(format!("{:.1}/{:.1}", state.now, model.run.stop_time)),
+        egui::TopBottomPanel::top("toolbar")
+            .frame(
+                egui::Frame::side_top_panel(&ctx.style())
+                    .fill(palette::PANEL)
+                    .inner_margin(egui::Margin::symmetric(10.0, 6.0)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new("OpenFlex")
+                            .size(17.0)
+                            .strong()
+                            .color(palette::ACCENT_HI),
                     );
-                }
-                ui.separator();
-                if ui
-                    .add_enabled(self.model.is_some(), egui::Button::new("Save checkpoint"))
-                    .clicked()
-                {
-                    self.save_checkpoint();
-                }
-                if ui
-                    .add_enabled(self.model.is_some(), egui::Button::new("Load checkpoint"))
-                    .clicked()
-                {
-                    self.load_checkpoint();
-                }
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.checkpoint_dir)
-                        .hint_text("checkpoints/")
-                        .desired_width(110.0),
-                );
-                ui.separator();
-                ui.label("Step");
-                ui.add(
-                    egui::DragValue::new(&mut self.step_size)
-                        .speed(1.0)
-                        .range(0.1..=1000.0),
-                );
-                ui.label("Speed");
-                ui.add(
-                    egui::Slider::new(&mut self.play_speed, 0.25..=8.0)
-                        .logarithmic(true)
-                        .suffix("×"),
-                );
-                ui.separator();
-                if ui
-                    .add_enabled(self.model.is_some(), egui::Button::new("Fit"))
-                    .on_hover_text("frame the selection (or the whole model)")
-                    .clicked()
-                {
-                    self.frame_selection();
-                }
-                if ui.button("Iso").clicked() {
-                    self.yaw = -0.6;
-                    self.pitch = 0.5;
-                    self.zoom = 1.0;
-                }
-                if ui.button("Top").clicked() {
-                    self.yaw = 0.0;
-                    self.pitch = 1.45;
-                    self.zoom = 1.0;
-                }
-                if ui.button("Front").clicked() {
-                    self.yaw = 0.0;
-                    self.pitch = 0.05;
-                    self.zoom = 1.0;
-                }
-                if ui.button("Side").clicked() {
-                    self.yaw = 1.55;
-                    self.pitch = 0.05;
-                    self.zoom = 1.0;
-                }
-                ui.separator();
-                ui.label("Heatmap");
-                egui::ComboBox::from_id_salt("heatmap")
-                    .selected_text(match self.heatmap {
-                        1 => "utilization",
-                        2 => "throughput",
-                        3 => "WIP",
-                        _ => "off",
-                    })
-                    .show_ui(ui, |ui| {
-                        for (value, name) in [
-                            (0u8, "off"),
-                            (1, "utilization"),
-                            (2, "throughput"),
-                            (3, "WIP"),
-                        ] {
-                            if ui.selectable_label(self.heatmap == value, name).clicked() {
-                                self.heatmap = value;
-                            }
-                        }
-                    });
-                if let Some(state) = self.sim_state.as_ref() {
                     ui.separator();
-                    ui.label(format!("t = {:.2}", state.now));
-                    ui.label(format!("created {}", state.items_created));
-                    ui.label(format!("completed {}", state.items_completed));
-                }
+                    ui.add(egui::TextEdit::singleline(&mut self.path_input).desired_width(280.0));
+                    if ui.button("Open").clicked() && !self.path_input.is_empty() {
+                        self.load(PathBuf::from(self.path_input.clone()));
+                    }
+                    if ui.button("Save").clicked() {
+                        self.save();
+                    }
+                    if ui.button("Save as…").clicked() {
+                        self.save_as = self.path_input.clone();
+                        self.show_save_as = true;
+                    }
+                    if ui.button("New").clicked() {
+                        self.new_model();
+                    }
+                    if ui.button("Help").clicked() {
+                        self.show_help = !self.show_help;
+                    }
+                    if ui
+                        .add_enabled(self.model.is_some(), egui::Button::new("Export view SVG"))
+                        .clicked()
+                    {
+                        self.export_svg();
+                    }
+                    if ui
+                        .add_enabled(!self.undo.is_empty(), egui::Button::new("Undo"))
+                        .clicked()
+                    {
+                        self.restore();
+                    }
+                    if ui
+                        .add_enabled(!self.redo.is_empty(), egui::Button::new("Redo"))
+                        .clicked()
+                    {
+                        self.redo_once();
+                    }
+                    if !self.recent.is_empty() {
+                        ui.menu_button("Recent", |ui| {
+                            let items: Vec<PathBuf> = self.recent.clone();
+                            for item in items {
+                                if ui
+                                    .button(
+                                        item.file_name()
+                                            .map(|name| name.to_string_lossy().into_owned())
+                                            .unwrap_or_default(),
+                                    )
+                                    .clicked()
+                                {
+                                    self.load(item);
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(
+                            self.model.is_some() && !self.report_running,
+                            egui::Button::new("Run"),
+                        )
+                        .clicked()
+                    {
+                        self.start_report();
+                    }
+                    if ui
+                        .add_enabled(self.model.is_some(), egui::Button::new("Step"))
+                        .clicked()
+                    {
+                        self.advance(self.step_size as f64);
+                    }
+                    if ui
+                        .add_enabled(
+                            self.model.is_some() && !self.running,
+                            egui::Button::new("Step event"),
+                        )
+                        .clicked()
+                    {
+                        self.step_event();
+                    }
+                    if ui
+                        .add_enabled(self.handle.is_some(), egui::Button::new("Pause"))
+                        .clicked()
+                    {
+                        if let Some(handle) = self.handle.as_mut() {
+                            let _ = handle.pause();
+                        }
+                        self.paused = true;
+                        self.status = "Paused".into();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.handle.is_some() && self.paused,
+                            egui::Button::new("Resume"),
+                        )
+                        .clicked()
+                    {
+                        if let Some(handle) = self.handle.as_mut() {
+                            let _ = handle.resume();
+                        }
+                        self.paused = false;
+                        self.status = "Resumed".into();
+                    }
+                    if ui
+                        .add_enabled(self.model.is_some(), egui::Button::new("Play"))
+                        .clicked()
+                    {
+                        self.running = true;
+                        self.paused = false;
+                    }
+                    if ui.button("Reset").clicked() {
+                        self.reset_run();
+                    }
+                    if let (Some(state), Some(model)) = (self.sim_state.as_ref(), self.model) {
+                        let progress = if model.run.stop_time > 0.0 {
+                            (state.now / model.run.stop_time).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        ui.add(
+                            egui::ProgressBar::new(progress as f32)
+                                .desired_width(140.0)
+                                .text(format!("{:.1}/{:.1}", state.now, model.run.stop_time)),
+                        );
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(self.model.is_some(), egui::Button::new("Save checkpoint"))
+                        .clicked()
+                    {
+                        self.save_checkpoint();
+                    }
+                    if ui
+                        .add_enabled(self.model.is_some(), egui::Button::new("Load checkpoint"))
+                        .clicked()
+                    {
+                        self.load_checkpoint();
+                    }
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.checkpoint_dir)
+                            .hint_text("checkpoints/")
+                            .desired_width(110.0),
+                    );
+                    ui.separator();
+                    ui.label("Step");
+                    ui.add(
+                        egui::DragValue::new(&mut self.step_size)
+                            .speed(1.0)
+                            .range(0.1..=1000.0),
+                    );
+                    ui.label("Speed");
+                    ui.add(
+                        egui::Slider::new(&mut self.play_speed, 0.25..=8.0)
+                            .logarithmic(true)
+                            .suffix("×"),
+                    );
+                    ui.separator();
+                    if ui
+                        .add_enabled(self.model.is_some(), egui::Button::new("Fit"))
+                        .on_hover_text("frame the selection (or the whole model)")
+                        .clicked()
+                    {
+                        self.frame_selection();
+                    }
+                    if ui
+                        .add_enabled(self.model.is_some(), egui::Button::new("Auto layout"))
+                        .on_hover_text("arrange objects following the connections")
+                        .clicked()
+                    {
+                        self.auto_layout(false);
+                    }
+                    if ui.button("Iso").clicked() {
+                        self.yaw = -0.6;
+                        self.pitch = 0.5;
+                        self.zoom = 1.0;
+                    }
+                    if ui.button("Top").clicked() {
+                        self.yaw = 0.0;
+                        self.pitch = 1.45;
+                        self.zoom = 1.0;
+                    }
+                    if ui.button("Front").clicked() {
+                        self.yaw = 0.0;
+                        self.pitch = 0.05;
+                        self.zoom = 1.0;
+                    }
+                    if ui.button("Side").clicked() {
+                        self.yaw = 1.55;
+                        self.pitch = 0.05;
+                        self.zoom = 1.0;
+                    }
+                    ui.separator();
+                    ui.label("Heatmap");
+                    egui::ComboBox::from_id_salt("heatmap")
+                        .selected_text(match self.heatmap {
+                            1 => "utilization",
+                            2 => "throughput",
+                            3 => "WIP",
+                            _ => "off",
+                        })
+                        .show_ui(ui, |ui| {
+                            for (value, name) in [
+                                (0u8, "off"),
+                                (1, "utilization"),
+                                (2, "throughput"),
+                                (3, "WIP"),
+                            ] {
+                                if ui.selectable_label(self.heatmap == value, name).clicked() {
+                                    self.heatmap = value;
+                                }
+                            }
+                        });
+                    if let Some(state) = self.sim_state.as_ref() {
+                        ui.separator();
+                        ui.label(format!("t = {:.2}", state.now));
+                        ui.label(format!("created {}", state.items_created));
+                        ui.label(format!("completed {}", state.items_completed));
+                    }
+                });
             });
-        });
+
+        egui::TopBottomPanel::bottom("status-bar")
+            .frame(
+                egui::Frame::side_top_panel(&ctx.style())
+                    .fill(palette::PANEL)
+                    .inner_margin(egui::Margin::symmetric(10.0, 4.0)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    // A small drawn dot makes the run state readable at a glance
+                    // (glyphs such as ● are not in the default font).
+                    let (active, colour) = if self.running && !self.paused {
+                        (true, palette::OK)
+                    } else if self.report_running || self.exp_running {
+                        (true, palette::AMBER)
+                    } else {
+                        (false, palette::TEXT_DIM)
+                    };
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
+                    if active {
+                        ui.painter().circle_filled(rect.center(), 3.6, colour);
+                    } else {
+                        ui.painter().circle_stroke(
+                            rect.center(),
+                            3.2,
+                            egui::Stroke::new(1.0_f32, colour),
+                        );
+                    }
+                    let message = if self.error.is_some() {
+                        "error — see the banner"
+                    } else {
+                        self.status.as_str()
+                    };
+                    ui.label(
+                        egui::RichText::new(message)
+                            .small()
+                            .color(palette::TEXT_DIM),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(state) = self.sim_state.as_ref() {
+                            ui.label(
+                                egui::RichText::new(format!("t = {:.2}", state.now))
+                                    .small()
+                                    .monospace()
+                                    .color(palette::TEXT_DIM),
+                            );
+                        }
+                        ui.label(
+                            egui::RichText::new("OpenFlex")
+                                .small()
+                                .color(palette::ACCENT.gamma_multiply(0.8)),
+                        );
+                    });
+                });
+            });
 
         if let Some(error) = self.error.clone() {
             egui::TopBottomPanel::top("error").show(ctx, |ui| {
@@ -3991,10 +4291,17 @@ impl eframe::App for OpenFlexApp {
 
         egui::SidePanel::left("objects")
             .resizable(true)
+            .default_width(330.0)
+            .width_range(260.0..=560.0)
+            .frame(
+                egui::Frame::side_top_panel(&ctx.style())
+                    .fill(palette::PANEL)
+                    .inner_margin(egui::Margin::symmetric(10.0, 8.0)),
+            )
             .default_width(300.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.heading("Model tree");
+                    panel_heading(ui, "Model tree");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.search)
                             .hint_text("filter")
@@ -4028,7 +4335,7 @@ impl eframe::App for OpenFlexApp {
                             if ui.small_button(&name).clicked() {
                                 self.apply_layout_preset(&name);
                             }
-                            if ui.small_button("✕").clicked() {
+                            if ui.small_button("x").clicked() {
                                 delete = Some(name.clone());
                             }
                         });
@@ -4131,7 +4438,7 @@ impl eframe::App for OpenFlexApp {
                     );
                     ui.label(
                         egui::RichText::new(
-                            "Start with File ▸ New, File ▸ Open, or a bundled example:",
+                            "Start with File > New, File > Open, or a bundled example:",
                         )
                         .small()
                         .weak(),
@@ -4179,6 +4486,7 @@ impl eframe::App for OpenFlexApp {
                                 indices.len()
                             ))
                             .id_salt(kind.as_str())
+                            .default_open(true)
                             .show(ui, |ui| {
                                 for index in indices.clone() {
                                     let object = &model.objects[index];
@@ -4282,7 +4590,14 @@ impl eframe::App for OpenFlexApp {
                 }
                 if !self.selection.is_empty() {
                     ui.separator();
-                    ui.heading(format!("{} objects selected", self.selection.len()));
+                    ui.label(
+                            egui::RichText::new(format!(
+                                "{} objects selected",
+                                self.selection.len()
+                            ))
+                            .strong()
+                            .color(palette::AMBER),
+                        );
                     ui.horizontal(|ui| {
                         if ui.small_button("Align X").clicked() {
                             self.batch_align(true);
@@ -4366,7 +4681,7 @@ impl eframe::App for OpenFlexApp {
                             painter.rect_filled(
                                 response.rect,
                                 4.0,
-                                egui::Color32::from_rgb(24, 26, 30),
+                                palette::CANVAS,
                             );
                             let rects: Vec<(String, egui::Rect)> = ids
                                 .iter()
@@ -4519,7 +4834,7 @@ impl eframe::App for OpenFlexApp {
                                 for id in ids {
                                     ui.horizontal(|ui| {
                                         ui.label(&id);
-                                        if ui.small_button("✕").clicked() {
+                                        if ui.small_button("x").clicked() {
                                             remove = Some(id.clone());
                                         }
                                     });
@@ -4553,7 +4868,7 @@ impl eframe::App for OpenFlexApp {
                         }
                     });
                 ui.separator();
-                ui.heading("Experiment");
+                panel_heading(ui, "Experiment");
                 ui.horizontal(|ui| {
                     ui.radio_value(&mut self.exp_mode_param, false, "stop-time");
                     ui.radio_value(&mut self.exp_mode_param, true, "parameter");
@@ -4599,7 +4914,7 @@ impl eframe::App for OpenFlexApp {
                         egui::Sense::hover(),
                     );
                     let rect = response.rect;
-                    painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(24, 26, 30));
+                    painter.rect_filled(rect, 0.0, palette::CANVAS);
                     let max = self
                         .exp_rows
                         .iter()
@@ -4639,7 +4954,7 @@ impl eframe::App for OpenFlexApp {
                         });
                 }
                 ui.separator();
-                ui.heading("Optimise");
+                panel_heading(ui, "Optimise");
                 ui.horizontal(|ui| {
                     ui.radio_value(&mut self.opt_mode, 0, "grid");
                     ui.radio_value(&mut self.opt_mode, 1, "random");
@@ -4658,7 +4973,7 @@ impl eframe::App for OpenFlexApp {
                         ui.add(egui::DragValue::new(&mut self.opt_vars[index].low).speed(0.5));
                         ui.label("high");
                         ui.add(egui::DragValue::new(&mut self.opt_vars[index].high).speed(0.5));
-                        if ui.small_button("✕").clicked() {
+                        if ui.small_button("x").clicked() {
                             remove = Some(index);
                         }
                     });
@@ -4711,9 +5026,9 @@ impl eframe::App for OpenFlexApp {
                         .join(" / ");
                     ui.label(
                         egui::RichText::new(if self.opt_secondary_stay {
-                            format!("best: {vars} → completed {score:.1}, max stay {second:.1}")
+                            format!("best: {vars} -> completed {score:.1}, max stay {second:.1}")
                         } else {
-                            format!("best: {vars} → completed {score:.1}")
+                            format!("best: {vars} -> completed {score:.1}")
                         })
                         .strong(),
                     );
@@ -4753,7 +5068,7 @@ impl eframe::App for OpenFlexApp {
                         egui::Sense::hover(),
                     );
                     let rect = response.rect;
-                    painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(24, 26, 30));
+                    painter.rect_filled(rect, 0.0, palette::CANVAS);
                     let max_score = self
                         .opt_rows
                         .iter()
@@ -4799,9 +5114,15 @@ impl eframe::App for OpenFlexApp {
 
         egui::SidePanel::right("report")
             .resizable(true)
+            .width_range(300.0..=620.0)
+            .frame(
+                egui::Frame::side_top_panel(&ctx.style())
+                    .fill(palette::PANEL)
+                    .inner_margin(egui::Margin::symmetric(10.0, 8.0)),
+            )
             .default_width(360.0)
             .show(ctx, |ui| {
-                ui.heading("Connections");
+                panel_heading(ui, "Connections");
                 ui.separator();
                 let Some(model) = self.model else {
                     return;
@@ -4829,10 +5150,10 @@ impl eframe::App for OpenFlexApp {
                                     _ => "",
                                 };
                                 ui.label(format!(
-                                    "[{kind}] {}{}{}{strategy}",
+                                    "[{kind}] {} -> {}{}{strategy}",
                                     connection.from, connection.to, port
                                 ));
-                                if ui.small_button("✕").clicked() {
+                                if ui.small_button("x").clicked() {
                                     self.remove_connection(index);
                                 }
                                 egui::ComboBox::from_id_salt(("conn-strategy", index))
@@ -4915,7 +5236,7 @@ impl eframe::App for OpenFlexApp {
                     }
                 });
                 ui.separator();
-                ui.heading("Time series");
+                panel_heading(ui, "Time series");
                 ui.horizontal(|ui| {
                     ui.label("interval");
                     ui.add(
@@ -4971,7 +5292,7 @@ impl eframe::App for OpenFlexApp {
                         egui::Sense::hover(),
                     );
                     let rect = response.rect;
-                    painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(24, 26, 30));
+                    painter.rect_filled(rect, 0.0, palette::CANVAS);
                     let metric = self.series_metric as usize;
                     let value_of = |point: &SeriesPoint| match metric {
                         1 => point.2,
@@ -5091,7 +5412,7 @@ impl eframe::App for OpenFlexApp {
                     self.jump_to_event(time);
                 }
                 ui.separator();
-                ui.heading("Report");
+                panel_heading(ui, "Report");
                 ui.separator();
                 if self.report.is_none() {
                     ui.label("Run the model to see statistics.");
@@ -5159,7 +5480,7 @@ impl eframe::App for OpenFlexApp {
                     egui::Sense::hover(),
                 );
                 let rect = response.rect;
-                painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(24, 26, 30));
+                painter.rect_filled(rect, 0.0, palette::CANVAS);
                 let entries: Vec<f64> = report
                     .objects
                     .values()
@@ -5228,7 +5549,7 @@ impl eframe::App for OpenFlexApp {
                             ui.separator();
                             ui.label(
                                 egui::RichText::new(format!(
-                                    "Comparison vs baseline (completed {:.1} → {:.1})",
+                                    "Comparison vs baseline (completed {:.1} -> {:.1})",
                                     baseline.completed.mean, report.completed.mean
                                 ))
                                 .strong(),
@@ -5290,8 +5611,8 @@ impl eframe::App for OpenFlexApp {
                             ("drag", "rotate the camera"),
                             ("wheel", "zoom"),
                             ("click", "select an object"),
-                            ("→", "step the simulation forward"),
-                            ("↑ / ↓", "increase / decrease the step size"),
+                            ("Right arrow", "step the simulation forward"),
+                            ("Up / Down", "increase / decrease the step size"),
                         ] {
                             ui.strong(key);
                             ui.label(action);
@@ -5413,7 +5734,9 @@ impl eframe::App for OpenFlexApp {
             self.advance(self.step_size as f64);
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(&ctx.style()).fill(palette::BG))
+            .show(ctx, |ui| {
             let Some(model) = self.model else {
                 ui.centered_and_justified(|ui| ui.label("Open a model to see the layout."));
                 return;
@@ -5422,6 +5745,16 @@ impl eframe::App for OpenFlexApp {
                 ui.allocate_painter(ui.available_size(), egui::Sense::drag());
             let rect = response.rect;
             painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(18, 22, 28));
+            if !self.canvas_measured {
+                self.canvas_size = rect.size();
+                self.canvas_measured = true;
+                if self.frame_pending {
+                    self.frame_pending = false;
+                    self.frame_selection();
+                }
+            } else {
+                self.canvas_size = rect.size();
+            }
             let scale = (rect.width().min(rect.height()) / 12.0) * self.zoom;
             // Shift the origin so the focused object sits in the middle.
             let raw_center = rect.center();
@@ -5940,17 +6273,85 @@ mod tests {
     }
 
     #[test]
-    fn frame_maths_centres_and_zooms_for_a_span() {
-        // A 24 x 4 group should centre and zoom out; a 2 x 2 group zooms in.
-        let (centre, zoom) = OpenFlexApp::frame_maths(&[[0.0, 0.0], [24.0, 4.0]]);
-        assert_eq!(centre, [12.0, 2.0]);
-        assert!((zoom - 0.5).abs() < 1e-6, "got {zoom}");
-        let (centre, zoom) = OpenFlexApp::frame_maths(&[[0.0, 0.0], [2.0, 2.0]]);
-        assert_eq!(centre, [1.0, 1.0]);
-        assert!((zoom - 4.0).abs() < 1e-6, "zoom is clamped, got {zoom}");
-        // A single point keeps a sane zoom instead of dividing by zero.
-        let (_, zoom) = OpenFlexApp::frame_maths(&[[5.0, 5.0]]);
-        assert!(zoom.is_finite() && zoom > 0.0);
+    fn layout_order_is_breadth_first_from_the_sources() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "layout",
+          "run": {"stop_time": 10.0},
+          "objects": [
+            {"name": "S", "kind": "source", "params": {}},
+            {"name": "Q", "kind": "queue", "params": {}},
+            {"name": "P", "kind": "processor", "params": {}},
+            {"name": "K", "kind": "sink", "params": {}},
+            {"name": "Lonely", "kind": "queue", "params": {}}
+          ],
+          "connections": [
+            {"from": "S", "to": "Q"},
+            {"from": "Q", "to": "P"},
+            {"from": "P", "to": "K"}
+          ]
+        }"#,
+        )
+        .expect("model");
+        let order = OpenFlexApp::layout_order(&model);
+        let names: Vec<&str> = order
+            .iter()
+            .map(|i| model.objects[*i].name.as_str())
+            .collect();
+        assert_eq!(names, vec!["S", "Q", "P", "K", "Lonely"]);
+    }
+
+    #[test]
+    fn framed_points_stay_inside_the_viewport() {
+        // Every object must project inside the canvas after framing, for a few
+        // camera angles and aspect ratios.
+        let points = [[-12.0, -6.0], [12.0, 6.0], [0.0, 9.0], [-9.0, 3.0]];
+        for (yaw, pitch) in [(-0.6_f32, 0.5_f32), (0.0, 1.45), (1.55, 0.05), (0.9, 0.3)] {
+            let canvas = 560.0_f32;
+            let (centre, zoom) = OpenFlexApp::frame_maths_view(&points, yaw, pitch, canvas);
+            let scale = canvas / 12.0 * zoom;
+            let (sin_yaw, cos_yaw) = yaw.sin_cos();
+            let (sin_pitch, _cos_pitch) = pitch.sin_cos();
+            let project = |pos: [f32; 2]| {
+                let rx = pos[0] * cos_yaw - pos[1] * sin_yaw;
+                let ry = pos[0] * sin_yaw + pos[1] * cos_yaw;
+                [rx * scale, ry * sin_pitch * scale]
+            };
+            let focus = project(centre);
+            for point in points {
+                let p = project([point[0] as f32, point[1] as f32]);
+                let offset = [p[0] - focus[0], p[1] - focus[1]];
+                assert!(
+                    offset[0].abs() <= canvas / 2.0 && offset[1].abs() <= canvas / 2.0,
+                    "yaw {yaw} pitch {pitch}: {offset:?} outside {}",
+                    canvas / 2.0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn frame_view_keeps_a_rotated_group_inside_the_canvas() {
+        let points = [[-12.0, 0.0], [12.0, 6.0]];
+        let (centre, zoom) = OpenFlexApp::frame_maths_view(&points, -0.6, 0.35, 640.0);
+        assert!(zoom > 0.0 && zoom < 2.5, "zoom out of range: {zoom}");
+        // Projecting the centre back must land near the middle of the view.
+        let (sin_yaw, cos_yaw) = (-0.6_f32).sin_cos();
+        let (sin_pitch, cos_pitch) = 0.35_f32.sin_cos();
+        let project = |pos: [f32; 2]| {
+            let rx = pos[0] * cos_yaw - pos[1] * sin_yaw;
+            let ry = pos[0] * sin_yaw + pos[1] * cos_yaw;
+            [rx, ry * sin_pitch - 0.0 * cos_pitch]
+        };
+        let c = project(centre);
+        // Group midpoint must project near the origin (the canvas centre).
+        let mid = [
+            (points[0][0] + points[1][0]) as f32 / 2.0,
+            (points[0][1] + points[1][1]) as f32 / 2.0,
+        ];
+        let m = project(mid);
+        assert!((c[0] - m[0]).abs() < 0.5, "x {c:?} vs {m:?}");
+        assert!((c[1] - m[1]).abs() < 0.5, "y {c:?} vs {m:?}");
     }
 
     #[test]
