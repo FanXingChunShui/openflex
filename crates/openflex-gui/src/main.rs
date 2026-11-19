@@ -1471,7 +1471,7 @@ struct OpenFlexApp {
     opt_secondary_stay: bool,
     opt_rows: Vec<OptRow>,
     opt_best: Option<OptRow>,
-    opt_rx: Option<Receiver<Vec<OptRow>>>,
+    opt_rx: Option<Receiver<(Vec<OptRow>, std::time::Duration)>>,
     opt_running: bool,
     replay_index: Option<usize>,
 }
@@ -2150,6 +2150,7 @@ impl OpenFlexApp {
         let (tx, rx) = channel();
         self.opt_rx = Some(rx);
         self.opt_running = true;
+        let started = std::time::Instant::now();
         self.status = format!(
             "Optimising: {}",
             match mode {
@@ -2272,7 +2273,7 @@ impl OpenFlexApp {
                         let mut position = 0;
                         loop {
                             if position >= indices.len() {
-                                let _ = tx.send(rows);
+                                let _ = tx.send((rows, started.elapsed()));
                                 return;
                             }
                             indices[position] += 1;
@@ -2285,7 +2286,7 @@ impl OpenFlexApp {
                     }
                 }
             }
-            let _ = tx.send(rows);
+            let _ = tx.send((rows, started.elapsed()));
         });
     }
 
@@ -2294,13 +2295,14 @@ impl OpenFlexApp {
             return;
         };
         match rx.try_recv() {
-            Ok(mut rows) => {
+            Ok((mut rows, elapsed)) => {
                 rows.sort_by(|a, b| b.1.total_cmp(&a.1));
                 rows.truncate(20);
                 self.opt_best = rows.first().cloned();
                 self.status = match self.opt_best.as_ref() {
                     Some((values, score, _)) => format!(
-                        "Best: {} -> completed {score:.1}",
+                        "Best (in {:.2}s): {} -> completed {score:.1}",
+                        elapsed.as_secs_f64(),
                         values
                             .iter()
                             .map(|value| format!("{value:.3}"))

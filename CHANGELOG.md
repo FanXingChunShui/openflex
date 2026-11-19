@@ -9,6 +9,7 @@
   行格式与 `openflex run --trace` 一致（`simulate_traced` 同一序列化路径）。
   此前桌面版的“事件日志”只记录 GUI 自己步进过的事件，看不到完整事件流。
 - 新增 `trace_export_lines_match_the_cli_jsonl` 测试（GUI 18 项）。
+- **优化耗时**：最优解提示改为 `Best (in X.XXs): …`，与运行/实验的耗时口径一致。
 - **实验耗时**：实验结束的状态栏改为 `Experiment finished in X.XXs: N runs (Y.YYs each)`，
   便于判断要不要继续加样本。
 - **运行耗时**：`Run` 结束的状态栏改为 `Run finished in X.XXs: N completed, M objects · K items/s`，
