@@ -6309,30 +6309,37 @@ impl eframe::App for OpenFlexApp {
                         _ => object.name.clone(),
                     }
                 };
-                // Outline first so the caption stays readable on bright
-                // heatmap colours (FlexSim draws labels with a halo too).
-                let label_pos = box_rect.center_top() - egui::vec2(0.0, 4.0);
+                // The caption sits in a rounded dark plate so it stays readable
+                // on every fill colour (heatmap, state, kind) without a halo.
                 let font = egui::FontId::proportional(12.0);
-                for offset in [
-                    egui::vec2(-1.0, 0.0),
-                    egui::vec2(1.0, 0.0),
-                    egui::vec2(0.0, -1.0),
-                    egui::vec2(0.0, 1.0),
-                ] {
-                    painter.text(
-                        label_pos + offset,
-                        egui::Align2::CENTER_BOTTOM,
-                        &caption,
-                        font.clone(),
-                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160),
-                    );
-                }
+                let metrics = ctx.fonts(|fonts| {
+                    fonts
+                        .layout_no_wrap(caption.clone(), font.clone(), egui::Color32::WHITE)
+                        .size()
+                });
+                let plate = egui::Rect::from_center_size(
+                    egui::pos2(
+                        box_rect.center().x,
+                        box_rect.top() - 6.0 - metrics.y / 2.0,
+                    ),
+                    metrics + egui::vec2(10.0, 3.0),
+                );
+                painter.rect_filled(
+                    plate,
+                    (plate.height() / 2.0).max(4.0),
+                    egui::Color32::from_rgba_unmultiplied(14, 18, 26, 205),
+                );
+                painter.rect_stroke(
+                    plate,
+                    (plate.height() / 2.0).max(4.0),
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(120, 140, 175, 90)),
+                );
                 painter.text(
-                    label_pos,
-                    egui::Align2::CENTER_BOTTOM,
+                    plate.center(),
+                    egui::Align2::CENTER_CENTER,
                     &caption,
                     font,
-                    egui::Color32::WHITE,
+                    if selected { palette::AMBER } else { egui::Color32::WHITE },
                 );
                 // State badge: the engine state name in the box corner so the
                 // colour is not the only cue (accessibility + FlexSim parity).
