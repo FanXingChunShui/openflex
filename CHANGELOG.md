@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.16.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **班次日历编辑**：对象表单新增 `Timetable (JSON)` 折叠区，可直接编辑 `{"windows": [{start, duration, repeat_every}]}`，
+  `null` 表示无班次限制；Apply 时解析为 `TimeTable` 参与校验。
+- 模型层新增 `ObjectParams::timetable_mut()` / `set_timetable()`（fluid 类对象无日历，返回 `None`/`false`）。
+
+### 文档
+
+- `docs/UNIMPLEMENTED.md` 第 11 项更新：OnContentChange/OnStateChange/OnReset/OnStop/OnResume 均已实现且 GUI 可编辑；仅 OnDraw 为 schema-only。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**516 passed / 0 failed**；clippy 0、fmt 干净、启动无 panic。
+- 发布前清理了 47 个临时校验目录（释放约 3 GB，此前磁盘满导致链接失败）。
+
 ## v1.15.0 — 2026-11-19
 
 ### 桌面 GUI

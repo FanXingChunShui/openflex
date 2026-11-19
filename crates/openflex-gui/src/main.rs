@@ -516,6 +516,7 @@ struct EditForm {
     /// Trigger JSON (shared by every kind); kept as text so the user can type
     /// full `Action` objects without a dedicated editor per action type.
     triggers_text: String,
+    timetable_text: String,
 }
 
 impl EditForm {
@@ -527,6 +528,12 @@ impl EditForm {
             params: object.params.clone(),
             triggers_text: serde_json::to_string_pretty(object.params.triggers())
                 .unwrap_or_else(|_| "{}".into()),
+            timetable_text: match object.params.timetable() {
+                Some(timetable) => {
+                    serde_json::to_string_pretty(timetable).unwrap_or_else(|_| "null".into())
+                }
+                None => "null".to_string(),
+            },
         }
     }
 
@@ -924,6 +931,23 @@ impl EditForm {
             }
         }
         ui.separator();
+        egui::CollapsingHeader::new("Timetable (JSON)")
+            .id_salt("timetable")
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "{\"windows\": [{\"start\": 0, \"duration\": 28800, \"repeat_every\": 86400}]} — null disables shifts",
+                    )
+                    .weak()
+                    .small(),
+                );
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.timetable_text)
+                        .code_editor()
+                        .desired_rows(4),
+                );
+            });
+        ui.separator();
         egui::CollapsingHeader::new("Triggers (JSON)")
             .id_salt("triggers")
             .show(ui, |ui| {
@@ -941,6 +965,21 @@ impl EditForm {
                 );
             });
         changed
+    }
+
+    /// Applies the timetable JSON (`null` clears the shift plan).
+    fn apply_timetable(&self, params: &mut ObjectParams) -> Result<(), String> {
+        let text = self.timetable_text.trim();
+        let timetable: Option<openflex_model::TimeTable> = if text.is_empty() || text == "null" {
+            None
+        } else {
+            Some(
+                serde_json::from_str(text)
+                    .map_err(|error| format!("invalid timetable JSON: {error}"))?,
+            )
+        };
+        params.set_timetable(timetable);
+        Ok(())
     }
 
     /// Applies the trigger JSON to the params (used by Apply).
@@ -2976,6 +3015,10 @@ impl OpenFlexApp {
         copy.objects[index].z = form.z as f64;
         let mut params = form.params.clone();
         if let Err(error) = form.apply_triggers(&mut params) {
+            self.error = Some(error);
+            return;
+        }
+        if let Err(error) = form.apply_timetable(&mut params) {
             self.error = Some(error);
             return;
         }

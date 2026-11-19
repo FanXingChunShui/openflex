@@ -23,6 +23,7 @@ cargo build -p openflex-gui --release
 | 模型树 | **新增对象**（kind 下拉 28 种 + 可选名字，自动编号与安全默认参数，右侧自动摆放）、按 kind 分组（可折叠）、名称/kind 过滤、每行显示 `(x, y)` 与旋转角、组内 `select all`、点击选中 |
 | 多选与批量 | 3D 视图**拖框多选**（Shift 追加），选中集合高亮；批量 **Align X/Y**（以首个为基准）、**Distribute X/Y**（首末之间等距分布，≥3 个）、**Grid 4**（方形网格排布）、
 **Duplicate**（复制选中，唯一命名）、**Delete**（清理连接）、**按 dx/dy 移动**、**统一设置 rot°**、**Clear** |
+| 班次日历 | 表单底部 `Timetable (JSON)` 折叠区直接编辑 `{"windows": [{start, duration, repeat_every}]}`，`null` 表示无班次限制；Apply 时解析为 `TimeTable` |
 | 触发器编辑 | 表单底部 `Triggers (JSON)` 折叠区可编辑全部触发器（on_create/on_entry/on_exit/on_receive/on_message/on_breakdown/on_repair/on_photo_eye/on_content_change/on_state_change…），Apply 时解析为 `Triggers` 并校验 |
 | 实时校验 | 选中对象的表单下方实时显示 `validate_collect` 的问题列表（location: message，最多 20 条），Apply 前即可发现问题 |
 | 对象编辑 | `x/y/z` 拖拽数值、**按 kind 的参数表单**（Distribution 类型下拉 + 数值：source/queue/processor/conveyor/resource/transporter/person/robot/crane/asrs/agv）、Apply 校验后提交；JSON 高级模式（复选框） |

@@ -530,6 +530,97 @@ impl ObjectParams {
         }
     }
 
+    /// Mutable access to the availability calendar (B11).
+    ///
+    /// Fluid kinds keep their schedule in `stop_time`/triggers only, so they
+    /// have no calendar and return `None`.
+    pub fn timetable_mut(&mut self) -> Option<&mut TimeTable> {
+        match self {
+            ObjectParams::Source(p) => p.timetable.as_mut(),
+            ObjectParams::Queue(p) => p.timetable.as_mut(),
+            ObjectParams::Processor(p) => p.timetable.as_mut(),
+            ObjectParams::MultiProcessor(p) => p.timetable.as_mut(),
+            ObjectParams::Sink(p) => p.timetable.as_mut(),
+            ObjectParams::Combiner(p) => p.timetable.as_mut(),
+            ObjectParams::Separator(p) => p.timetable.as_mut(),
+            ObjectParams::Conveyor(p) => p.timetable.as_mut(),
+            ObjectParams::Escalator(p) => p.timetable.as_mut(),
+            ObjectParams::Merge(p) => p.timetable.as_mut(),
+            ObjectParams::Split(p) => p.timetable.as_mut(),
+            ObjectParams::Transporter(p) => p.timetable.as_mut(),
+            ObjectParams::Robot(p) => p.timetable.as_mut(),
+            ObjectParams::Crane(p) => p.timetable.as_mut(),
+            ObjectParams::AsrsVehicle(p) => p.timetable.as_mut(),
+            ObjectParams::Person(p) => p.timetable.as_mut(),
+            ObjectParams::Agv(p) => p.timetable.as_mut(),
+            ObjectParams::Elevator(p) => p.timetable.as_mut(),
+            ObjectParams::Dispatcher(p) => p.timetable.as_mut(),
+            ObjectParams::Resource(p) => p.timetable.as_mut(),
+            ObjectParams::Rack(p) => p.timetable.as_mut(),
+            ObjectParams::BasicFr(p) => p.timetable.as_mut(),
+            ObjectParams::BasicTe(p) => p.timetable.as_mut(),
+            ObjectParams::FluidGenerator(_)
+            | ObjectParams::FluidTank(_)
+            | ObjectParams::FluidValve(_)
+            | ObjectParams::FluidSink(_)
+            | ObjectParams::FluidPipe(_) => None,
+        }
+    }
+
+    /// Replaces the availability calendar (B11); `None` clears it.
+    ///
+    /// Returns `false` for the fluid kinds, which have no calendar.
+    pub fn set_timetable(&mut self, timetable: Option<TimeTable>) -> bool {
+        match timetable {
+            Some(timetable) => match self.timetable_mut() {
+                Some(slot) => {
+                    *slot = timetable;
+                    true
+                }
+                None => false,
+            },
+            None => match self.clear_timetable() {
+                Some(()) => true,
+                None => false,
+            },
+        }
+    }
+
+    /// Clears the availability calendar when the kind supports one.
+    fn clear_timetable(&mut self) -> Option<()> {
+        match self {
+            ObjectParams::Source(p) => p.timetable = None,
+            ObjectParams::Queue(p) => p.timetable = None,
+            ObjectParams::Processor(p) => p.timetable = None,
+            ObjectParams::MultiProcessor(p) => p.timetable = None,
+            ObjectParams::Sink(p) => p.timetable = None,
+            ObjectParams::Combiner(p) => p.timetable = None,
+            ObjectParams::Separator(p) => p.timetable = None,
+            ObjectParams::Conveyor(p) => p.timetable = None,
+            ObjectParams::Escalator(p) => p.timetable = None,
+            ObjectParams::Merge(p) => p.timetable = None,
+            ObjectParams::Split(p) => p.timetable = None,
+            ObjectParams::Transporter(p) => p.timetable = None,
+            ObjectParams::Robot(p) => p.timetable = None,
+            ObjectParams::Crane(p) => p.timetable = None,
+            ObjectParams::AsrsVehicle(p) => p.timetable = None,
+            ObjectParams::Person(p) => p.timetable = None,
+            ObjectParams::Agv(p) => p.timetable = None,
+            ObjectParams::Elevator(p) => p.timetable = None,
+            ObjectParams::Dispatcher(p) => p.timetable = None,
+            ObjectParams::Resource(p) => p.timetable = None,
+            ObjectParams::Rack(p) => p.timetable = None,
+            ObjectParams::BasicFr(p) => p.timetable = None,
+            ObjectParams::BasicTe(p) => p.timetable = None,
+            ObjectParams::FluidGenerator(_)
+            | ObjectParams::FluidTank(_)
+            | ObjectParams::FluidValve(_)
+            | ObjectParams::FluidSink(_)
+            | ObjectParams::FluidPipe(_) => return None,
+        }
+        Some(())
+    }
+
     /// Pull configuration shared by every object kind (A3).
     pub fn pull(&self) -> Option<&PullParams> {
         match self {
