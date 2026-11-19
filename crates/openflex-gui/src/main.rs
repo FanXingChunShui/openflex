@@ -1385,6 +1385,7 @@ struct OpenFlexApp {
     form: Option<EditForm>,
     params_text: String,
     show_json: bool,
+    form_dirty: bool,
     new_from: String,
     new_to: String,
     new_port: String,
@@ -1486,6 +1487,7 @@ impl OpenFlexApp {
             form: None,
             params_text: String::new(),
             show_json: false,
+            form_dirty: false,
             new_from: String::new(),
             new_to: String::new(),
             new_port: String::new(),
@@ -3597,6 +3599,7 @@ idle,busy,blocked,down\n",
             return;
         };
         let object = &model.objects[index];
+        self.form_dirty = false;
         self.selected = Some(index);
         self.selection = vec![index];
         self.form = Some(EditForm::from_object(object));
@@ -3666,6 +3669,7 @@ idle,busy,blocked,down\n",
                         self.model = Some(Box::leak(Box::new(copy)));
                         self.status = format!("Updated {name}");
                         self.error = None;
+                        self.form_dirty = false;
                         self.form = self
                             .model
                             .map(|model| EditForm::from_object(&model.objects[index]));
@@ -5033,6 +5037,9 @@ impl eframe::App for OpenFlexApp {
                         }
                         // A "dirty" hint appears as soon as a field is edited.
                         if form_changed {
+                            self.form_dirty = true;
+                        }
+                        if self.form_dirty {
                             ui.label(
                                 egui::RichText::new("unsaved edits")
                                     .size(10.0_f32)
