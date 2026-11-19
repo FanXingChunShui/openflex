@@ -1834,6 +1834,11 @@ impl OpenFlexApp {
                 self.error = None;
                 self.model_dirty = false;
                 self.form_dirty = false;
+                // A different model means different object names: drop the
+                // interpolation cache and the replay cursor.
+                self.smooth.clear();
+                self.replay_index = None;
+                self.event_log.clear();
                 self.selected = None;
                 self.form = None;
                 self.params_text.clear();
@@ -3423,6 +3428,10 @@ idle,busy,blocked,down\n",
 
     fn reset_run(&mut self) {
         self.event_log.clear();
+        // Drop the interpolated positions too: otherwise the next run starts by
+        // sliding objects from wherever the previous one stopped.
+        self.smooth.clear();
+        self.replay_index = None;
         self.handle = None;
         self.sim_state = None;
         self.running = false;
