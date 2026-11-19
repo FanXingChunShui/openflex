@@ -9,6 +9,9 @@
   行格式与 `openflex run --trace` 一致（`simulate_traced` 同一序列化路径）。
   此前桌面版的“事件日志”只记录 GUI 自己步进过的事件，看不到完整事件流。
 - 新增 `trace_export_lines_match_the_cli_jsonl` 测试（GUI 18 项）。
+- **内置文件浏览器**：工具栏新增 `Browse…`，打开一个原生窗口列出当前目录（文件夹在前、`.ofm` 在后，忽略隐藏与非模型文件），
+  支持 `Up` / `Home` 与逐层进入，选中即加载。不引入 `rfd` 等新依赖（Linux 上需要 GTK，会让 CI 变复杂）。
+  新增 `browser_lists_dirs_before_models` 测试（GUI 19 项），此前只能手输路径打开模型。
 - **优化耗时**：最优解提示改为 `Best (in X.XXs): …`，与运行/实验的耗时口径一致。
 - **实验耗时**：实验结束的状态栏改为 `Experiment finished in X.XXs: N runs (Y.YYs each)`，
   便于判断要不要继续加样本。

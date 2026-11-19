@@ -1446,6 +1446,11 @@ struct OpenFlexApp {
     recent: Vec<PathBuf>,
     save_as: String,
     show_save_as: bool,
+    /// Built-in file browser (no system dialog dependency on Linux CI).
+    show_browser: bool,
+    browser_dir: std::path::PathBuf,
+    browser_entries: Vec<(String, bool)>, // (name, is_dir)
+    browser_error: Option<String>,
     show_help: bool,
     context_menu_open: Option<String>,
     focus: [f32; 2],
@@ -1551,6 +1556,10 @@ impl OpenFlexApp {
             recent: Vec::new(),
             save_as: String::new(),
             show_save_as: false,
+            show_browser: false,
+            browser_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            browser_entries: Vec::new(),
+            browser_error: None,
             show_help: false,
             context_menu_open: None,
             focus: [0.0, 0.0],
@@ -1793,6 +1802,51 @@ impl OpenFlexApp {
             .collect();
         if let Ok(text) = serde_json::to_string(&values) {
             let _ = std::fs::write(&path, text);
+        }
+    }
+
+    /// Reads `browser_dir` for the built-in file browser: directories first,
+    /// then `.ofm` files, both alphabetical.
+    fn refresh_browser(&mut self) {
+        self.browser_error = None;
+        let mut dirs: Vec<String> = Vec::new();
+        let mut files: Vec<String> = Vec::new();
+        match std::fs::read_dir(&self.browser_dir) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if name.starts_with('.') {
+                        continue;
+                    }
+                    if entry.path().is_dir() {
+                        dirs.push(name);
+                    } else if entry.path().extension().is_some_and(|ext| ext == "ofm") {
+                        files.push(name);
+                    }
+                }
+            }
+            Err(error) => {
+                self.browser_error = Some(format!("{}: {error}", self.browser_dir.display()));
+                return;
+            }
+        }
+        dirs.sort();
+        files.sort();
+        self.browser_entries = dirs
+            .into_iter()
+            .map(|name| (name, true))
+            .chain(files.into_iter().map(|name| (name, false)))
+            .collect();
+    }
+
+    fn navigate_browser(&mut self, name: &str, is_dir: bool) {
+        if is_dir {
+            self.browser_dir = self.browser_dir.join(name);
+            self.refresh_browser();
+        } else {
+            let path = self.browser_dir.join(name);
+            self.show_browser = false;
+            self.load(path);
         }
     }
 
@@ -4600,6 +4654,18 @@ impl eframe::App for OpenFlexApp {
                     if ui.button("Open").clicked() && !self.path_input.is_empty() {
                         self.load(PathBuf::from(self.path_input.clone()));
                     }
+                    if ui
+                        .button("Browse…")
+                        .on_hover_text("pick a model from a folder list")
+                        .clicked()
+                    {
+                        // Start where the current model lives, if any.
+                        if let Some(path) = self.path.as_ref().and_then(|p| p.parent()) {
+                            self.browser_dir = path.to_path_buf();
+                        }
+                        self.refresh_browser();
+                        self.show_browser = true;
+                    }
                     if ui.button("Save").clicked() {
                         self.save();
                     }
@@ -7289,6 +7355,83 @@ impl eframe::App for OpenFlexApp {
                 self.show_help = false;
             }
         }
+        if self.show_browser {
+            let mut open = true;
+            egui::Window::new("Open model")
+                .open(&mut open)
+                .resizable(true)
+                .default_width(520.0)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("Up").clicked()
+                            && let Some(parent) = self.browser_dir.parent()
+                        {
+                            let parent = parent.to_path_buf();
+                            self.browser_dir = parent;
+                            self.refresh_browser();
+                        }
+                        if ui.button("Home").clicked()
+                            && let Some(home) = std::env::var_os("HOME")
+                        {
+                            self.browser_dir = PathBuf::from(home);
+                            self.refresh_browser();
+                        }
+                        ui.label(
+                            egui::RichText::new(self.browser_dir.display().to_string())
+                                .small()
+                                .monospace()
+                                .color(palette::TEXT_DIM),
+                        );
+                    });
+                    ui.separator();
+                    if let Some(error) = self.browser_error.as_ref() {
+                        ui.colored_label(egui::Color32::from_rgb(226, 116, 96), error);
+                    }
+                    egui::ScrollArea::vertical()
+                        .id_salt("browser")
+                        .max_height(320.0)
+                        .show(ui, |ui| {
+                            if self.browser_entries.is_empty() {
+                                empty_state(
+                                    ui,
+                                    "Nothing here",
+                                    "No folders or .ofm models in this directory.",
+                                );
+                            }
+                            let entries = self.browser_entries.clone();
+                            for (name, is_dir) in entries {
+                                let label = if is_dir {
+                                    format!("[dir] {name}")
+                                } else {
+                                    name.clone()
+                                };
+                                let colour = if is_dir {
+                                    palette::ACCENT_HI
+                                } else {
+                                    palette::TEXT
+                                };
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new(label)
+                                                .small()
+                                                .monospace()
+                                                .color(colour),
+                                        )
+                                        .fill(egui::Color32::TRANSPARENT)
+                                        .rounding(egui::Rounding::same(4.0_f32)),
+                                    )
+                                    .clicked()
+                                {
+                                    self.navigate_browser(&name, is_dir);
+                                }
+                            }
+                        });
+                });
+            if !open {
+                self.show_browser = false;
+            }
+        }
         if self.show_save_as {
             let mut open = true;
             egui::Window::new("Save as")
@@ -8039,6 +8182,32 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn browser_lists_dirs_before_models() {
+        // Build a scratch directory with a sub-folder, a model and a decoy.
+        let dir = std::env::temp_dir().join(format!("openflex-browser-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).expect("sub dir");
+        std::fs::write(dir.join("b.ofm"), "{}").expect("model");
+        std::fs::write(dir.join("a.ofm"), "{}").expect("model");
+        std::fs::write(dir.join("notes.txt"), "x").expect("decoy");
+
+        let mut app = OpenFlexApp::new(None);
+        app.browser_dir = dir.clone();
+        app.refresh_browser();
+        let names: Vec<(String, bool)> = app.browser_entries.clone();
+        assert_eq!(
+            names,
+            vec![
+                ("sub".to_string(), true),
+                ("a.ofm".to_string(), false),
+                ("b.ofm".to_string(), false),
+            ],
+            "directories first, then models alphabetically, no other files"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
