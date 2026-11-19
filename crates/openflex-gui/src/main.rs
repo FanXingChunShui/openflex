@@ -6042,7 +6042,7 @@ impl eframe::App for OpenFlexApp {
                         }
                     });
                     let (response, painter) = ui.allocate_painter(
-                        egui::vec2(ui.available_width(), 120.0),
+                        egui::vec2(ui.available_width(), 150.0),
                         egui::Sense::hover(),
                     );
                     let rect = response.rect;
@@ -6074,6 +6074,32 @@ impl eframe::App for OpenFlexApp {
                         let x = rect.left() + rect.width() * index as f32 / total as f32;
                         let y = rect.bottom() - 6.0 - (rect.height() - 12.0) * (value / max) as f32;
                         points.push(egui::pos2(x, y));
+                    }
+                    // Axis labels: max value top-left, first/last time below.
+                    painter.text(
+                        rect.left_top() + egui::vec2(3.0, 2.0),
+                        egui::Align2::LEFT_TOP,
+                        format!("{max:.1}"),
+                        egui::FontId::proportional(9.0),
+                        palette::TEXT_DIM,
+                    );
+                    if let (Some((first_time, _)), Some((last_time, _))) =
+                        (self.series.first(), self.series.last())
+                    {
+                        painter.text(
+                            rect.left_bottom() + egui::vec2(3.0, -3.0),
+                            egui::Align2::LEFT_BOTTOM,
+                            format!("{first_time:.0}"),
+                            egui::FontId::proportional(9.0),
+                            palette::TEXT_DIM,
+                        );
+                        painter.text(
+                            rect.right_bottom() + egui::vec2(-3.0, -3.0),
+                            egui::Align2::RIGHT_BOTTOM,
+                            format!("{last_time:.0}"),
+                            egui::FontId::proportional(9.0),
+                            palette::TEXT_DIM,
+                        );
                     }
                     // Horizontal guides at 25/50/75 % keep the scale readable.
                     for step in 1..4 {
