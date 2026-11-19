@@ -5080,9 +5080,11 @@ impl eframe::App for OpenFlexApp {
                         let ids = self.flow_block_ids();
                         if !ids.is_empty() {
                             let (response, painter) = ui.allocate_painter(
-                                egui::vec2(ui.available_width(), 190.0),
+                                egui::vec2(ui.available_width(), 210.0),
                                 egui::Sense::click_and_drag(),
                             );
+                            // Clip so panned nodes cannot bleed into the panels.
+                            let painter = painter.with_clip_rect(response.rect);
                             let origin = response.rect.min + self.flow_pan;
                             let zoom = self.flow_zoom.clamp(0.4, 2.5);
                             let rect_of = |id: &String, index: usize| {
@@ -5096,11 +5098,23 @@ impl eframe::App for OpenFlexApp {
                                     egui::vec2(124.0, 40.0) * zoom,
                                 )
                             };
-                            painter.rect_filled(
-                                response.rect,
-                                4.0,
-                                palette::CANVAS,
-                            );
+                            painter.rect_filled(response.rect, 6.0, palette::CANVAS);
+                            // Dot grid (like a diagram editor) follows pan/zoom.
+                            let spacing = (24.0 * zoom).max(10.0);
+                            let offset = self.flow_pan;
+                            let mut x = response.rect.left() + offset.x.rem_euclid(spacing);
+                            while x < response.rect.right() {
+                                let mut y = response.rect.top() + offset.y.rem_euclid(spacing);
+                                while y < response.rect.bottom() {
+                                    painter.circle_filled(
+                                        egui::pos2(x, y),
+                                        0.9,
+                                        egui::Color32::from_rgba_unmultiplied(120, 145, 180, 34),
+                                    );
+                                    y += spacing;
+                                }
+                                x += spacing;
+                            }
                             let rects: Vec<(String, egui::Rect)> = ids
                                 .iter()
                                 .enumerate()
