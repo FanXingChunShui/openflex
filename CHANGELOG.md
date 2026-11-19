@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### 桌面 GUI（功能补齐）
+
+- **对象重命名**：属性面板头部名称**就地编辑**（Enter/失焦提交、Esc 还原）；`rename_object()` 经撤销栈、
+  重名拒绝，`rewrite_name()` 改写全部引用（连接端点、`home`/`charger`/`network`、Process Flow 块），
+  随后 `validate()`。新增 `rename_rewrites_every_reference` 测试（GUI 16 项）。
+- **安全删除**：新增 `delete_objects()`，删除对象时同步清理连接、`home`/`charger`/`dispatcher`/`*_operator`
+  引用与 `network` 边；删除被引用对象不再因 `validate()` 失败而无反应，批量与右键删除共用该路径。
+  新增 `delete_cleans_dangling_references` 测试（GUI 17 项）。
+- **全局表只读预览**：左侧 `Global tables (n)` 折叠区显示 `行数 × 列数`、列名胶囊与前 4 行值，
+  超出提示剩余行数；空模型给出 `Tables live in the model JSON`。
+- **检查点列表操作**：显示当前文件夹，检查点改为等宽胶囊按钮，新增 `x` 删除（带错误反馈）。
+- **视觉状态重置**：`Reset` 与加载新模型时清空 `smooth` 插值缓存、`replay_index` 与事件日志。
+
 ### 桌面 GUI（外观）
 
 - **形体光影**：对象描边改为深色细线（选中时 1.6px 暖色环），机械类与源/汇/车辆都加**接触阴影**，
