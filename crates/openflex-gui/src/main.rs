@@ -5655,7 +5655,6 @@ impl eframe::App for OpenFlexApp {
             .default_width(360.0)
             .show(ctx, |ui| {
                 panel_heading(ui, "Connections");
-                ui.separator();
                 let Some(model) = self.model else {
                     return;
                 };
@@ -6035,7 +6034,6 @@ impl eframe::App for OpenFlexApp {
                 }
                 ui.separator();
                 panel_heading(ui, "Report");
-                ui.separator();
                 if self.report.is_none() {
                     empty_state(
                         ui,
