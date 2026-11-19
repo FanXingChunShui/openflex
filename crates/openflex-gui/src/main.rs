@@ -1925,10 +1925,12 @@ impl OpenFlexApp {
             .unwrap_or_default()
     }
 
+    /// Default node placement: a left-to-right pipeline, wrapping every four
+    /// blocks so a longer flow still reads top-down.
     fn flow_default_pos(index: usize) -> [f32; 2] {
-        let column = index % 3;
-        let row = index / 3;
-        [20.0 + column as f32 * 150.0, 20.0 + row as f32 * 70.0]
+        let column = index % 4;
+        let row = index / 4;
+        [16.0 + column as f32 * 140.0, 16.0 + row as f32 * 64.0]
     }
 
     fn start_timeseries(&mut self) {
