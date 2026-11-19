@@ -772,6 +772,28 @@ impl EditForm {
 
 type SeriesPoint = (String, f64, f64, f64); // object, content, throughput, utilization
 
+/// One row of the GUI event log (also used as a replay checkpoint marker).
+#[derive(Clone)]
+struct EventEntry {
+    time: f64,
+    kind: String,
+    object: Option<String>,
+}
+
+impl EventEntry {
+    fn line(&self) -> String {
+        format!(
+            "t={:.3} {}{}",
+            self.time,
+            self.kind,
+            self.object
+                .as_ref()
+                .map(|object| format!(" [{object}]"))
+                .unwrap_or_default()
+        )
+    }
+}
+
 /// One evaluated optimisation point: variable values, objective, secondary score.
 type OptRow = (Vec<f64>, f64, f64);
 
@@ -810,7 +832,7 @@ struct OpenFlexApp {
     new_port: String,
     handle: Option<SimulationHandle<'static>>,
     sim_state: Option<SimulationState>,
-    event_log: Vec<String>,
+    event_log: Vec<EventEntry>,
     running: bool,
     paused: bool,
     step_size: f32,
@@ -2058,6 +2080,25 @@ impl OpenFlexApp {
         }
     }
 
+    /// Replays the run up to `time` (jumping to a logged event): rebuilds the
+    /// handle and steps until the first event at/after that time.
+    fn jump_to_event(&mut self, time: f64) {
+        self.handle = None;
+        if !self.new_handle() {
+            return;
+        }
+        let Some(handle) = self.handle.as_mut() else {
+            return;
+        };
+        if let Err(error) = handle.step_until(time) {
+            self.error = Some(error.to_string());
+            return;
+        }
+        self.sim_state = Some(handle.state());
+        self.replay_index = None;
+        self.status = format!("Jumped to t={time:.3}");
+    }
+
     /// Runs until the next event, recording it in the event log.
     fn step_event(&mut self) {
         if !self.new_handle() {
@@ -2074,21 +2115,16 @@ impl OpenFlexApp {
                 return;
             }
         };
-        let line = format!(
-            "t={:.3} {}{}",
-            preview.time,
-            preview.kind,
-            preview
-                .object
-                .as_ref()
-                .map(|object| format!(" [{object}]"))
-                .unwrap_or_default()
-        );
+        let entry = EventEntry {
+            time: preview.time,
+            kind: preview.kind.clone(),
+            object: preview.object.clone(),
+        };
         if let Err(error) = handle.step_event() {
             self.error = Some(error.to_string());
             return;
         }
-        self.event_log.push(line);
+        self.event_log.push(entry);
         if self.event_log.len() > 200 {
             self.event_log.remove(0);
         }
@@ -3496,6 +3532,7 @@ impl eframe::App for OpenFlexApp {
                     });
                 }
                 ui.separator();
+                let mut jump: Option<f64> = None;
                 egui::CollapsingHeader::new(format!("Events ({})", self.event_log.len()))
                     .id_salt("event-log")
                     .show(ui, |ui| {
@@ -3508,11 +3545,18 @@ impl eframe::App for OpenFlexApp {
                             .max_height(140.0)
                             .stick_to_bottom(true)
                             .show(ui, |ui| {
-                                for line in &self.event_log {
-                                    ui.label(egui::RichText::new(line).monospace().small());
+                                for entry in &self.event_log {
+                                    let label =
+                                        egui::RichText::new(entry.line()).monospace().small();
+                                    if ui.selectable_label(false, label).clicked() {
+                                        jump = Some(entry.time);
+                                    }
                                 }
                             });
                     });
+                if let Some(time) = jump {
+                    self.jump_to_event(time);
+                }
                 ui.separator();
                 ui.heading("Report");
                 ui.separator();

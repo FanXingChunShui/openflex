@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.88.0 — 2026-11-19
+
+### 桌面 GUI
+
+- **事件时间跳转**：事件日志改为结构化条目（`time/kind/object`）；点击任一行触发 `jump_to_event`——
+  重建 `SimulationHandle` 并 `step_until(该事件时间)`，视图与统计随即回到那一刻，状态栏显示 `Jumped to t=…`。
+
+### 验证
+
+- 490 个测试全绿（core 255、CLI 86、report 14、model 115）；GUI 编译、clippy 0、启动无 panic。
+- v0.88.0 三平台产物（含 GUI 安装包）发布并 SHA256 校验。
+
 ## v0.87.0 — 2026-11-19
 
 ### 引擎（Person）
