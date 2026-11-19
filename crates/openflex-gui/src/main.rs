@@ -2797,10 +2797,9 @@ idle,busy,blocked,down\n",
         let x = centroid[0];
         let r = centroid[1] / sin_pitch;
         let centre = [x * cos_yaw + r * sin_yaw, -x * sin_yaw + r * cos_yaw];
-        // Pad by two units, then fit the group into the canvas with a margin
-        // that leaves room for the labels above the boxes.
-        // 4 units of padding plus 200 px of margin leave room for the object
-        // boxes and their captions, which sit outside the projected centre.
+        // Fit the group into the canvas with a margin that leaves room for the
+        // object boxes and their captions, which extend outside the projected
+        // centre of each object.
         let padding = 4.0_f32;
         let span = (max[0] - min[0]).max(max[1] - min[1]).max(1.0) + padding;
         let usable = (canvas - 200.0).max(160.0);
