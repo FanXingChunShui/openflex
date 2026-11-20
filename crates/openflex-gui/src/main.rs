@@ -679,6 +679,82 @@ fn distribution_name(dist: &Distribution) -> &'static str {
     }
 }
 
+/// Switches `dist` to another family while keeping any parameter the two
+/// families share (so `normal(mean 8)` → `exponential` keeps 8 as its mean
+/// instead of snapping back to the 1.0 default).
+fn switch_distribution(dist: &mut Distribution, name: &str) {
+    let mut next = make_distribution(name);
+    let carried = |field: &str| -> Option<f64> {
+        let read = |value: &Distribution| -> Option<f64> {
+            use Distribution::*;
+            match (value, field) {
+                (Constant { value }, "value") => Some(*value),
+                (Uniform { min, .. }, "min") | (Triangular { min, .. }, "min") => Some(*min),
+                (Uniform { max, .. }, "max") | (Triangular { max, .. }, "max") => Some(*max),
+                (IntegerUniform { min, .. }, "min") => Some(*min as f64),
+                (IntegerUniform { max, .. }, "max") => Some(*max as f64),
+                (Normal { mean, .. }, "mean")
+                | (Exponential { mean }, "mean")
+                | (Lognormal { meanlog: mean, .. }, "mean") => Some(*mean),
+                (Triangular { mode, .. }, "mode") => Some(*mode),
+                (Normal { stddev, .. }, "stddev") => Some(*stddev),
+                (Gamma { shape, .. }, "shape") | (Weibull { shape, .. }, "shape") => Some(*shape),
+                (Erlang { shape, .. }, "shape") => Some(*shape as f64),
+                (Pareto { shape, .. }, "shape") => Some(*shape),
+                (Gamma { scale, .. }, "scale")
+                | (Weibull { scale, .. }, "scale")
+                | (Erlang { scale, .. }, "scale")
+                | (Pareto { scale, .. }, "scale") => Some(*scale),
+                (Lognormal { sdlog, .. }, "sdlog") => Some(*sdlog),
+                (Beta { alpha, .. }, "alpha") => Some(*alpha),
+                (Beta { beta, .. }, "beta") => Some(*beta),
+                _ => None,
+            }
+        };
+        read(dist)
+    };
+    let apply = |field: &str, target: &mut f64| {
+        if let Some(value) = carried(field) {
+            *target = value;
+        }
+    };
+    {
+        use Distribution::*;
+        match &mut next {
+            Constant { value } => apply("value", value),
+            Uniform { min, max } => {
+                apply("min", min);
+                apply("max", max);
+            }
+            Normal { mean, stddev } => {
+                apply("mean", mean);
+                apply("stddev", stddev);
+            }
+            Exponential { mean } => apply("mean", mean),
+            Triangular { min, mode, max } => {
+                apply("min", min);
+                apply("mode", mode);
+                apply("max", max);
+            }
+            Gamma { shape, scale } | Weibull { shape, scale } | Pareto { shape, scale } => {
+                apply("shape", shape);
+                apply("scale", scale);
+            }
+            Lognormal { meanlog, sdlog } => {
+                apply("mean", meanlog);
+                apply("sdlog", sdlog);
+            }
+            Erlang { scale, .. } => apply("scale", scale),
+            Beta { alpha, beta } => {
+                apply("alpha", alpha);
+                apply("beta", beta);
+            }
+            _ => {}
+        }
+    }
+    *dist = next;
+}
+
 fn make_distribution(name: &str) -> Distribution {
     match name {
         "uniform" => Distribution::Uniform { min: 0.0, max: 1.0 },
@@ -740,7 +816,7 @@ fn distribution_editor(ui: &mut egui::Ui, label: &str, dist: &mut Distribution) 
                         .clicked()
                         && current != *name
                     {
-                        *dist = make_distribution(name);
+                        switch_distribution(dist, name);
                         changed = true;
                     }
                 }
@@ -10229,6 +10305,51 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn switching_distribution_keeps_shared_parameters() {
+        use openflex_model::Distribution;
+        // mean carries from normal to exponential.
+        let mut dist = Distribution::Normal {
+            mean: 8.0,
+            stddev: 2.0,
+        };
+        switch_distribution(&mut dist, "exponential");
+        match dist {
+            Distribution::Exponential { mean } => assert_eq!(mean, 8.0),
+            other => panic!("expected exponential, got {other:?}"),
+        }
+        // shape/scale carry between gamma and weibull.
+        let mut dist = Distribution::Gamma {
+            shape: 3.0,
+            scale: 4.0,
+        };
+        switch_distribution(&mut dist, "weibull");
+        match dist {
+            Distribution::Weibull { shape, scale } => {
+                assert_eq!((shape, scale), (3.0, 4.0));
+            }
+            other => panic!("expected weibull, got {other:?}"),
+        }
+        // A family without the field falls back to its own default.
+        let mut dist = Distribution::Exponential { mean: 8.0 };
+        switch_distribution(&mut dist, "beta");
+        match dist {
+            Distribution::Beta { alpha, beta } => {
+                assert_eq!((alpha, beta), (2.0, 2.0), "no shared field: defaults");
+            }
+            other => panic!("expected beta, got {other:?}"),
+        }
+        // Integer families convert without losing the value.
+        let mut dist = Distribution::IntegerUniform { min: 1, max: 6 };
+        switch_distribution(&mut dist, "triangular");
+        match dist {
+            Distribution::Triangular { min, max, .. } => {
+                assert_eq!((min, max), (1.0, 6.0));
+            }
+            other => panic!("expected triangular, got {other:?}"),
+        }
     }
 
     #[test]
