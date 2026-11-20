@@ -2337,7 +2337,7 @@ impl OpenFlexApp {
         }
         if width != cells.len() {
             self.error = Some(format!(
-                "row {row} needs {width} cell(s), got {}",
+                "{table_name} row {row} needs {width} cell(s), got {}",
                 cells.len()
             ));
             return;
@@ -7662,11 +7662,15 @@ impl eframe::App for OpenFlexApp {
                                         .table_edit
                                         .get_mut(&key)
                                         .expect("buffer just inserted");
-                                    let response = ui.add(
-                                        egui::TextEdit::singleline(buffer)
-                                            .desired_width(78.0)
-                                            .font(egui::TextStyle::Monospace),
-                                    );
+                                    let response = ui
+                                        .add(
+                                            egui::TextEdit::singleline(buffer)
+                                                .desired_width(78.0)
+                                                .font(egui::TextStyle::Monospace),
+                                        )
+                                        .on_hover_text(
+                                            "number, true/false, or text — the type is detected on commit",
+                                        );
                                     if response.lost_focus() {
                                         let cells: Vec<String> = (0..table.width())
                                             .map(|column| {
@@ -11492,6 +11496,30 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn table_errors_name_the_table() {
+        // Multi-table models need the table name in the message, otherwise the
+        // user cannot tell which grid was rejected.
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        app.add_global_table();
+        app.add_global_table();
+        let second = app
+            .model
+            .expect("model")
+            .global_tables
+            .keys()
+            .last()
+            .expect("table")
+            .clone();
+        // A short row is rejected and the message names the table.
+        app.commit_table_row(&second, 0, vec!["only one".to_string()]);
+        let message = app.error.clone().expect("error");
+        assert!(message.contains(&second), "message: {message}");
+        assert!(message.contains("2 cell(s)"), "message: {message}");
     }
 
     #[test]
