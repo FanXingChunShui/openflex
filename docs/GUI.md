@@ -105,7 +105,7 @@ wix build packaging\windows\openflex-gui.wxs -d Version=<ver> ^
 
 | 优先级 | 缺口 | 说明 |
 |---|---|---|
-| ~~P0~~ | ~~参数表单（按 kind 的控件）~~ | **已完成（v0.52.0 + v0.64.0）**：Distribution 下拉 + 数值控件，覆盖全部 28 种对象（枚举型字段如 rack type/pick policy 仍走 JSON） |
+| ~~P0~~ | ~~参数表单（按 kind 的控件）~~ | **已完成（v0.52.0 / v0.64.0 / v0.93.0）**：Distribution 下拉 + 数值控件，覆盖全部 28 种对象；rack type/pick policy、queue order、valve curve 已是下拉，仅 `by_label` 这类带参枚举走 JSON |
 | P0 | 3D 场景增强（部分完成） | ✅ 地面网格/阴影/相机预设/按 kind 几何体/明暗/旋转 + 侧面挤出（v0.75.0）；仍缺纹理贴图与实时光照模型 |
 | P1 | 运行可视化 | ✅ 状态着色 + 瞬时 WIP + item 圆点 + 执行器实时位置 + 进度条 + 平滑动画 + **采样回放滑块**（v0.62.0） |
 | P1 | 流程图/Process Flow 编辑 | ✅ 可视化节点画布 + 块增删/连接/JSON 编辑 + 平移/缩放（v0.59.0 / v1.12.0）；节点位置保存在内存（不写入模型） |
@@ -114,7 +114,8 @@ wix build packaging\windows\openflex-gui.wxs -d Version=<ver> ^
 | ~~P2~~ | 撤销/重做 | **已完成（v0.56.0）** |
 | ~~P2~~ | 文件菜单/最近文件/新建 | **已完成（v0.56.0）**：New / Save as / Recent / 快捷键 |
 | P2 | 统计图表 | ✅ 利用率柱状图 + 状态饼图 + 时间序列（WIP/吞吐/利用率）+ 时间序列/报告 CSV + 报告 JSON 导出（v0.70.0） |
-| ~~P3~~ | 打包成 .app 双击启动（v0.58.0，universal v0.71.0）：`scripts/package-gui-app.sh` 生成 `OpenFlex.app` + zip；Windows 的 `.exe` 可直接双击（MSI 附带 GUI 仍未做） |
+| ~~P3~~ | 打包成 .app 双击启动 | **已完成（v0.58.0，universal v0.71.0，GUI MSI 随 v0.79.0 起发布）**：`scripts/package-gui-app.sh` 生成 `OpenFlex.app` + zip；Windows `.msi` 含 GUI，Linux `.deb`/`.rpm` 同批发布 |
+| P2 | 层级树 / 历史列表 / 本地化 | 见下方路线图第 2、4、5 项 |
 
 ## 路线图（v1.26.0 之后）
 
