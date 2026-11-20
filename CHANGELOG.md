@@ -4,6 +4,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **另存建议为绝对路径**：未保存的模型按 `Save` 时，对话框预填 `~/Documents/<name>.ofm`
+  （没有 Documents 则落到家目录），不再是裸文件名 `untitled.ofm`——后者会保存到启动目录。
+  新增 `save_as_suggestion_is_absolute` 测试（GUI 88 项）。
 - **导出路径可预测**：未保存的模型导出 CSV/JSON/SVG 时，文件落到 `~/Documents/<模型名>.<ext>`
   （没有 Documents 则落到家目录），而不是依赖 GUI 启动时的进程工作目录——从桌面图标启动时那里是 `/`。
   已保存的模型仍写在模型同目录。新增 `export_paths_are_predictable_without_a_saved_model` 测试（GUI 87 项）。

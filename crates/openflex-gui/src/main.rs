@@ -2866,9 +2866,23 @@ impl OpenFlexApp {
         let Some(path) = self.path.clone() else {
             if self.model.is_some() {
                 let suggested = if self.path_input.trim().is_empty() {
-                    self.model
+                    // A bare file name would save relative to the launch
+                    // directory; suggest a full path the user can confirm.
+                    let name = self
+                        .model
                         .map(|model| format!("{}.ofm", model.name))
-                        .unwrap_or_else(|| "untitled.ofm".to_string())
+                        .unwrap_or_else(|| "untitled.ofm".to_string());
+                    let base = std::env::var_os("HOME")
+                        .or_else(|| std::env::var_os("USERPROFILE"))
+                        .map(std::path::PathBuf::from);
+                    match base {
+                        Some(base) => {
+                            let docs = base.join("Documents");
+                            let dir = if docs.is_dir() { docs } else { base };
+                            dir.join(name).display().to_string()
+                        }
+                        None => name,
+                    }
                 } else {
                     self.path_input.clone()
                 };
@@ -11082,6 +11096,30 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn save_as_suggestion_is_absolute() {
+        // The suggestion `save()` builds when the model has no path yet.
+        let name = "untitled.ofm".to_string();
+        let base = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(std::path::PathBuf::from);
+        let suggested = match base {
+            Some(base) => {
+                let docs = base.join("Documents");
+                let dir = if docs.is_dir() { docs } else { base };
+                dir.join(&name).display().to_string()
+            }
+            None => name.clone(),
+        };
+        if std::env::var_os("HOME").is_some() {
+            assert!(
+                std::path::Path::new(&suggested).is_absolute(),
+                "expected an absolute suggestion, got {suggested}"
+            );
+            assert!(suggested.ends_with("untitled.ofm"));
+        }
     }
 
     #[test]
