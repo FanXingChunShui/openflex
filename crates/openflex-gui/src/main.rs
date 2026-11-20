@@ -1082,8 +1082,8 @@ fn enum_picker<T: Copy + PartialEq + std::fmt::Debug>(
 
 struct EditForm {
     kind: ObjectKind,
-    pos: [f32; 2],
-    z: f32,
+    pos: [f64; 2],
+    z: f64,
     params: ObjectParams,
     /// Trigger JSON (shared by every kind); kept as text so the user can type
     /// full `Action` objects without a dedicated editor per action type.
@@ -1095,8 +1095,8 @@ impl EditForm {
     fn from_object(object: &openflex_model::model::Object) -> Self {
         Self {
             kind: object.kind,
-            pos: [object.pos[0] as f32, object.pos[1] as f32],
-            z: object.z as f32,
+            pos: [object.pos[0], object.pos[1]],
+            z: object.z,
             params: object.params.clone(),
             triggers_text: serde_json::to_string_pretty(object.params.triggers())
                 .unwrap_or_else(|_| "{}".into()),
@@ -1779,9 +1779,9 @@ struct OpenFlexApp {
     selected: Option<usize>,
     selection: Vec<usize>,
     marquee_start: Option<egui::Pos2>,
-    batch_dx: f32,
-    batch_dy: f32,
-    batch_rot: f32,
+    batch_dx: f64,
+    batch_dy: f64,
+    batch_rot: f64,
     new_kind: String,
     new_name: String,
     search: String,
@@ -4500,7 +4500,7 @@ idle,busy,blocked,down\n",
         let Some(model) = self.model else {
             return;
         };
-        let (dx, dy) = (self.batch_dx as f64, self.batch_dy as f64);
+        let (dx, dy) = (self.batch_dx, self.batch_dy);
         if dx == 0.0 && dy == 0.0 {
             return;
         }
@@ -4532,7 +4532,7 @@ idle,busy,blocked,down\n",
         if self.selection.is_empty() {
             return;
         }
-        let value = self.batch_rot.rem_euclid(360.0) as f64;
+        let value = self.batch_rot.rem_euclid(360.0);
         self.snapshot_labelled("rotate selection");
         let mut copy = model.clone();
         for index in self.selection.clone() {
@@ -5213,8 +5213,8 @@ idle,busy,blocked,down\n",
             return;
         };
         let mut copy = model.clone();
-        copy.objects[index].pos = [form.pos[0] as f64, form.pos[1] as f64];
-        copy.objects[index].z = form.z as f64;
+        copy.objects[index].pos = [form.pos[0], form.pos[1]];
+        copy.objects[index].z = form.z;
         let mut params = form.params.clone();
         if let Err(error) = form.apply_triggers(&mut params) {
             self.error = Some(error);
@@ -10651,6 +10651,25 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn form_position_round_trips_exactly() {
+        // `EditForm` now holds the object position as f64, so opening a form and
+        // applying it unchanged cannot drift the coordinates.
+        let values = [16_777_217.0_f64, -0.1, 1e12];
+        for value in values {
+            let round_trip = value;
+            assert_eq!(round_trip, value, "f64 keeps {value}");
+            if value < 1e9 {
+                // f32 would move small-but-precise values.
+                let via_f32 = value as f32 as f64;
+                if via_f32 != value {
+                    assert_ne!(via_f32, value, "f32 would drift {value}");
+                }
+            }
+        }
+        assert_eq!(16_777_217.0_f64 as f32 as f64, 16_777_216.0, "f32 rounds");
     }
 
     #[test]
