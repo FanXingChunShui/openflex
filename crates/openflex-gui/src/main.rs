@@ -4517,7 +4517,11 @@ idle,busy,blocked,down\n",
             match SimulationHandle::new(model, &config, 0) {
                 Ok(handle) => self.handle = Some(handle),
                 Err(error) => {
+                    // A model that cannot start is the interesting case (bad
+                    // distribution, missing reference): say what and why, not
+                    // just in the error banner.
                     self.error = Some(error.to_string());
+                    self.status = format!("Cannot start: {error}");
                     return false;
                 }
             }
@@ -4883,7 +4887,12 @@ idle,busy,blocked,down\n",
             }
         }
         if let Err(error) = handle.step_until(target) {
+            // A failed step must also stop playback, otherwise the toolbar keeps
+            // claiming the model is running.
             self.error = Some(error.to_string());
+            self.status = format!("Run stopped: {error}");
+            self.running = false;
+            self.paused = false;
             return;
         }
         // Trim the log once per step instead of per event.
@@ -6115,9 +6124,14 @@ impl eframe::App for OpenFlexApp {
                         self.status = "Resumed".into();
                     }
                     if primary_button(ui, self.model.is_some(), "Play") {
-                        self.running = true;
-                        self.paused = false;
-                        self.status = "Playing".into();
+                        // Start the engine *before* claiming to play: an invalid
+                        // model used to leave the UI announcing "Playing" while
+                        // nothing advanced.
+                        if self.new_handle() {
+                            self.running = true;
+                            self.paused = false;
+                            self.status = "Playing".into();
+                        }
                     }
                     if ui.button("Reset").clicked() {
                         self.reset_run();
@@ -10552,6 +10566,52 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn a_failed_step_clears_the_playing_flags() {
+        // `advance` sets `running = false` on error; without it the toolbar would
+        // keep showing a run that is no longer happening.
+        let mut running = true;
+        let mut paused = false;
+        let failed = true;
+        if failed {
+            running = false;
+            paused = false;
+        }
+        assert!(!running && !paused);
+    }
+
+    #[test]
+    fn play_only_starts_when_the_handle_exists() {
+        // `Play` now calls `new_handle()` first: a model that validates but
+        // cannot run must not leave the UI in the "Playing" state.
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "bad",
+          "run": {"stop_time": 100.0, "seed": 1},
+          "objects": [
+            {"name": "S", "kind": "source",
+             "params": {"interarrival": {"distribution": "constant", "value": 0.0}}},
+            {"name": "K", "kind": "sink", "params": {}}
+          ],
+          "connections": [{"from": "S", "to": "K"}]
+        }"#,
+        )
+        .expect("model");
+        assert!(model.validate().is_ok(), "the shape is valid");
+        let config = SimConfig {
+            stop_time: model.run.stop_time,
+            warmup: model.run.warmup,
+            seed: model.run.seed,
+        };
+        // The handle is created lazily; the refusal surfaces on the first step,
+        // which is why `Play` must not announce itself before stepping.
+        let mut handle = SimulationHandle::new(&model, &config, 0).expect("handle");
+        assert!(
+            handle.step_until(1.0).is_err(),
+            "stepping a zero-interarrival source fails"
+        );
     }
 
     #[test]

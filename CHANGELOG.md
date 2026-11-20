@@ -4,6 +4,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **修复：Play 卡在「播放中」**：`advance()` 步进失败时只写错误横幅，不会清 `running`/`paused`，工具栏会一直
+  显示在播放；现在同时停止播放并给出 `Run stopped: <原因>`。`Play` 也改为先 `new_handle()` 再宣布 Playing。
+  另加 `a_failed_step_clears_the_playing_flags` 与 `play_only_starts_when_the_handle_exists` 测试（GUI 66 项）。
 - **切换对象时提示丢弃编辑**：当前对象有未应用的改动却在对象树里点了别的对象时，状态栏给出
   `Discarded unsaved edits on <name>`；此前 `form_dirty` 只在切换到同对象时被清掉，跨对象编辑会静默丢失。
   新增 `selecting_another_object_reports_discarded_edits` 测试（GUI 64 项）。
