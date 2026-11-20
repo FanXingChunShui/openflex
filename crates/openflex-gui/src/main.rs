@@ -3442,6 +3442,17 @@ idle,busy,blocked,down\n",
         }
     }
 
+    /// Model time encoded in a checkpoint file name
+    /// (`checkpoint-12.50.json` → 12.5, `checkpoint-12.50-2.json` → 12.5).
+    fn checkpoint_time(path: &std::path::Path) -> f64 {
+        path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stem| stem.strip_prefix("checkpoint-"))
+            .and_then(|rest| rest.split('-').next())
+            .and_then(|time| time.parse::<f64>().ok())
+            .unwrap_or(0.0)
+    }
+
     /// Saves the current simulation state as a checkpoint JSON file.
     fn save_checkpoint(&mut self) {
         if self.handle.is_none() && !self.new_handle() {
@@ -3513,7 +3524,11 @@ idle,busy,blocked,down\n",
                 return;
             }
         };
-        entries.sort();
+        // Sort by the model time encoded in the name, not lexically: with plain
+        // string ordering `checkpoint-9.00` would sort after `checkpoint-10.00`.
+        entries.sort_by(|left, right| {
+            Self::checkpoint_time(left).total_cmp(&Self::checkpoint_time(right))
+        });
         let Some(path) = entries.last().cloned() else {
             self.error = Some(format!("no checkpoints in {dir}"));
             return;
@@ -9892,6 +9907,34 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn checkpoints_sort_by_model_time_not_by_name() {
+        use std::path::PathBuf;
+        let names = [
+            "checkpoint-10.00.json",
+            "checkpoint-9.00.json",
+            "checkpoint-100.00.json",
+            "checkpoint-9.00-2.json",
+            "notes.txt",
+        ];
+        let mut entries: Vec<PathBuf> = names.iter().map(PathBuf::from).collect();
+        entries.sort_by(|a, b| {
+            OpenFlexApp::checkpoint_time(a).total_cmp(&OpenFlexApp::checkpoint_time(b))
+        });
+        let times: Vec<f64> = entries
+            .iter()
+            .map(|path| OpenFlexApp::checkpoint_time(path))
+            .collect();
+        assert_eq!(times, vec![0.0, 9.0, 9.0, 10.0, 100.0], "{times:?}");
+        assert_eq!(
+            entries
+                .last()
+                .map(|path| OpenFlexApp::checkpoint_time(path)),
+            Some(100.0),
+            "the newest checkpoint is the one with the largest model time"
+        );
     }
 
     #[test]
