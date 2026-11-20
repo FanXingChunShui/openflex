@@ -4,6 +4,10 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **导出路径可预测**：未保存的模型导出 CSV/JSON/SVG 时，文件落到 `~/Documents/<模型名>.<ext>`
+  （没有 Documents 则落到家目录），而不是依赖 GUI 启动时的进程工作目录——从桌面图标启动时那里是 `/`。
+  已保存的模型仍写在模型同目录。新增 `export_paths_are_predictable_without_a_saved_model` 测试（GUI 87 项）。
+- **预设删除提示**：布局预设的 `x` 悬停给出 `delete the preset '<name>'`。
 - **替换未保存文档需二次确认**：`New` / `Open` / 内置示例在 `model_dirty` 时第一次只给出
   `Unsaved changes — press <动作> again to discard them, or Save first`，再按一次才真正替换；
   工具栏按钮与 `Ctrl/Cmd+N`、`Ctrl/Cmd+O` 走同一个 `may_replace_document()` 守卫。

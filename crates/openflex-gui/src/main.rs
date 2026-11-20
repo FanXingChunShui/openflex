@@ -3626,10 +3626,24 @@ impl OpenFlexApp {
     }
 
     fn report_path(&self, extension: &str) -> PathBuf {
-        self.path
-            .as_ref()
-            .map(|path| path.with_extension(extension))
-            .unwrap_or_else(|| PathBuf::from(format!("openflex-report.{extension}")))
+        if let Some(path) = self.path.as_ref() {
+            return path.with_extension(extension);
+        }
+        // An unsaved model has no directory to sit next to: put the artefact
+        // somewhere predictable instead of the process working directory
+        // (which depends on how the GUI was launched).
+        let base = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let dir = base.join("Documents");
+        let dir = if dir.is_dir() { dir } else { base };
+        let name = self
+            .model
+            .map(|model| model.name.clone())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| "openflex".to_string());
+        dir.join(format!("{name}.{extension}"))
     }
 
     /// Keeps the current report as the comparison baseline.
@@ -7119,7 +7133,11 @@ impl eframe::App for OpenFlexApp {
                             if ui.small_button(&name).clicked() {
                                 self.apply_layout_preset(&name);
                             }
-                            if ui.small_button("x").clicked() {
+                            if ui
+                                .small_button("x")
+                                .on_hover_text(format!("delete the preset '{name}'"))
+                                .clicked()
+                            {
                                 delete = Some(name.clone());
                             }
                         });
@@ -11064,6 +11082,27 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn export_paths_are_predictable_without_a_saved_model() {
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        let path = app.report_path("report.csv");
+        assert!(
+            path.to_string_lossy().ends_with("mm1.report.csv"),
+            "unexpected export name: {}",
+            path.display()
+        );
+        // It must be absolute, i.e. not relative to the process directory.
+        assert!(path.is_absolute(), "{}", path.display());
+        // With a saved model the artefact sits next to the model.
+        app.path = Some(std::path::PathBuf::from("/tmp/demo/model.ofm"));
+        assert_eq!(
+            app.report_path("report.csv"),
+            std::path::PathBuf::from("/tmp/demo/model.report.csv")
+        );
     }
 
     #[test]
