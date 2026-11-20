@@ -4,6 +4,12 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **修复：`Timetable` 提示字段写错**：表单里的示例写的是 `{"windows": [{start, duration, repeat_every}]}`，但
+  `TimeTable.windows` 实际是 `DowntimeWindow { start, end }`——照抄示例会得到 `unknown field 'duration'`。
+  提示已改为 `{"windows": [{"start": 0, "end": 28800}]}`，`docs/GUI.md` 对应行同步修正（并注明 `shifts` 才是
+  `{start, duration, repeat_every}`）。新增 `timetable_hint_matches_the_model_schema` 测试（GUI 61 项）。
+- **`BasicFr` 表单显示状态**：`process flow / timetable / emptier` 三个布尔从一行纯文本改为 `on/off` 彩色标签，
+  并在开启时提示去哪里编辑（流程走画布、emptier 走 JSON），不再一句「(edit via JSON)」打发。
 - **run 设置改用 f64**：`model_stop` / `model_warmup` 原是 `f32`，而 `DragValue` 的范围到 `1e9`——该量级下 f32
   的整数精度只有 64，`1e9+1` 会变成 `1e9`。改为 f64 后与模型字段同类型，往返不失真。
   新增 `run_settings_keep_precision_at_large_values` 测试（GUI 59 项）。

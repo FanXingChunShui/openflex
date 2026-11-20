@@ -1461,12 +1461,49 @@ impl EditForm {
                 });
             }
             ObjectParams::BasicFr(p) => {
-                ui.label(format!(
-                    "process flow: {} · timetable: {} · emptier: {} (edit via JSON)",
-                    p.process_flow.is_some(),
-                    p.timetable.is_some(),
-                    p.emptier.is_some()
-                ));
+                // The timetable has its own editor at the bottom of the form and
+                // the process flow has the canvas; only the emptier is JSON-only.
+                let on_off = |present: bool| {
+                    if present {
+                        egui::RichText::new("on").color(palette::OK)
+                    } else {
+                        egui::RichText::new("off").color(palette::TEXT_DIM)
+                    }
+                };
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("process flow")
+                            .small()
+                            .color(palette::TEXT_DIM),
+                    );
+                    ui.label(on_off(p.process_flow.is_some()).small());
+                    ui.label(
+                        egui::RichText::new("timetable")
+                            .small()
+                            .color(palette::TEXT_DIM),
+                    );
+                    ui.label(on_off(p.timetable.is_some()).small());
+                    ui.label(
+                        egui::RichText::new("emptier")
+                            .small()
+                            .color(palette::TEXT_DIM),
+                    );
+                    ui.label(on_off(p.emptier.is_some()).small());
+                });
+                if p.process_flow.is_some() {
+                    ui.label(
+                        egui::RichText::new("edit the flow on the Process Flow canvas")
+                            .size(9.0_f32)
+                            .color(palette::TEXT_DIM),
+                    );
+                }
+                if p.emptier.is_some() {
+                    ui.label(
+                        egui::RichText::new("emptier settings live in the JSON view")
+                            .size(9.0_f32)
+                            .color(palette::TEXT_DIM),
+                    );
+                }
             }
             ObjectParams::BasicTe(p) => {
                 changed |= ui
@@ -1578,9 +1615,12 @@ impl EditForm {
         egui::CollapsingHeader::new("Timetable (JSON)")
             .id_salt("timetable")
             .show(ui, |ui| {
+                // The sample must match `TimeTable { windows: Vec<DowntimeWindow{start,end}> }`:
+                // the old hint showed `duration`/`repeat_every`, which the model
+                // rejects with `unknown field`.
                 ui.label(
                     egui::RichText::new(
-                        "{\"windows\": [{\"start\": 0, \"duration\": 28800, \"repeat_every\": 86400}]} — null disables shifts",
+                        "{\"windows\": [{\"start\": 0, \"end\": 28800}]} — non-overlapping [start, end) intervals; null means always available",
                     )
                     .weak()
                     .small(),
@@ -10436,6 +10476,36 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn timetable_hint_matches_the_model_schema() {
+        // `TimeTable.windows` is `DowntimeWindow { start, end }`; the hint used to
+        // advertise `duration`/`repeat_every`, which the model rejects.
+        let hint = "{\"windows\": [{\"start\": 0, \"end\": 28800}]}";
+        let value: serde_json::Value = serde_json::from_str(hint).expect("hint is JSON");
+        let window = &value["windows"][0];
+        assert!(window.get("start").is_some());
+        assert!(window.get("end").is_some());
+        assert!(
+            window.get("duration").is_none() && window.get("repeat_every").is_none(),
+            "the hint must not mention fields the model does not have"
+        );
+        // And the model accepts exactly that shape.
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "shift",
+          "run": {"stop_time": 10.0},
+          "objects": [
+            {"name": "S", "kind": "source", "params": {}},
+            {"name": "A", "kind": "basic_fr",
+             "params": {"timetable": {"windows": [{"start": 0, "end": 28800}]}}},
+            {"name": "K", "kind": "sink", "params": {}}
+          ],
+          "connections": [{"from": "S", "to": "A"}, {"from": "A", "to": "K"}]
+        }"#,
+        );
+        assert!(model.is_ok(), "the documented shape must validate");
     }
 
     #[test]
