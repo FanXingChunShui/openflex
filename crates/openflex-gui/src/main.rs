@@ -5237,8 +5237,10 @@ impl eframe::App for OpenFlexApp {
                                     .fill(fill.gamma_multiply(0.85))
                                     .text(
                                         egui::RichText::new(format!(
-                                            "{:.1} / {:.1}",
-                                            state.now, model.run.stop_time
+                                            "{:.1} / {:.1} {}",
+                                            state.now,
+                                            model.run.stop_time,
+                                            model.time_unit.label()
                                         ))
                                         .size(10.0_f32)
                                         .color(palette::TEXT),
@@ -5504,10 +5506,16 @@ impl eframe::App for OpenFlexApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(state) = self.sim_state.as_ref() {
                             ui.label(
-                                egui::RichText::new(format!("t = {:.2}", state.now))
-                                    .small()
-                                    .monospace()
-                                    .color(palette::TEXT_DIM),
+                                egui::RichText::new(format!(
+                                    "t = {:.2} {}",
+                                    state.now,
+                                    self.model
+                                        .map(|model| model.time_unit.label())
+                                        .unwrap_or("")
+                                ))
+                                .small()
+                                .monospace()
+                                .color(palette::TEXT_DIM),
                             );
                         }
                         ui.label(
@@ -7364,14 +7372,28 @@ impl eframe::App for OpenFlexApp {
                         painter.text(
                             rect.left_bottom() + egui::vec2(3.0, -3.0),
                             egui::Align2::LEFT_BOTTOM,
-                            format!("{first_time:.0}"),
+                            {
+                                format!(
+                                    "{first_time:.0} {}",
+                                    self.model
+                                        .map(|model| model.time_unit.label())
+                                        .unwrap_or("")
+                                )
+                            },
                             egui::FontId::proportional(9.0),
                             palette::TEXT_DIM,
                         );
                         painter.text(
                             rect.right_bottom() + egui::vec2(-3.0, -3.0),
                             egui::Align2::RIGHT_BOTTOM,
-                            format!("{last_time:.0}"),
+                            {
+                                format!(
+                                    "{last_time:.0} {}",
+                                    self.model
+                                        .map(|model| model.time_unit.label())
+                                        .unwrap_or("")
+                                )
+                            },
                             egui::FontId::proportional(9.0),
                             palette::TEXT_DIM,
                         );
@@ -7816,7 +7838,16 @@ impl eframe::App for OpenFlexApp {
                     } else {
                         format!("{:.0}", report.completed.mean)
                     };
-                    metric_card(ui, "COMPLETED", &completed, palette::AMBER);
+                    let unit = self
+                        .model
+                        .map(|model| model.time_unit.label())
+                        .unwrap_or("");
+                    metric_card(
+                        ui,
+                        &format!("COMPLETED / {unit}"),
+                        &completed,
+                        palette::AMBER,
+                    );
                     metric_card(
                         ui,
                         "CREATED",
