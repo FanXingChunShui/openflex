@@ -2502,7 +2502,22 @@ impl OpenFlexApp {
                             .collect::<Vec<_>>()
                             .join(" / ")
                     ),
-                    None => "Optimisation finished without results".into(),
+                    None => {
+                        // Almost always a bad JSON path rather than a real
+                        // "no better point"; say so instead of a bare message.
+                        let bad = self
+                            .opt_vars
+                            .iter()
+                            .find(|var| var.path.trim().is_empty())
+                            .is_some();
+                        if bad {
+                            "Optimisation produced no results — a variable has no JSON path"
+                                .to_string()
+                        } else {
+                            "Optimisation produced no results — check the JSON paths and bounds"
+                                .to_string()
+                        }
+                    }
                 };
                 self.opt_rows = rows;
                 self.opt_running = false;
