@@ -10378,6 +10378,8 @@ impl eframe::App for OpenFlexApp {
                                 ("drag", "rotate the camera"),
                                 ("wheel", "zoom"),
                                 ("2D on/off", "flat floor-plan view"),
+                                ("Ctrl/Cmd + 2", "toggle the flat floor plan"),
+                                ("F", "frame the selection"),
                                 ("Top / Front / Side", "camera presets"),
                             ][..],
                         ),
@@ -10647,6 +10649,8 @@ impl eframe::App for OpenFlexApp {
         let mut step_delta = 0.0_f32;
         let mut new_pressed = false;
         let mut open_pressed = false;
+        let mut frame_pressed = false;
+        let mut flat_pressed = false;
         ctx.input_mut(|input| {
             if !typing && input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z) {
                 self.restore();
@@ -10697,6 +10701,14 @@ impl eframe::App for OpenFlexApp {
             if !typing && input.consume_key(egui::Modifiers::COMMAND, egui::Key::D) {
                 self.duplicate_selection();
             }
+            // View shortcuts: F frames the selection, Ctrl/Cmd+2 toggles the
+            // flat 2D floor plan.
+            if !typing && input.consume_key(egui::Modifiers::NONE, egui::Key::F) {
+                frame_pressed = true;
+            }
+            if !typing && input.consume_key(egui::Modifiers::COMMAND, egui::Key::Num2) {
+                flat_pressed = true;
+            }
             // Delete removes the selection (FlexSim uses the same key).
             if !typing
                 && (input.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
@@ -10726,6 +10738,17 @@ impl eframe::App for OpenFlexApp {
             } else if self.may_replace_document("Open") {
                 self.load(PathBuf::from(self.path_input.clone()));
             }
+        }
+        if frame_pressed {
+            self.frame_selection();
+        }
+        if flat_pressed {
+            self.flat_view = !self.flat_view;
+            if self.flat_view {
+                self.yaw = 0.0;
+                self.pitch = PITCH_MAX;
+            }
+            self.save_ui_prefs();
         }
         if step_delta != 0.0 {
             self.step_size = (self.step_size + step_delta).clamp(0.1, 1000.0);
@@ -12993,6 +13016,8 @@ mod tests {
                 "Ctrl/Cmd + A" => "egui::Key::A",
                 "Ctrl/Cmd + D" => "egui::Key::D",
                 "Delete / Backspace" => "egui::Key::Delete",
+                "Ctrl/Cmd + 2" => "egui::Key::Num2",
+                "F" => "egui::Key::F",
                 "F1" => "egui::Key::F1",
                 other => panic!("unmapped key cap: {other}"),
             };
