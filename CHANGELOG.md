@@ -4,6 +4,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **对比结果窗口**：`Compare to file` 的结果除了状态栏摘要，还会打开一个可滚动的窗口逐条列出
+  （`+` 绿、`-` 红、`~` 琥珀、其余灰），长摘要不再被下一条状态消息顶掉。
+  新增 `compare_report_lines_are_colour_coded` 测试（GUI 81 项）。
 - **与磁盘版本对比**：文件菜单新增 `Compare to file`——逐对象/逐连接比较内存模型与 `.ofm` 文件，
   状态栏给出 `vs <path>: +1 object(s): X · -1 object(s): Y · ~2 edited: Z · connections +1/-0 · run settings changed`
   或 `No differences against <path>`。此前想知道「改了哪些」只能靠 git diff 原始 JSON。

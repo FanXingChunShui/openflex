@@ -1825,6 +1825,10 @@ struct OpenFlexApp {
     sim_state: Option<SimulationState>,
     event_log: Vec<EventEntry>,
     event_filter: String,
+    /// Lines of the last `Compare to file` result (shown in a window so a long
+    /// summary is not lost to the next status message).
+    compare_lines: Vec<String>,
+    show_compare_report: bool,
     /// Objects waiting for a second Delete press (group deletions).
     delete_confirm: Option<Vec<String>>,
     /// Per-cell text buffers for the editable global tables:
@@ -1964,6 +1968,8 @@ impl OpenFlexApp {
             sim_state: None,
             event_log: Vec::new(),
             event_filter: String::new(),
+            compare_lines: Vec::new(),
+            show_compare_report: false,
             delete_confirm: None,
             table_edit: std::collections::HashMap::new(),
             window_title: String::new(),
@@ -2766,6 +2772,8 @@ impl OpenFlexApp {
             && !run_changed
         {
             self.status = format!("No differences against {}", path.display());
+            self.compare_lines = vec![format!("No differences against {}", path.display())];
+            self.show_compare_report = true;
             self.error = None;
             return;
         }
@@ -2789,6 +2797,25 @@ impl OpenFlexApp {
         if run_changed {
             parts.push("run settings changed".to_string());
         }
+        self.compare_lines = vec![format!("Compared with {}", path.display())];
+        for name in &added {
+            self.compare_lines.push(format!("+ {name}"));
+        }
+        for name in &removed {
+            self.compare_lines.push(format!("- {name}"));
+        }
+        for name in &edited {
+            self.compare_lines
+                .push(format!("~ {name} (parameters differ)"));
+        }
+        if edges_added > 0 || edges_removed > 0 {
+            self.compare_lines
+                .push(format!("connections +{edges_added} / -{edges_removed}"));
+        }
+        if run_changed {
+            self.compare_lines.push("run settings changed".to_string());
+        }
+        self.show_compare_report = true;
         self.status = format!("vs {}: {}", path.display(), parts.join(" · "));
         self.error = None;
     }
@@ -9998,6 +10025,31 @@ impl eframe::App for OpenFlexApp {
                 self.show_help = false;
             }
         }
+        if self.show_compare_report {
+            let mut open = true;
+            egui::Window::new("Compare to file")
+                .open(&mut open)
+                .resizable(true)
+                .default_width(460.0)
+                .show(ctx, |ui| {
+                    if self.compare_lines.is_empty() {
+                        empty_state(ui, "Nothing compared yet", "Use File > Compare to file.");
+                    }
+                    for line in &self.compare_lines {
+                        let colour = match line.chars().next() {
+                            Some('+') => palette::OK,
+                            Some('-') => egui::Color32::from_rgb(226, 116, 96),
+                            Some('~') => palette::AMBER,
+                            _ => palette::TEXT,
+                        };
+                        ui.label(egui::RichText::new(line).small().monospace().color(colour));
+                    }
+                });
+            if !open {
+                self.show_compare_report = false;
+                self.compare_lines.clear();
+            }
+        }
         if self.show_path_picker {
             let mut open = true;
             egui::Window::new("Pick a numeric field")
@@ -10940,6 +10992,22 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn compare_report_lines_are_colour_coded() {
+        // The prefix each line gets decides its colour in the report window.
+        let colour_of = |line: &str| match line.chars().next() {
+            Some('+') => "ok",
+            Some('-') => "bad",
+            Some('~') => "amber",
+            _ => "text",
+        };
+        assert_eq!(colour_of("+ Extra1"), "ok");
+        assert_eq!(colour_of("- Queue1"), "bad");
+        assert_eq!(colour_of("~ Processor1 (parameters differ)"), "amber");
+        assert_eq!(colour_of("Compared with /tmp/x.ofm"), "text");
+        assert_eq!(colour_of("No differences against /tmp/x.ofm"), "text");
     }
 
     #[test]
