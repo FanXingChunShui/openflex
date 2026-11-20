@@ -2769,6 +2769,19 @@ impl OpenFlexApp {
             }
             counter += 1;
         };
+        // A transfer block needs a real target: pick the model's first sink (or
+        // any object) instead of the hard-coded `Sink1` that may not exist.
+        let transfer_target = self
+            .model
+            .and_then(|model| {
+                model
+                    .objects
+                    .iter()
+                    .find(|object| object.kind == ObjectKind::Sink)
+                    .or_else(|| model.objects.first())
+            })
+            .map(|object| object.name.clone())
+            .unwrap_or_else(|| "Sink1".to_string());
         let block = match kind {
             "create" => serde_json::json!({
                 "id": id, "kind": "create", "quantity": 1, "first_arrival": 0.0,
@@ -2779,7 +2792,9 @@ impl OpenFlexApp {
             }),
             "assign" => serde_json::json!({"id": id, "kind": "assign", "actions": []}),
             "decision" => serde_json::json!({"id": id, "kind": "decision", "conditions": []}),
-            "transfer" => serde_json::json!({"id": id, "kind": "transfer", "object": "Sink1"}),
+            "transfer" => {
+                serde_json::json!({"id": id, "kind": "transfer", "object": transfer_target})
+            }
             _ => serde_json::json!({"id": id, "kind": "sink"}),
         };
         blocks.push(block);
@@ -10735,6 +10750,38 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn new_transfer_block_targets_an_object_in_the_model() {
+        // The rule `add_flow_block` uses for a transfer target: first sink, else
+        // the first object, else a harmless fallback.
+        let pick = |model: &Model| {
+            model
+                .objects
+                .iter()
+                .find(|object| object.kind == ObjectKind::Sink)
+                .or_else(|| model.objects.first())
+                .map(|object| object.name.clone())
+                .unwrap_or_else(|| "Sink1".to_string())
+        };
+        let pipeline = builtin_example("mm1").expect("example");
+        assert_eq!(pick(&pipeline), "Sink1", "the sink is preferred");
+        // A model without a sink falls back to its first object. Built from an
+        // existing model so validation does not reject the fixture.
+        let mut no_sink = pipeline.clone();
+        no_sink
+            .objects
+            .retain(|object| object.kind != ObjectKind::Sink);
+        no_sink
+            .connections
+            .retain(|connection| !connection.to.starts_with("Sink"));
+        assert_eq!(pick(&no_sink), "Source1");
+        // And an empty model keeps the documented default.
+        let mut empty = pipeline.clone();
+        empty.objects.clear();
+        empty.connections.clear();
+        assert_eq!(pick(&empty), "Sink1");
     }
 
     #[test]

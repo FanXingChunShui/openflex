@@ -4,6 +4,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **新 transfer 块的目标取自模型**：`+transfer` 以前硬编码 `"object": "Sink1"`，在没有该名字的模型里
+  Apply 就会校验失败。现在优先取模型中的第一个 sink，没有 sink 就取第一个对象，空模型才回落到 `Sink1`。
+  新增 `new_transfer_block_targets_an_object_in_the_model` 测试（GUI 75 项）。
 - **Run / 实验 / 优化可放弃**：三者运行中按钮分别变为 `Stop run` / `Stop experiment` / `Stop`，
   点击后丢弃接收端，状态栏说明 `… abandoned — its result will be ignored`。引擎本身没有取消钩子
   （`run_model` 一次跑完复现），因此这里放弃的是「结果落盘」，界面不再被锁住。
