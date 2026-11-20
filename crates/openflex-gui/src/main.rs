@@ -2387,6 +2387,32 @@ impl OpenFlexApp {
         out
     }
 
+    /// A slash path that actually exists in the current model, used as the hint
+    /// for the experiment and optimiser path fields. Falls back to a generic
+    /// example when the model has no numeric leaf.
+    fn example_path(&self) -> String {
+        let Some(model) = self.model else {
+            return "objects/0/params/interarrival/mean".to_string();
+        };
+        let Ok(json) = serde_json::to_value(model) else {
+            return "objects/0/params/interarrival/mean".to_string();
+        };
+        let mut paths = Vec::new();
+        if let Some(objects) = json.get("objects").and_then(|value| value.as_array()) {
+            for (index, object) in objects.iter().enumerate() {
+                if let Some(params) = object.get("params") {
+                    numeric_paths(params, &format!("objects/{index}/params"), &mut paths);
+                }
+            }
+        }
+        paths.sort();
+        paths.dedup();
+        paths
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "objects/0/params/interarrival/mean".to_string())
+    }
+
     /// Sample index under a horizontal position in the chart, clamped to the
     /// available samples. Used by the time-series hover readout.
     fn series_index_at(fraction: f32, samples: usize) -> Option<usize> {
@@ -7782,6 +7808,9 @@ impl eframe::App for OpenFlexApp {
                     }
                 });
                 if self.exp_mode_param {
+                    // Compute the hint first: it borrows `self` immutably while
+                    // the text edit borrows `exp_path` mutably.
+                    let hint = self.example_path();
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new("PATH")
@@ -7790,7 +7819,7 @@ impl eframe::App for OpenFlexApp {
                         );
                         ui.add(
                             egui::TextEdit::singleline(&mut self.exp_path)
-                                .hint_text("objects/0/params/process_time/value")
+                                .hint_text(hint)
                                 .desired_width(240.0),
                         );
                     });
@@ -7975,11 +8004,12 @@ impl eframe::App for OpenFlexApp {
                 });
                 let mut remove: Option<usize> = None;
                 for index in 0..self.opt_vars.len() {
+                    let hint = self.example_path();
                     ui.horizontal(|ui| {
                         ui.label(format!("#{}", index + 1));
                         ui.add(
                             egui::TextEdit::singleline(&mut self.opt_vars[index].path)
-                                .hint_text("objects/0/params/interarrival/mean")
+                                .hint_text(hint)
                                 .desired_width(170.0),
                         );
                         ui.label("low");
@@ -10476,6 +10506,35 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn example_path_is_a_real_path_in_the_model() {
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        let hint = app.example_path();
+        // The hint must be a path the "pick field" list also offers, i.e. a
+        // number that actually exists in this document.
+        let json = serde_json::to_value(app.model.expect("model")).expect("json");
+        let mut paths = Vec::new();
+        for (index, object) in json["objects"]
+            .as_array()
+            .expect("objects")
+            .iter()
+            .enumerate()
+        {
+            if let Some(params) = object.get("params") {
+                numeric_paths(params, &format!("objects/{index}/params"), &mut paths);
+            }
+        }
+        assert!(
+            paths.contains(&hint),
+            "hint {hint} is not a numeric leaf of the model: {paths:?}"
+        );
+        // Without a model the generic fallback is still a usable shape.
+        let empty = OpenFlexApp::new(None);
+        assert_eq!(empty.example_path(), "objects/0/params/interarrival/mean");
     }
 
     #[test]

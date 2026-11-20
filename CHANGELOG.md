@@ -4,6 +4,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **路径提示取自当前模型**：实验 `PATH` 与优化变量路径的占位提示原来写死 `objects/0/params/process_time/value`
+  （在 `mm1` 里索引 0 是源点，该字段根本不存在）。改为 `example_path()` 从当前模型取第一个真实数值叶子，
+  无模型时回落到通用示例。新增 `example_path_is_a_real_path_in_the_model` 测试（GUI 62 项）。
 - **修复：`Timetable` 提示字段写错**：表单里的示例写的是 `{"windows": [{start, duration, repeat_every}]}`，但
   `TimeTable.windows` 实际是 `DowntimeWindow { start, end }`——照抄示例会得到 `unknown field 'duration'`。
   提示已改为 `{"windows": [{"start": 0, "end": 28800}]}`，`docs/GUI.md` 对应行同步修正（并注明 `shifts` 才是
