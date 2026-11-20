@@ -2694,6 +2694,105 @@ impl OpenFlexApp {
         }
     }
 
+    /// Compares the in-memory model with the file on disk and reports the
+    /// differences in the status line (objects added/removed, connections
+    /// changed, parameters edited).
+    fn compare_with_file(&mut self) {
+        let Some(path) = self.path.clone() else {
+            self.error = Some("save the model first — there is no file to compare".into());
+            return;
+        };
+        let Some(current) = self.model else {
+            return;
+        };
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                self.error = Some(format!("could not read {}: {error}", path.display()));
+                return;
+            }
+        };
+        let saved = match Model::from_json(&text) {
+            Ok(model) => model,
+            Err(error) => {
+                self.error = Some(format!("{} is not a valid model: {error}", path.display()));
+                return;
+            }
+        };
+        let current_names: std::collections::BTreeSet<&str> = current
+            .objects
+            .iter()
+            .map(|object| object.name.as_str())
+            .collect();
+        let saved_names: std::collections::BTreeSet<&str> = saved
+            .objects
+            .iter()
+            .map(|object| object.name.as_str())
+            .collect();
+        let added: Vec<&str> = current_names.difference(&saved_names).copied().collect();
+        let removed: Vec<&str> = saved_names.difference(&current_names).copied().collect();
+        // Parameter edits: same name, different serialised form.
+        let edited: Vec<&str> = current
+            .objects
+            .iter()
+            .filter(|object| {
+                saved
+                    .object(&object.name)
+                    .map(|before| {
+                        serde_json::to_value(before).ok() != serde_json::to_value(object).ok()
+                    })
+                    .unwrap_or(false)
+            })
+            .map(|object| object.name.as_str())
+            .collect();
+        let current_edges: std::collections::BTreeSet<(String, String)> = current
+            .connections
+            .iter()
+            .map(|connection| (connection.from.clone(), connection.to.clone()))
+            .collect();
+        let saved_edges: std::collections::BTreeSet<(String, String)> = saved
+            .connections
+            .iter()
+            .map(|connection| (connection.from.clone(), connection.to.clone()))
+            .collect();
+        let edges_added = current_edges.difference(&saved_edges).count();
+        let edges_removed = saved_edges.difference(&current_edges).count();
+        let run_changed = current.run != saved.run;
+        if added.is_empty()
+            && removed.is_empty()
+            && edited.is_empty()
+            && edges_added == 0
+            && edges_removed == 0
+            && !run_changed
+        {
+            self.status = format!("No differences against {}", path.display());
+            self.error = None;
+            return;
+        }
+        let mut parts = Vec::new();
+        if !added.is_empty() {
+            parts.push(format!("+{} object(s): {}", added.len(), added.join(", ")));
+        }
+        if !removed.is_empty() {
+            parts.push(format!(
+                "-{} object(s): {}",
+                removed.len(),
+                removed.join(", ")
+            ));
+        }
+        if !edited.is_empty() {
+            parts.push(format!("~{} edited: {}", edited.len(), edited.join(", ")));
+        }
+        if edges_added > 0 || edges_removed > 0 {
+            parts.push(format!("connections +{edges_added}/-{edges_removed}"));
+        }
+        if run_changed {
+            parts.push("run settings changed".to_string());
+        }
+        self.status = format!("vs {}: {}", path.display(), parts.join(" · "));
+        self.error = None;
+    }
+
     fn save(&mut self) {
         // A model that has never been written (New, built-in example) has no
         // path yet: fall back to the Save-as dialog instead of doing nothing.
@@ -6215,6 +6314,16 @@ impl eframe::App for OpenFlexApp {
                     if ui.button("Save as…").clicked() {
                         self.save_as = self.path_input.clone();
                         self.show_save_as = true;
+                    }
+                    if ui
+                        .add_enabled(
+                            self.path.is_some() && self.model.is_some(),
+                            egui::Button::new("Compare to file"),
+                        )
+                        .on_hover_text("what changed since the last save (or since loading)")
+                        .clicked()
+                    {
+                        self.compare_with_file();
                     }
                     if ui.button("New").clicked() {
                         self.new_model();
@@ -10831,6 +10940,36 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn compare_finds_added_removed_and_edited_objects() {
+        // The comparison `compare_with_file` performs.
+        let saved = builtin_example("mm1").expect("example");
+        let mut current = saved.clone();
+        current.objects.retain(|object| object.name != "Queue1");
+        let mut extra = current.objects[0].clone();
+        extra.name = "Extra1".to_string();
+        current.objects.push(extra);
+        current
+            .connections
+            .retain(|connection| connection.from != "Queue1");
+        let saved_names: std::collections::BTreeSet<&str> = saved
+            .objects
+            .iter()
+            .map(|object| object.name.as_str())
+            .collect();
+        let current_names: std::collections::BTreeSet<&str> = current
+            .objects
+            .iter()
+            .map(|object| object.name.as_str())
+            .collect();
+        let added: Vec<&str> = current_names.difference(&saved_names).copied().collect();
+        let removed: Vec<&str> = saved_names.difference(&current_names).copied().collect();
+        assert_eq!(added, vec!["Extra1"]);
+        assert_eq!(removed, vec!["Queue1"]);
+        // Identical models compare equal.
+        assert!(saved_names.iter().eq(saved_names.iter()));
     }
 
     #[test]

@@ -4,6 +4,10 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **与磁盘版本对比**：文件菜单新增 `Compare to file`——逐对象/逐连接比较内存模型与 `.ofm` 文件，
+  状态栏给出 `vs <path>: +1 object(s): X · -1 object(s): Y · ~2 edited: Z · connections +1/-0 · run settings changed`
+  或 `No differences against <path>`。此前想知道「改了哪些」只能靠 git diff 原始 JSON。
+  新增 `compare_finds_added_removed_and_edited_objects` 测试（GUI 80 项）。
 - **帮助面板的维护区**：`F1` 对话框新增 `HOUSEKEEPING`——`Reset window layout` 删除
   `~/.config/openflex/app.ron`（下次启动回到默认窗口/面板），`Clear recent files` 清空最近文件；
   两者都在状态栏报告结果。新增 `housekeeping_actions_are_safe_without_config` 测试（GUI 79 项）。
