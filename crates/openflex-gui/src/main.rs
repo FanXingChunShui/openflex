@@ -5245,6 +5245,24 @@ impl eframe::App for OpenFlexApp {
                                     ),
                             );
                         });
+                        // Warm-up is excluded from the statistics: mark the
+                        // boundary so the live view is not read as data.
+                        if model.run.warmup > 0.0 {
+                            let in_warmup = state.now < model.run.warmup - 1e-9;
+                            ui.label(
+                                egui::RichText::new(if in_warmup {
+                                    format!("warm-up until {:.1}", model.run.warmup)
+                                } else {
+                                    "measuring".to_string()
+                                })
+                                .size(9.0_f32)
+                                .color(if in_warmup {
+                                    palette::AMBER
+                                } else {
+                                    palette::OK.gamma_multiply(0.9)
+                                }),
+                            );
+                        }
                     }
                     ui.separator();
                     tool_group(ui, "STATE");
