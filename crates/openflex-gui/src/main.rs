@@ -9988,6 +9988,22 @@ impl eframe::App for OpenFlexApp {
                         &completed,
                         palette::AMBER,
                     );
+                    // Say whether the transient phase was excluded: the same
+                    // model reports different totals with and without warm-up.
+                    if report.warmup > 0.0 {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "warm-up {:.0} {unit} ignored",
+                                report.warmup
+                            ))
+                            .size(9.0_f32)
+                            .monospace()
+                            .color(palette::AMBER),
+                        )
+                        .on_hover_text(
+                            "the first warmup units of model time are excluded from every statistic",
+                        );
+                    }
                     metric_card(
                         ui,
                         "CREATED",
@@ -11515,6 +11531,43 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn the_report_says_when_warmup_was_excluded() {
+        // The label only appears for a configured warm-up, and it names the value.
+        let label = |warmup: f64, unit: &str| {
+            if warmup > 0.0 {
+                Some(format!("warm-up {warmup:.0} {unit} ignored"))
+            } else {
+                None
+            }
+        };
+        assert_eq!(label(0.0, "min"), None, "no warm-up, no label");
+        assert_eq!(
+            label(10_000.0, "min").as_deref(),
+            Some("warm-up 10000 min ignored")
+        );
+        // `examples/mm1.ofm` configures warmup = 10000; the built-in examples do
+        // not, so build the fixture from JSON.
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "warm",
+          "time_unit": "minutes",
+          "run": {"stop_time": 100000.0, "warmup": 10000.0, "seed": 1},
+          "objects": [
+            {"name": "S", "kind": "source", "params": {}},
+            {"name": "K", "kind": "sink", "params": {}}
+          ],
+          "connections": [{"from": "S", "to": "K"}]
+        }"#,
+        )
+        .expect("model");
+        assert!(model.run.warmup > 0.0);
+        assert_eq!(
+            label(model.run.warmup, model.time_unit.label()).as_deref(),
+            Some("warm-up 10000 min ignored")
+        );
     }
 
     #[test]
