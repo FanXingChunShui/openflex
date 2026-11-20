@@ -8842,10 +8842,16 @@ impl eframe::App for OpenFlexApp {
                                         .color(colour),
                                 );
                                 ui.label(
-                                    egui::RichText::new(format!("{ci:.1}"))
-                                        .monospace()
-                                        .small()
-                                        .color(palette::TEXT_DIM),
+                                    egui::RichText::new(if self.exp_reps < 2 {
+                                        // One replication per scenario has no
+                                        // interval; a 0.0 would look precise.
+                                        "—".to_string()
+                                    } else {
+                                        format!("{ci:.1}")
+                                    })
+                                    .monospace()
+                                    .small()
+                                    .color(palette::TEXT_DIM),
                                 );
                                 ui.end_row();
                             }
@@ -10288,7 +10294,16 @@ impl eframe::App for OpenFlexApp {
                                     ui.label(format!("{:.1}", stats.avg_stay_time.mean));
                                     ui.label(format!("{:.0}%", stats.utilization.mean * 100.0));
                                     ui.label(format!("{:.2}", stats.throughput.mean));
-                                    ui.label(format!("±{:.3}", stats.throughput.ci95));
+                                    // With a single replication there is no
+                                    // interval to show: `±0.000` would read as
+                                    // "very precise" instead of "not measured".
+                                    ui.label(
+                                        if report.replications.len() < 2 {
+                                            "—".to_string()
+                                        } else {
+                                            format!("±{:.3}", stats.throughput.ci95)
+                                        },
+                                    );
                                     ui.end_row();
                                 }
                             });
@@ -11500,6 +11515,30 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn a_single_replication_shows_no_interval() {
+        // `ci95` is 0.0 with one replication, which would read as "very precise".
+        let cell = |replications: usize, ci: f64| {
+            if replications < 2 {
+                "—".to_string()
+            } else {
+                format!("±{ci:.3}")
+            }
+        };
+        assert_eq!(cell(1, 0.0), "—");
+        assert_eq!(cell(5, 0.25), "±0.250");
+        // The experiment table uses the same rule with its own precision.
+        let exp = |reps: u32, ci: f64| {
+            if reps < 2 {
+                "—".to_string()
+            } else {
+                format!("{ci:.1}")
+            }
+        };
+        assert_eq!(exp(1, 0.0), "—");
+        assert_eq!(exp(3, 1.25), "1.2");
     }
 
     #[test]
