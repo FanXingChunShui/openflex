@@ -111,7 +111,7 @@ jobs:
           grep -q "openflex ${{ steps.version.outputs.version }}" /tmp/version.txt
 
       - name: Build and push multi-arch image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: packaging/Dockerfile
