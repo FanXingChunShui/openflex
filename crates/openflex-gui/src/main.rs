@@ -1480,6 +1480,9 @@ struct OpenFlexApp {
     event_filter: String,
     /// Last title pushed to the OS window, to avoid redundant commands.
     window_title: String,
+    /// Report table sort: column index (0 = name) and direction.
+    stats_sort: Option<u8>,
+    stats_desc: bool,
     /// Bumped whenever the model is replaced; keys the validation cache.
     model_gen: u64,
     /// Cached `validate_collect` result for `model_gen`.
@@ -1603,6 +1606,8 @@ impl OpenFlexApp {
             event_log: Vec::new(),
             event_filter: String::new(),
             window_title: String::new(),
+            stats_sort: None,
+            stats_desc: true,
             model_gen: 0,
             validity_cache: None,
             heatmap: 0,
@@ -8098,21 +8103,88 @@ impl eframe::App for OpenFlexApp {
                             .striped(true)
                             .num_columns(8)
                             .show(ui, |ui| {
-                                ui.strong("Object");
-                                ui.strong("In");
-                                ui.strong("Out");
-                                ui.strong("WIP");
-                                ui.strong("Stay");
-                                ui.strong("Util");
-                                ui.strong(format!(
-                                    "Thru / {}",
-                                    self.model
-                                        .map(|model| model.time_unit.label())
-                                        .unwrap_or("")
-                                ));
-                                ui.strong("±CI");
+                                // Column headers are clickable: the first
+                                // click sorts descending, the second reverses.
+                                let mut sort_now: Option<u8> = None;
+                                let headers: [(u8, String); 8] = [
+                                    (0, "Object".to_string()),
+                                    (1, "In".to_string()),
+                                    (2, "Out".to_string()),
+                                    (3, "WIP".to_string()),
+                                    (4, "Stay".to_string()),
+                                    (5, "Util".to_string()),
+                                    (
+                                        6,
+                                        format!(
+                                            "Thru / {}",
+                                            self.model
+                                                .map(|model| model.time_unit.label())
+                                                .unwrap_or("")
+                                        ),
+                                    ),
+                                    (7, "±CI".to_string()),
+                                ];
+                                for (column, label) in headers {
+                                    let active = self.stats_sort == Some(column);
+                                    let text = if active {
+                                        format!("{label} ▾")
+                                    } else {
+                                        label
+                                    };
+                                    if ui
+                                        .add(
+                                            egui::Button::new(
+                                                egui::RichText::new(text)
+                                                    .strong()
+                                                    .color(if active {
+                                                        palette::ACCENT_HI
+                                                    } else {
+                                                        palette::TEXT
+                                                    }),
+                                            )
+                                            .fill(egui::Color32::TRANSPARENT)
+                                            .rounding(egui::Rounding::same(3.0_f32)),
+                                        )
+                                        .on_hover_text("click to sort")
+                                        .clicked()
+                                    {
+                                        sort_now = Some(column);
+                                    }
+                                }
                                 ui.end_row();
-                                for (name, stats) in &report.objects {
+                                if let Some(column) = sort_now {
+                                    if self.stats_sort == Some(column) {
+                                        self.stats_desc = !self.stats_desc;
+                                    } else {
+                                        self.stats_sort = Some(column);
+                                        self.stats_desc = true;
+                                    }
+                                }
+                                let mut rows: Vec<(&String, &openflex_core::stats::ObjectAggregate)> =
+                                    report.objects.iter().collect();
+                                if let Some(column) = self.stats_sort {
+                                    rows.sort_by(|a, b| {
+                                        let key = |stats: &openflex_core::stats::ObjectAggregate| {
+                                            match column {
+                                                1 => stats.input_count.mean,
+                                                2 => stats.output_count.mean,
+                                                3 => stats.avg_content.mean,
+                                                4 => stats.avg_stay_time.mean,
+                                                5 => stats.utilization.mean,
+                                                6 => stats.throughput.mean,
+                                                7 => stats.throughput.ci95,
+                                                _ => 0.0,
+                                            }
+                                        };
+                                        if column == 0 {
+                                            let order = a.0.cmp(b.0);
+                                            return if self.stats_desc { order.reverse() } else { order };
+                                        }
+                                        let order = key(a.1).total_cmp(&key(b.1));
+                                        if self.stats_desc { order.reverse() } else { order }
+                                    });
+                                }
+                                for (name, stats) in rows {
                                     ui.horizontal(|ui| {
                                         // A 4-segment bar (busy/blocked/idle/down)
                                         // makes the dominant state visible without
@@ -9239,6 +9311,36 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn report_rows_sort_by_the_selected_metric() {
+        // The comparator the table uses: `column` 0 sorts names, 1..7 sort the
+        // metric values, `desc` flips the order.
+        let rows = [
+            ("A".to_string(), 5.0_f64, 0.2_f64),
+            ("B".to_string(), 1.0, 0.9),
+            ("C".to_string(), 3.0, 0.5),
+        ];
+        let sort = |column: u8, desc: bool| {
+            let mut out = rows.clone();
+            out.sort_by(|a, b| {
+                if column == 0 {
+                    let order = a.0.cmp(&b.0);
+                    return if desc { order.reverse() } else { order };
+                }
+                let key = if column == 1 { a.1 } else { a.2 };
+                let other = if column == 1 { b.1 } else { b.2 };
+                let order = key.total_cmp(&other);
+                if desc { order.reverse() } else { order }
+            });
+            out.into_iter().map(|row| row.0).collect::<Vec<_>>()
+        };
+        assert_eq!(sort(0, false), vec!["A", "B", "C"]);
+        assert_eq!(sort(0, true), vec!["C", "B", "A"]);
+        assert_eq!(sort(1, true), vec!["A", "C", "B"], "descending by count");
+        assert_eq!(sort(1, false), vec!["B", "C", "A"]);
+        assert_eq!(sort(2, true), vec!["B", "C", "A"], "descending by ratio");
     }
 
     #[test]

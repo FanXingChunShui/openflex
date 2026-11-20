@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **报告表可排序**：8 个列头变成按钮，点击按该列排序（首次降序、再点升序），当前列高亮并带 `▾`；
+  可按 In / Out / WIP / Stay / Util / Thru / ±CI 排序，或按对象名。新增 `report_rows_sort_by_the_selected_metric`
+  测试（GUI 33 项）。
 - **修复：流程块删不掉**：`remove_flow_block` 的 `retain` 闭包里 `|id|` 与函数参数 `id` 同名，
   比较变成「块名 != 块名」恒为假，删除永远无效；改用 `target` 后按精确 id 删除，并加
   `removing_a_flow_block_by_id_actually_removes_it` 回归测试（GUI 32 项）。
