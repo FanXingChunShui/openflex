@@ -8439,6 +8439,30 @@ impl eframe::App for OpenFlexApp {
                     {
                         load_baseline = true;
                     }
+                    // Name the document the baseline came from: a delta against
+                    // another model is meaningless.
+                    if let Some(baseline) = self.baseline.as_ref() {
+                        let own = baseline.model.clone();
+                        let matches = self
+                            .model
+                            .map(|model| model.name.is_empty() || model.name == own)
+                            .unwrap_or(true);
+                        ui.label(
+                            egui::RichText::new(format!("from {own}"))
+                                .size(9.0_f32)
+                                .monospace()
+                                .color(if matches {
+                                    palette::TEXT_DIM
+                                } else {
+                                    palette::AMBER
+                                }),
+                        )
+                        .on_hover_text(if matches {
+                            "baseline belongs to this model"
+                        } else {
+                            "baseline was captured from a different model"
+                        });
+                    }
                     if self.baseline.is_some() {
                         let selected = self.show_compare;
                         let button = egui::Button::new(
@@ -9846,6 +9870,15 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn baseline_ownership_matches_by_name() {
+        // The chip in the baseline row: dim when the names agree, amber when not.
+        let matches = |model: &str, baseline: &str| model.is_empty() || model == baseline;
+        assert!(matches("demo", "demo"));
+        assert!(matches("", "demo"), "an unnamed model cannot be compared");
+        assert!(!matches("demo", "other"));
     }
 
     #[test]
