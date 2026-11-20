@@ -10,7 +10,9 @@
 
 - **常驻校验状态**：状态栏新增 `valid` / `N issue(s)` 指示（悬停列出前 6 条问题）；
   此前校验结果只在选中对象的表单里可见，没选中时无从判断模型是否可跑。
-  （先把它加在状态栏，再核对 `validate_collect` 的调用开销：单次 <1 ms，可每帧调用。）
+- **校验结果缓存**：新增 `model_gen` 世代号与 `validity_cache`，`validation_issues()` 只在模型变化后重算。
+  200 对象 / 201 连接的模型单次 `validate_collect` 约 3–5 ms，每帧调用会明显浪费；新增
+  `validation_cache_follows_the_model_generation` 测试（GUI 28 项）。
 
 ## v1.26.0 — 2026-11-20
 

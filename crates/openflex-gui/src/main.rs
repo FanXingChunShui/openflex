@@ -1469,6 +1469,10 @@ struct OpenFlexApp {
     sim_state: Option<SimulationState>,
     event_log: Vec<EventEntry>,
     event_filter: String,
+    /// Bumped whenever the model is replaced; keys the validation cache.
+    model_gen: u64,
+    /// Cached `validate_collect` result for `model_gen`.
+    validity_cache: Option<(u64, Vec<openflex_model::ValidationIssue>)>,
     heatmap: u8,
     model_name: String,
     model_stop: f32,
@@ -1587,6 +1591,8 @@ impl OpenFlexApp {
             sim_state: None,
             event_log: Vec::new(),
             event_filter: String::new(),
+            model_gen: 0,
+            validity_cache: None,
             heatmap: 0,
             model_name: String::new(),
             model_stop: 300.0,
@@ -1678,6 +1684,11 @@ impl OpenFlexApp {
     }
 
     /// Records the current model in the undo stack (called before an edit).
+    /// Bumps the model generation, invalidating the validation cache.
+    fn touch_model(&mut self) {
+        self.model_gen = self.model_gen.wrapping_add(1);
+    }
+
     fn snapshot(&mut self) {
         let Some(model) = self.model else {
             return;
@@ -1685,6 +1696,7 @@ impl OpenFlexApp {
         if let Ok(json) = model.to_json() {
             self.undo.push(json);
             self.model_dirty = true;
+            self.touch_model();
             if self.undo.len() > 50 {
                 self.undo.remove(0);
             }
@@ -1695,6 +1707,7 @@ impl OpenFlexApp {
     /// Drops the per-object editor buffers after the model changed underneath
     /// them, so a stale `params_text` / `rename_text` cannot be written back.
     fn clear_object_editor(&mut self) {
+        self.touch_model();
         self.selected = None;
         self.form = None;
         self.params_text.clear();
@@ -2618,6 +2631,22 @@ impl OpenFlexApp {
             }
             Err(error) => self.error = Some(format!("could not write event log: {error}")),
         }
+    }
+
+    /// `validate_collect` for the current model, memoised by generation so a
+    /// 200-object model is not re-validated on every frame.
+    fn validation_issues(&mut self) -> Vec<openflex_model::ValidationIssue> {
+        if let Some((generation, issues)) = self.validity_cache.as_ref()
+            && *generation == self.model_gen
+        {
+            return issues.clone();
+        }
+        let Some(model) = self.model else {
+            return Vec::new();
+        };
+        let issues = openflex_model::validate_collect(model);
+        self.validity_cache = Some((self.model_gen, issues.clone()));
+        issues
     }
 
     fn report_path(&self, extension: &str) -> PathBuf {
@@ -5384,8 +5413,8 @@ impl eframe::App for OpenFlexApp {
                     );
                     // Model validity is always visible here, not only while an
                     // object happens to be selected.
-                    if let Some(model) = self.model {
-                        let issues = openflex_model::validate_collect(model);
+                    if self.model.is_some() {
+                        let issues = self.validation_issues();
                         if issues.is_empty() {
                             ui.label(
                                 egui::RichText::new("valid")
@@ -6010,8 +6039,8 @@ impl eframe::App for OpenFlexApp {
                     // rules the CLI uses. Each issue is clickable and selects
                     // the object it belongs to (locations look like
                     // `objects.<name>.<field>`).
-                    if let Some(model) = self.model {
-                        let issues = openflex_model::validate_collect(model);
+                    if self.model.is_some() {
+                        let issues = self.validation_issues();
                         if !issues.is_empty() {
                             ui.separator();
                             ui.label(
@@ -8966,6 +8995,28 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn validation_cache_follows_the_model_generation() {
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        let issues = app.validation_issues();
+        assert!(issues.is_empty(), "the built-in example is valid");
+        let generation = app.model_gen;
+        // A second call reuses the cache (same generation).
+        let _ = app.validation_issues();
+        assert_eq!(app.model_gen, generation, "reading must not bump the gen");
+        // Editing bumps the generation, so the cache is recomputed.
+        app.touch_model();
+        assert_ne!(app.model_gen, generation);
+        let _ = app.validation_issues();
+        assert!(
+            app.validity_cache
+                .as_ref()
+                .is_some_and(|(cached, _)| *cached == app.model_gen)
+        );
     }
 
     #[test]
