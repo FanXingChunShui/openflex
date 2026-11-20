@@ -1843,6 +1843,9 @@ struct OpenFlexApp {
     /// Per-cell text buffers for the editable global tables:
     /// (table name, row, column) -> text being edited.
     table_edit: std::collections::HashMap<(String, usize, usize), String>,
+    /// Per-column name buffers for the editable global tables:
+    /// (table name, current column name) -> text being edited.
+    table_column_edit: std::collections::HashMap<(String, String), String>,
     /// Last title pushed to the OS window, to avoid redundant commands.
     window_title: String,
     /// Report table sort: column index (0 = name) and direction.
@@ -1985,6 +1988,7 @@ impl OpenFlexApp {
             close_confirmed: false,
             delete_confirm: None,
             table_edit: std::collections::HashMap::new(),
+            table_column_edit: std::collections::HashMap::new(),
             window_title: String::new(),
             stats_sort: None,
             stats_desc: true,
@@ -2115,6 +2119,43 @@ impl OpenFlexApp {
                 self.undo.remove(0);
             }
             self.redo.clear();
+        }
+    }
+
+    /// Renames one column of a global table (the cells move with the header).
+    fn rename_table_column(&mut self, table_name: &str, old: &str, new: &str) {
+        let trimmed = new.trim();
+        if trimmed.is_empty() || trimmed == old {
+            return;
+        }
+        let Some(model) = self.model else {
+            return;
+        };
+        let Some(table) = model.global_tables.get(table_name) else {
+            return;
+        };
+        if table.columns.iter().any(|column| column == trimmed) {
+            self.error = Some(format!("'{}' already has a column '{trimmed}'", table_name));
+            return;
+        }
+        let mut copy = model.clone();
+        let Some(table) = copy.global_tables.get_mut(table_name) else {
+            return;
+        };
+        if let Some(slot) = table.columns.iter_mut().find(|column| *column == old) {
+            *slot = trimmed.to_string();
+        }
+        match copy.validate() {
+            Ok(()) => {
+                self.snapshot_labelled("rename table column");
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.clear_analysis_results();
+                self.table_column_edit
+                    .retain(|(table, _), _| table != table_name);
+                self.status = format!("{table_name}: column '{old}' -> '{trimmed}'");
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
         }
     }
 
@@ -2515,6 +2556,7 @@ impl OpenFlexApp {
         self.replay_index = None;
         // Table buffers belong to the previous document too.
         self.table_edit.clear();
+        self.table_column_edit.clear();
     }
 
     fn restore(&mut self) -> bool {
@@ -7535,6 +7577,7 @@ impl eframe::App for OpenFlexApp {
                     // Read-only preview: name, shape and the first rows. Editing
                     // stays in the JSON so the whole table can be pasted in.
                     let mut remove_table: Option<String> = None;
+                    let mut rename_column: Option<(String, String, String)> = None;
                     for (name, table) in &model.global_tables {
                         ui.horizontal(|ui| {
                             ui.label(
@@ -7562,18 +7605,36 @@ impl eframe::App for OpenFlexApp {
                         });
                         if !table.columns.is_empty() {
                             ui.horizontal_wrapped(|ui| {
+                                // Column names are editable in place: click the
+                                // chip, type, and the rename lands on Enter or
+                                // focus loss.
                                 for column in &table.columns {
+                                    let key = (name.clone(), column.clone());
+                                    if !self.table_column_edit.contains_key(&key) {
+                                        self.table_column_edit.insert(key.clone(), column.clone());
+                                    }
+                                    let buffer = self
+                                        .table_column_edit
+                                        .get_mut(&key)
+                                        .expect("column buffer");
                                     egui::Frame::none()
                                         .fill(palette::CARD)
                                         .stroke(egui::Stroke::new(1.0_f32, palette::STROKE))
                                         .rounding(egui::Rounding::same(4.0_f32))
                                         .inner_margin(egui::Margin::symmetric(5.0, 1.0))
                                         .show(ui, |ui| {
-                                            ui.label(
-                                                egui::RichText::new(column)
-                                                    .size(10.0_f32)
-                                                    .color(palette::TEXT_DIM),
+                                            let response = ui.add(
+                                                egui::TextEdit::singleline(buffer)
+                                                    .desired_width(58.0)
+                                                    .font(egui::TextStyle::Small),
                                             );
+                                            if response.lost_focus() {
+                                                rename_column = Some((
+                                                    name.clone(),
+                                                    column.clone(),
+                                                    buffer.clone(),
+                                                ));
+                                            }
                                         });
                                 }
                             });
@@ -7652,6 +7713,9 @@ impl eframe::App for OpenFlexApp {
                             }
                         });
                         ui.add_space(2.0);
+                    }
+                    if let Some((table, old, new)) = rename_column {
+                        self.rename_table_column(&table, &old, &new);
                     }
                     if let Some(name) = remove_table {
                         self.remove_global_table(&name);
@@ -11431,6 +11495,39 @@ mod tests {
     }
 
     #[test]
+    fn table_columns_can_be_renamed() {
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        app.add_global_table();
+        let name = app
+            .model
+            .expect("model")
+            .global_tables
+            .keys()
+            .next()
+            .expect("table")
+            .clone();
+        app.rename_table_column(&name, "col1", "weight");
+        assert_eq!(
+            app.model.expect("model").global_tables[&name].columns,
+            vec!["weight", "col2"]
+        );
+        // A duplicate name is refused and nothing changes.
+        app.rename_table_column(&name, "weight", "col2");
+        assert_eq!(
+            app.model.expect("model").global_tables[&name].columns,
+            vec!["weight", "col2"]
+        );
+        // An empty name is refused too.
+        app.rename_table_column(&name, "weight", "   ");
+        assert_eq!(
+            app.model.expect("model").global_tables[&name].columns[0],
+            "weight"
+        );
+    }
+
+    #[test]
     fn table_columns_and_rows_can_grow_and_shrink() {
         let model = builtin_example("mm1").expect("example");
         let mut app = OpenFlexApp::new(None);
@@ -11825,9 +11922,9 @@ mod tests {
         let calls = production.matches("self.clear_analysis_results();").count();
         // undo, redo, apply-best, model-settings, add, delete, duplicate, rename,
         // add-connection, remove-connection, set-strategy, add-global-table,
-        // delete-global-table, add-table-column, drop-table-row.
+        // delete-global-table, add-table-column, drop-table-row, rename-column.
         assert_eq!(
-            calls, 15,
+            calls, 16,
             "structural call sites changed — check that the new one clears results"
         );
         let body = production
