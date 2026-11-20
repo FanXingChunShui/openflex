@@ -4,6 +4,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **两个内置示例**：空状态新增 `agv-delivery`（调度器 + AGV 把成品送到汇点）与 `fluid-line`
+  （发电机 → 水箱 → 阀门 → 汇点），覆盖 AGV 与流体两条此前没有示例的路径。
+  两者都用 CLI 跑过：`agv-delivery` 完成 30 件、Agv1 利用率 0.45；`fluid-line` 流量 4.0 → 3.63。
 - **跳转失败提示**：点击事件日志但模型无法启动时，状态栏给出 `Jump failed: the model could not be started`，
   不再静默无反应。
 - **检查点自动扫描**：启动时调用一次 `refresh_checkpoints()`，已存在的 `checkpoints/*.json` 直接出现在列表里，

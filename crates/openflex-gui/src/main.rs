@@ -82,6 +82,50 @@ fn builtin_example(name: &str) -> Option<Model> {
   ]
 }"#
         }
+        "fluid-line" => {
+            r#"{
+  "format": "openflex-model", "version": 1, "name": "fluid-line",
+  "description": "A generator feeds a tank, which drains through a valve into a sink",
+  "run": {"stop_time": 120.0, "warmup": 0.0, "seed": 1, "replications": 1},
+  "objects": [
+    {"name": "Generator1", "kind": "fluid_generator", "pos": [-9.0, 0.0],
+     "params": {"flow_rate": 4.0}},
+    {"name": "Tank1", "kind": "fluid_tank", "pos": [-4.0, 0.0],
+     "params": {"capacity": 20.0, "initial_level": 5.0, "max_outflow": 6.0}},
+    {"name": "Valve1", "kind": "fluid_valve", "pos": [2.0, 0.0],
+     "params": {"opening": 0.9}},
+    {"name": "Sink1", "kind": "fluid_sink", "pos": [7.0, 0.0], "params": {}}
+  ],
+  "connections": [
+    {"from": "Generator1", "to": "Tank1"},
+    {"from": "Tank1", "to": "Valve1"},
+    {"from": "Valve1", "to": "Sink1"}
+  ]
+}"#
+        }
+        "agv-delivery" => {
+            r#"{
+  "format": "openflex-model", "version": 1, "name": "agv-delivery",
+  "description": "One AGV shuttles items from a processor to a sink",
+  "run": {"stop_time": 600.0, "warmup": 0.0, "seed": 3, "replications": 1},
+  "objects": [
+    {"name": "Source1", "kind": "source", "pos": [-10.0, 0.0],
+     "params": {"interarrival": {"distribution": "constant", "value": 20.0}}},
+    {"name": "Processor1", "kind": "processor", "pos": [-4.0, 0.0],
+     "params": {"process_time": {"distribution": "constant", "value": 5.0},
+                "process_operator": "Dispatcher1"}},
+    {"name": "Sink1", "kind": "sink", "pos": [6.0, 0.0], "params": {}},
+    {"name": "Dispatcher1", "kind": "dispatcher", "pos": [0.0, 0.0], "params": {}},
+    {"name": "Agv1", "kind": "agv", "pos": [0.0, 0.0],
+     "params": {"speed": 2.0, "home": "Dispatcher1"}}
+  ],
+  "connections": [
+    {"from": "Source1", "to": "Processor1"},
+    {"from": "Processor1", "to": "Sink1"},
+    {"from": "Dispatcher1", "to": "Agv1"}
+  ]
+}"#
+        }
         _ => return None,
     };
     Model::from_json(json).ok()
@@ -6058,7 +6102,7 @@ impl eframe::App for OpenFlexApp {
                     if ui.button("New model").clicked() {
                         self.new_model();
                     }
-                    for example in ["mm1", "routing", "batch-queue"] {
+                    for example in ["mm1", "routing", "batch-queue", "agv-delivery", "fluid-line"] {
                         if ui.button(format!("Open example: {example}")).clicked() {
                             self.load_example(example);
                         }
@@ -9952,7 +9996,13 @@ mod tests {
 
     #[test]
     fn builtin_examples_parse_and_validate() {
-        for name in ["mm1", "routing", "batch-queue"] {
+        for name in [
+            "mm1",
+            "routing",
+            "batch-queue",
+            "agv-delivery",
+            "fluid-line",
+        ] {
             let model = builtin_example(name).unwrap_or_else(|| panic!("{name} missing"));
             model
                 .validate()
