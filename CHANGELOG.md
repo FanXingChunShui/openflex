@@ -11,6 +11,10 @@
 - **`by_label` 队列排序可编辑**：队列 `order` 下拉新增 `by_label` 选项，并在其下给出标签输入框；
   此前只有 `fifo/lifo/priority` 三项，`by_label` 显示为 `by_label(…) — edit via JSON`。
   新增 `queue_order_by_label_round_trips` 测试（GUI 56 项），确认 `{"by_label":"…"}` 的序列化形式。
+- **任务序列编辑器**：调度器的 `task_sequence` 从「`N (edit via JSON)`」改为真正的编辑器——每步可选
+  `travel/load/unload`、可 `up` 上移与 `x` 删除，另有 `+travel/+load/+unload` 追加与 `clear`；
+  切换种类时保留该步原有的 `duration`/`condition`。新增 `task_steps_keep_their_details_when_the_kind_changes`
+  测试（GUI 57 项）。
 
 ## v1.28.0 — 2026-11-20
 

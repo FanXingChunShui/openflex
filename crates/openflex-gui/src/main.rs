@@ -18,7 +18,8 @@ use openflex_core::stats::SimReport;
 use openflex_model::Distribution;
 use openflex_model::Model;
 use openflex_model::model::{
-    ObjectKind, ObjectParams, QueueOrder, RackPickPolicy, RackType, ValveOpeningCurve,
+    ObjectKind, ObjectParams, QueueOrder, RackPickPolicy, RackType, TaskStep, TaskStepKind,
+    ValveOpeningCurve,
 };
 
 /// Built-in examples compiled into the binary, used when no `examples/`
@@ -1363,10 +1364,84 @@ impl EditForm {
                             .prefix("preempt max retries "),
                     )
                     .changed();
-                ui.label(format!(
-                    "task steps: {} (edit via JSON)",
-                    p.task_sequence.len()
-                ));
+                // Task sequence editor: each step picks its kind and can be
+                // reordered or removed; an empty list keeps the default
+                // travel → load → unload behaviour.
+                ui.label(
+                    egui::RichText::new(format!("task steps ({})", p.task_sequence.len()))
+                        .size(9.0_f32)
+                        .color(palette::TEXT_DIM),
+                );
+                let mut remove: Option<usize> = None;
+                let mut swap: Option<(usize, usize)> = None;
+                for (index, step) in p.task_sequence.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        let current = step.kind();
+                        egui::ComboBox::from_id_salt(("task-step", index))
+                            .selected_text(match current {
+                                TaskStepKind::Travel => "travel",
+                                TaskStepKind::Load => "load",
+                                TaskStepKind::Unload => "unload",
+                            })
+                            .width(88.0)
+                            .show_ui(ui, |ui| {
+                                for (kind, name) in [
+                                    (TaskStepKind::Travel, "travel"),
+                                    (TaskStepKind::Load, "load"),
+                                    (TaskStepKind::Unload, "unload"),
+                                ] {
+                                    if ui.selectable_label(current == kind, name).clicked()
+                                        && current != kind
+                                    {
+                                        // Keep any detailed fields the step had.
+                                        *step = match step {
+                                            TaskStep::Detailed {
+                                                duration,
+                                                condition,
+                                                ..
+                                            } => TaskStep::Detailed {
+                                                kind,
+                                                duration: duration.clone(),
+                                                condition: condition.clone(),
+                                            },
+                                            TaskStep::Simple(_) => TaskStep::Simple(kind),
+                                        };
+                                        changed = true;
+                                    }
+                                }
+                            });
+                        if index > 0 && ui.small_button("up").clicked() {
+                            swap = Some((index - 1, index));
+                        }
+                        if ui.small_button("x").clicked() {
+                            remove = Some(index);
+                        }
+                    });
+                }
+                if let Some((a, b)) = swap {
+                    p.task_sequence.swap(a, b);
+                    changed = true;
+                }
+                if let Some(index) = remove {
+                    p.task_sequence.remove(index);
+                    changed = true;
+                }
+                ui.horizontal(|ui| {
+                    for (kind, name) in [
+                        (TaskStepKind::Travel, "+travel"),
+                        (TaskStepKind::Load, "+load"),
+                        (TaskStepKind::Unload, "+unload"),
+                    ] {
+                        if ui.small_button(name).clicked() {
+                            p.task_sequence.push(TaskStep::Simple(kind));
+                            changed = true;
+                        }
+                    }
+                    if !p.task_sequence.is_empty() && ui.small_button("clear").clicked() {
+                        p.task_sequence.clear();
+                        changed = true;
+                    }
+                });
             }
             ObjectParams::BasicFr(p) => {
                 ui.label(format!(
@@ -10333,6 +10408,43 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn task_steps_keep_their_details_when_the_kind_changes() {
+        use openflex_model::Distribution;
+        use openflex_model::model::{TaskStep, TaskStepKind};
+        // A detailed step keeps its duration when the kind is switched (mirrors
+        // the assignment the combo box performs).
+        let step = TaskStep::Detailed {
+            kind: TaskStepKind::Travel,
+            duration: Some(Distribution::Constant { value: 2.0 }),
+            condition: None,
+        };
+        let switched = match step {
+            TaskStep::Detailed {
+                duration,
+                condition,
+                ..
+            } => TaskStep::Detailed {
+                kind: TaskStepKind::Load,
+                duration,
+                condition,
+            },
+            TaskStep::Simple(_) => TaskStep::Simple(TaskStepKind::Load),
+        };
+        match switched {
+            TaskStep::Detailed { kind, duration, .. } => {
+                assert_eq!(kind, TaskStepKind::Load);
+                assert_eq!(duration, Some(Distribution::Constant { value: 2.0 }));
+            }
+            other => panic!("expected a detailed step, got {other:?}"),
+        }
+        // Simple forms serialise as plain strings.
+        assert_eq!(
+            serde_json::to_string(&TaskStep::Simple(TaskStepKind::Unload)).expect("json"),
+            r#""unload""#
+        );
     }
 
     #[test]
