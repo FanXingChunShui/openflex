@@ -7376,6 +7376,36 @@ impl eframe::App for OpenFlexApp {
                             palette::TEXT_DIM,
                         );
                     }
+                    // Warm-up boundary: samples before it do not enter the
+                    // statistics, so shade that part of the chart.
+                    if let Some(model) = self.model
+                        && model.run.warmup > 0.0
+                        && let Some((last_time, _)) = self.series.last()
+                        && *last_time > 0.0
+                    {
+                        let boundary = rect.left()
+                            + rect.width() * (model.run.warmup / *last_time).clamp(0.0, 1.0) as f32;
+                        if boundary > rect.left() + 1.0 {
+                            painter.rect_filled(
+                                egui::Rect::from_min_max(
+                                    rect.left_top(),
+                                    egui::pos2(boundary, rect.bottom()),
+                                ),
+                                0.0,
+                                egui::Color32::from_rgba_unmultiplied(245, 190, 100, 18),
+                            );
+                            painter.line_segment(
+                                [
+                                    egui::pos2(boundary, rect.top()),
+                                    egui::pos2(boundary, rect.bottom()),
+                                ],
+                                egui::Stroke::new(
+                                    1.0_f32,
+                                    palette::AMBER.gamma_multiply(0.55),
+                                ),
+                            );
+                        }
+                    }
                     // Horizontal guides at 25/50/75 % keep the scale readable.
                     for step in 1..4 {
                         let y = rect.bottom() - 6.0 - (rect.height() - 12.0) * step as f32 / 4.0;
