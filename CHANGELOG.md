@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **撤销历史列表**：撤销栈改为 `(json, label)` 二元组，16 个主要编辑入口（新增/删除/复制/移动/旋转/对齐/分布/网格/
+  自动布局/重命名/连接增删/表单/JSON/模型设置/布局预设）都用 `snapshot_labelled()` 记录动作名；
+  左侧新增 `History (n undo / m redo)` 面板，按序号列出每步并可**点击回退到该步**，状态栏显示 `Undo: <动作>`。
+  新增 `undo_stack_keeps_a_label_per_step` 测试（GUI 30 项）。
+
 ### 文档
 
 - **`docs/GUI.md` 刷新**：能力表补上 v1.26.0 起新增的 9 项（文件浏览、产物清单、trace、事件日志、平面 2D、校验状态、

@@ -1520,8 +1520,8 @@ struct OpenFlexApp {
     exp_reps: u32,
     smooth: std::collections::HashMap<String, [f32; 2]>,
     last_frame: f64,
-    undo: Vec<String>,
-    redo: Vec<String>,
+    undo: Vec<(String, String)>,
+    redo: Vec<(String, String)>,
     recent: Vec<PathBuf>,
     save_as: String,
     show_save_as: bool,
@@ -1699,11 +1699,17 @@ impl OpenFlexApp {
     }
 
     fn snapshot(&mut self) {
+        self.snapshot_labelled("edit");
+    }
+
+    /// Records the current model in the undo stack under a human label, so the
+    /// history list can say what each step was.
+    fn snapshot_labelled(&mut self, label: &str) {
         let Some(model) = self.model else {
             return;
         };
         if let Ok(json) = model.to_json() {
-            self.undo.push(json);
+            self.undo.push((json, label.to_string()));
             self.model_dirty = true;
             self.touch_model();
             if self.undo.len() > 50 {
@@ -1730,7 +1736,7 @@ impl OpenFlexApp {
     }
 
     fn restore(&mut self) -> bool {
-        let Some(json) = self.undo.pop() else {
+        let Some((json, label)) = self.undo.pop() else {
             return false;
         };
         // Undo changes the document relative to the file on disk.
@@ -1740,11 +1746,11 @@ impl OpenFlexApp {
                 if let Some(current) = self.model
                     && let Ok(text) = current.to_json()
                 {
-                    self.redo.push(text);
+                    self.redo.push((text, label.clone()));
                 }
                 self.model = Some(Box::leak(Box::new(model)));
                 self.clear_object_editor();
-                self.status = "Undo".into();
+                self.status = format!("Undo: {label}");
                 true
             }
             Err(error) => {
@@ -1755,7 +1761,7 @@ impl OpenFlexApp {
     }
 
     fn redo_once(&mut self) -> bool {
-        let Some(json) = self.redo.pop() else {
+        let Some((json, label)) = self.redo.pop() else {
             return false;
         };
         self.model_dirty = true;
@@ -1764,11 +1770,11 @@ impl OpenFlexApp {
                 if let Some(current) = self.model
                     && let Ok(text) = current.to_json()
                 {
-                    self.undo.push(text);
+                    self.undo.push((text, label.clone()));
                 }
                 self.model = Some(Box::leak(Box::new(model)));
                 self.clear_object_editor();
-                self.status = "Redo".into();
+                self.status = format!("Redo: {label}");
                 true
             }
             Err(error) => {
@@ -2989,7 +2995,7 @@ idle,busy,blocked,down\n",
         else {
             return;
         };
-        self.snapshot();
+        self.snapshot_labelled("apply layout preset");
         let mut copy = model.clone();
         let mut applied = 0;
         for (pos, object_name) in objects {
@@ -3211,7 +3217,7 @@ idle,busy,blocked,down\n",
             Ok(()) => {
                 // Applying run settings changes the document too, so the
                 // unsaved marker and the undo stack must both know about it.
-                self.snapshot();
+                self.snapshot_labelled("model settings");
                 self.status = format!(
                     "Model settings applied (stop {}, seed {})",
                     copy.run.stop_time, copy.run.seed
@@ -3309,7 +3315,7 @@ idle,busy,blocked,down\n",
         }) {
             slot_y -= 4.0;
         }
-        self.snapshot();
+        self.snapshot_labelled("add object");
         let mut copy = model.clone();
         copy.objects.push(openflex_model::model::Object {
             name: name.clone(),
@@ -3448,7 +3454,7 @@ idle,busy,blocked,down\n",
         if self.selection.is_empty() {
             return;
         }
-        self.snapshot();
+        self.snapshot_labelled("duplicate selection");
         let mut copy = model.clone();
         let mut added = 0;
         for index in self.selection.clone() {
@@ -3488,7 +3494,7 @@ idle,busy,blocked,down\n",
         let columns = (order.len() as f64).sqrt().ceil().max(1.0) as usize;
         let spacing = 6.0;
         if !silent {
-            self.snapshot();
+            self.snapshot_labelled("auto layout");
         }
         let mut copy = model.clone();
         for (position, index) in order.iter().enumerate() {
@@ -3574,7 +3580,7 @@ idle,busy,blocked,down\n",
         }
         let indices = self.selection.clone();
         let anchor = model.objects[indices[0]].pos;
-        self.snapshot();
+        self.snapshot_labelled("align selection");
         let mut copy = model.clone();
         for index in indices {
             let object = &mut copy.objects[index];
@@ -3626,7 +3632,7 @@ idle,busy,blocked,down\n",
             model.objects[*indices.last().expect("non-empty")].pos[1]
         };
         let step = (last - first) / (indices.len() - 1) as f64;
-        self.snapshot();
+        self.snapshot_labelled("distribute selection");
         let mut copy = model.clone();
         for (position, index) in indices.iter().enumerate() {
             let value = first + step * position as f64;
@@ -3662,7 +3668,7 @@ idle,busy,blocked,down\n",
         let count = self.selection.len();
         let columns = (count as f64).sqrt().ceil() as usize;
         let origin = model.objects[self.selection[0]].pos;
-        self.snapshot();
+        self.snapshot_labelled("grid layout");
         let mut copy = model.clone();
         for (position, index) in self.selection.clone().into_iter().enumerate() {
             let column = position % columns;
@@ -3690,7 +3696,7 @@ idle,busy,blocked,down\n",
         if dx == 0.0 && dy == 0.0 {
             return;
         }
-        self.snapshot();
+        self.snapshot_labelled("move selection");
         let mut copy = model.clone();
         for index in self.selection.clone() {
             copy.objects[index].pos[0] += dx;
@@ -3719,7 +3725,7 @@ idle,busy,blocked,down\n",
             return;
         }
         let value = self.batch_rot.rem_euclid(360.0) as f64;
-        self.snapshot();
+        self.snapshot_labelled("rotate selection");
         let mut copy = model.clone();
         for index in self.selection.clone() {
             copy.objects[index].rot = if value.abs() < 0.01 {
@@ -4131,7 +4137,7 @@ idle,busy,blocked,down\n",
             self.rename_text = old_name;
             return;
         }
-        self.snapshot();
+        self.snapshot_labelled("rename object");
         let mut copy = model.clone();
         copy.objects[index].name = new_name.clone();
         let json = match serde_json::to_value(&copy) {
@@ -4212,7 +4218,7 @@ idle,busy,blocked,down\n",
         if names.is_empty() {
             return;
         }
-        self.snapshot();
+        self.snapshot_labelled("delete object");
         let mut copy = model.clone();
         copy.objects.retain(|object| !names.contains(&object.name));
         copy.connections.retain(|connection| {
@@ -4308,7 +4314,7 @@ idle,busy,blocked,down\n",
         }
         // Record the previous state so the form edit can be undone, the same
         // way every other edit path does.
-        self.snapshot();
+        self.snapshot_labelled("edit object form");
         let (Some(model), Some(index), Some(form)) =
             (self.model, self.selected, self.form.as_ref())
         else {
@@ -4346,7 +4352,7 @@ idle,busy,blocked,down\n",
         let (Some(model), Some(index)) = (self.model, self.selected) else {
             return;
         };
-        self.snapshot();
+        self.snapshot_labelled("edit object JSON");
         let kind = model.objects[index].kind;
         let value: serde_json::Value = match serde_json::from_str(&self.params_text) {
             Ok(value) => value,
@@ -4381,7 +4387,7 @@ idle,busy,blocked,down\n",
         if self.model.is_none() {
             return;
         }
-        self.snapshot();
+        self.snapshot_labelled("add connection");
         let Some(model) = self.model else {
             return;
         };
@@ -4456,7 +4462,7 @@ idle,busy,blocked,down\n",
         if self.model.is_none() {
             return;
         }
-        self.snapshot();
+        self.snapshot_labelled("remove connection");
         let Some(model) = self.model else {
             return;
         };
@@ -6245,6 +6251,66 @@ impl eframe::App for OpenFlexApp {
                 }
                 if let Some(new_name) = pending_rename {
                     self.rename_object(new_name);
+                }
+                if !self.undo.is_empty() || !self.redo.is_empty() {
+                    ui.separator();
+                    egui::CollapsingHeader::new(format!(
+                        "History ({} undo / {} redo)",
+                        self.undo.len(),
+                        self.redo.len()
+                    ))
+                    .id_salt("history")
+                    .show(ui, |ui| {
+                        // Newest first; clicking an entry rewinds to it.
+                        let labels: Vec<(usize, String)> = self
+                            .undo
+                            .iter()
+                            .enumerate()
+                            .rev()
+                            .map(|(index, (_, label))| (index, label.clone()))
+                            .collect();
+                        let mut rewind: Option<usize> = None;
+                        for (index, label) in labels {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(format!("{}", index + 1))
+                                        .size(9.0_f32)
+                                        .monospace()
+                                        .color(palette::TEXT_DIM),
+                                );
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new(label)
+                                                .small()
+                                                .color(palette::TEXT),
+                                        )
+                                        .fill(egui::Color32::TRANSPARENT)
+                                        .rounding(egui::Rounding::same(4.0_f32)),
+                                    )
+                                    .on_hover_text("rewind to this step")
+                                    .clicked()
+                                {
+                                    rewind = Some(index);
+                                }
+                            });
+                        }
+                        for (_, label) in self.redo.iter().rev() {
+                            ui.label(
+                                egui::RichText::new(format!("redo · {label}"))
+                                    .size(9.0_f32)
+                                    .color(palette::TEXT_DIM.gamma_multiply(0.7)),
+                            );
+                        }
+                        if let Some(target) = rewind {
+                            // Pop until `target` is the top entry.
+                            while self.undo.len() > target {
+                                if !self.restore() {
+                                    break;
+                                }
+                            }
+                        }
+                    });
                 }
                 if !self.selection.is_empty() {
                     ui.separator();
@@ -9140,6 +9206,27 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn undo_stack_keeps_a_label_per_step() {
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        app.snapshot_labelled("first edit");
+        app.snapshot_labelled("second edit");
+        let labels: Vec<String> = app.undo.iter().map(|(_, label)| label.clone()).collect();
+        assert_eq!(labels, vec!["first edit", "second edit"]);
+        // Undo pops the newest and pushes a redo carrying the same label, so the
+        // history list can describe what would be re-applied.
+        assert!(app.restore());
+        assert_eq!(app.undo.len(), 1);
+        assert_eq!(
+            app.redo.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>(),
+            vec!["second edit"]
+        );
+        assert!(app.redo_once());
+        assert_eq!(app.undo.len(), 2);
     }
 
     #[test]
