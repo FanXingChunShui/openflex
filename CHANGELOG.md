@@ -4,6 +4,10 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **三个 JSON 框实时校验**：`Triggers` / `Timetable` / `Process Flow` 下方各加一行状态——`valid JSON` 为绿色，
+  出错时显示解析器的具体信息（含位置），不再只在 Apply 时才报错。`json_status()` 区分「可为 null」
+  （timetable、flow）与「必须为对象」（triggers）：`null` 本身是合法 JSON，需要显式拒绝。
+  新增 `json_status_accepts_null_only_for_optional_boxes` 测试（GUI 63 项）。
 - **路径提示取自当前模型**：实验 `PATH` 与优化变量路径的占位提示原来写死 `objects/0/params/process_time/value`
   （在 `mm1` 里索引 0 是源点，该字段根本不存在）。改为 `example_path()` 从当前模型取第一个真实数值叶子，
   无模型时回落到通用示例。新增 `example_path_is_a_real_path_in_the_model` 测试（GUI 62 项）。

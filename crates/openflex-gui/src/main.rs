@@ -445,6 +445,36 @@ fn primary_button(ui: &mut egui::Ui, enabled: bool, text: &str) -> bool {
 }
 
 /// Empty-state placeholder used by the panels before any data exists.
+/// Status line under a JSON editor: green `valid JSON`, or red with the parser
+/// message so a typo is located before Apply.
+fn json_status(ui: &mut egui::Ui, text: &str, allow_null: bool) -> bool {
+    let trimmed = text.trim();
+    // `null` parses as JSON, so it has to be rejected explicitly where the field
+    // is required (triggers must stay an object).
+    let valid = trimmed.is_empty()
+        || if trimmed == "null" {
+            allow_null
+        } else {
+            serde_json::from_str::<serde_json::Value>(trimmed).is_ok()
+        };
+    let message = if trimmed.is_empty() {
+        "empty — nothing to apply".to_string()
+    } else if valid {
+        "valid JSON".to_string()
+    } else {
+        match serde_json::from_str::<serde_json::Value>(trimmed) {
+            Err(error) => format!("invalid JSON — {error}"),
+            Ok(_) => "valid JSON".to_string(),
+        }
+    };
+    ui.label(egui::RichText::new(message).size(10.0_f32).color(if valid {
+        palette::OK
+    } else {
+        egui::Color32::from_rgb(226, 116, 96)
+    }));
+    valid
+}
+
 fn empty_state(ui: &mut egui::Ui, title: &str, hint: &str) {
     ui.add_space(6.0);
     egui::Frame::none()
@@ -1630,6 +1660,7 @@ impl EditForm {
                         .code_editor()
                         .desired_rows(4),
                 );
+                json_status(ui, &self.timetable_text, true);
             });
         ui.separator();
         egui::CollapsingHeader::new("Triggers (JSON)")
@@ -1647,6 +1678,7 @@ impl EditForm {
                         .code_editor()
                         .desired_rows(6),
                 );
+                json_status(ui, &self.triggers_text, false);
             });
         changed
     }
@@ -7714,6 +7746,7 @@ impl eframe::App for OpenFlexApp {
                                 .code_editor()
                                 .desired_rows(8),
                         );
+                        json_status(ui, &self.flow_text, true);
                         if let Some(flow) = self.flow_value() {
                             if let Some(blocks) = flow.get("blocks").and_then(|b| b.as_array()) {
                                 ui.label(format!("{} block(s)", blocks.len()));
@@ -10506,6 +10539,28 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn json_status_accepts_null_only_for_optional_boxes() {
+        // The rule `json_status` applies: an empty box is fine, `null` only where
+        // the field is optional (timetable/process flow), and anything else must
+        // parse as JSON.
+        let valid = |text: &str, allow_null: bool| {
+            let trimmed = text.trim();
+            trimmed.is_empty()
+                || if trimmed == "null" {
+                    allow_null
+                } else {
+                    serde_json::from_str::<serde_json::Value>(trimmed).is_ok()
+                }
+        };
+        assert!(valid("", false), "an empty box is nothing to apply");
+        assert!(valid("null", true), "timetable may be disabled");
+        assert!(!valid("null", false), "triggers cannot be null");
+        assert!(valid("{\"a\": 1}", false));
+        assert!(!valid("{\"a\": }", false), "syntax error is caught");
+        assert!(!valid("[1, 2", false), "unclosed bracket is caught");
     }
 
     #[test]
