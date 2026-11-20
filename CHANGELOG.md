@@ -9,6 +9,8 @@
   行格式与 `openflex run --trace` 一致（`simulate_traced` 同一序列化路径）。
   此前桌面版的“事件日志”只记录 GUI 自己步进过的事件，看不到完整事件流。
 - 新增 `trace_export_lines_match_the_cli_jsonl` 测试（GUI 18 项）。
+- **撤销覆盖补齐**：`apply_form()` 与 `apply_model_settings()` 现在都会 `snapshot()`——此前改表单或 run 参数
+  无法撤销，也不点亮未保存标记；模型设置的提示同时带上 seed。
 - **流程块 ID 唯一**：新增块时不再用「块数+1」编号（删除后会撞名），改为从 `len+1` 起找第一个未被占用的
   `前缀+数字`；新增 `flow_block_ids_avoid_reuse` 测试（GUI 25 项）。
 - **流程连线校验**：连接前检查两端都是**已存在的块**、禁止自连、跳过重复边，并在状态栏回显

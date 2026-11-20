@@ -3076,7 +3076,13 @@ idle,busy,blocked,down\n",
         };
         match copy.validate() {
             Ok(()) => {
-                self.status = format!("Model settings applied (stop {})", copy.run.stop_time);
+                // Applying run settings changes the document too, so the
+                // unsaved marker and the undo stack must both know about it.
+                self.snapshot();
+                self.status = format!(
+                    "Model settings applied (stop {}, seed {})",
+                    copy.run.stop_time, copy.run.seed
+                );
                 self.model = Some(Box::leak(Box::new(copy)));
                 self.handle = None;
                 self.sim_state = None;
@@ -4138,6 +4144,12 @@ idle,busy,blocked,down\n",
     }
 
     fn apply_form(&mut self) {
+        if self.model.is_none() || self.selected.is_none() || self.form.is_none() {
+            return;
+        }
+        // Record the previous state so the form edit can be undone, the same
+        // way every other edit path does.
+        self.snapshot();
         let (Some(model), Some(index), Some(form)) =
             (self.model, self.selected, self.form.as_ref())
         else {
