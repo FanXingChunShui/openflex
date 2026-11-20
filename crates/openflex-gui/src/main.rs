@@ -2746,7 +2746,18 @@ impl OpenFlexApp {
         };
         // Every metric carries its 95% half-width next to the mean so the
         // export matches the CLI/Studio tables (which show mean ± CI95).
-        let mut text = String::from(
+        // A `#` header documents the run so a stray file is self-describing.
+        let unit = report.time_unit.label();
+        let mut text = format!(
+            "# OpenFlex report\n# model: {}\n# time_unit: {}\n# stop_time: {}\n# warmup: {}\n# seed: {}\n# replications: {}\n",
+            report.model,
+            unit,
+            report.stop_time,
+            report.warmup,
+            report.base_seed,
+            report.replications.len()
+        );
+        text.push_str(
             "object,kind,input,input_ci95,output,output_ci95,avg_wip,avg_wip_ci95,\
 max_wip,avg_stay,avg_stay_ci95,throughput,throughput_ci95,utilization,utilization_ci95,\
 idle,busy,blocked,down\n",
@@ -9101,6 +9112,23 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn report_csv_header_documents_the_run() {
+        // The header lines the export writes; every one starts with `#` so
+        // spreadsheet importers skip them consistently.
+        let header = format!(
+            "# model: {}\n# time_unit: {}\n# stop_time: {}\n# warmup: {}\n# seed: {}\n# replications: {}\n",
+            "demo", "min", 1000.0, 10.0, 42, 3
+        );
+        let lines: Vec<&str> = header.lines().collect();
+        assert_eq!(lines.len(), 6);
+        for line in &lines {
+            assert!(line.starts_with("# "), "not a comment: {line}");
+        }
+        assert!(header.contains("# time_unit: min"));
+        assert!(header.contains("# replications: 3"));
     }
 
     #[test]
