@@ -4350,6 +4350,15 @@ idle,busy,blocked,down\n",
                         String::new()
                     }
                 );
+                // A report belongs to the model it was produced from; if the
+                // document changed while the worker ran, keep it but say so.
+                let stale = self
+                    .model
+                    .map(|model| !report.replications.is_empty() && model.name != report.model)
+                    .unwrap_or(false);
+                if stale {
+                    self.status.push_str(" · model changed during the run");
+                }
                 self.report = Some(report);
                 self.report_running = false;
                 self.report_rx = None;
