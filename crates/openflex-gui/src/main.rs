@@ -4906,6 +4906,18 @@ idle,busy,blocked,down\n",
                 }
             }
         };
+        if from == to {
+            self.error = Some("an object cannot connect to itself".into());
+            return;
+        }
+        if model
+            .connections
+            .iter()
+            .any(|connection| connection.from == from && connection.to == to)
+        {
+            self.error = Some(format!("{from} -> {to} already exists"));
+            return;
+        }
         let mut copy = model.clone();
         copy.connections.push(openflex_model::model::Connection {
             from,
@@ -10194,11 +10206,28 @@ mod tests {
     }
 
     #[test]
+    fn connections_reject_self_and_duplicates() {
+        // The guards `add_connection` applies before touching the model.
+        let existing = [("A", "B"), ("B", "C")];
+        let accepts = |from: &str, to: &str| {
+            from != to && !existing.iter().any(|(f, t)| *f == from && *t == to)
+        };
+        assert!(accepts("A", "C"), "a new edge is fine");
+        assert!(!accepts("A", "A"), "self connection");
+        assert!(!accepts("A", "B"), "duplicate edge");
+        assert!(!accepts("B", "C"), "duplicate edge, reversed order differs");
+        assert!(
+            accepts("C", "B"),
+            "the reverse direction is a different edge"
+        );
+    }
+
+    #[test]
     fn duplicate_names_never_collide() {
         // Mirrors the suffix search in `duplicate_selection`: the loop checks the
         // copy being built, so two duplicates in one action cannot collide.
         let mut names = vec!["Q1".to_string(), "Q1_2".to_string()];
-        let mut next = |base: &str, names: &Vec<String>| {
+        let next = |base: &str, names: &Vec<String>| {
             let mut suffix = 2;
             let mut candidate = format!("{base}_{suffix}");
             while names.iter().any(|name| name == &candidate) {
