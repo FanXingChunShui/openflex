@@ -260,6 +260,11 @@ fn install_cjk_font(ctx: &egui::Context) {
 const PITCH_MIN: f32 = -1.4;
 const PITCH_MAX: f32 = 1.45;
 
+/// Zoom limits, shared by the wheel handler and the framing maths so a framed
+/// view is never outside the range the wheel allows.
+const ZOOM_MIN: f32 = 0.15;
+const ZOOM_MAX: f32 = 6.0;
+
 fn apply_theme(ctx: &egui::Context) {
     use palette::*;
 
@@ -3822,7 +3827,7 @@ idle,busy,blocked,down\n",
         let span = (max[0] - min[0]).max(max[1] - min[1]).max(1.0) + padding;
         let usable = (canvas - 200.0).max(160.0);
         // scale = canvas / 12 * zoom, and span * scale must fit `usable`.
-        let zoom = (usable * 12.0 / (span * canvas.max(1.0))).clamp(0.15, 2.5);
+        let zoom = (usable * 12.0 / (span * canvas.max(1.0))).clamp(ZOOM_MIN, ZOOM_MAX);
         (centre, zoom)
     }
 
@@ -9289,7 +9294,7 @@ impl eframe::App for OpenFlexApp {
             }
             let scroll = ui.input(|input| input.smooth_scroll_delta.y);
             if scroll != 0.0 {
-                self.zoom = (self.zoom * (1.0 + scroll * 0.001)).clamp(0.2, 6.0);
+                self.zoom = (self.zoom * (1.0 + scroll * 0.001)).clamp(ZOOM_MIN, ZOOM_MAX);
             }
             // Soft vignette: a lighter pool in the middle of the canvas gives
             // the flat dark background some depth.
@@ -9924,7 +9929,14 @@ mod tests {
             clamped, preset_pitch,
             "a preset must already satisfy the clamp"
         );
-        assert!(PITCH_MIN < PITCH_MAX);
+        // Range sanity, computed at runtime so the assertions are not constant.
+        let ranges = [(PITCH_MAX - PITCH_MIN, 1.0_f32, "pitch tilt span")]
+            .into_iter()
+            .chain(std::iter::once((ZOOM_MAX - ZOOM_MIN, 1.0, "zoom span")))
+            .chain(std::iter::once((1.0 - ZOOM_MIN, 0.5, "zoom out range")));
+        for (value, minimum, name) in ranges {
+            assert!(value > minimum, "{name} is too small: {value}");
+        }
         // A drag from the preset moves smoothly in both directions.
         let up = (preset_pitch - 0.1).clamp(PITCH_MIN, PITCH_MAX);
         let down = (preset_pitch + 0.1).clamp(PITCH_MIN, PITCH_MAX);
