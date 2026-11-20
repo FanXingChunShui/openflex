@@ -1833,6 +1833,8 @@ struct OpenFlexApp {
     /// summary is not lost to the next status message).
     compare_lines: Vec<String>,
     show_compare_report: bool,
+    /// Action waiting for a second press because the document has unsaved edits.
+    pending_discard: Option<String>,
     /// Objects waiting for a second Delete press (group deletions).
     delete_confirm: Option<Vec<String>>,
     /// Per-cell text buffers for the editable global tables:
@@ -1974,6 +1976,7 @@ impl OpenFlexApp {
             event_filter: String::new(),
             compare_lines: Vec::new(),
             show_compare_report: false,
+            pending_discard: None,
             delete_confirm: None,
             table_edit: std::collections::HashMap::new(),
             window_title: String::new(),
@@ -2273,6 +2276,24 @@ impl OpenFlexApp {
             ""
         };
         format!("OpenFlex — {name}{dirty}{state}")
+    }
+
+    /// Refuses to replace the document while it has unsaved edits, unless the
+    /// user already pressed the same action twice. Returns true when the caller
+    /// may continue.
+    fn may_replace_document(&mut self, action: &str) -> bool {
+        if !self.model_dirty {
+            self.pending_discard = None;
+            return true;
+        }
+        if self.pending_discard.as_deref() == Some(action) {
+            self.pending_discard = None;
+            return true;
+        }
+        self.pending_discard = Some(action.to_string());
+        self.status =
+            format!("Unsaved changes — press {action} again to discard them, or Save first");
+        false
     }
 
     /// Drops analysis results that no longer describe the current model: a
@@ -6348,7 +6369,10 @@ impl eframe::App for OpenFlexApp {
                     ui.separator();
                     tool_group(ui, "FILE");
                     ui.add(egui::TextEdit::singleline(&mut self.path_input).desired_width(280.0));
-                    if ui.button("Open").clicked() && !self.path_input.is_empty() {
+                    if ui.button("Open").clicked()
+                        && !self.path_input.is_empty()
+                        && self.may_replace_document("Open")
+                    {
                         self.load(PathBuf::from(self.path_input.clone()));
                     }
                     if ui
@@ -6380,7 +6404,7 @@ impl eframe::App for OpenFlexApp {
                     {
                         self.compare_with_file();
                     }
-                    if ui.button("New").clicked() {
+                    if ui.button("New").clicked() && self.may_replace_document("New") {
                         self.new_model();
                     }
                     if ui.button("Help").clicked() {
@@ -7376,7 +7400,9 @@ impl eframe::App for OpenFlexApp {
                             .fill(palette::CARD)
                             .stroke(egui::Stroke::new(1.0_f32, palette::STROKE))
                             .rounding(egui::Rounding::same(10.0_f32));
-                            if ui.add(button).on_hover_text(hint).clicked() {
+                            if ui.add(button).on_hover_text(hint).clicked()
+                                && self.may_replace_document("the example")
+                            {
                                 self.load_example(example);
                             }
                         }
@@ -10292,6 +10318,8 @@ impl eframe::App for OpenFlexApp {
         let typing = ctx.wants_keyboard_input();
         let mut step_forward = false;
         let mut step_delta = 0.0_f32;
+        let mut new_pressed = false;
+        let mut open_pressed = false;
         ctx.input_mut(|input| {
             if !typing && input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z) {
                 self.restore();
@@ -10310,14 +10338,10 @@ impl eframe::App for OpenFlexApp {
             // Open/New also skip while a text field has focus, so typing a
             // path never accidentally opens or resets the model.
             if !typing && input.consume_key(egui::Modifiers::COMMAND, egui::Key::O) {
-                if self.path_input.trim().is_empty() {
-                    self.status = "Type a model path first (or use Recent)".into();
-                } else {
-                    self.load(PathBuf::from(self.path_input.clone()));
-                }
+                open_pressed = true;
             }
             if !typing && input.consume_key(egui::Modifiers::COMMAND, egui::Key::N) {
-                self.new_model();
+                new_pressed = true;
             }
             // Space toggles play/pause; R resets; F1 shows the short help.
             if !typing && input.consume_key(egui::Modifiers::NONE, egui::Key::Space) {
@@ -10365,6 +10389,17 @@ impl eframe::App for OpenFlexApp {
                 step_delta = -1.0;
             }
         });
+        // Shortcuts go through the same guard as the toolbar buttons.
+        if new_pressed && self.may_replace_document("New") {
+            self.new_model();
+        }
+        if open_pressed {
+            if self.path_input.trim().is_empty() {
+                self.status = "Type a model path first (or use Recent)".into();
+            } else if self.may_replace_document("Open") {
+                self.load(PathBuf::from(self.path_input.clone()));
+            }
+        }
         if step_delta != 0.0 {
             self.step_size = (self.step_size + step_delta).clamp(0.1, 1000.0);
         }
@@ -11029,6 +11064,32 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn replacing_a_dirty_document_needs_a_second_press() {
+        // The rule `may_replace_document` applies to New/Open/example loading.
+        let mut pending: Option<String> = None;
+        let mut decide = |dirty: bool, action: &str| {
+            if !dirty {
+                pending = None;
+                return true;
+            }
+            if pending.as_deref() == Some(action) {
+                pending = None;
+                return true;
+            }
+            pending = Some(action.to_string());
+            false
+        };
+        assert!(decide(false, "New"), "a clean document is replaced at once");
+        assert!(!decide(true, "New"), "first press only warns");
+        assert!(decide(true, "New"), "second press goes through");
+        assert!(
+            !decide(true, "Open"),
+            "a different action needs its own press"
+        );
+        assert!(decide(true, "Open"));
     }
 
     #[test]

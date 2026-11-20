@@ -4,6 +4,11 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **替换未保存文档需二次确认**：`New` / `Open` / 内置示例在 `model_dirty` 时第一次只给出
+  `Unsaved changes — press <动作> again to discard them, or Save first`，再按一次才真正替换；
+  工具栏按钮与 `Ctrl/Cmd+N`、`Ctrl/Cmd+O` 走同一个 `may_replace_document()` 守卫。
+  此前改完模型直接点 New 就会静默丢失全部改动。新增
+  `replacing_a_dirty_document_needs_a_second_press` 测试（GUI 86 项）。
 - **"unsaved edits" 覆盖 JSON 模式**：参数 JSON 与流程 JSON 的编辑现在也点亮未保存提示；`Triggers` /
   `Timetable` 两个框通过 `EditForm::show` 的返回值汇入同一个 `form_changed`。此前只有表单控件会触发提示，
   用 JSON 改参数时看不到任何提示。新增 `json_buffer_edits_mark_the_form_dirty` 测试（GUI 85 项）。
