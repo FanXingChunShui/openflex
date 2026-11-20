@@ -8,7 +8,7 @@ cargo build -p openflex-gui --release
 ./target/release/openflex-gui examples/mm1.ofm   # 也可以不带参数启动后在窗口内填路径
 ```
 
-## 当前能力（v1.26.0）
+## 当前能力（v1.29.0）
 
 | 区域 | 功能 |
 |---|---|
@@ -33,7 +33,7 @@ cargo build -p openflex-gui --release
 | 对象编辑 | `x/y/z` 拖拽数值、**按 kind 的参数表单**（Distribution 类型下拉 + 数值：source/queue/processor/conveyor/resource/transporter/person/robot/crane/asrs/agv）、Apply 校验后提交；JSON 高级模式（复选框） |
 | 连接编辑 | 列表 + 删除、from/to/port 添加（校验后原子替换模型） |
 | 3D 视图 | 透视投影、**地面网格**、对象地面阴影、按 kind 着色、连接线、选中高亮、拖拽旋转、滚轮缩放、点击选中、**相机预设 Iso/Top/Front/Side**、**按 kind 的几何体与明暗**（机台带顶板与指示灯、传送带带方向箭头、货架分层、源/汇圆鼓、人员/车辆胶囊、流体罐带液位、其余盒体）、**可旋转 footprint + 侧面挤出**（右键对象菜单 -15°/+15°/0°，写入 `Object.rot` 并随模型保存）、右侧挤出面模拟立体感 |
-| 单元测试 | `crates/openflex-gui` 内置 **29 项**测试（JSON 路径、参数解析、热力色带、明暗、Pareto、事件格式、XML 转义、取景、BFS 布局、内置示例、字体路径、重命名引用、删除清理、trace 行格式、平面命中、路径收集、字节格式、校验缓存等），CI 的 GUI Linux job 会执行 |
+| 单元测试 | `crates/openflex-gui` 内置 **93 项**测试（交互约定见下节），CI 的 GUI Linux job 会执行 |
 | 外观 | 启动时应用深色主题（面板/窗口/画布分层配色），窗口与 macOS bundle 使用程序生成的 64×64 图标（无二进制资源） |
 | Trace | 工具栏 `Trace run` 用 `simulate_traced()` 跑一次并保留引擎事件流；`Export trace` 写 `<model>.trace.jsonl`（与 CLI `--trace` 同格式） |
 | 事件日志 | 右侧 `Events (n)`：过滤（kind/对象，忽略大小写）、点击跳转到该时刻、`CSV` 导出、`clear`；`Play` 与 `Step event` 都会填充 |
@@ -100,6 +100,22 @@ wix build packaging\windows\openflex-gui.wxs -d Version=<ver> ^
   Studio **WebGL 3D**（角点在物体空间旋转后投影）；桌面版额外把前/右侧面挤出做出立体感；
 - `openflex layout --svg` 平面视图用 `<g transform="rotate(deg cx cy)">`，等轴测视图直接旋转 footprint 角点，
   `--html` 交互预览继承同一份 SVG，可随模型一起进版本库。
+
+## 交互约定（v1.29.0 起）
+
+这些规则由单元测试锁住，改代码时若破坏约定会直接失败：
+
+| 约定 | 行为 | 测试 |
+|---|---|---|
+| **先校验后快照** | 任何编辑先 `validate()`，通过后才写撤销栈；被拒绝的编辑不留下空历史项 | `rejected_edits_do_not_leave_history_entries` |
+| **结果随模型失效** | 撤销/重做、新增/删除/复制/重命名、连接增删、端口策略、应用最优、模型设置都会调用 `clear_analysis_results()`（报告、实验、优化、时序、trace） | `every_structural_edit_path_clears_results` |
+| **位置操作不清结果** | 移动/旋转/对齐/分布/网格/自动布局不改变统计，故保留结果 | `structural_edits_invalidate_results_but_moves_do_not` |
+| **丢弃文档要二次确认** | `New` / `Open`（含 Recent、文件浏览器、示例）与关闭窗口，在 `model_dirty` 时第一次只提示，第二次才执行 | `closing_with_unsaved_edits_needs_a_second_press` |
+| **批量删除要二次确认** | 一次删除 ≥3 个对象需按两次 `Delete`；选区一变确认即失效 | `group_deletes_need_a_second_press` |
+| **异步结果带来源** | Run/时序/实验/优化都回传模型名，换文档后状态栏标注 `from 'X' (model changed since)` | `every_worker_reports_the_model_it_ran` |
+| **数值一律 f64** | 所有会写回模型的数值（run 设置、扫描、优化边界、坐标、批量位移）都用 f64，表单往返是恒等变换 | `form_position_round_trips_exactly` |
+| **路径可预测** | 已保存模型的边车文件在同目录；未保存的导出与另存建议落到 `~/Documents/<模型名>.*`，布局预设落到 `~/.config/openflex/` | `export_paths_are_predictable_without_a_saved_model` |
+| **提示与实现同步** | 帮助面板列出的每个快捷键都能在源码中找到对应绑定 | `help_dialog_lists_every_shortcut` |
 
 ## 与 FlexSim 桌面界面差距（按优先级）
 
