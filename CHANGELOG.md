@@ -10,6 +10,9 @@
 - **「最新检查点」排序修正**：`Load checkpoint` 原按文件名字典序取最后一项，`checkpoint-9.00` 会排在
   `checkpoint-100.00` 之后；改为解析文件名中的模型时间排序（`checkpoint_time()`），并加
   `checkpoints_sort_by_model_time_not_by_name` 测试（GUI 46 项）。
+- **热力图可解释**：没有报告时下拉项显示 `(run first)` 并禁用（此前静默回退到类型色）；
+  选中指标后显示**色标**（绿→黄→红，两端标注实际 min/max，利用率固定 0–100%）。
+  新增 `heatmap_legend_range_falls_back_when_empty` 测试（GUI 48 项）。
 - **缩放范围统一**：取景计算的 clamp 是 `0.15–2.5`，滚轮是 `0.2–6.0`，取景后一滚轮画面就会跳；
   改为共用 `ZOOM_MIN/ZOOM_MAX`。两条范围断言写成了编译期常量，被 clippy 指出后改为运行时计算。
 - **相机俯仰角统一**：`Top`/2D 预设用 `1.45`，而拖动时的 clamp 上限是 `1.4`，选完 Top 再拖会突然跳变；

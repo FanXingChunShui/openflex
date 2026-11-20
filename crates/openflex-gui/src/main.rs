@@ -5932,6 +5932,76 @@ impl eframe::App for OpenFlexApp {
                     }
                     ui.separator();
                     ui.label("Heatmap");
+                    // Legend: green → yellow → red with the metric's range.
+                    if self.heatmap != 0
+                        && let Some(report) = self.report.as_ref()
+                    {
+                        let (low, high, name) = match self.heatmap {
+                            2 => {
+                                let values: Vec<f64> = report
+                                    .objects
+                                    .values()
+                                    .map(|stats| stats.throughput.mean)
+                                    .collect();
+                                (
+                                    values.iter().copied().fold(f64::INFINITY, f64::min),
+                                    values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                                    "thru",
+                                )
+                            }
+                            3 => {
+                                let values: Vec<f64> = report
+                                    .objects
+                                    .values()
+                                    .map(|stats| stats.avg_content.mean)
+                                    .collect();
+                                (
+                                    values.iter().copied().fold(f64::INFINITY, f64::min),
+                                    values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                                    "WIP",
+                                )
+                            }
+                            _ => (0.0, 1.0, "util"),
+                        };
+                        let (low, high) = if low.is_finite() && high.is_finite() && low <= high {
+                            (low, high)
+                        } else {
+                            (0.0, 1.0)
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(if self.heatmap == 1 {
+                                    "0%".to_string()
+                                } else {
+                                    format!("{low:.1}")
+                                })
+                                .size(9.0_f32)
+                                .monospace()
+                                .color(palette::TEXT_DIM),
+                            );
+                            let (bar, _) =
+                                ui.allocate_exact_size(egui::vec2(56.0, 7.0), egui::Sense::hover());
+                            // Nine steps read as a gradient without a gradient API.
+                            for step in 0..9 {
+                                let t = step as f64 / 8.0;
+                                let piece = egui::Rect::from_min_size(
+                                    egui::pos2(bar.left() + bar.width() * t as f32, bar.top()),
+                                    egui::vec2(bar.width() / 8.0 + 0.5, bar.height()),
+                                );
+                                ui.painter().rect_filled(piece, 0.0, Self::heat_colour(t));
+                            }
+                            ui.label(
+                                egui::RichText::new(if self.heatmap == 1 {
+                                    "100%".to_string()
+                                } else {
+                                    format!("{high:.1} {name}")
+                                })
+                                .size(9.0_f32)
+                                .monospace()
+                                .color(palette::TEXT_DIM),
+                            );
+                        });
+                    }
                     egui::ComboBox::from_id_salt("heatmap")
                         .selected_text(match self.heatmap {
                             1 => "utilization",
@@ -5946,7 +6016,27 @@ impl eframe::App for OpenFlexApp {
                                 (2, "throughput"),
                                 (3, "WIP"),
                             ] {
-                                if ui.selectable_label(self.heatmap == value, name).clicked() {
+                                // A heatmap needs a report; say so instead of
+                                // silently falling back to the kind colours.
+                                let ready = value == 0 || self.report.is_some();
+                                let label = if ready {
+                                    name.to_string()
+                                } else {
+                                    format!("{name}  (run first)")
+                                };
+                                if ui
+                                    .add_enabled(
+                                        ready,
+                                        egui::Button::new(egui::RichText::new(label).small())
+                                            .fill(if self.heatmap == value {
+                                                palette::ACCENT_HI
+                                            } else {
+                                                egui::Color32::TRANSPARENT
+                                            })
+                                            .rounding(egui::Rounding::same(3.0_f32)),
+                                    )
+                                    .clicked()
+                                {
                                     self.heatmap = value;
                                 }
                             }
@@ -9917,6 +10007,30 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn heatmap_legend_range_falls_back_when_empty() {
+        // The legend uses the min/max of the chosen metric, but an empty or
+        // degenerate report must not draw `inf`.
+        let values: Vec<f64> = Vec::new();
+        let low = values.iter().copied().fold(f64::INFINITY, f64::min);
+        let high = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let (low, high) = if low.is_finite() && high.is_finite() && low <= high {
+            (low, high)
+        } else {
+            (0.0, 1.0)
+        };
+        assert_eq!((low, high), (0.0, 1.0));
+
+        let single = [3.0_f64];
+        let low = single.iter().copied().fold(f64::INFINITY, f64::min);
+        let high = single.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        assert_eq!(
+            (low, high),
+            (3.0, 3.0),
+            "a single object has a zero-width range"
+        );
     }
 
     #[test]
