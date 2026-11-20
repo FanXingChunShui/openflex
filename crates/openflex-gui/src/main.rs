@@ -5303,6 +5303,8 @@ idle,busy,blocked,down\n",
         match renamed.validate() {
             Ok(()) => {
                 self.model = Some(Box::leak(Box::new(renamed)));
+                // Results are keyed by object name, so a rename invalidates them.
+                self.clear_analysis_results();
                 self.form = self
                     .model
                     .map(|model| EditForm::from_object(&model.objects[index]));
@@ -5580,6 +5582,7 @@ idle,busy,blocked,down\n",
         match copy.validate() {
             Ok(()) => {
                 self.model = Some(Box::leak(Box::new(copy)));
+                self.clear_analysis_results();
                 self.status = "Connection added".into();
                 self.error = None;
             }
@@ -5624,6 +5627,7 @@ idle,busy,blocked,down\n",
         match copy.validate() {
             Ok(()) => {
                 self.model = Some(Box::leak(Box::new(copy)));
+                self.clear_analysis_results();
                 self.status = "Connection strategy updated".into();
                 self.error = None;
             }
@@ -5645,6 +5649,7 @@ idle,busy,blocked,down\n",
             match copy.validate() {
                 Ok(()) => {
                     self.model = Some(Box::leak(Box::new(copy)));
+                    self.clear_analysis_results();
                     self.status = "Connection removed".into();
                     self.error = None;
                 }
@@ -11011,6 +11016,35 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn every_structural_edit_path_clears_results() {
+        // Count the call sites in production code: one helper plus the paths that
+        // use it. A path that changes the graph must not be missing here.
+        let source = include_str!("main.rs");
+        let production = source.split("mod tests").next().expect("production code");
+        let calls = production.matches("self.clear_analysis_results();").count();
+        // undo, redo, apply-best, model-settings, add, delete, duplicate, rename,
+        // add-connection, remove-connection, set-strategy.
+        assert_eq!(
+            calls, 11,
+            "structural call sites changed — check that the new one clears results"
+        );
+        let body = production
+            .split("fn clear_analysis_results")
+            .nth(1)
+            .expect("helper body");
+        for field in [
+            "self.report = None",
+            "self.exp_rows.clear()",
+            "self.opt_rows.clear()",
+            "self.opt_best = None",
+            "self.series.clear()",
+            "self.trace = None",
+        ] {
+            assert!(body.contains(field), "helper misses {field}");
+        }
     }
 
     #[test]
