@@ -11,6 +11,9 @@
   `checkpoint-100.00` 之后；改为解析文件名中的模型时间排序（`checkpoint_time()`），并加
   `checkpoints_sort_by_model_time_not_by_name` 测试（GUI 46 项）。
 - **实验柱状图**：最优场景的柱子改为绿色（表格里也仍以 `*` 标注），悬停时描边并在柱顶显示完成数。
+- **自动布局覆盖全部对象**：`layout_order()` 的 BFS 在「没有源点」的图（例如只含环）上不会入队，
+  但未访问对象仍会追加到末尾，另加 `debug_assert_eq!` 保证顺序长度等于对象数；新增
+  `layout_order_covers_every_object_including_cycles` 测试（GUI 51 项）。
 - **全局状态占比**：报告顶部新增 `STATE MIX` 条（busy/blocked/idle/down 的模型级占比）与一行百分比文字，
   补上「整机队有多忙」这一视角（此前只有逐对象的四段小条）。`state_mix()` 对空模型返回全零而不是 NaN，
   新增 `state_mix_normalises_and_handles_zero` 测试（GUI 50 项）。

@@ -3982,12 +3982,16 @@ idle,busy,blocked,down\n",
                 }
             }
         }
-        // Isolated objects (no connections at all) come last.
+        // Objects the walk never reached (isolated ones, or every object when
+        // the graph has no root at all because it contains a cycle) still need a
+        // slot, otherwise the layout would silently leave them where they are.
         for (index, used) in seen.iter().enumerate() {
             if !used {
                 order.push(index);
             }
         }
+        // Defensive: a model always yields one entry per object.
+        debug_assert_eq!(order.len(), model.objects.len());
         order
     }
 
@@ -10179,6 +10183,42 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn layout_order_covers_every_object_including_cycles() {
+        // No root at all (a two-node cycle): the walk reaches nothing, yet the
+        // order must still list every object so auto layout can place them.
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "cycle",
+          "run": {"stop_time": 10.0},
+          "objects": [
+            {"name": "S", "kind": "source", "params": {}},
+            {"name": "K", "kind": "sink", "params": {}},
+            {"name": "A", "kind": "queue", "params": {}},
+            {"name": "B", "kind": "queue", "params": {}}
+          ],
+          "connections": [
+            {"from": "A", "to": "B"}, {"from": "B", "to": "A"}
+          ]
+        }"#,
+        )
+        .expect("model");
+        let order = OpenFlexApp::layout_order(&model);
+        assert_eq!(order.len(), model.objects.len(), "every object gets a slot");
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, vec![0, 1, 2, 3], "no object is dropped");
+
+        // A normal pipeline starts at the source.
+        let pipeline = builtin_example("mm1").expect("example");
+        let order = OpenFlexApp::layout_order(&pipeline);
+        assert_eq!(order.len(), pipeline.objects.len());
+        assert_eq!(
+            pipeline.objects[order[0]].name, "Source1",
+            "the source leads the layout"
+        );
     }
 
     #[test]
