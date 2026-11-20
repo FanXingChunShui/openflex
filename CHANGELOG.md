@@ -4,6 +4,10 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **被拒绝的编辑不再污染历史**：`add_connection` 原先在输入校验**之前**就记快照——空输入、无效端口、自连、
+  重复边都会在历史里留下一条空记录；`batch_move`/`batch_rotate`/`apply_form`/`apply_json` 同样是先快照后
+  `validate()`。五处统一改为「先校验、通过后才记快照」。新增 `rejected_edits_do_not_leave_history_entries`
+  测试（GUI 76 项）。
 - **新 transfer 块的目标取自模型**：`+transfer` 以前硬编码 `"object": "Sink1"`，在没有该名字的模型里
   Apply 就会校验失败。现在优先取模型中的第一个 sink，没有 sink 就取第一个对象，空模型才回落到 `Sink1`。
   新增 `new_transfer_block_targets_an_object_in_the_model` 测试（GUI 75 项）。

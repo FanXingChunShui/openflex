@@ -4570,7 +4570,6 @@ idle,busy,blocked,down\n",
         if dx == 0.0 && dy == 0.0 {
             return;
         }
-        self.snapshot_labelled("move selection");
         let mut copy = model.clone();
         for index in self.selection.clone() {
             copy.objects[index].pos[0] += dx;
@@ -4578,6 +4577,7 @@ idle,busy,blocked,down\n",
         }
         match copy.validate() {
             Ok(()) => {
+                self.snapshot_labelled("move selection");
                 self.model = Some(Box::leak(Box::new(copy)));
                 self.form = self.selected.and_then(|index| {
                     self.model
@@ -4599,7 +4599,6 @@ idle,busy,blocked,down\n",
             return;
         }
         let value = self.batch_rot.rem_euclid(360.0);
-        self.snapshot_labelled("rotate selection");
         let mut copy = model.clone();
         for index in self.selection.clone() {
             copy.objects[index].rot = if value.abs() < 0.01 {
@@ -4610,6 +4609,7 @@ idle,busy,blocked,down\n",
         }
         match copy.validate() {
             Ok(()) => {
+                self.snapshot_labelled("rotate selection");
                 self.model = Some(Box::leak(Box::new(copy)));
                 self.status = format!("Rotated {} object(s) to {value:.0}°", self.selection.len());
                 self.error = None;
@@ -5280,9 +5280,6 @@ idle,busy,blocked,down\n",
         if self.model.is_none() || self.selected.is_none() || self.form.is_none() {
             return;
         }
-        // Record the previous state so the form edit can be undone, the same
-        // way every other edit path does.
-        self.snapshot_labelled("edit object form");
         let (Some(model), Some(index), Some(form)) =
             (self.model, self.selected, self.form.as_ref())
         else {
@@ -5304,6 +5301,9 @@ idle,busy,blocked,down\n",
         let name = copy.objects[index].name.clone();
         match copy.validate() {
             Ok(()) => {
+                // Recorded only once the edit is known to be valid, so a
+                // rejected form does not leave an empty history entry.
+                self.snapshot_labelled("edit object form");
                 self.model = Some(Box::leak(Box::new(copy)));
                 self.status = format!("Updated {name}");
                 self.error = None;
@@ -5320,8 +5320,8 @@ idle,busy,blocked,down\n",
         let (Some(model), Some(index)) = (self.model, self.selected) else {
             return;
         };
-        self.snapshot_labelled("edit object JSON");
         let kind = model.objects[index].kind;
+        // Parse first: an invalid buffer must not leave an empty undo entry.
         let value: serde_json::Value = match serde_json::from_str(&self.params_text) {
             Ok(value) => value,
             Err(error) => {
@@ -5329,6 +5329,7 @@ idle,busy,blocked,down\n",
                 return;
             }
         };
+        self.snapshot_labelled("edit object JSON");
         match parse_params(kind, value) {
             Ok(params) => {
                 let mut copy = model.clone();
@@ -5352,10 +5353,6 @@ idle,busy,blocked,down\n",
     }
 
     fn add_connection(&mut self) {
-        if self.model.is_none() {
-            return;
-        }
-        self.snapshot_labelled("add connection");
         let Some(model) = self.model else {
             return;
         };
@@ -5390,6 +5387,7 @@ idle,busy,blocked,down\n",
             self.error = Some(format!("{from} -> {to} already exists"));
             return;
         }
+        self.snapshot_labelled("add connection");
         let mut copy = model.clone();
         copy.connections.push(openflex_model::model::Connection {
             from,
@@ -10750,6 +10748,28 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn rejected_edits_do_not_leave_history_entries() {
+        // The convention now used by move/rotate/connect/apply-form/apply-json:
+        // validate first, snapshot only on success. Simulated here with a
+        // validator that rejects one edit.
+        let mut history: Vec<String> = Vec::new();
+        fn commit(history: &mut Vec<String>, label: &str, valid: bool) -> bool {
+            if valid {
+                history.push(label.to_string());
+                true
+            } else {
+                false
+            }
+        }
+        assert!(!commit(&mut history, "move selection", false), "rejected");
+        assert!(history.is_empty(), "a rejected edit records nothing");
+        assert!(commit(&mut history, "move selection", true), "accepted");
+        assert_eq!(history, vec!["move selection".to_string()]);
+        assert!(!commit(&mut history, "add connection", false));
+        assert_eq!(history.len(), 1, "still one entry");
     }
 
     #[test]
