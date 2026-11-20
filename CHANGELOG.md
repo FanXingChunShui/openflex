@@ -17,6 +17,10 @@
   悬停说明「模型时间的前 N 个单位不计入任何统计」。同一个模型有无预热会得到不同的总数，此前报告里看不出来。
   新增 `the_report_says_when_warmup_was_excluded` 测试（GUI 107 项）。
 
+- **AGV 悬停显示电量**：AGV 的悬停摘要新增一行 `battery 73% · charging 25%`（来自 `ObjectStats` 的
+  `battery_remaining` 与 `charging_fraction`）；非 AGV 对象不受影响。
+  新增 `agv_tooltip_adds_the_battery_line` 测试（GUI 108 项）。
+
 ## v1.30.0 — 2026-11-20
 
 本轮补齐**全局表的完整编辑能力**（建表、删表、增列、删行、改列名、逐格编辑），并继续收紧「不丢工作」与「界面状态与模型一致」：切换/关闭/另存路径都不再静默丢弃改动，模型描述可编辑，画布与树的多选行为统一。发布节奏保持**至少 3 小时一版**。

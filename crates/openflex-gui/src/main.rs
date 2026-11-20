@@ -11262,6 +11262,15 @@ impl eframe::App for OpenFlexApp {
                         ),
                         None => object.kind.as_str().to_string(),
                     };
+                    // AGVs report a battery and the share of time spent charging.
+                    let summary = match live.and_then(|stats| stats.battery_remaining) {
+                        Some(battery) => format!(
+                            "{summary}\nbattery {battery:.0}% · charging {:.0}%",
+                            live.map(|stats| stats.charging_fraction * 100.0)
+                                .unwrap_or(0.0)
+                        ),
+                        None => summary,
+                    };
                     hovered_info = Some((object.name.clone(), summary));
                 }
                 if response.clicked()
@@ -11531,6 +11540,23 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn agv_tooltip_adds_the_battery_line() {
+        // The extra line only appears when the engine reports a battery.
+        let line = |battery: Option<f64>, charging: f64| match battery {
+            Some(battery) => Some(format!(
+                "battery {battery:.0}% · charging {:.0}%",
+                charging * 100.0
+            )),
+            None => None,
+        };
+        assert_eq!(
+            line(Some(73.4), 0.25).as_deref(),
+            Some("battery 73% · charging 25%")
+        );
+        assert_eq!(line(None, 0.0), None, "non-AGV objects get no line");
     }
 
     #[test]
