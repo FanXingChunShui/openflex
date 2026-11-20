@@ -7966,7 +7966,12 @@ impl eframe::App for OpenFlexApp {
                                 ui.strong("WIP");
                                 ui.strong("Stay");
                                 ui.strong("Util");
-                                ui.strong("Thru");
+                                ui.strong(format!(
+                                    "Thru / {}",
+                                    self.model
+                                        .map(|model| model.time_unit.label())
+                                        .unwrap_or("")
+                                ));
                                 ui.strong("±CI");
                                 ui.end_row();
                                 for (name, stats) in &report.objects {
