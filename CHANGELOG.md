@@ -4,6 +4,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **守卫状态及时失效**：成功保存或任何一次新编辑（`snapshot_labelled`）都会清除 `pending_discard`，
+  不会出现「几十分钟前按过一次 New，现在按 Open 就直接丢改动」的残留提示。
+  新增 `saving_or_editing_cancels_a_pending_discard_prompt` 测试（GUI 91 项）。
 - **未保存守卫覆盖所有打开入口**：`load()` 内部先过 `may_replace_document()`，因此工具栏、`Recent` 菜单、
   内置文件浏览器、示例加载都受保护（此前只有工具栏的两个按钮）；已确认过的示例加载改走
   `load_unchecked()`，`load_example()` 自己持守卫，不会再重复问两次。

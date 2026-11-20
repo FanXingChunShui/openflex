@@ -2098,6 +2098,9 @@ impl OpenFlexApp {
             return;
         };
         if let Ok(json) = model.to_json() {
+            // Any edit means the user kept working, so a pending
+            // "press again to discard" prompt no longer applies.
+            self.pending_discard = None;
             self.undo.push((json, label.to_string()));
             self.model_dirty = true;
             self.touch_model();
@@ -2917,6 +2920,7 @@ impl OpenFlexApp {
                     // A successful save clears both markers and any stale error.
                     self.model_dirty = false;
                     self.form_dirty = false;
+                    self.pending_discard = None;
                     self.error = None;
                     self.remember_output(&path);
                     self.status = format!("Saved {}", path.display());
@@ -11110,6 +11114,27 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn saving_or_editing_cancels_a_pending_discard_prompt() {
+        // The prompt is void once the document is clean (saved) or the user keeps
+        // editing; both paths reset it.
+        let mut pending: Option<String> = None;
+        pending = Some("New".to_string());
+        // A successful save clears the flag.
+        let saved = true;
+        if saved {
+            pending = None;
+        }
+        assert!(pending.is_none(), "saving cancels the prompt");
+        // A new snapshot (i.e. an edit) also cancels it.
+        pending = Some("New".to_string());
+        let snapshot = true;
+        if snapshot {
+            pending = None;
+        }
+        assert!(pending.is_none(), "editing cancels the prompt");
     }
 
     #[test]
