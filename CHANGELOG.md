@@ -24,6 +24,11 @@
   随后再用提交后的模型重写这两个缓冲（它们存在 `EditForm` 上）。此前提交后文本框仍显示旧内容，
   再点一次 Apply 会把旧触发器写回去。新增 `applying_the_form_rewrites_the_json_buffers` 测试（GUI 97 项）。
 
+- **应用最优解后刷新编辑器**：`apply_best_point()` 会重写对象参数，此前只清了句柄与结果，表单里仍显示旧值，
+  再点 Apply 就会把旧参数写回。现在调用新的 `refresh_editor_from_model()`（对失效索引也安全）。
+  `Apply JSON` 旁另加一句 `replaces the form's current values`，提示 JSON 模式以自身为准。
+  新增 `refreshing_the_editor_needs_a_valid_selection` 测试（GUI 98 项）。
+
 ## v1.29.0 — 2026-11-20
 
 本轮把桌面 GUI 的**数据可信性**与**不丢工作**做实：所有会写回模型的数值统一为 f64、结果随模型结构变化失效、后台任务的结果都带来源模型；同时补齐「丢弃文档 / 批量删除 / 关闭窗口」的二次确认，并让导出与另存的落盘位置可预测。发布节奏保持**至少 3 小时一版**。

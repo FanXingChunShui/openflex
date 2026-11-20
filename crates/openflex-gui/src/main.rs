@@ -2306,6 +2306,27 @@ impl OpenFlexApp {
         false
     }
 
+    /// Re-reads the selected object into the form and the JSON buffers, used
+    /// after an edit that changed parameters without going through the form.
+    fn refresh_editor_from_model(&mut self) {
+        let Some(model) = self.model else {
+            return;
+        };
+        let Some(index) = self.selected else {
+            return;
+        };
+        let Some(object) = model.objects.get(index) else {
+            self.selected = None;
+            self.form = None;
+            return;
+        };
+        self.form = Some(EditForm::from_object(object));
+        self.params_text =
+            serde_json::to_string_pretty(&object.params).unwrap_or_else(|_| "{}".into());
+        self.rename_text = object.name.clone();
+        self.form_dirty = false;
+    }
+
     /// Drops analysis results that no longer describe the current model: a
     /// report, experiment rows, optimiser output, time series and the trace.
     fn clear_analysis_results(&mut self) {
@@ -3484,6 +3505,9 @@ impl OpenFlexApp {
                 self.handle = None;
                 self.sim_state = None;
                 self.clear_analysis_results();
+                // The best point rewrites parameters, so every editor buffer
+                // that still shows the old values must be rebuilt.
+                self.refresh_editor_from_model();
                 let summary = values
                     .iter()
                     .map(|value| format!("{value:.3}"))
@@ -7818,6 +7842,14 @@ impl eframe::App for OpenFlexApp {
                                 self.apply_json();
                             }
                             ui.label(
+                                egui::RichText::new("replaces the form's current values")
+                                    .size(9.0_f32)
+                                    .color(palette::TEXT_DIM),
+                            )
+                            .on_hover_text(
+                                "JSON is authoritative: applying it overwrites whatever the form holds",
+                            );
+                            ui.label(
                                 egui::RichText::new(if valid {
                                     "valid JSON"
                                 } else {
@@ -11183,6 +11215,27 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn refreshing_the_editor_needs_a_valid_selection() {
+        // `refresh_editor_from_model` must survive a selection that no longer
+        // exists (e.g. after the object was deleted by another path).
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        app.selected = Some(999);
+        app.form = Some(EditForm::from_object(&app.model.expect("model").objects[0]));
+        app.refresh_editor_from_model();
+        assert!(app.selected.is_none(), "a dangling index is cleared");
+        assert!(app.form.is_none(), "and so is the form");
+        // With a valid index the buffers are rebuilt from the model.
+        app.selected = Some(0);
+        app.refresh_editor_from_model();
+        assert!(app.form.is_some());
+        let expected = serde_json::to_string_pretty(&app.model.expect("model").objects[0].params)
+            .expect("json");
+        assert_eq!(app.params_text, expected);
     }
 
     #[test]
