@@ -11,6 +11,9 @@
   `checkpoint-100.00` 之后；改为解析文件名中的模型时间排序（`checkpoint_time()`），并加
   `checkpoints_sort_by_model_time_not_by_name` 测试（GUI 46 项）。
 - **实验柱状图**：最优场景的柱子改为绿色（表格里也仍以 `*` 标注），悬停时描边并在柱顶显示完成数。
+- **复制后选中副本**：`Duplicate`（`Ctrl/Cmd+D` 与批量按钮）现在把选区切到刚复制出的对象，接着就能移动它们；
+  此前复制后选区仍停在源对象上，看不出发生了什么。命名续号已有唯一性循环，补 `duplicate_names_never_collide`
+  测试（GUI 53 项）。
 - **自动布局覆盖全部对象**：`layout_order()` 的 BFS 在「没有源点」的图（例如只含环）上不会入队，
   但未访问对象仍会追加到末尾，另加 `debug_assert_eq!` 保证顺序长度等于对象数；新增
   `layout_order_covers_every_object_including_cycles` 测试（GUI 51 项）。

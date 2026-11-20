@@ -3896,7 +3896,15 @@ idle,busy,blocked,down\n",
         }
         match copy.validate() {
             Ok(()) => {
+                // Select the copies: that is what the user wants to move next,
+                // and it matches FlexSim's duplicate behaviour.
+                let first_new = model.objects.len();
+                let new_indices: Vec<usize> = (first_new..first_new + added).collect();
                 self.model = Some(Box::leak(Box::new(copy)));
+                if let Some(first) = new_indices.first().copied() {
+                    self.selection = new_indices;
+                    self.select(first);
+                }
                 self.status = format!("Duplicated {added} object(s)");
                 self.error = None;
             }
@@ -10183,6 +10191,28 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn duplicate_names_never_collide() {
+        // Mirrors the suffix search in `duplicate_selection`: the loop checks the
+        // copy being built, so two duplicates in one action cannot collide.
+        let mut names = vec!["Q1".to_string(), "Q1_2".to_string()];
+        let mut next = |base: &str, names: &Vec<String>| {
+            let mut suffix = 2;
+            let mut candidate = format!("{base}_{suffix}");
+            while names.iter().any(|name| name == &candidate) {
+                suffix += 1;
+                candidate = format!("{base}_{suffix}");
+            }
+            candidate
+        };
+        let first = next("Q1", &names);
+        names.push(first.clone());
+        let second = next("Q1", &names);
+        assert_eq!(first, "Q1_3", "Q1_2 is taken");
+        assert_eq!(second, "Q1_4", "the second copy skips the first");
+        assert_ne!(first, second);
     }
 
     #[test]
