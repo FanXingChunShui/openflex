@@ -8397,13 +8397,19 @@ impl eframe::App for OpenFlexApp {
                         .layout_no_wrap(caption.clone(), font.clone(), egui::Color32::WHITE)
                         .size()
                 });
-                let plate = egui::Rect::from_center_size(
-                    egui::pos2(
-                        box_rect.center().x,
-                        box_rect.top() - 6.0 - metrics.y / 2.0,
-                    ),
-                    metrics + egui::vec2(10.0, 3.0),
-                );
+                // In the floor plan there is no “above the box”, so the plate
+                // sits on the footprint centre instead.
+                let plate = if self.flat_view {
+                    egui::Rect::from_center_size(box_rect.center(), metrics + egui::vec2(6.0, 2.0))
+                } else {
+                    egui::Rect::from_center_size(
+                        egui::pos2(
+                            box_rect.center().x,
+                            box_rect.top() - 6.0 - metrics.y / 2.0,
+                        ),
+                        metrics + egui::vec2(10.0, 3.0),
+                    )
+                };
                 painter.rect_filled(
                     plate,
                     (plate.height() / 2.0).max(4.0),
@@ -8423,20 +8429,36 @@ impl eframe::App for OpenFlexApp {
                 );
                 // State badge: the engine state name in the box corner so the
                 // colour is not the only cue (accessibility + FlexSim parity).
-                if let Some(name) = live.and_then(|stats| stats.state).map(|state| match state {
-                    openflex_core::engine::State::Idle => "idle",
-                    openflex_core::engine::State::Busy => "busy",
-                    openflex_core::engine::State::Blocked => "blocked",
-                    openflex_core::engine::State::Down => "down",
-                    openflex_core::engine::State::OffShift => "off",
-                }) {
-                    painter.text(
-                        box_rect.right_bottom() - egui::vec2(3.0, 2.0),
-                        egui::Align2::RIGHT_BOTTOM,
-                        name,
-                        egui::FontId::proportional(9.0),
-                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 190),
-                    );
+                if let Some(state) = live.and_then(|stats| stats.state) {
+                    let name = match state {
+                        openflex_core::engine::State::Idle => "idle",
+                        openflex_core::engine::State::Busy => "busy",
+                        openflex_core::engine::State::Blocked => "blocked",
+                        openflex_core::engine::State::Down => "down",
+                        openflex_core::engine::State::OffShift => "off",
+                    };
+                    if self.flat_view {
+                        // A dot reads better than 9px text on a small footprint.
+                        painter.circle_filled(
+                            box_rect.right_top() + egui::vec2(-4.0, 4.0),
+                            (2.6 * self.zoom).max(1.6),
+                            match state {
+                                openflex_core::engine::State::Busy => palette::ST_BUSY,
+                                openflex_core::engine::State::Blocked => palette::ST_BLOCKED,
+                                openflex_core::engine::State::Down => palette::ST_DOWN,
+                                openflex_core::engine::State::OffShift => palette::ST_OFF,
+                                openflex_core::engine::State::Idle => palette::ST_IDLE,
+                            },
+                        );
+                    } else {
+                        painter.text(
+                            box_rect.right_bottom() - egui::vec2(3.0, 2.0),
+                            egui::Align2::RIGHT_BOTTOM,
+                            name,
+                            egui::FontId::proportional(9.0),
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 190),
+                        );
+                    }
                 }
                 if let Some(pointer) = pointer_pos
                     && box_rect.expand(4.0).contains(pointer)
