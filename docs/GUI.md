@@ -8,14 +8,14 @@ cargo build -p openflex-gui --release
 ./target/release/openflex-gui examples/mm1.ofm   # 也可以不带参数启动后在窗口内填路径
 ```
 
-## 当前能力（v1.29.0）
+## 当前能力（v1.30.0）
 
 | 区域 | 功能 |
 |---|---|
 | 文件 | **New**（生成 source→queue→processor→sink 模板）、Open（路径输入）、Save、**Save as…**、**Recent 最近 8 个（持久化到 `~/.config/openflex/recent.json`，含 hover 全路径与 Clear recent）**、加载时校验 |
 | 文件浏览 | 工具栏 `Browse…` 打开内置目录浏览器（文件夹在前、`.ofm` 在后，支持 `Up`/`Home`，选中即加载），不依赖 GTK |
 | 产物清单 | 右侧 `Outputs (n)` 列出本会话写出的文件（名称、大小、完整路径悬停），`Clear list` 清空 |
-| 快捷键 | `Ctrl/Cmd+A` 全选、`Ctrl/Cmd+D` 复制选中（自动 `_2` 命名 + 偏移）、`Ctrl/Cmd+O` 打开、`Ctrl/Cmd+N` 新建、`Ctrl/Cmd+S` 保存、`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 重做、`Space` 播放/暂停、`R` 重置、`F1` 快捷键帮助对话框、右方向键步进、上/下方向键调整步长 |
+| 快捷键 | `Ctrl/Cmd+A` 全选、`Ctrl/Cmd+D` 复制选中（自动 `_2` 命名 + 偏移、复制后选中副本）、`Ctrl/Cmd+O` 打开、`Ctrl/Cmd+N` 新建、`Ctrl/Cmd+S` 保存、`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 重做、`Ctrl/Cmd+2` 切换平面 2D、`F` 取景选区、`Space` 播放/暂停、`R` 重置、`Delete`/`Backspace` 删除选中（≥3 个需按两次）、`F1` 帮助、右方向键步进、上/下方向键调整步长；`Ctrl/Cmd+点击` 在画布上追加选择 |
 | Studio 帮助 | 工具栏 `?` 按钮弹出快捷键面板（拖拽/滚轮/框选/方向键微调/撤销/保存/播放/删除，`data-help-panel`） |
 | Studio 复制 | 浏览器 Studio 对象操作区新增 `Duplicate`（深拷贝参数、自动 `_2` 后缀命名、位置偏移 +2，经 `/api/model` 保存并入历史） |
 | 重命名 | 属性面板头部名称可就地编辑（Enter/失焦提交、Esc 还原），自动改写全部引用（连接、home/charger/network、流程块） |
@@ -33,7 +33,7 @@ cargo build -p openflex-gui --release
 | 对象编辑 | `x/y/z` 拖拽数值、**按 kind 的参数表单**（Distribution 类型下拉 + 数值：source/queue/processor/conveyor/resource/transporter/person/robot/crane/asrs/agv）、Apply 校验后提交；JSON 高级模式（复选框） |
 | 连接编辑 | 列表 + 删除、from/to/port 添加（校验后原子替换模型） |
 | 3D 视图 | 透视投影、**地面网格**、对象地面阴影、按 kind 着色、连接线、选中高亮、拖拽旋转、滚轮缩放、点击选中、**相机预设 Iso/Top/Front/Side**、**按 kind 的几何体与明暗**（机台带顶板与指示灯、传送带带方向箭头、货架分层、源/汇圆鼓、人员/车辆胶囊、流体罐带液位、其余盒体）、**可旋转 footprint + 侧面挤出**（右键对象菜单 -15°/+15°/0°，写入 `Object.rot` 并随模型保存）、右侧挤出面模拟立体感 |
-| 单元测试 | `crates/openflex-gui` 内置 **93 项**测试（交互约定见下节），CI 的 GUI Linux job 会执行 |
+| 单元测试 | `crates/openflex-gui` 内置 **104 项**测试（交互约定见下节），CI 的 GUI Linux job 会执行 |
 | 外观 | 启动时应用深色主题（面板/窗口/画布分层配色），窗口与 macOS bundle 使用程序生成的 64×64 图标（无二进制资源） |
 | Trace | 工具栏 `Trace run` 用 `simulate_traced()` 跑一次并保留引擎事件流；`Export trace` 写 `<model>.trace.jsonl`（与 CLI `--trace` 同格式） |
 | 事件日志 | 右侧 `Events (n)`：过滤（kind/对象，忽略大小写）、点击跳转到该时刻、`CSV` 导出、`clear`；`Play` 与 `Step event` 都会填充 |
@@ -42,7 +42,8 @@ cargo build -p openflex-gui --release
 | 时间单位 | 进度条、状态栏时钟、`COMPLETED / unit` 卡片、时序轴、`Thru / unit` 列头都带 `s/min/h/d` |
 | warm-up | 进度条旁 `warm-up until X` → `measuring`；时序图对 warm-up 区加琥珀底色与分界线 |
 | CSV 自描述 | 报告/对比/时序/事件四类 CSV 顶部写 `# model / # time_unit / …` 注释行，Excel 自动跳过 |
-| 全局表 | 左侧 `Global tables (n)` 显示每张表的行×列、列名胶囊与前 4 行值 |
+| 全局表 | 左侧 `Global tables (n)`：`+ table` 建表、`x` 删整表、列名可直接重命名、`+ col` / `- row` 调整形状，
+  单元格逐格编辑（数字/布尔/文本自动识别） |
 | 检查点 | 右侧 `Checkpoints (n)` 面板列出目录内文件与模型时间，点击任意项即恢复该检查点；工具栏另有 `Save checkpoint` / `Load checkpoint`（最新）与目录输入：保存 `SimulationHandle::snapshot()` 为 `<dir>/checkpoint-<time>.json`，恢复时读取该目录最新文件并经 `Checkpoint::from_json_verified` 校验 |
 | 运行 |**`parallel` 开关**：`Run` 与实验用 `run_model_parallel(model, 0)` 在多核上跑复现（结果与串行逐位一致），关闭则退回串行 |
 | 运行 |**播放速度滑块（0.25–8×，对数刻度）**：Play 时每帧推进的模型时间与帧率随之缩放 |
@@ -101,7 +102,7 @@ wix build packaging\windows\openflex-gui.wxs -d Version=<ver> ^
 - `openflex layout --svg` 平面视图用 `<g transform="rotate(deg cx cy)">`，等轴测视图直接旋转 footprint 角点，
   `--html` 交互预览继承同一份 SVG，可随模型一起进版本库。
 
-## 交互约定（v1.29.0 起）
+## 交互约定（v1.30.0 起）
 
 这些规则由单元测试锁住，改代码时若破坏约定会直接失败：
 
