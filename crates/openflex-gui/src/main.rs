@@ -2681,7 +2681,14 @@ impl OpenFlexApp {
         let (Some(report), Some(baseline)) = (self.report.as_ref(), self.baseline.as_ref()) else {
             return;
         };
-        let mut text = String::from("object,metric,baseline,current,delta,delta_percent\n");
+        let mut text = format!(
+            "# OpenFlex baseline comparison\n# model: {}\n# time_unit: {}\n# baseline completed: {:.1}\n# current completed: {:.1}\n",
+            report.model,
+            report.time_unit.label(),
+            baseline.completed.mean,
+            report.completed.mean
+        );
+        text.push_str("object,metric,baseline,current,delta,delta_percent\n");
         let mut push = |object: &str, metric: &str, old: f64, new: f64| {
             let delta = new - old;
             let percent = if old.abs() > 1e-12 {
