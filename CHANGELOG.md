@@ -4,6 +4,8 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **检查点自动扫描**：启动时调用一次 `refresh_checkpoints()`，已存在的 `checkpoints/*.json` 直接出现在列表里，
+  不必先点 `Refresh list`。
 - **另存为收尾**：`Save as…` 成功后清空 `model_dirty`/`form_dirty` 并调用 `save_presets()`，
   避免「刚另存完仍显示未保存 `*`」以及布局预设写到旧路径的边车文件。
 

@@ -1700,6 +1700,8 @@ impl OpenFlexApp {
         if let Some(path) = model {
             app.load(PathBuf::from(path));
         }
+        // Show the checkpoints that already exist next to the project.
+        app.refresh_checkpoints();
         app
     }
 
