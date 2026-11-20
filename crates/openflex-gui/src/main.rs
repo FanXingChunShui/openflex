@@ -2312,6 +2312,10 @@ impl OpenFlexApp {
         self.opt_best = None;
         self.series.clear();
         self.trace = None;
+        // The baseline is a result too: comparing a new model against the old
+        // one would produce meaningless deltas.
+        self.baseline = None;
+        self.show_compare = false;
     }
 
     /// Resets everything that belongs to the previous document: editor buffers,
@@ -11345,6 +11349,8 @@ mod tests {
             "self.opt_best = None",
             "self.series.clear()",
             "self.trace = None",
+            "self.baseline = None",
+            "self.show_compare = false",
         ] {
             assert!(body.contains(field), "helper misses {field}");
         }
