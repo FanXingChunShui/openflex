@@ -1690,6 +1690,21 @@ impl OpenFlexApp {
         }
     }
 
+    /// Drops the per-object editor buffers after the model changed underneath
+    /// them, so a stale `params_text` / `rename_text` cannot be written back.
+    fn clear_object_editor(&mut self) {
+        self.selected = None;
+        self.form = None;
+        self.params_text.clear();
+        self.flow_text.clear();
+        self.rename_text.clear();
+        self.form_dirty = false;
+        self.handle = None;
+        self.sim_state = None;
+        self.smooth.clear();
+        self.replay_index = None;
+    }
+
     fn restore(&mut self) -> bool {
         let Some(json) = self.undo.pop() else {
             return false;
@@ -1704,10 +1719,7 @@ impl OpenFlexApp {
                     self.redo.push(text);
                 }
                 self.model = Some(Box::leak(Box::new(model)));
-                self.selected = None;
-                self.form = None;
-                self.handle = None;
-                self.sim_state = None;
+                self.clear_object_editor();
                 self.status = "Undo".into();
                 true
             }
@@ -1731,10 +1743,7 @@ impl OpenFlexApp {
                     self.undo.push(text);
                 }
                 self.model = Some(Box::leak(Box::new(model)));
-                self.selected = None;
-                self.form = None;
-                self.handle = None;
-                self.sim_state = None;
+                self.clear_object_editor();
                 self.status = "Redo".into();
                 true
             }
@@ -1983,15 +1992,12 @@ impl OpenFlexApp {
                 self.model_dirty = false;
                 self.form_dirty = false;
                 // A different model means different object names: drop the
-                // interpolation cache and the replay cursor.
+                // interpolation cache, the replay cursor and every editor
+                // buffer that still refers to the old objects.
                 self.smooth.clear();
                 self.replay_index = None;
                 self.event_log.clear();
-                self.selected = None;
-                self.form = None;
-                self.params_text.clear();
-                self.handle = None;
-                self.sim_state = None;
+                self.clear_object_editor();
                 self.running = false;
                 self.paused = false;
                 self.report = None;
