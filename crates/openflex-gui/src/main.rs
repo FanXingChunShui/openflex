@@ -1825,6 +1825,8 @@ struct OpenFlexApp {
     sim_state: Option<SimulationState>,
     event_log: Vec<EventEntry>,
     event_filter: String,
+    /// Objects waiting for a second Delete press (group deletions).
+    delete_confirm: Option<Vec<String>>,
     /// Per-cell text buffers for the editable global tables:
     /// (table name, row, column) -> text being edited.
     table_edit: std::collections::HashMap<(String, usize, usize), String>,
@@ -1960,6 +1962,7 @@ impl OpenFlexApp {
             sim_state: None,
             event_log: Vec::new(),
             event_filter: String::new(),
+            delete_confirm: None,
             table_edit: std::collections::HashMap::new(),
             window_title: String::new(),
             stats_sort: None,
@@ -4240,6 +4243,7 @@ idle,busy,blocked,down\n",
             return;
         };
         self.selection = (0..model.objects.len()).collect();
+        self.delete_confirm = None;
         self.status = format!("{} object(s) selected", self.selection.len());
     }
 
@@ -4585,6 +4589,14 @@ idle,busy,blocked,down\n",
             .iter()
             .filter_map(|index| model.objects.get(*index).map(|object| object.name.clone()))
             .collect();
+        // Deleting one object is undoable in one keystroke; deleting a group is
+        // worth a confirmation, because it also drops their connections.
+        if names.len() > 2 && self.delete_confirm != Some(names.clone()) {
+            self.delete_confirm = Some(names);
+            self.status = "Press Delete again to remove the selection".into();
+            return;
+        }
+        self.delete_confirm = None;
         self.delete_objects(&names);
     }
 
@@ -5017,6 +5029,8 @@ idle,busy,blocked,down\n",
             None
         };
         let object = &model.objects[index];
+        // A new selection invalidates a pending group-delete confirmation.
+        self.delete_confirm = None;
         self.form_dirty = false;
         self.rename_text = object.name.clone();
         self.selected = Some(index);
@@ -7181,6 +7195,7 @@ impl eframe::App for OpenFlexApp {
                                 }
                                 if indices.len() > 1 && ui.small_button("select all").clicked() {
                                     self.selection = indices.clone();
+                                    self.delete_confirm = None;
                                     self.status =
                                         format!("{} object(s) selected", indices.len());
                                 }
@@ -10160,6 +10175,7 @@ impl eframe::App for OpenFlexApp {
                             }
                         } else {
                             self.selection = hits;
+                            self.delete_confirm = None;
                         }
                         if let Some(first) = self.selection.first().copied() {
                             self.selected = Some(first);
@@ -10672,6 +10688,38 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn group_deletes_need_a_second_press() {
+        // The rule `batch_delete` follows: one or two objects go at once, three
+        // or more need the same names confirmed a second time.
+        let decide = |names: &[&str], pending: Option<Vec<String>>| {
+            let owned: Vec<String> = names.iter().map(|name| name.to_string()).collect();
+            if owned.len() > 2 && pending != Some(owned.clone()) {
+                (false, Some(owned))
+            } else {
+                (true, None)
+            }
+        };
+        let (delete, pending) = decide(&["A"], None);
+        assert!(delete, "a single object needs no confirmation");
+        assert!(pending.is_none());
+        let (delete, pending) = decide(&["A", "B"], None);
+        assert!(delete, "two objects still go at once");
+        assert!(pending.is_none());
+        let (delete, pending) = decide(&["A", "B", "C"], None);
+        assert!(!delete, "three objects ask first");
+        let confirmed = pending.clone();
+        let (delete, pending) = decide(&["A", "B", "C"], confirmed);
+        assert!(delete, "the second press goes through");
+        assert!(pending.is_none());
+        // A different group does not inherit the confirmation.
+        let (delete, _) = decide(
+            &["A", "B", "D"],
+            Some(vec!["A".into(), "B".into(), "C".into()]),
+        );
+        assert!(!delete, "the pending names must match exactly");
     }
 
     #[test]

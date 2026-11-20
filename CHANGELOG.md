@@ -4,6 +4,10 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **批量删除二次确认**：一次删除 3 个及以上对象时，第一次 `Delete` 只给出
+  `Press Delete again to remove the selection`，再按一次才执行；删 1–2 个仍是一步完成。
+  待确认的名单在选中变化（点击、全选、框选、组内全选）时立即失效，避免隔了很久误删。
+  新增 `group_deletes_need_a_second_press` 测试（GUI 72 项）。
 - **可选字段记住上次的值**：`optional_u32` / `optional_f64` 取消勾选再勾选时，不再回落到默认的 `1`，
   而是恢复用户上次填的数字（存在 egui 的临时数据里，按标签区分）。新增
   `optional_fields_restore_the_remembered_value` 测试（GUI 71 项）。
