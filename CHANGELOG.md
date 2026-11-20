@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **修复：流程块删不掉**：`remove_flow_block` 的 `retain` 闭包里 `|id|` 与函数参数 `id` 同名，
+  比较变成「块名 != 块名」恒为假，删除永远无效；改用 `target` 后按精确 id 删除，并加
+  `removing_a_flow_block_by_id_actually_removes_it` 回归测试（GUI 32 项）。
 - **窗口标题同步**：操作系统标题栏改为 `OpenFlex — <模型名><未保存 *><— playing/— running>`，
   有变化时才发 `ViewportCommand::Title`；`window_title_text()` + `window_title_reflects_document_state` 测试（GUI 31 项）。
 - **撤销历史列表**：撤销栈改为 `(json, label)` 二元组，16 个主要编辑入口（新增/删除/复制/移动/旋转/对齐/分布/网格/

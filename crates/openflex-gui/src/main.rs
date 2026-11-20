@@ -2147,7 +2147,12 @@ impl OpenFlexApp {
             return;
         };
         if let Some(blocks) = flow.get_mut("blocks").and_then(|b| b.as_array_mut()) {
-            blocks.retain(|block| block.get("id").and_then(|id| id.as_str()) != Some(id));
+            // `target` avoids shadowing the parameter with the closure's `id`,
+            // which used to make this comparison always false.
+            let target = id.to_string();
+            blocks.retain(|block| {
+                block.get("id").and_then(|id| id.as_str()) != Some(target.as_str())
+            });
         }
         if let Some(connections) = flow.get_mut("connections").and_then(|c| c.as_array_mut()) {
             connections.retain(|connection| {
@@ -9234,6 +9239,27 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn removing_a_flow_block_by_id_actually_removes_it() {
+        // Regression: the retain closure used to shadow the `id` parameter, so
+        // the comparison was always `name != name` and nothing was removed.
+        let mut flow = serde_json::json!({
+            "blocks": [{"id": "A1"}, {"id": "B2"}, {"id": "A1b"}],
+            "connections": [{"from": "A1", "to": "B2"}, {"from": "B2", "to": "A1b"}]
+        });
+        let target = "A1";
+        if let Some(blocks) = flow.get_mut("blocks").and_then(|b| b.as_array_mut()) {
+            blocks.retain(|block| block.get("id").and_then(|id| id.as_str()) != Some(target));
+        }
+        let ids: Vec<&str> = flow["blocks"]
+            .as_array()
+            .expect("blocks")
+            .iter()
+            .filter_map(|block| block.get("id").and_then(|id| id.as_str()))
+            .collect();
+        assert_eq!(ids, vec!["B2", "A1b"], "only the exact id is removed");
     }
 
     #[test]
