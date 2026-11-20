@@ -8019,7 +8019,14 @@ impl eframe::App for OpenFlexApp {
                                     "[{kind}] {} -> {}{}{strategy}",
                                     connection.from, connection.to, port
                                 ));
-                                if ui.small_button("x").clicked() {
+                                if ui
+                                    .small_button("x")
+                                    .on_hover_text(format!(
+                                        "remove {} -> {}",
+                                        connection.from, connection.to
+                                    ))
+                                    .clicked()
+                                {
                                     self.remove_connection(index);
                                 }
                                 egui::ComboBox::from_id_salt(("conn-strategy", index))
