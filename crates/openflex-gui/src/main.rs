@@ -2141,6 +2141,85 @@ impl OpenFlexApp {
         }
     }
 
+    /// Appends a column of default cells to a global table.
+    fn append_table_column(&mut self, table_name: &str) {
+        let Some(model) = self.model else {
+            return;
+        };
+        let Some(existing) = model.global_tables.get(table_name) else {
+            return;
+        };
+        // Name it something that is not already a column.
+        let mut counter = existing.columns.len() + 1;
+        let name = loop {
+            let candidate = format!("col{counter}");
+            if !existing.columns.iter().any(|column| column == &candidate) {
+                break candidate;
+            }
+            counter += 1;
+        };
+        let mut copy = model.clone();
+        let Some(table) = copy.global_tables.get_mut(table_name) else {
+            return;
+        };
+        table.columns.push(name.clone());
+        for row in &mut table.rows {
+            row.push(openflex_model::TableCell::Number(0.0));
+        }
+        if table.rows.is_empty() {
+            table.rows.push(
+                (0..table.columns.len())
+                    .map(|_| openflex_model::TableCell::Number(0.0))
+                    .collect(),
+            );
+        }
+        let columns = table.columns.len();
+        match copy.validate() {
+            Ok(()) => {
+                self.snapshot_labelled("add table column");
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.clear_analysis_results();
+                self.table_edit
+                    .retain(|(table, _, _), _| table != table_name);
+                self.status = format!("{table_name}: {columns} column(s)");
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    /// Drops the last row of a global table.
+    fn pop_table_row(&mut self, table_name: &str) {
+        let Some(model) = self.model else {
+            return;
+        };
+        let Some(table) = model.global_tables.get(table_name) else {
+            return;
+        };
+        if table.rows.len() <= 1 {
+            self.error = Some("a table keeps at least one row".into());
+            return;
+        }
+        let mut copy = model.clone();
+        let Some(table) = copy.global_tables.get_mut(table_name) else {
+            return;
+        };
+        table.rows.pop();
+        let rows = table.rows.len();
+        match copy.validate() {
+            Ok(()) => {
+                self.snapshot_labelled("drop table row");
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.clear_analysis_results();
+                self.table_edit
+                    .retain(|(table, _, _), _| table != table_name);
+                self.status = format!("{table_name}: {rows} row(s)");
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
     /// Creates an empty 2x2 global table (`col1`, `col2`) with one row of zeros,
     /// so the editable grid has somewhere to start.
     fn add_global_table(&mut self) {
@@ -7552,6 +7631,20 @@ impl eframe::App for OpenFlexApp {
                             {
                                 self.append_table_row(name);
                             }
+                            if ui
+                                .small_button("+ col")
+                                .on_hover_text("append a column of default cells")
+                                .clicked()
+                            {
+                                self.append_table_column(name);
+                            }
+                            if ui
+                                .small_button("- row")
+                                .on_hover_text("drop the last row")
+                                .clicked()
+                            {
+                                self.pop_table_row(name);
+                            }
                             if ui.small_button("reset").clicked() {
                                 // Drop the buffers so they reload from the model.
                                 self.table_edit
@@ -11315,6 +11408,35 @@ mod tests {
     }
 
     #[test]
+    fn table_columns_and_rows_can_grow_and_shrink() {
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        app.add_global_table();
+        let name = app
+            .model
+            .expect("model")
+            .global_tables
+            .keys()
+            .next()
+            .expect("table")
+            .clone();
+        app.append_table_column(&name);
+        let table = app.model.expect("model").global_tables[&name].clone();
+        assert_eq!(table.columns, vec!["col1", "col2", "col3"]);
+        assert_eq!(table.width(), 3);
+        assert!(table.rows.iter().all(|row| row.len() == 3), "rows grew too");
+        // Rows: add then drop.
+        app.append_table_row(&name);
+        assert_eq!(app.model.expect("model").global_tables[&name].rows.len(), 2);
+        app.pop_table_row(&name);
+        assert_eq!(app.model.expect("model").global_tables[&name].rows.len(), 1);
+        // The last row cannot be dropped.
+        app.pop_table_row(&name);
+        assert_eq!(app.model.expect("model").global_tables[&name].rows.len(), 1);
+    }
+
+    #[test]
     fn deleting_a_global_table_removes_it_and_its_buffers() {
         let model = builtin_example("mm1").expect("example");
         let mut app = OpenFlexApp::new(None);
@@ -11680,9 +11802,9 @@ mod tests {
         let calls = production.matches("self.clear_analysis_results();").count();
         // undo, redo, apply-best, model-settings, add, delete, duplicate, rename,
         // add-connection, remove-connection, set-strategy, add-global-table,
-        // delete-global-table.
+        // delete-global-table, add-table-column, drop-table-row.
         assert_eq!(
-            calls, 13,
+            calls, 15,
             "structural call sites changed — check that the new one clears results"
         );
         let body = production
