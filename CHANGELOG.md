@@ -4,6 +4,8 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **`reset_for_new_document()`**：New / Load / 内置示例三条入口合并到同一个重置函数（编辑器缓冲、事件日志、
+  运行状态、撤销栈），并新增 `opening_a_document_clears_every_buffer` 测试（GUI 40 项）锁住这一约定。
 - **`New model` 收尾**：同样改用 `clear_object_editor()` 并清空事件日志与播放状态；此前新建后上一个模型的
   插值缓存、表格缓冲与事件日志仍在。
 - **内置示例加载收尾**：`load_example()` 走内置示例的分支改为复用 `clear_object_editor()`，并同时清空事件日志、

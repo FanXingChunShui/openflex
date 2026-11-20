@@ -1960,6 +1960,18 @@ impl OpenFlexApp {
         format!("OpenFlex — {name}{dirty}{state}")
     }
 
+    /// Resets everything that belongs to the previous document: editor buffers,
+    /// runtime state, event log and undo history. Used by New / Load / example
+    /// loading so no code path can forget one of the buffers.
+    fn reset_for_new_document(&mut self) {
+        self.clear_object_editor();
+        self.event_log.clear();
+        self.running = false;
+        self.paused = false;
+        self.undo.clear();
+        self.redo.clear();
+    }
+
     /// Drops the per-object editor buffers after the model changed underneath
     /// them, so a stale `params_text` / `rename_text` cannot be written back.
     fn clear_object_editor(&mut self) {
@@ -2055,12 +2067,7 @@ impl OpenFlexApp {
                 self.path_input.clear();
                 self.report = None;
                 // A new document shares no state with the previous one.
-                self.clear_object_editor();
-                self.event_log.clear();
-                self.running = false;
-                self.paused = false;
-                self.undo.clear();
-                self.redo.clear();
+                self.reset_for_new_document();
                 self.model_name = "untitled".into();
                 self.model_stop = 300.0;
                 self.model_warmup = 0.0;
@@ -2103,15 +2110,10 @@ impl OpenFlexApp {
             self.selection.clear();
             // The example is a different document: drop every buffer that still
             // refers to the previous objects or tables.
-            self.clear_object_editor();
-            self.event_log.clear();
-            self.running = false;
-            self.paused = false;
+            self.reset_for_new_document();
             // No file on disk: saving it will prompt for a path.
             self.model_dirty = true;
             self.path_input.clear();
-            self.undo.clear();
-            self.redo.clear();
             self.status = format!("Loaded built-in example: {name} — not saved yet");
             return;
         }
@@ -2321,12 +2323,7 @@ impl OpenFlexApp {
                 // A different model means different object names: drop the
                 // interpolation cache, the replay cursor and every editor
                 // buffer that still refers to the old objects.
-                self.smooth.clear();
-                self.replay_index = None;
-                self.event_log.clear();
-                self.clear_object_editor();
-                self.running = false;
-                self.paused = false;
+                self.reset_for_new_document();
                 self.report = None;
             }
             Err(error) => self.error = Some(format!("invalid model: {error}")),
@@ -9760,6 +9757,40 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn opening_a_document_clears_every_buffer() {
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        // Simulate a session with state in every document-scoped buffer.
+        app.params_text = "{}".into();
+        app.flow_text = "{}".into();
+        app.rename_text = "Old".into();
+        app.event_log.push(EventEntry {
+            time: 1.0,
+            kind: "arrive".into(),
+            object: Some("Queue1".into()),
+        });
+        app.table_edit
+            .insert(("routes".into(), 0, 0), "stale".into());
+        app.smooth.insert("Queue1".into(), [1.0, 2.0]);
+        app.undo.push(("{}".into(), "edit".into()));
+        app.running = true;
+
+        app.reset_for_new_document();
+
+        assert!(app.params_text.is_empty());
+        assert!(app.flow_text.is_empty());
+        assert!(app.rename_text.is_empty());
+        assert!(app.event_log.is_empty());
+        assert!(app.table_edit.is_empty());
+        assert!(app.smooth.is_empty());
+        assert!(app.undo.is_empty());
+        assert!(app.redo.is_empty());
+        assert!(!app.running);
+        assert!(!app.paused);
     }
 
     #[test]
