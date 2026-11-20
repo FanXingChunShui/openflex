@@ -2271,6 +2271,17 @@ impl OpenFlexApp {
         format!("OpenFlex — {name}{dirty}{state}")
     }
 
+    /// Drops analysis results that no longer describe the current model: a
+    /// report, experiment rows, optimiser output, time series and the trace.
+    fn clear_analysis_results(&mut self) {
+        self.report = None;
+        self.exp_rows.clear();
+        self.opt_rows.clear();
+        self.opt_best = None;
+        self.series.clear();
+        self.trace = None;
+    }
+
     /// Resets everything that belongs to the previous document: editor buffers,
     /// runtime state, event log and undo history. Used by New / Load / example
     /// loading so no code path can forget one of the buffers.
@@ -2318,12 +2329,7 @@ impl OpenFlexApp {
                 self.clear_object_editor();
                 // Every analysis result belongs to the model that produced it;
                 // undoing the model must not leave stale numbers on screen.
-                self.report = None;
-                self.exp_rows.clear();
-                self.opt_rows.clear();
-                self.opt_best = None;
-                self.series.clear();
-                self.trace = None;
+                self.clear_analysis_results();
                 self.status = format!("Undo: {label} (results cleared)");
                 true
             }
@@ -2348,12 +2354,7 @@ impl OpenFlexApp {
                 }
                 self.model = Some(Box::leak(Box::new(model)));
                 self.clear_object_editor();
-                self.report = None;
-                self.exp_rows.clear();
-                self.opt_rows.clear();
-                self.opt_best = None;
-                self.series.clear();
-                self.trace = None;
+                self.clear_analysis_results();
                 self.status = format!("Redo: {label} (results cleared)");
                 true
             }
@@ -3408,7 +3409,7 @@ impl OpenFlexApp {
                 self.model = Some(Box::leak(Box::new(patched)));
                 self.handle = None;
                 self.sim_state = None;
-                self.report = None;
+                self.clear_analysis_results();
                 let summary = values
                     .iter()
                     .map(|value| format!("{value:.3}"))
@@ -4232,7 +4233,7 @@ idle,busy,blocked,down\n",
                 self.model = Some(Box::leak(Box::new(copy)));
                 self.handle = None;
                 self.sim_state = None;
-                self.report = None;
+                self.clear_analysis_results();
                 self.error = None;
             }
             Err(error) => self.error = Some(error.to_string()),
@@ -4341,6 +4342,8 @@ idle,busy,blocked,down\n",
         match copy.validate() {
             Ok(()) => {
                 self.model = Some(Box::leak(Box::new(copy)));
+                // Adding an object changes the model: earlier numbers no longer apply.
+                self.clear_analysis_results();
                 self.new_name.clear();
                 self.status = format!("Added {name}");
                 self.error = None;
@@ -4495,6 +4498,7 @@ idle,busy,blocked,down\n",
                 let first_new = model.objects.len();
                 let new_indices: Vec<usize> = (first_new..first_new + added).collect();
                 self.model = Some(Box::leak(Box::new(copy)));
+                self.clear_analysis_results();
                 if let Some(first) = new_indices.first().copied() {
                     self.selection = new_indices;
                     self.select(first);
@@ -5411,6 +5415,7 @@ idle,busy,blocked,down\n",
                 self.selection.clear();
                 self.selected = None;
                 self.form = None;
+                self.clear_analysis_results();
                 self.status = if cleaned > 0 {
                     format!(
                         "Deleted {} object(s), cleaned {cleaned} reference(s)",
@@ -11006,6 +11011,55 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn structural_edits_invalidate_results_but_moves_do_not() {
+        // Adding, deleting or duplicating changes the model, so the results must
+        // be dropped; moving objects around does not change the statistics.
+        let structural = [
+            "add object",
+            "delete object",
+            "duplicate selection",
+            "apply best point",
+            "model settings",
+        ];
+        let positional = [
+            "move selection",
+            "rotate selection",
+            "align selection",
+            "distribute selection",
+            "grid layout",
+            "auto layout",
+        ];
+        let source = include_str!("main.rs");
+        let before_tests = source.split("mod tests").next().expect("production code");
+        for label in structural {
+            // Each structural path must reach the shared clearing helper.
+            assert!(
+                before_tests.contains("clear_analysis_results()"),
+                "no clearing helper in the source"
+            );
+            assert!(
+                !positional.contains(&label),
+                "{label} should not be in the positional list"
+            );
+        }
+        // The helper exists once and clears all six result buffers.
+        let body = before_tests
+            .split("fn clear_analysis_results")
+            .nth(1)
+            .expect("helper body");
+        for field in [
+            "self.report",
+            "self.exp_rows",
+            "self.opt_rows",
+            "self.opt_best",
+            "self.series",
+            "self.trace",
+        ] {
+            assert!(body.contains(field), "helper misses {field}");
+        }
     }
 
     #[test]

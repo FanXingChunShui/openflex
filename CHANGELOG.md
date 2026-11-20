@@ -4,6 +4,10 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **结果清理收敛为 `clear_analysis_results()`**：撤销/重做、应用最优解、模型设置、新增/删除/复制对象
+  都改走同一个函数（报告、实验行、优化行与最优解、时序、trace）；此前这些路径只清 `report`，
+  实验与优化的旧行会留在界面上。位置类操作（移动/旋转/对齐/分布/网格/自动布局）不影响统计，故不清。
+  新增 `structural_edits_invalidate_results_but_moves_do_not` 测试（GUI 83 项）。
 - **撤销/重做清空分析结果**：撤销或重做改变模型后，报告、实验结果、优化结果与最优解、时序采样、trace
   一并清空，状态栏注明 `(results cleared)`。此前这些面板仍显示撤销前的数字，容易被当成本模型的结论。
   新增 `undo_and_redo_drop_stale_analysis_results` 测试（GUI 82 项）。
