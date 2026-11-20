@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **对齐基准**：`Align X/Y` 改为按选中集合的**最小坐标**对齐（旧实现取「先点选的那个」，结果依赖框选顺序），
+  状态栏回显 `Aligned on X at -1.0`；新增 `align_uses_the_selection_extreme` 测试（GUI 35 项）。
 - **两级模型树**：每个 kind 组内再按**流程阶段**（沿连接从源点 BFS 的跳数）折叠成 `stage 0/1/2…`，
   孤立对象自成一档；树头部 `by stage / flat` 按钮可切换。
   抽出 `tree_row()` 渲染行、`stage_of()` 计算阶段，新增 `stage_of_counts_hops_from_the_sources` 测试（GUI 34 项）。

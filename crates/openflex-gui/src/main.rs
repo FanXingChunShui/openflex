@@ -3675,25 +3675,26 @@ idle,busy,blocked,down\n",
             return;
         }
         let indices = self.selection.clone();
-        let anchor = model.objects[indices[0]].pos;
+        // Align on the selection's extreme value rather than "whichever was
+        // clicked first", which depends on marquee order.
+        let axis = if along_x { 0 } else { 1 };
+        let anchor = indices
+            .iter()
+            .map(|index| model.objects[*index].pos[axis])
+            .fold(f64::INFINITY, f64::min);
         self.snapshot_labelled("align selection");
         let mut copy = model.clone();
         for index in indices {
-            let object = &mut copy.objects[index];
-            if along_x {
-                object.pos[0] = anchor[0];
-            } else {
-                object.pos[1] = anchor[1];
-            }
+            copy.objects[index].pos[axis] = anchor;
         }
         match copy.validate() {
             Ok(()) => {
                 self.model = Some(Box::leak(Box::new(copy)));
-                self.status = if along_x {
-                    "Aligned on X".into()
-                } else {
-                    "Aligned on Y".into()
-                };
+                self.status = format!(
+                    "Aligned on {} at {:.1}",
+                    if along_x { "X" } else { "Y" },
+                    anchor
+                );
                 self.error = None;
             }
             Err(error) => self.error = Some(error.to_string()),
@@ -9396,6 +9397,25 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn align_uses_the_selection_extreme() {
+        // Mirrors `batch_align`: the anchor is the minimum along the axis, so
+        // the result does not depend on selection order.
+        let positions = [(3.0_f64, 7.0), (-1.0, 2.0), (5.0, -4.0)];
+        for axis in [0usize, 1] {
+            let anchor = positions
+                .iter()
+                .map(|pos| if axis == 0 { pos.0 } else { pos.1 })
+                .fold(f64::INFINITY, f64::min);
+            let aligned: Vec<f64> = positions.iter().map(|_| anchor).collect();
+            assert!(aligned.iter().all(|value| *value == anchor));
+        }
+        let min_x = positions.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+        let min_y = positions.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+        assert_eq!(min_x, -1.0);
+        assert_eq!(min_y, -4.0);
     }
 
     #[test]
