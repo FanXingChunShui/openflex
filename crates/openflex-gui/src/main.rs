@@ -9876,25 +9876,20 @@ impl eframe::App for OpenFlexApp {
                 ui.separator();
                 if self.heatmap != 0 {
                     ui.separator();
+                    // The toolbar carries the graduated scale; here a single
+                    // line names the active metric so the canvas stays uncluttered.
                     ui.label(
                         egui::RichText::new(format!(
-                            "heatmap: {}",
+                            "coloured by {} · scale in the toolbar",
                             match self.heatmap {
                                 1 => "utilization",
                                 2 => "throughput",
                                 _ => "WIP",
                             }
                         ))
-                        .small(),
+                        .small()
+                        .color(OpenFlexApp::heat_colour(0.62)),
                     );
-                    let green = OpenFlexApp::heat_colour(0.0);
-                    let yellow = OpenFlexApp::heat_colour(0.5);
-                    let red = OpenFlexApp::heat_colour(1.0);
-                    for colour in [green, yellow, red] {
-                        let (rect, _) =
-                            ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                        ui.painter().rect_filled(rect, 2.0, colour);
-                    }
                 }
                 ui.separator();
                 ui.label(
