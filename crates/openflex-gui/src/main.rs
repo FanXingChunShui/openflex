@@ -2559,7 +2559,18 @@ impl OpenFlexApp {
         if self.series.is_empty() {
             return;
         }
-        let mut text = String::from("time,object,content,throughput,utilization\n");
+        let unit = self
+            .model
+            .map(|model| model.time_unit.label())
+            .unwrap_or("");
+        let mut text = format!(
+            "# OpenFlex time series\n# model: {}\n# time_unit: {}\n# interval: {}\n# samples: {}\n",
+            self.model.map(|model| model.name.as_str()).unwrap_or(""),
+            unit,
+            self.series_interval,
+            self.series.len()
+        );
+        text.push_str("time,object,content,throughput,utilization\n");
         for (time, row) in &self.series {
             for (name, content, throughput, utilization) in row {
                 text.push_str(&format!(
