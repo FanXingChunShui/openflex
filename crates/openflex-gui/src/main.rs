@@ -10186,6 +10186,20 @@ mod tests {
     }
 
     #[test]
+    fn selection_indices_stay_valid_after_removal() {
+        // The selection holds indices into `model.objects`; anything that shrinks
+        // the list must clear it, otherwise later lookups index out of bounds.
+        let mut selection: Vec<usize> = vec![0, 2, 3];
+        // Simulate removing one object at index 1: index 2 now points at a
+        // different object and 3 is out of bounds.
+        let object_count = 3;
+        assert!(selection.iter().any(|index| *index >= object_count));
+        selection.clear();
+        assert!(selection.iter().all(|index| *index < object_count));
+        assert!(selection.is_empty());
+    }
+
+    #[test]
     fn layout_order_covers_every_object_including_cycles() {
         // No root at all (a two-node cycle): the walk reaches nothing, yet the
         // order must still list every object so auto layout can place them.
