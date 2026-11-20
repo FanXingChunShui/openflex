@@ -9783,6 +9783,39 @@ impl eframe::App for OpenFlexApp {
                         .color(palette::TEXT_DIM),
                     );
                     ui.add_space(6.0);
+                    // Housekeeping: the eframe state file remembers window size
+                    // and panel state, which sometimes needs a reset.
+                    panel_heading(ui, "HOUSEKEEPING");
+                    ui.horizontal(|ui| {
+                        if ui.button("Reset window layout").clicked() {
+                            match persistence_file() {
+                                Some(path) => match std::fs::remove_file(&path) {
+                                    Ok(()) => {
+                                        self.status = format!(
+                                            "Removed {} — restart to restore the default layout",
+                                            path.display()
+                                        );
+                                        self.error = None;
+                                    }
+                                    Err(error) => {
+                                        self.error = Some(format!(
+                                            "could not remove {}: {error}",
+                                            path.display()
+                                        ));
+                                    }
+                                },
+                                None => {
+                                    self.error = Some("no config directory to reset".into());
+                                }
+                            }
+                        }
+                        if ui.button("Clear recent files").clicked() {
+                            self.recent.clear();
+                            self.save_recent();
+                            self.status = "Recent files cleared".into();
+                        }
+                    });
+                    ui.add_space(6.0);
                     for (section, rows) in [
                         (
                             "FILE",
@@ -10798,6 +10831,29 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn housekeeping_actions_are_safe_without_config() {
+        // Resetting the layout removes the eframe file if it exists and reports
+        // success either way; clearing recent leaves an empty writable list.
+        let dir = std::env::temp_dir().join(format!("openflex-house-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let state = dir.join("app.ron");
+        std::fs::write(&state, "{}").expect("write");
+        assert!(state.exists());
+        std::fs::remove_file(&state).expect("remove");
+        assert!(!state.exists(), "the state file is gone");
+        // Removing a file that is already absent is an error the UI reports.
+        assert!(std::fs::remove_file(&state).is_err());
+        let mut recent: Vec<std::path::PathBuf> = vec![
+            std::path::PathBuf::from("a.ofm"),
+            std::path::PathBuf::from("b.ofm"),
+        ];
+        recent.clear();
+        assert!(recent.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

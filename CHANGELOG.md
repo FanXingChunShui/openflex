@@ -4,6 +4,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **帮助面板的维护区**：`F1` 对话框新增 `HOUSEKEEPING`——`Reset window layout` 删除
+  `~/.config/openflex/app.ron`（下次启动回到默认窗口/面板），`Clear recent files` 清空最近文件；
+  两者都在状态栏报告结果。新增 `housekeeping_actions_are_safe_without_config` 测试（GUI 79 项）。
 - **Recent 列表标记失效文件**：菜单里已删除的路径显示为暗色 `name (missing)`，悬停给出完整路径；
   点击时不再尝试加载，而是从列表中移除并说明原因。此前这些条目混在正常项里，点了才报错。
   新增 `missing_recent_entries_are_dropped_on_click` 测试（GUI 78 项）。
