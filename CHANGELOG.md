@@ -38,6 +38,10 @@
   新增 `a_new_global_table_is_valid_and_empty` 测试（GUI 100 项），
   `every_structural_edit_path_clears_results` 的调用点数同步为 12。
 
+- **可以删除整张全局表**：表头新增 `x`（悬停 `delete the whole table '<name>'`），`remove_global_table()`
+  走快照与校验并清理该表的编辑缓冲；`+ table` 也从空状态移到面板头部，已有表时仍可继续新增。
+  新增 `deleting_a_global_table_removes_it_and_its_buffers` 测试（GUI 101 项），调用点计数同步为 13。
+
 ## v1.29.0 — 2026-11-20
 
 本轮把桌面 GUI 的**数据可信性**与**不丢工作**做实：所有会写回模型的数值统一为 f64、结果随模型结构变化失效、后台任务的结果都带来源模型；同时补齐「丢弃文档 / 批量删除 / 关闭窗口」的二次确认，并让导出与另存的落盘位置可预测。发布节奏保持**至少 3 小时一版**。

@@ -2118,6 +2118,29 @@ impl OpenFlexApp {
         }
     }
 
+    /// Deletes a global table and every buffer that belonged to it.
+    fn remove_global_table(&mut self, name: &str) {
+        let Some(model) = self.model else {
+            return;
+        };
+        if !model.global_tables.contains_key(name) {
+            return;
+        }
+        let mut copy = model.clone();
+        copy.global_tables.remove(name);
+        match copy.validate() {
+            Ok(()) => {
+                self.snapshot_labelled("delete global table");
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.clear_analysis_results();
+                self.table_edit.retain(|(table, _, _), _| table != name);
+                self.status = format!("Deleted global table '{name}'");
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
     /// Creates an empty 2x2 global table (`col1`, `col2`) with one row of zeros,
     /// so the editable grid has somewhere to start.
     fn add_global_table(&mut self) {
@@ -7413,19 +7436,26 @@ impl eframe::App for OpenFlexApp {
                     let Some(model) = self.model else {
                         return;
                     };
+                    // Always available: once a table exists the empty state is
+                    // gone, so the button cannot live there alone.
+                    if ui
+                        .small_button("+ table")
+                        .on_hover_text("append a new 2-column table")
+                        .clicked()
+                    {
+                        self.add_global_table();
+                    }
                     if model.global_tables.is_empty() {
                         empty_state(
                             ui,
                             "No global tables",
                             "A table is a named grid of numbers, booleans or text.",
                         );
-                        if ui.button("+ table").clicked() {
-                            self.add_global_table();
-                        }
                         return;
                     }
                     // Read-only preview: name, shape and the first rows. Editing
                     // stays in the JSON so the whole table can be pasted in.
+                    let mut remove_table: Option<String> = None;
                     for (name, table) in &model.global_tables {
                         ui.horizontal(|ui| {
                             ui.label(
@@ -7443,6 +7473,13 @@ impl eframe::App for OpenFlexApp {
                                 .monospace()
                                 .color(palette::TEXT_DIM),
                             );
+                            if ui
+                                .small_button("x")
+                                .on_hover_text(format!("delete the whole table '{name}'"))
+                                .clicked()
+                            {
+                                remove_table = Some(name.clone());
+                            }
                         });
                         if !table.columns.is_empty() {
                             ui.horizontal_wrapped(|ui| {
@@ -7522,6 +7559,9 @@ impl eframe::App for OpenFlexApp {
                             }
                         });
                         ui.add_space(2.0);
+                    }
+                    if let Some(name) = remove_table {
+                        self.remove_global_table(&name);
                     }
                 });
                 ui.separator();
@@ -11275,6 +11315,30 @@ mod tests {
     }
 
     #[test]
+    fn deleting_a_global_table_removes_it_and_its_buffers() {
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        app.add_global_table();
+        let name = app
+            .model
+            .expect("model")
+            .global_tables
+            .keys()
+            .next()
+            .expect("table")
+            .clone();
+        app.table_edit
+            .insert((name.clone(), 0, 0), "editing".into());
+        app.remove_global_table(&name);
+        assert!(app.model.expect("model").global_tables.is_empty());
+        assert!(app.table_edit.is_empty(), "buffers for that table are gone");
+        // Removing an unknown table is a no-op, not a panic.
+        app.remove_global_table("nope");
+        assert!(app.model.expect("model").global_tables.is_empty());
+    }
+
+    #[test]
     fn a_new_global_table_is_valid_and_empty() {
         // `add_global_table` builds a 2-column, 1-row table with a free name.
         let model = builtin_example("mm1").expect("example");
@@ -11615,9 +11679,10 @@ mod tests {
         let production = source.split("mod tests").next().expect("production code");
         let calls = production.matches("self.clear_analysis_results();").count();
         // undo, redo, apply-best, model-settings, add, delete, duplicate, rename,
-        // add-connection, remove-connection, set-strategy, add-global-table.
+        // add-connection, remove-connection, set-strategy, add-global-table,
+        // delete-global-table.
         assert_eq!(
-            calls, 12,
+            calls, 13,
             "structural call sites changed — check that the new one clears results"
         );
         let body = production
