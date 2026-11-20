@@ -115,7 +115,7 @@ wix build packaging\windows\openflex-gui.wxs -d Version=<ver> ^
 | ~~P2~~ | 文件菜单/最近文件/新建 | **已完成（v0.56.0）**：New / Save as / Recent / 快捷键 |
 | P2 | 统计图表 | ✅ 利用率柱状图 + 状态饼图 + 时间序列（WIP/吞吐/利用率）+ 时间序列/报告 CSV + 报告 JSON 导出（v0.70.0） |
 | ~~P3~~ | 打包成 .app 双击启动 | **已完成（v0.58.0，universal v0.71.0，GUI MSI 随 v0.79.0 起发布）**：`scripts/package-gui-app.sh` 生成 `OpenFlex.app` + zip；Windows `.msi` 含 GUI，Linux `.deb`/`.rpm` 同批发布 |
-| P2 | 层级树 / 历史列表 / 本地化 | 见下方路线图第 2、4、5 项 |
+| P2 | 层级树 / 本地化 | 见下方路线图第 2、5 项（历史列表已完成） |
 
 ## 路线图（v1.26.0 之后）
 
@@ -125,5 +125,5 @@ wix build packaging\windows\openflex-gui.wxs -d Version=<ver> ^
 1. **纹理与实时光照**：需要美术资源与 GPU 渲染路径，当前仍是程序化配色 + 伪造明暗。
 2. **多级层级树**：模型树现为「按 kind 分组」一层，没有父子嵌套。
 3. **协作/多窗口**：无文档共享编辑、无多视口。
-4. **完整 Undo 历史可视化**：只有 `Ctrl+Z`/`Ctrl+Shift+Z`，没有历史列表。
+4. ~~完整 Undo 历史可视化~~：**已完成（v1.27.0 起）**——撤销栈带标签，左侧 `History` 面板可点击回退。
 5. **本地化**：界面文案仍以英文为主（中文标签依赖系统 CJK 字体回退）。
