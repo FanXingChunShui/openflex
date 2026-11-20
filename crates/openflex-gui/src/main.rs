@@ -4903,6 +4903,16 @@ idle,busy,blocked,down\n",
         let Some(model) = self.model else {
             return;
         };
+        // Switching objects throws away edits that were never applied: say so
+        // instead of dropping them silently.
+        let discarded = if self.form_dirty && self.selected != Some(index) {
+            model
+                .objects
+                .get(self.selected.unwrap_or(usize::MAX))
+                .map(|object| object.name.clone())
+        } else {
+            None
+        };
         let object = &model.objects[index];
         self.form_dirty = false;
         self.rename_text = object.name.clone();
@@ -4911,6 +4921,9 @@ idle,busy,blocked,down\n",
         self.form = Some(EditForm::from_object(object));
         self.params_text =
             serde_json::to_string_pretty(&object.params).unwrap_or_else(|_| "{}".into());
+        if let Some(name) = discarded {
+            self.status = format!("Discarded unsaved edits on {name}");
+        }
         self.flow_text = serde_json::to_value(&object.params)
             .ok()
             .and_then(|value| value.get("process_flow").cloned())
@@ -10539,6 +10552,31 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn selecting_another_object_reports_discarded_edits() {
+        // The rule `select` applies: only a pending edit on a *different* object
+        // is discarded, and it is reported by name.
+        let model = builtin_example("mm1").expect("example");
+        let decide = |dirty: bool, from: Option<usize>, to: usize| match (dirty, from) {
+            (true, Some(from)) if from != to => {
+                model.objects.get(from).map(|object| object.name.clone())
+            }
+            _ => None,
+        };
+        assert_eq!(
+            decide(true, Some(0), 1).as_deref(),
+            Some("Source1"),
+            "the previous object is named"
+        );
+        assert_eq!(
+            decide(true, Some(1), 1),
+            None,
+            "re-selecting the same object"
+        );
+        assert_eq!(decide(false, Some(0), 1), None, "nothing pending");
+        assert_eq!(decide(true, None, 1), None, "no previous object");
     }
 
     #[test]

@@ -4,6 +4,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **切换对象时提示丢弃编辑**：当前对象有未应用的改动却在对象树里点了别的对象时，状态栏给出
+  `Discarded unsaved edits on <name>`；此前 `form_dirty` 只在切换到同对象时被清掉，跨对象编辑会静默丢失。
+  新增 `selecting_another_object_reports_discarded_edits` 测试（GUI 64 项）。
 - **三个 JSON 框实时校验**：`Triggers` / `Timetable` / `Process Flow` 下方各加一行状态——`valid JSON` 为绿色，
   出错时显示解析器的具体信息（含位置），不再只在 Apply 时才报错。`json_status()` 区分「可为 null」
   （timetable、flow）与「必须为对象」（triggers）：`null` 本身是合法 JSON，需要显式拒绝。
