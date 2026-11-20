@@ -2118,6 +2118,46 @@ impl OpenFlexApp {
         }
     }
 
+    /// Creates an empty 2x2 global table (`col1`, `col2`) with one row of zeros,
+    /// so the editable grid has somewhere to start.
+    fn add_global_table(&mut self) {
+        let Some(model) = self.model else {
+            return;
+        };
+        let name = {
+            let mut counter = 1;
+            loop {
+                let candidate = format!("table{counter}");
+                if !model.global_tables.contains_key(&candidate) {
+                    break candidate;
+                }
+                counter += 1;
+            }
+        };
+        let mut copy = model.clone();
+        copy.global_tables.insert(
+            name.clone(),
+            openflex_model::GlobalTable {
+                columns: vec!["col1".into(), "col2".into()],
+                rows: vec![vec![
+                    openflex_model::TableCell::Number(0.0),
+                    openflex_model::TableCell::Number(0.0),
+                ]],
+            },
+        );
+        match copy.validate() {
+            Ok(()) => {
+                self.snapshot_labelled("add global table");
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.clear_analysis_results();
+                self.table_edit.retain(|(table, _, _), _| table != &name);
+                self.status = format!("Added global table '{name}'");
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
     /// Parses one table cell from user text: a number when it parses as one,
     /// `true`/`false` as booleans, everything else as a string.
     fn parse_table_cell(text: &str) -> openflex_model::TableCell {
@@ -7377,8 +7417,11 @@ impl eframe::App for OpenFlexApp {
                         empty_state(
                             ui,
                             "No global tables",
-                            "Tables live in the model JSON (global_tables).",
+                            "A table is a named grid of numbers, booleans or text.",
                         );
+                        if ui.button("+ table").clicked() {
+                            self.add_global_table();
+                        }
                         return;
                     }
                     // Read-only preview: name, shape and the first rows. Editing
@@ -11232,6 +11275,27 @@ mod tests {
     }
 
     #[test]
+    fn a_new_global_table_is_valid_and_empty() {
+        // `add_global_table` builds a 2-column, 1-row table with a free name.
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        assert!(app.model.expect("model").global_tables.is_empty());
+        app.add_global_table();
+        let model = app.model.expect("model");
+        assert_eq!(model.global_tables.len(), 1, "one table added");
+        let (name, table) = model.global_tables.iter().next().expect("table");
+        assert_eq!(name, "table1", "the first free name");
+        assert_eq!(table.width(), 2);
+        assert_eq!(table.rows.len(), 1);
+        // Adding again picks the next free name.
+        app.add_global_table();
+        let model = app.model.expect("model");
+        assert_eq!(model.global_tables.len(), 2);
+        assert!(model.global_tables.contains_key("table2"));
+    }
+
+    #[test]
     fn model_description_round_trips_through_the_settings_form() {
         // `apply_model_settings` writes the description straight from the field.
         let model = builtin_example("mm1").expect("example");
@@ -11551,9 +11615,9 @@ mod tests {
         let production = source.split("mod tests").next().expect("production code");
         let calls = production.matches("self.clear_analysis_results();").count();
         // undo, redo, apply-best, model-settings, add, delete, duplicate, rename,
-        // add-connection, remove-connection, set-strategy.
+        // add-connection, remove-connection, set-strategy, add-global-table.
         assert_eq!(
-            calls, 11,
+            calls, 12,
             "structural call sites changed — check that the new one clears results"
         );
         let body = production
