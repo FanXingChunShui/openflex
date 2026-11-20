@@ -4,6 +4,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **跳转/单步提示统一**：`jump_to_event()` 失败时给出 `Jump failed: <原因>` 并停止播放标记；成功时写
+  `Jumped to t=7.500 min`。`step_event()` 的 `Stepped to …` 也补上时间单位。新增
+  `jump_and_step_status_lines_name_the_unit` 测试（GUI 67 项）。
 - **修复：Play 卡在「播放中」**：`advance()` 步进失败时只写错误横幅，不会清 `running`/`paused`，工具栏会一直
   显示在播放；现在同时停止播放并给出 `Run stopped: <原因>`。`Play` 也改为先 `new_handle()` 再宣布 Playing。
   另加 `a_failed_step_clears_the_playing_flags` 与 `play_only_starts_when_the_handle_exists` 测试（GUI 66 项）。

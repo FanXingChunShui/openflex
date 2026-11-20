@@ -4827,11 +4827,21 @@ idle,busy,blocked,down\n",
         };
         if let Err(error) = handle.step_until(time) {
             self.error = Some(error.to_string());
+            self.status = format!("Jump failed: {error}");
+            self.running = false;
+            self.paused = false;
             return;
         }
         self.sim_state = Some(handle.state());
         self.replay_index = None;
-        self.status = format!("Jumped to t={time:.3}");
+        // A jump is a replay: playback flags belong to the previous run.
+        self.running = false;
+        self.paused = false;
+        let unit = self
+            .model
+            .map(|model| model.time_unit.label())
+            .unwrap_or("");
+        self.status = format!("Jumped to t={time:.3} {unit}");
     }
 
     /// Runs until the next event, recording it in the event log.
@@ -4860,7 +4870,11 @@ idle,busy,blocked,down\n",
             self.event_log.remove(0);
         }
         self.sim_state = Some(handle.state());
-        self.status = format!("Stepped to t={:.3}", preview.time);
+        let unit = self
+            .model
+            .map(|model| model.time_unit.label())
+            .unwrap_or("");
+        self.status = format!("Stepped to t={:.3} {unit}", preview.time);
     }
 
     fn advance(&mut self, delta: f64) {
@@ -10566,6 +10580,18 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn jump_and_step_status_lines_name_the_unit() {
+        // `jump_to_event` and `step_event` append `TimeUnit::label()` so
+        // `Stepped to t=42.000 min` cannot be mistaken for seconds.
+        let unit = "min";
+        let step = format!("Stepped to t={:.3} {unit}", 42.0);
+        let jump = format!("Jumped to t={:.3} {unit}", 7.5);
+        assert_eq!(step, "Stepped to t=42.000 min");
+        assert_eq!(jump, "Jumped to t=7.500 min");
+        assert!(step.contains(unit) && jump.contains(unit));
     }
 
     #[test]
