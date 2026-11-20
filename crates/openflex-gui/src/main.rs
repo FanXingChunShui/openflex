@@ -2626,7 +2626,17 @@ impl OpenFlexApp {
             self.error = Some("the event log is empty".into());
             return;
         }
-        let mut text = String::from("time,event,object\n");
+        let unit = self
+            .model
+            .map(|model| model.time_unit.label())
+            .unwrap_or("");
+        let mut text = format!(
+            "# OpenFlex GUI event log\n# model: {}\n# time_unit: {}\n# events: {}\n",
+            self.model.map(|model| model.name.as_str()).unwrap_or(""),
+            unit,
+            self.event_log.len()
+        );
+        text.push_str("time,event,object\n");
         for entry in &self.event_log {
             let object = entry
                 .object
