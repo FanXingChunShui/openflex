@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v1.26.0 — 2026-11-20
+
+本轮把桌面 GUI 的**平面视图**做成真正的二维布局（含旋转、命中、导出），补齐**产物清单**、**优化字段选择器**、**内置文件浏览器**与**真实 trace**，并修掉一批「静默丢弃 / 无法撤销 / 状态残留」的问题。发布节奏保持**至少 3 小时一版**。
 
 ### 桌面 GUI（功能补齐）
 
@@ -56,6 +58,14 @@
   便于判断要不要继续加样本。
 - **运行耗时**：`Run` 结束的状态栏改为 `Run finished in X.XXs: N completed, M objects · K items/s`，
   通道随之携带 `Instant::elapsed()`；此前只报完成数，看不出这次跑得快还是慢。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**534 passed / 0 failed**。
+- GUI 单元测试 **26 项**（取景、BFS 布局、内置示例、字体路径、热力色、明暗、Pareto、事件格式、XML 转义、
+  重命名引用、删除清理、trace 行格式、两处多边形命中、路径收集、字节格式等）。
+- GUI `clippy` 0、`fmt` 干净；以 `mm1.ofm`、`routing.ofm`、`process-flow-transfer.ofm`、`agv-charging.ofm`、
+  `engine-integration.ofm`、`elevator.ofm`、`conveyor.ofm`、中文模型与无参数共 9 种方式启动均无 panic。
 
 ## v1.25.0 — 2026-11-20
 
