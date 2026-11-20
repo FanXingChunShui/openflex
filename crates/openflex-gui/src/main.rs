@@ -4022,9 +4022,30 @@ idle,busy,blocked,down\n",
         };
         let now = handle.now();
         let target = (now + delta).min(stop);
+        // Record the events this step crosses, so Play fills the log the same
+        // way Step event does. The cap keeps a huge step from stalling a frame.
+        let mut recorded = 0usize;
+        while let Some(preview) = handle.next_event() {
+            if preview.time > target + 1e-9 || recorded >= 50 {
+                break;
+            }
+            self.event_log.push(EventEntry {
+                time: preview.time,
+                kind: preview.kind.clone(),
+                object: preview.object.clone(),
+            });
+            recorded += 1;
+            if handle.step_event().is_err() {
+                break;
+            }
+        }
         if let Err(error) = handle.step_until(target) {
             self.error = Some(error.to_string());
             return;
+        }
+        // Trim the log once per step instead of per event.
+        while self.event_log.len() > 200 {
+            self.event_log.remove(0);
         }
         let state = handle.state();
         let finished = state.now >= stop - 1e-9;
