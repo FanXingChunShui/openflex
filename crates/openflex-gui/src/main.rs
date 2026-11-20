@@ -1396,7 +1396,7 @@ type SeriesPoint = (String, f64, f64, f64); // object, content, throughput, util
 type ExpRow = (f64, f64, f64);
 
 /// Result delivered by the experiment worker: the rows plus how long it took.
-type ExpResult = (Vec<ExpRow>, std::time::Duration);
+type ExpResult = (Vec<ExpRow>, usize, std::time::Duration);
 
 /// One stored layout preset: a name plus the `(position, object name)` pairs.
 type LayoutPreset = (String, Vec<([f64; 2], String)>);
@@ -3693,6 +3693,7 @@ idle,busy,blocked,down\n",
         let started = std::time::Instant::now();
         std::thread::spawn(move || {
             let mut rows = Vec::new();
+            let mut failed = 0usize;
             for index in 0..count {
                 let value = start + step * index as f64;
                 let mut model = base.clone();
@@ -3719,11 +3720,12 @@ idle,busy,blocked,down\n",
                 } else {
                     openflex_core::run_model(&model)
                 };
-                if let Ok(report) = outcome {
-                    rows.push((value, report.completed.mean, report.completed.ci95));
+                match outcome {
+                    Ok(report) => rows.push((value, report.completed.mean, report.completed.ci95)),
+                    Err(_) => failed += 1,
                 }
             }
-            let _ = tx.send((rows, started.elapsed()));
+            let _ = tx.send((rows, failed, started.elapsed()));
         });
     }
 
@@ -3732,15 +3734,17 @@ idle,busy,blocked,down\n",
             return;
         };
         match rx.try_recv() {
-            Ok((rows, elapsed)) => {
+            Ok((rows, failed, elapsed)) => {
                 let seconds = elapsed.as_secs_f64();
+                let runs = rows.len().max(1);
                 self.status = format!(
-                    "Experiment finished in {seconds:.2}s: {} runs ({:.2}s each)",
+                    "Experiment finished in {seconds:.2}s: {} runs ({:.2}s each){}",
                     rows.len(),
-                    if rows.is_empty() {
-                        0.0
+                    seconds / runs as f64,
+                    if failed > 0 {
+                        format!(" · {failed} scenario(s) failed")
                     } else {
-                        seconds / rows.len() as f64
+                        String::new()
                     }
                 );
                 self.exp_rows = rows;
