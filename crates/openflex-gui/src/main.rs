@@ -3161,9 +3161,25 @@ idle,busy,blocked,down\n",
         };
         match serde_json::from_str::<SimReport>(&text) {
             Ok(report) => {
+                // A baseline from another model would make every delta
+                // meaningless, so require the names to line up unless the
+                // current model has no name yet.
+                let mismatch = self
+                    .model
+                    .map(|model| !model.name.is_empty() && model.name != report.model)
+                    .unwrap_or(false);
+                let note = if mismatch {
+                    format!(
+                        " (warning: baseline is for '{}', current model is '{}')",
+                        report.model,
+                        self.model.map(|model| model.name.as_str()).unwrap_or("")
+                    )
+                } else {
+                    String::new()
+                };
                 self.baseline = Some(report);
                 self.show_compare = true;
-                self.status = format!("Baseline loaded from {}", path.display());
+                self.status = format!("Baseline loaded from {}{note}", path.display());
                 self.error = None;
             }
             Err(error) => self.error = Some(format!("invalid baseline JSON: {error}")),
@@ -9798,6 +9814,25 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn baseline_note_only_fires_on_a_name_mismatch() {
+        // The rule `load_baseline_json` applies before accepting a comparison.
+        let note = |model: &str, baseline: &str| {
+            if !model.is_empty() && model != baseline {
+                Some(format!("'{}' vs '{}'", baseline, model))
+            } else {
+                None
+            }
+        };
+        assert!(note("demo", "demo").is_none());
+        assert!(
+            note("", "demo").is_none(),
+            "an unnamed model cannot mismatch"
+        );
+        let mismatch = note("demo", "other").expect("mismatch detected");
+        assert!(mismatch.contains("other"));
     }
 
     #[test]

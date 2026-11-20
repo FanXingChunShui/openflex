@@ -4,6 +4,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **基线归属校验**：`Load baseline` 时若基线报告的模型名与当前模型不同，状态栏提示
+  `(warning: baseline is for 'X', current model is 'Y')`，避免把别的模型的报告当成本模型基线。
+  新增 `baseline_note_only_fires_on_a_name_mismatch` 测试（GUI 42 项）。
 - **报告与模型一致性**：`Run` 结束时若模型名与报告里的不一致（运行期间换了文档），状态栏追加
   `· model changed during the run`，避免把旧报告当新结果看待。
 - **上下文菜单编辑补齐**：右键 `Reset position` 现在记快照、走 `validate()` 并刷新表单（此前三样都没有）；
