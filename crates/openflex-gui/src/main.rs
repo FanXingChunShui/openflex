@@ -8658,8 +8658,14 @@ impl eframe::App for OpenFlexApp {
                                     self.path = Some(path.clone());
                                     self.path_input = path.display().to_string();
                                     self.remember_recent(&path);
+                                    // Saved-as means the document now matches the
+                                    // file, and the presets belong to the new path.
+                                    self.model_dirty = false;
+                                    self.form_dirty = false;
+                                    self.save_presets();
                                     self.status = format!("Saved {}", path.display());
                                     self.show_save_as = false;
+                                    self.error = None;
                                 }
                                 Err(error) => self.error = Some(error.to_string()),
                             }
