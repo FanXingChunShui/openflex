@@ -1410,6 +1410,15 @@ struct EventEntry {
 }
 
 impl EventEntry {
+    /// Builds a log row from an engine event preview.
+    fn from_preview(preview: &openflex_core::EventPreview) -> Self {
+        Self {
+            time: preview.time,
+            kind: preview.kind.clone(),
+            object: preview.object.clone(),
+        }
+    }
+
     fn line(&self) -> String {
         format!(
             "t={:.3} {}{}",
@@ -3995,11 +4004,7 @@ idle,busy,blocked,down\n",
                 return;
             }
         };
-        let entry = EventEntry {
-            time: preview.time,
-            kind: preview.kind.clone(),
-            object: preview.object.clone(),
-        };
+        let entry = EventEntry::from_preview(&preview);
         if let Err(error) = handle.step_event() {
             self.error = Some(error.to_string());
             return;
@@ -4029,11 +4034,7 @@ idle,busy,blocked,down\n",
             if preview.time > target + 1e-9 || recorded >= 50 {
                 break;
             }
-            self.event_log.push(EventEntry {
-                time: preview.time,
-                kind: preview.kind.clone(),
-                object: preview.object.clone(),
-            });
+            self.event_log.push(EventEntry::from_preview(&preview));
             recorded += 1;
             if handle.step_event().is_err() {
                 break;
