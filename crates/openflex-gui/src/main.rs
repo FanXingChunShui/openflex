@@ -9483,6 +9483,65 @@ mod tests {
     }
 
     #[test]
+    fn help_dialog_lists_every_shortcut() {
+        // The key caps the help dialog shows; every one must be a key the
+        // window actually consumes (kept in sync by hand, checked here).
+        let documented = [
+            "Ctrl/Cmd + O",
+            "Ctrl/Cmd + N",
+            "Ctrl/Cmd + S",
+            "Ctrl/Cmd + Z",
+            "Ctrl/Cmd + Shift + Z",
+            "Space",
+            "R",
+            "Right arrow",
+            "Up / Down",
+            "Ctrl/Cmd + A",
+            "Ctrl/Cmd + D",
+            "click",
+            "drag on empty space",
+            "Delete / Backspace",
+            "drag",
+            "wheel",
+            "2D on/off",
+            "Top / Front / Side",
+            "F1",
+        ];
+        let source = include_str!("main.rs");
+        for key in documented {
+            if key == "click"
+                || key == "drag"
+                || key == "drag on empty space"
+                || key == "wheel"
+                || key == "2D on/off"
+                || key == "Top / Front / Side"
+            {
+                continue; // mouse / toolbar affordances, not key codes
+            }
+            let needle = match key {
+                "Ctrl/Cmd + O" => "egui::Key::O",
+                "Ctrl/Cmd + N" => "egui::Key::N",
+                "Ctrl/Cmd + S" => "egui::Key::S",
+                "Ctrl/Cmd + Z" => "egui::Key::Z",
+                "Ctrl/Cmd + Shift + Z" => "egui::Modifiers::SHIFT",
+                "Space" => "egui::Key::Space",
+                "R" => "egui::Key::R",
+                "Right arrow" => "egui::Key::ArrowRight",
+                "Up / Down" => "egui::Key::ArrowUp",
+                "Ctrl/Cmd + A" => "egui::Key::A",
+                "Ctrl/Cmd + D" => "egui::Key::D",
+                "Delete / Backspace" => "egui::Key::Delete",
+                "F1" => "egui::Key::F1",
+                other => panic!("unmapped key cap: {other}"),
+            };
+            assert!(
+                source.contains(needle),
+                "help lists `{key}` but the window never handles `{needle}`"
+            );
+        }
+    }
+
+    #[test]
     fn align_uses_the_selection_extreme() {
         // Mirrors `batch_align`: the anchor is the minimum along the axis, so
         // the result does not depend on selection order.
