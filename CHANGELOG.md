@@ -4,6 +4,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **全局表编辑收尾**：编辑缓冲随文档一起清空（撤销/加载模型时 `clear_object_editor()` 一并 `table_edit.clear()`），
+  且 `commit_table_row()` 先校验行列形状**再**记快照——被拒绝的编辑不再留下空的历史项。
+  新增 `edited_row_must_match_the_table_width` 测试（GUI 39 项）。
 - **全局表可编辑**：`Global tables` 面板从只读预览改为**逐单元格编辑**（等宽输入框，失焦即提交），
   新增 `+ row`（追加一行默认值）与 `reset`（丢弃缓冲、从模型重新读取）；
   `commit_table_row()` 走 `snapshot_labelled("edit global table")` 与 `validate()`，

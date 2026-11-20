@@ -1809,22 +1809,33 @@ impl OpenFlexApp {
         let Some(model) = self.model else {
             return;
         };
+        // Validate the shape before touching the undo stack, so a rejected edit
+        // does not leave an empty history entry behind.
+        let width = model
+            .global_tables
+            .get(table_name)
+            .map(|table| table.width())
+            .unwrap_or(0);
+        let rows = model
+            .global_tables
+            .get(table_name)
+            .map(|table| table.rows.len())
+            .unwrap_or(0);
+        if row >= rows {
+            return;
+        }
+        if width != cells.len() {
+            self.error = Some(format!(
+                "row {row} needs {width} cell(s), got {}",
+                cells.len()
+            ));
+            return;
+        }
         self.snapshot_labelled("edit global table");
         let mut copy = model.clone();
         let Some(table) = copy.global_tables.get_mut(table_name) else {
             return;
         };
-        if row >= table.rows.len() {
-            return;
-        }
-        if table.width() != cells.len() {
-            self.error = Some(format!(
-                "row {row} needs {} cell(s), got {}",
-                table.width(),
-                cells.len()
-            ));
-            return;
-        }
         table.rows[row] = cells
             .iter()
             .map(|text| Self::parse_table_cell(text))
@@ -1963,6 +1974,8 @@ impl OpenFlexApp {
         self.sim_state = None;
         self.smooth.clear();
         self.replay_index = None;
+        // Table buffers belong to the previous document too.
+        self.table_edit.clear();
     }
 
     fn restore(&mut self) -> bool {
@@ -9742,6 +9755,20 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn edited_row_must_match_the_table_width() {
+        // The guard `commit_table_row` applies before touching the undo stack.
+        let table = openflex_model::GlobalTable {
+            columns: vec!["a".into(), "b".into()],
+            rows: vec![Vec::new()],
+        };
+        let accepts = |cells: &[&str]| table.width() == cells.len();
+        assert!(accepts(&["1", "2"]));
+        assert!(!accepts(&["1"]), "short row");
+        assert!(!accepts(&["1", "2", "3"]), "long row");
+        assert!(!accepts(&[]), "empty row");
     }
 
     #[test]
