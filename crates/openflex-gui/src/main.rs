@@ -1765,8 +1765,8 @@ type OptRow = (Vec<f64>, f64, f64);
 #[derive(Clone, Default)]
 struct OptVar {
     path: String,
-    low: f32,
-    high: f32,
+    low: f64,
+    high: f64,
 }
 type SeriesRow = (f64, Vec<SeriesPoint>);
 
@@ -1848,8 +1848,8 @@ struct OpenFlexApp {
     show_compare: bool,
     report_rx: Option<Receiver<(Result<SimReport, String>, std::time::Duration)>>,
     report_running: bool,
-    exp_start: f32,
-    exp_step: f32,
+    exp_start: f64,
+    exp_step: f64,
     exp_count: u32,
     exp_rows: Vec<ExpRow>,
     exp_rx: Option<Receiver<ExpResult>>,
@@ -3002,7 +3002,7 @@ impl OpenFlexApp {
         let secondary = self.opt_secondary_stay;
         let roots: Vec<(String, f64, f64)> = vars
             .iter()
-            .map(|var| (var.path.clone(), var.low as f64, var.high as f64))
+            .map(|var| (var.path.clone(), var.low, var.high))
             .collect();
         if mode == 0 {
             let combos = roots
@@ -3170,7 +3170,7 @@ impl OpenFlexApp {
         let roots: Vec<(String, f64, f64)> = self
             .opt_vars
             .iter()
-            .map(|var| (var.path.clone(), var.low as f64, var.high as f64))
+            .map(|var| (var.path.clone(), var.low, var.high))
             .collect();
         if roots.len() != values.len() {
             self.error = Some(format!(
@@ -4611,11 +4611,7 @@ idle,busy,blocked,down\n",
             return;
         };
         let base = model.clone();
-        let (start, step, count) = (
-            self.exp_start as f64,
-            self.exp_step as f64,
-            self.exp_count.max(1),
-        );
+        let (start, step, count) = (self.exp_start, self.exp_step, self.exp_count.max(1));
         let sweep_params = self.exp_mode_param;
         let path = self.exp_path.clone();
         let reps = self.exp_reps.max(1);
@@ -10655,6 +10651,22 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn sweep_and_bounds_use_f64() {
+        // The experiment sweep and the optimiser bounds are f64 now: their
+        // DragValues reach large magnitudes where f32 would round.
+        let big = 1_000_000_001.0_f64;
+        assert_eq!(big as f32 as f64, 1_000_000_000.0, "f32 rounds");
+        // Sweep scenarios are `start + step * index`; in f32 the last scenario
+        // could collide with the previous one.
+        // 2^24 and 2^24 + 1 are distinct f64 values that map to the same f32
+        // (f32 has 24 bits of mantissa), so a f32 sweep collapses them.
+        let a = 16_777_216.0_f64;
+        let b = 16_777_217.0_f64;
+        assert_ne!(a, b, "f64 keeps adjacent scenarios apart");
+        assert_eq!(a as f32, b as f32, "f32 would collapse them");
     }
 
     #[test]

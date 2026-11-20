@@ -4,6 +4,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **实验与优化参数改用 f64**：`exp_start`/`exp_step` 与优化变量的 `low`/`high` 原是 `f32`，与 `DragValue`
+  的取值域不匹配；f32 只有 24 位尾数，`2^24` 与 `2^24+1` 会折叠成同一个数。改为 f64 并去掉多余的类型转换。
+  新增 `sweep_and_bounds_use_f64` 测试（GUI 69 项）。
 - **一键应用最优解**：优化结果表下方新增 `Apply best to the model`——把最优变量值按配置的 JSON 路径写回模型，
   走 `snapshot_labelled("apply best point")` 与 `validate()`，并清空旧的报告/句柄。此前只能手抄这几行数值。
   非数值路径或变量数与结果不符都会给出明确错误。新增 `best_point_applies_through_json_paths` 测试（GUI 68 项）。
