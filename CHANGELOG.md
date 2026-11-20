@@ -12,6 +12,10 @@
   此前只有主选中行亮起，框选 5 个对象在树里只看得出 1 个。新增 `the_tree_lights_up_the_whole_selection`
   测试（GUI 94 项）。
 
+- **画布 Ctrl/Cmd+点击追加选择**：按住 Ctrl/Cmd（或 Shift）在 3D/2D 画布上点对象会把该对象加入现有选区，
+  不再重置为单选；`select_inner()` 因此拆出 `select()` 与 `select_without_resetting()`。
+  新增 `additive_canvas_clicks_extend_the_selection` 测试（GUI 95 项）。
+
 ## v1.29.0 — 2026-11-20
 
 本轮把桌面 GUI 的**数据可信性**与**不丢工作**做实：所有会写回模型的数值统一为 f64、结果随模型结构变化失效、后台任务的结果都带来源模型；同时补齐「丢弃文档 / 批量删除 / 关闭窗口」的二次确认，并让导出与另存的落盘位置可预测。发布节奏保持**至少 3 小时一版**。

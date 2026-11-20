@@ -5322,6 +5322,16 @@ idle,busy,blocked,down\n",
     }
 
     fn select(&mut self, index: usize) {
+        self.select_inner(index, true);
+    }
+
+    /// Like [`select`] but keeps the existing multi-selection, for additive
+    /// clicks in the canvas.
+    fn select_without_resetting(&mut self, index: usize) {
+        self.select_inner(index, false);
+    }
+
+    fn select_inner(&mut self, index: usize, reset_selection: bool) {
         let Some(model) = self.model else {
             return;
         };
@@ -5341,7 +5351,9 @@ idle,busy,blocked,down\n",
         self.form_dirty = false;
         self.rename_text = object.name.clone();
         self.selected = Some(index);
-        self.selection = vec![index];
+        if reset_selection {
+            self.selection = vec![index];
+        }
         self.form = Some(EditForm::from_object(object));
         self.params_text =
             serde_json::to_string_pretty(&object.params).unwrap_or_else(|_| "{}".into());
@@ -10894,7 +10906,21 @@ impl eframe::App for OpenFlexApp {
                                 .is_some_and(|corners| point_in_polygon(pointer, corners))
                         }))
                 {
-                    self.select(index);
+                    // Ctrl/Cmd+click extends the selection instead of replacing
+                    // it, matching the marquee's Shift behaviour.
+                    let additive = ui.input(|input| {
+                        input.modifiers.command || input.modifiers.shift
+                    });
+                    if additive {
+                        if !self.selection.contains(&index) {
+                            self.selection.push(index);
+                            let count = self.selection.len();
+                            self.status = format!("{count} object(s) selected");
+                        }
+                        self.select_without_resetting(index);
+                    } else {
+                        self.select(index);
+                    }
                 }
                 if response.secondary_clicked()
                     && let Some(pointer) = response.interact_pointer_pos()
@@ -11138,6 +11164,32 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn additive_canvas_clicks_extend_the_selection() {
+        // The rule the canvas click handler applies: plain click replaces the
+        // selection, Ctrl/Cmd or Shift adds to it.
+        let mut selection: Vec<usize> = vec![0];
+        let click = |selection: &mut Vec<usize>, index: usize, additive: bool| {
+            if additive {
+                if !selection.contains(&index) {
+                    selection.push(index);
+                }
+            } else {
+                *selection = vec![index];
+            }
+        };
+        click(&mut selection, 2, true);
+        assert_eq!(selection, vec![0, 2], "additive click grows the set");
+        click(&mut selection, 2, true);
+        assert_eq!(
+            selection,
+            vec![0, 2],
+            "clicking a member does not duplicate"
+        );
+        click(&mut selection, 3, false);
+        assert_eq!(selection, vec![3], "a plain click replaces the set");
     }
 
     #[test]
