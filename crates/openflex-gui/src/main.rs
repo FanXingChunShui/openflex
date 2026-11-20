@@ -997,11 +997,21 @@ fn distribution_editor(ui: &mut egui::Ui, label: &str, dist: &mut Distribution) 
 /// enabling a field does not reflow the whole form.
 fn optional_u32(ui: &mut egui::Ui, label: &str, value: &mut Option<u32>) -> bool {
     let mut changed = false;
+    // Remember the last number so unticking and re-ticking the box does not
+    // silently reset a user-typed value back to the default.
+    let memory_id = egui::Id::new(("optional-u32", label));
+    let mut remembered = ui.data(|data| data.get_temp::<u32>(memory_id)).unwrap_or(1);
+    if let Some(current) = *value {
+        remembered = current;
+    }
     ui.horizontal(|ui| {
         let mut enabled = value.is_some();
         if ui.checkbox(&mut enabled, label).changed() {
-            *value = if enabled { Some(1) } else { None };
+            *value = if enabled { Some(remembered) } else { None };
             changed = true;
+        }
+        if let Some(current) = *value {
+            ui.data_mut(|data| data.insert_temp(memory_id, current));
         }
         if let Some(inner) = value.as_mut() {
             changed |= ui
@@ -1015,11 +1025,22 @@ fn optional_u32(ui: &mut egui::Ui, label: &str, value: &mut Option<u32>) -> bool
 /// Optional float field, same layout as [`optional_u32`].
 fn optional_f64(ui: &mut egui::Ui, label: &str, value: &mut Option<f64>) -> bool {
     let mut changed = false;
+    // Same memory as the integer variant: keep the typed value across ticks.
+    let memory_id = egui::Id::new(("optional-f64", label));
+    let mut remembered = ui
+        .data(|data| data.get_temp::<f64>(memory_id))
+        .unwrap_or(1.0);
+    if let Some(current) = *value {
+        remembered = current;
+    }
     ui.horizontal(|ui| {
         let mut enabled = value.is_some();
         if ui.checkbox(&mut enabled, label).changed() {
-            *value = if enabled { Some(1.0) } else { None };
+            *value = if enabled { Some(remembered) } else { None };
             changed = true;
+        }
+        if let Some(current) = *value {
+            ui.data_mut(|data| data.insert_temp(memory_id, current));
         }
         if let Some(inner) = value.as_mut() {
             changed |= ui
@@ -10651,6 +10672,27 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn optional_fields_restore_the_remembered_value() {
+        // The rule the checkboxes follow: unticking clears the field, re-ticking
+        // brings back the value the user last typed (not the 1.0 default).
+        let mut remembered: Option<f64> = None;
+        let mut value: Option<f64> = None;
+        // Tick on with no memory → default.
+        if value.is_none() {
+            value = Some(remembered.unwrap_or(1.0));
+        }
+        assert_eq!(value, Some(1.0));
+        value = Some(4.5);
+        remembered = value;
+        // Untick, then tick again → 4.5, not 1.0.
+        value = None;
+        if value.is_none() {
+            value = Some(remembered.unwrap_or(1.0));
+        }
+        assert_eq!(value, Some(4.5));
     }
 
     #[test]

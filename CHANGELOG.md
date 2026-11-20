@@ -4,6 +4,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **可选字段记住上次的值**：`optional_u32` / `optional_f64` 取消勾选再勾选时，不再回落到默认的 `1`，
+  而是恢复用户上次填的数字（存在 egui 的临时数据里，按标签区分）。新增
+  `optional_fields_restore_the_remembered_value` 测试（GUI 71 项）。
 - **表单坐标改用 f64**：`EditForm` 的 `pos`/`z` 与批量工具的 `dx`/`dy`/`rot` 原为 `f32`——打开表单再 Apply
   会对模型坐标做一次 f32 往返，`16777217` 这类值会被改成 `16777216`。改为 f64 后表单往返是恒等变换。
   新增 `form_position_round_trips_exactly` 测试（GUI 70 项）。至此 GUI 侧所有「会写回模型」的数值输入均为 f64。
