@@ -29,6 +29,10 @@
   `Apply JSON` 旁另加一句 `replaces the form's current values`，提示 JSON 模式以自身为准。
   新增 `refreshing_the_editor_needs_a_valid_selection` 测试（GUI 98 项）。
 
+- **模型描述可编辑**：`Model settings` 新增 `DESC` 输入框，`apply_model_settings()` 写入 `model.description`
+  （该字段会被 CLI 与 Studio 显示）。此前 GUI 只能改名字，描述始终停留在文件里的原值。
+  新增 `model_description_round_trips_through_the_settings_form` 测试（GUI 99 项）。
+
 ## v1.29.0 — 2026-11-20
 
 本轮把桌面 GUI 的**数据可信性**与**不丢工作**做实：所有会写回模型的数值统一为 f64、结果随模型结构变化失效、后台任务的结果都带来源模型；同时补齐「丢弃文档 / 批量删除 / 关闭窗口」的二次确认，并让导出与另存的落盘位置可预测。发布节奏保持**至少 3 小时一版**。

@@ -1856,6 +1856,8 @@ struct OpenFlexApp {
     validity_cache: Option<(u64, Vec<openflex_model::ValidationIssue>)>,
     heatmap: u8,
     model_name: String,
+    /// Free-text model description (shown by the CLI/Studio, editable here).
+    model_description: String,
     model_stop: f64,
     model_warmup: f64,
     model_seed: String,
@@ -1991,6 +1993,7 @@ impl OpenFlexApp {
             validity_cache: None,
             heatmap: 0,
             model_name: String::new(),
+            model_description: String::new(),
             model_stop: 300.0,
             model_warmup: 0.0,
             model_seed: "1".into(),
@@ -2455,6 +2458,7 @@ impl OpenFlexApp {
                 // A new document shares no state with the previous one.
                 self.reset_for_new_document();
                 self.model_name = "untitled".into();
+                self.model_description.clear();
                 self.model_stop = 300.0;
                 self.model_warmup = 0.0;
                 self.model_seed = "1".into();
@@ -2753,6 +2757,7 @@ impl OpenFlexApp {
                 );
                 self.load_presets();
                 self.model_name = model.name.clone();
+                self.model_description = model.description.clone();
                 self.model_stop = model.run.stop_time;
                 self.model_warmup = model.run.warmup;
                 self.model_seed = model.run.seed.to_string();
@@ -4326,6 +4331,7 @@ idle,busy,blocked,down\n",
         if !self.model_name.trim().is_empty() {
             copy.name = self.model_name.trim().to_string();
         }
+        copy.description = self.model_description.trim().to_string();
         copy.run.stop_time = self.model_stop.max(1.0);
         copy.run.warmup = self.model_warmup.max(0.0);
         copy.run.seed = seed;
@@ -7273,6 +7279,14 @@ impl eframe::App for OpenFlexApp {
                             axis(ui, "NAME");
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.model_name)
+                                    .desired_width(160.0),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            axis(ui, "DESC");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.model_description)
+                                    .hint_text("shown by the CLI and Studio")
                                     .desired_width(160.0),
                             );
                         });
@@ -11215,6 +11229,23 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn model_description_round_trips_through_the_settings_form() {
+        // `apply_model_settings` writes the description straight from the field.
+        let model = builtin_example("mm1").expect("example");
+        assert_eq!(
+            model.description,
+            "M/M/1 queue: exponential arrivals and service"
+        );
+        let mut copy = model.clone();
+        copy.description = "edited in the GUI".to_string();
+        assert_eq!(copy.description, "edited in the GUI");
+        // It survives a JSON round trip (the field is part of the format).
+        let json = copy.to_json().expect("json");
+        let back = Model::from_json(&json).expect("model");
+        assert_eq!(back.description, "edited in the GUI");
     }
 
     #[test]
