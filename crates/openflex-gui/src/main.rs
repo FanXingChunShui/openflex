@@ -2208,13 +2208,16 @@ impl OpenFlexApp {
     /// One object row of the model tree: kind dot · name · dimmed coordinates.
     fn tree_row(&mut self, ui: &mut egui::Ui, model: &Model, index: usize) {
         let object = &model.objects[index];
-        let selected = self.selected == Some(index);
+        // Both the primary selection and the marquee/Shift selection light up,
+        // otherwise a multi-selection is invisible in the tree.
+        let primary = self.selected == Some(index);
+        let in_selection = primary || self.selection.contains(&index);
         let mut clicked = false;
         ui.horizontal(|ui| {
             let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
             ui.painter()
                 .circle_filled(dot.center(), 3.4, Self::kind_color(object.kind));
-            clicked = ui.selectable_label(selected, &object.name).clicked();
+            clicked = ui.selectable_label(in_selection, &object.name).clicked();
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let rot = object
                     .rot
@@ -11135,6 +11138,19 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn the_tree_lights_up_the_whole_selection() {
+        // The rule `tree_row` applies: a row is lit when it is the primary
+        // selection or a member of the marquee selection.
+        let lit = |primary: Option<usize>, selection: &[usize], index: usize| {
+            primary == Some(index) || selection.contains(&index)
+        };
+        assert!(lit(Some(0), &[0], 0), "primary selection");
+        assert!(lit(Some(0), &[0, 3], 3), "member of a multi-selection");
+        assert!(!lit(Some(0), &[0, 3], 2), "unselected row stays dark");
+        assert!(!lit(None, &[], 0), "nothing selected");
     }
 
     #[test]
