@@ -3162,6 +3162,60 @@ impl OpenFlexApp {
         });
     }
 
+    /// Writes the optimiser's best variable values into the current model.
+    fn apply_best_point(&mut self) {
+        let (Some(model), Some((values, _, _))) = (self.model, self.opt_best.clone()) else {
+            return;
+        };
+        let roots: Vec<(String, f64, f64)> = self
+            .opt_vars
+            .iter()
+            .map(|var| (var.path.clone(), var.low as f64, var.high as f64))
+            .collect();
+        if roots.len() != values.len() {
+            self.error = Some(format!(
+                "the best point has {} value(s) but {} variable(s) are configured",
+                values.len(),
+                roots.len()
+            ));
+            return;
+        }
+        let Ok(mut json) = serde_json::to_value(model) else {
+            self.error = Some("could not serialise the model".into());
+            return;
+        };
+        for (index, (path, _, _)) in roots.iter().enumerate() {
+            if !set_json_number(&mut json, path, values[index]) {
+                self.error = Some(format!("{path} is not a numeric field"));
+                return;
+            }
+        }
+        let patched: Model = match serde_json::from_value(json) {
+            Ok(model) => model,
+            Err(error) => {
+                self.error = Some(format!("could not apply the best point: {error}"));
+                return;
+            }
+        };
+        match patched.validate() {
+            Ok(()) => {
+                self.snapshot_labelled("apply best point");
+                self.model = Some(Box::leak(Box::new(patched)));
+                self.handle = None;
+                self.sim_state = None;
+                self.report = None;
+                let summary = values
+                    .iter()
+                    .map(|value| format!("{value:.3}"))
+                    .collect::<Vec<_>>()
+                    .join(" / ");
+                self.status = format!("Applied best point: {summary}");
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
     fn poll_optimize(&mut self) {
         let Some(rx) = self.opt_rx.as_ref() else {
             return;
@@ -3351,9 +3405,18 @@ impl OpenFlexApp {
     fn snapshot_baseline(&mut self) {
         match self.report.clone() {
             Some(report) => {
+                // Say which model and completion the baseline holds: replacing a
+                // previous baseline silently used to be a one-way door.
+                let replaced = self.baseline.is_some();
+                let summary = format!("{} · completed {:.1}", report.model, report.completed.mean);
                 self.baseline = Some(report);
                 self.show_compare = true;
-                self.status = "Baseline captured".into();
+                self.status = if replaced {
+                    format!("Baseline replaced: {summary}")
+                } else {
+                    format!("Baseline captured: {summary}")
+                };
+                self.error = None;
             }
             None => self.error = Some("run the model first".into()),
         }
@@ -8255,6 +8318,18 @@ impl eframe::App for OpenFlexApp {
                                 ui.end_row();
                             }
                         });
+                        // Applying the best point saves transcribing values by
+                        // hand (and the transcription typos that come with it).
+                        if self.opt_best.is_some()
+                            && ui
+                                .button("Apply best to the model")
+                                .on_hover_text(
+                                    "write the best variable values into the model (undoable)",
+                                )
+                                .clicked()
+                        {
+                            self.apply_best_point();
+                        }
                 }
                 if self.opt_secondary_stay && !self.opt_rows.is_empty() {
                     let front = OpenFlexApp::pareto_front(&self.opt_rows);
@@ -10580,6 +10655,31 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn best_point_applies_through_json_paths() {
+        // `apply_best_point` writes each value with `set_json_number`; the paths
+        // and the value count must line up.
+        let mut json = serde_json::json!({
+            "objects": [
+                {"params": {"interarrival": {"value": 5.0}}},
+                {"params": {"process_time": {"value": 4.0}}}
+            ]
+        });
+        let roots = [
+            ("objects/0/params/interarrival/value", 0.0, 10.0),
+            ("objects/1/params/process_time/value", 0.0, 10.0),
+        ];
+        let values = [3.0, 7.0];
+        assert_eq!(roots.len(), values.len());
+        for (index, (path, _, _)) in roots.iter().enumerate() {
+            assert!(set_json_number(&mut json, path, values[index]), "{path}");
+        }
+        assert_eq!(json["objects"][0]["params"]["interarrival"]["value"], 3.0);
+        assert_eq!(json["objects"][1]["params"]["process_time"]["value"], 7.0);
+        // A path that is not numeric is refused rather than replaced.
+        assert!(!set_json_number(&mut json, "objects/0/params", 1.0));
     }
 
     #[test]

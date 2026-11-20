@@ -4,6 +4,11 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **一键应用最优解**：优化结果表下方新增 `Apply best to the model`——把最优变量值按配置的 JSON 路径写回模型，
+  走 `snapshot_labelled("apply best point")` 与 `validate()`，并清空旧的报告/句柄。此前只能手抄这几行数值。
+  非数值路径或变量数与结果不符都会给出明确错误。新增 `best_point_applies_through_json_paths` 测试（GUI 68 项）。
+- **基线捕获给出摘要**：`set` 基线成功后显示 `Baseline captured: <模型> · completed N`，替换旧基线时改为
+  `Baseline replaced: …`，不再是干巴巴的 "Baseline captured"。
 - **跳转/单步提示统一**：`jump_to_event()` 失败时给出 `Jump failed: <原因>` 并停止播放标记；成功时写
   `Jumped to t=7.500 min`。`step_event()` 的 `Stepped to …` 也补上时间单位。新增
   `jump_and_step_status_lines_name_the_unit` 测试（GUI 67 项）。
