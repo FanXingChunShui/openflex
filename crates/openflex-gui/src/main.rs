@@ -4331,12 +4331,34 @@ idle,busy,blocked,down\n",
             let rot = object.rot.unwrap_or(0.0);
             let (r, g, b) = (base.r(), base.g(), base.b());
             let (x, y) = (point.x, point.y);
-            let w = 38.0 * self.zoom;
-            let h = 18.0 * self.zoom;
+            // Footprint size follows the render mode: the flat view uses the
+            // same per-kind plate sizes as the canvas.
+            let (w, h) = if self.flat_view {
+                let (fw, fh) = match object.kind {
+                    ObjectKind::Conveyor | ObjectKind::Escalator => (56.0, 12.0),
+                    ObjectKind::Elevator => (18.0, 30.0),
+                    ObjectKind::Queue => (40.0, 16.0),
+                    _ => (34.0, 20.0),
+                };
+                (fw * self.zoom, fh * self.zoom)
+            } else {
+                (38.0 * self.zoom, 18.0 * self.zoom)
+            };
             // Names go through the escaper so `&`/`<` in a model cannot break
             // the XML; the caption sits on a dark plate like the on-screen chip.
             let name = xml_escape(&object.name);
             let label_w = (object.name.chars().count() as f32 * 6.2 + 10.0).max(24.0);
+            // In the floor plan the caption sits on the footprint centre, the
+            // same place the canvas puts it.
+            let (px, py, ty) = if self.flat_view {
+                (x - label_w / 2.0, y - 7.5, y + 3.5)
+            } else {
+                (
+                    x - label_w / 2.0,
+                    y - 12.0 * self.zoom - 12.0,
+                    y - 12.0 * self.zoom - 1.0,
+                )
+            };
             svg.push_str(&format!(
                 "<g transform=\"rotate({rot:.1} {x:.1} {y:.1})\">\
 <rect x=\"{rx:.1}\" y=\"{ry:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"4\" fill=\"#{r:02x}{g:02x}{b:02x}\" stroke=\"#14181e\"/>\
@@ -4345,9 +4367,6 @@ idle,busy,blocked,down\n",
 <text x=\"{x:.1}\" y=\"{ty:.1}\" fill=\"#ffffff\" font-size=\"10.5\" text-anchor=\"middle\" font-family=\"sans-serif\">{name}</text>\n",
                 rx = x - w / 2.0,
                 ry = y - h / 2.0,
-                px = x - label_w / 2.0,
-                py = y - 12.0 * self.zoom - 12.0,
-                ty = y - 12.0 * self.zoom - 1.0,
             ));
         }
         svg.push_str("</svg>\n");
