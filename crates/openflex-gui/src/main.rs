@@ -1483,6 +1483,8 @@ struct OpenFlexApp {
     /// Report table sort: column index (0 = name) and direction.
     stats_sort: Option<u8>,
     stats_desc: bool,
+    /// Group the model tree by flow stage inside each kind.
+    tree_by_stage: bool,
     /// Bumped whenever the model is replaced; keys the validation cache.
     model_gen: u64,
     /// Cached `validate_collect` result for `model_gen`.
@@ -1608,6 +1610,7 @@ impl OpenFlexApp {
             window_title: String::new(),
             stats_sort: None,
             stats_desc: true,
+            tree_by_stage: true,
             model_gen: 0,
             validity_cache: None,
             heatmap: 0,
@@ -1725,6 +1728,72 @@ impl OpenFlexApp {
             }
             self.redo.clear();
         }
+    }
+
+    /// One object row of the model tree: kind dot · name · dimmed coordinates.
+    fn tree_row(&mut self, ui: &mut egui::Ui, model: &Model, index: usize) {
+        let object = &model.objects[index];
+        let selected = self.selected == Some(index);
+        let mut clicked = false;
+        ui.horizontal(|ui| {
+            let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+            ui.painter()
+                .circle_filled(dot.center(), 3.4, Self::kind_color(object.kind));
+            clicked = ui.selectable_label(selected, &object.name).clicked();
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let rot = object
+                    .rot
+                    .map(|rot| format!("  {rot:.0}°"))
+                    .unwrap_or_default();
+                ui.label(
+                    egui::RichText::new(format!(
+                        "({:.0}, {:.0}){rot}",
+                        object.pos[0], object.pos[1]
+                    ))
+                    .small()
+                    .monospace()
+                    .color(palette::TEXT_DIM),
+                );
+            });
+        });
+        if clicked {
+            self.select(index);
+        }
+    }
+
+    /// Distance of every object from the model's sources along connections;
+    /// unreachable objects get `usize::MAX`.
+    fn stage_of(model: &Model) -> Vec<usize> {
+        let mut distance = vec![usize::MAX; model.objects.len()];
+        let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+        for (index, object) in model.objects.iter().enumerate() {
+            let has_input = model
+                .connections
+                .iter()
+                .any(|connection| connection.to == object.name);
+            if !has_input {
+                distance[index] = 0;
+                queue.push_back(index);
+            }
+        }
+        while let Some(index) = queue.pop_front() {
+            let name = &model.objects[index].name;
+            for connection in &model.connections {
+                if &connection.from != name {
+                    continue;
+                }
+                if let Some(next) = model
+                    .objects
+                    .iter()
+                    .position(|object| object.name == connection.to)
+                    && distance[next] == usize::MAX
+                {
+                    distance[next] = distance[index].saturating_add(1);
+                    queue.push_back(next);
+                }
+            }
+        }
+        distance
     }
 
     /// Title bar text: `OpenFlex — <model><dirty><state>`.
@@ -5689,6 +5758,29 @@ impl eframe::App for OpenFlexApp {
                         {
                             self.search.clear();
                         }
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(if self.tree_by_stage {
+                                        "by stage"
+                                    } else {
+                                        "flat"
+                                    })
+                                    .size(9.0_f32)
+                                    .color(if self.tree_by_stage {
+                                        palette::ACCENT_HI
+                                    } else {
+                                        palette::TEXT_DIM
+                                    }),
+                                )
+                                .fill(palette::CARD)
+                                .rounding(egui::Rounding::same(4.0_f32)),
+                            )
+                            .on_hover_text("group objects by flow stage inside each kind")
+                            .clicked()
+                        {
+                            self.tree_by_stage = !self.tree_by_stage;
+                        }
                         if let Some(model) = self.model {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -5974,6 +6066,8 @@ impl eframe::App for OpenFlexApp {
                     .id_salt("tree")
                     .max_height(ui.available_height() * 0.45)
                     .show(ui, |ui| {
+                        // Stage map is computed once per frame (cheap BFS).
+                        let stages_of = Self::stage_of(model);
                         let mut kinds: Vec<ObjectKind> = Vec::new();
                         for object in &model.objects {
                             if !kinds.contains(&object.kind) {
@@ -6004,48 +6098,39 @@ impl eframe::App for OpenFlexApp {
                             .id_salt(kind.as_str())
                             .default_open(true)
                             .show(ui, |ui| {
-                                for index in indices.clone() {
-                                    let object = &model.objects[index];
-                                    // Row: kind dot · name · dimmed coordinates.
-                                    // Coordinates are right-aligned so names
-                                    // stay readable instead of being pushed.
-                                    let selected = self.selected == Some(index);
-                                    let mut clicked = false;
-                                    ui.horizontal(|ui| {
-                                        let (dot, _) = ui.allocate_exact_size(
-                                            egui::vec2(8.0, 8.0),
-                                            egui::Sense::hover(),
-                                        );
-                                        ui.painter().circle_filled(
-                                            dot.center(),
-                                            3.4,
-                                            Self::kind_color(object.kind),
-                                        );
-                                        clicked = ui
-                                            .selectable_label(selected, &object.name)
-                                            .clicked();
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                let rot = object
-                                                    .rot
-                                                    .map(|rot| format!("  {rot:.0}°"))
-                                                    .unwrap_or_default();
-                                                ui.label(
-                                                    egui::RichText::new(format!(
-                                                        "({:.0}, {:.0}){rot}",
-                                                        object.pos[0], object.pos[1]
-                                                    ))
-                                                    .small()
-                                                    .monospace()
-                                                    .color(palette::TEXT_DIM),
-                                                );
-                                            },
-                                        );
-                                    });
-                                    if clicked {
-                                        self.select(index);
+                                // Second level: the flow stage (BFS distance from
+                                // the sources) so a big model is not one long list.
+                                let mut stages: Vec<(usize, Vec<usize>)> = Vec::new();
+                                if self.tree_by_stage {
+                                    for index in indices.clone() {
+                                        let stage = stages_of[index];
+                                        match stages.iter_mut().find(|(s, _)| *s == stage) {
+                                            Some((_, list)) => list.push(index),
+                                            None => stages.push((stage, vec![index])),
+                                        }
                                     }
+                                    stages.sort_by_key(|(stage, _)| *stage);
+                                } else {
+                                    stages.push((usize::MAX, indices.clone()));
+                                }
+                                for (stage, group) in stages {
+                                    if stage == usize::MAX {
+                                        for index in group {
+                                            self.tree_row(ui, model, index);
+                                        }
+                                        continue;
+                                    }
+                                    egui::CollapsingHeader::new(format!(
+                                        "stage {stage} ({})",
+                                        group.len()
+                                    ))
+                                    .id_salt((kind.as_str(), stage))
+                                    .default_open(true)
+                                    .show(ui, |ui| {
+                                        for index in group {
+                                            self.tree_row(ui, model, index);
+                                        }
+                                    });
                                 }
                                 if indices.len() > 1 && ui.small_button("select all").clicked() {
                                     self.selection = indices.clone();
@@ -9311,6 +9396,48 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn stage_of_counts_hops_from_the_sources() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "stages",
+          "run": {"stop_time": 10.0},
+          "objects": [
+            {"name": "S", "kind": "source", "params": {}},
+            {"name": "Q1", "kind": "queue", "params": {}},
+            {"name": "P1", "kind": "processor", "params": {}},
+            {"name": "Q2", "kind": "queue", "params": {}},
+            {"name": "K", "kind": "sink", "params": {}},
+            {"name": "Lonely", "kind": "queue", "params": {}}
+          ],
+          "connections": [
+            {"from": "S", "to": "Q1"}, {"from": "Q1", "to": "P1"},
+            {"from": "P1", "to": "Q2"}, {"from": "Q2", "to": "K"}
+          ]
+        }"#,
+        )
+        .expect("model");
+        let stages = OpenFlexApp::stage_of(&model);
+        let by_name = |name: &str| {
+            let index = model
+                .objects
+                .iter()
+                .position(|o| o.name == name)
+                .expect("object");
+            stages[index]
+        };
+        assert_eq!(by_name("S"), 0);
+        assert_eq!(by_name("Q1"), 1);
+        assert_eq!(by_name("P1"), 2);
+        assert_eq!(by_name("Q2"), 3);
+        assert_eq!(by_name("K"), 4);
+        assert_eq!(
+            by_name("Lonely"),
+            0,
+            "isolated objects start their own stage"
+        );
     }
 
     #[test]

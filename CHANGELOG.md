@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **两级模型树**：每个 kind 组内再按**流程阶段**（沿连接从源点 BFS 的跳数）折叠成 `stage 0/1/2…`，
+  孤立对象自成一档；树头部 `by stage / flat` 按钮可切换。
+  抽出 `tree_row()` 渲染行、`stage_of()` 计算阶段，新增 `stage_of_counts_hops_from_the_sources` 测试（GUI 34 项）。
 - **报告表可排序**：8 个列头变成按钮，点击按该列排序（首次降序、再点升序），当前列高亮并带 `▾`；
   可按 In / Out / WIP / Stay / Util / Thru / ±CI 排序，或按对象名。新增 `report_rows_sort_by_the_selected_metric`
   测试（GUI 33 项）。
