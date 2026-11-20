@@ -9,6 +9,9 @@
   行格式与 `openflex run --trace` 一致（`simulate_traced` 同一序列化路径）。
   此前桌面版的“事件日志”只记录 GUI 自己步进过的事件，看不到完整事件流。
 - 新增 `trace_export_lines_match_the_cli_jsonl` 测试（GUI 18 项）。
+- **流程连线校验**：连接前检查两端都是**已存在的块**、禁止自连、跳过重复边，并在状态栏回显
+  `A -> B added` / `already exists`；不合法的连接不再静默写入、等到 Apply 才报错。
+  新增 `flow_connection_input_rules` 测试（GUI 24 项）。
 - **SVG 跟随视图模式**：平面模式下导出改用**俯视投影**（`project_for_export`，绕开相机 yaw/pitch），
   导出图与 2D 画布完全一致；足迹尺寸按当前模式取（平面模式用各 kind 的平面尺寸，3D 用 38×18），
   平面模式下名称底板同样落在足迹中心，导出的图与屏幕看到的一致。

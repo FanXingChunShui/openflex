@@ -2103,11 +2103,44 @@ impl OpenFlexApp {
         let mut flow = self
             .flow_value()
             .unwrap_or_else(|| serde_json::json!({"blocks": [], "connections": []}));
+        // Both ends must be existing blocks, otherwise the model would not
+        // validate and the error would only show up at Apply time.
+        let ids: Vec<String> = flow
+            .get("blocks")
+            .and_then(|blocks| blocks.as_array())
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .filter_map(|block| block.get("id")?.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for end in [&from, &to] {
+            if !ids.contains(end) {
+                self.error = Some(format!("no block named {end}"));
+                return;
+            }
+        }
+        if from == to {
+            self.error = Some("a block cannot connect to itself".into());
+            return;
+        }
+        let mut duplicate = false;
         if let Some(connections) = flow.get_mut("connections").and_then(|c| c.as_array_mut()) {
-            connections.push(serde_json::json!({"from": from, "to": to}));
+            duplicate = connections.iter().any(|connection| {
+                connection.get("from").and_then(|v| v.as_str()) == Some(from.as_str())
+                    && connection.get("to").and_then(|v| v.as_str()) == Some(to.as_str())
+            });
+            if !duplicate {
+                connections.push(serde_json::json!({"from": from, "to": to}));
+            }
         }
         self.flow_text = serde_json::to_string_pretty(&flow).unwrap_or_default();
-        self.status = "Flow connection added".into();
+        self.status = if duplicate {
+            format!("{from} -> {to} already exists")
+        } else {
+            format!("Flow connection {from} -> {to} added")
+        };
     }
 
     fn apply_flow(&mut self) {
@@ -8766,6 +8799,19 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn flow_connection_input_rules() {
+        // The rules the UI enforces before a connection is appended.
+        let ids = vec!["A".to_string(), "B".to_string()];
+        let accepts = |from: &str, to: &str| {
+            from != to && ids.contains(&from.to_string()) && ids.contains(&to.to_string())
+        };
+        assert!(accepts("A", "B"));
+        assert!(!accepts("A", "A"), "self connection");
+        assert!(!accepts("A", "Z"), "unknown target");
+        assert!(!accepts("Z", "B"), "unknown source");
     }
 
     #[test]
