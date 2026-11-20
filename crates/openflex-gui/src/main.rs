@@ -255,6 +255,11 @@ fn install_cjk_font(ctx: &egui::Context) {
 
 /// Applies the polished dark theme: rounded widgets, an indigo accent,
 /// readable typography and a calmer canvas than the default egui grey.
+/// Camera pitch limits, shared by the drag handler and the Top preset so a
+/// preset never starts outside the range the mouse can reach.
+const PITCH_MIN: f32 = -1.4;
+const PITCH_MAX: f32 = 1.45;
+
 fn apply_theme(ctx: &egui::Context) {
     use palette::*;
 
@@ -5901,13 +5906,13 @@ impl eframe::App for OpenFlexApp {
                         if self.flat_view {
                             // A floor plan only makes sense from above.
                             self.yaw = 0.0;
-                            self.pitch = 1.45;
+                            self.pitch = PITCH_MAX;
                         }
                         self.save_ui_prefs();
                     }
                     if ui.button("Top").clicked() {
                         self.yaw = 0.0;
-                        self.pitch = 1.45;
+                        self.pitch = PITCH_MAX;
                         self.zoom = 1.0;
                     }
                     if ui.button("Front").clicked() {
@@ -9280,7 +9285,7 @@ impl eframe::App for OpenFlexApp {
             if response.dragged() {
                 let delta = response.drag_delta();
                 self.yaw += delta.x * 0.01;
-                self.pitch = (self.pitch + delta.y * 0.01).clamp(-1.4, 1.4);
+                self.pitch = (self.pitch + delta.y * 0.01).clamp(PITCH_MIN, PITCH_MAX);
             }
             let scroll = ui.input(|input| input.smooth_scroll_delta.y);
             if scroll != 0.0 {
@@ -9907,6 +9912,24 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn camera_presets_stay_inside_the_drag_range() {
+        // The Top preset and the drag handler share one limit, so picking Top
+        // and then dragging must not jump.
+        let preset_pitch = PITCH_MAX;
+        let clamped = preset_pitch.clamp(PITCH_MIN, PITCH_MAX);
+        assert_eq!(
+            clamped, preset_pitch,
+            "a preset must already satisfy the clamp"
+        );
+        assert!(PITCH_MIN < PITCH_MAX);
+        // A drag from the preset moves smoothly in both directions.
+        let up = (preset_pitch - 0.1).clamp(PITCH_MIN, PITCH_MAX);
+        let down = (preset_pitch + 0.1).clamp(PITCH_MIN, PITCH_MAX);
+        assert!((up - (preset_pitch - 0.1)).abs() < 1e-6);
+        assert_eq!(down, PITCH_MAX, "further down is capped, not wrapped");
     }
 
     #[test]

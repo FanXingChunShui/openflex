@@ -10,6 +10,8 @@
 - **「最新检查点」排序修正**：`Load checkpoint` 原按文件名字典序取最后一项，`checkpoint-9.00` 会排在
   `checkpoint-100.00` 之后；改为解析文件名中的模型时间排序（`checkpoint_time()`），并加
   `checkpoints_sort_by_model_time_not_by_name` 测试（GUI 46 项）。
+- **相机俯仰角统一**：`Top`/2D 预设用 `1.45`，而拖动时的 clamp 上限是 `1.4`，选完 Top 再拖会突然跳变；
+  改为共用 `PITCH_MIN/PITCH_MAX` 常量。新增 `camera_presets_stay_inside_the_drag_range` 测试（GUI 47 项）。
 - **检查点收尾**：恢复检查点后清空平滑插值、回放位置、事件日志与播放状态（此前会沿用上一次运行的动画与日志）；
   保存在同一模型时间重复保存时改为加 `-2`、`-3` 后缀，不再静默覆盖。新增
   `checkpoint_names_do_not_overwrite_each_other` 测试（GUI 45 项）。
