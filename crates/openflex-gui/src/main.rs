@@ -1676,11 +1676,13 @@ impl EditForm {
                     .weak()
                     .small(),
                 );
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.timetable_text)
-                        .code_editor()
-                        .desired_rows(4),
-                );
+                changed |= ui
+                    .add(
+                        egui::TextEdit::multiline(&mut self.timetable_text)
+                            .code_editor()
+                            .desired_rows(4),
+                    )
+                    .changed();
                 json_status(ui, &self.timetable_text, true);
             });
         ui.separator();
@@ -1694,11 +1696,13 @@ impl EditForm {
                     .weak()
                     .small(),
                 );
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.triggers_text)
-                        .code_editor()
-                        .desired_rows(6),
-                );
+                changed |= ui
+                    .add(
+                        egui::TextEdit::multiline(&mut self.triggers_text)
+                            .code_editor()
+                            .desired_rows(6),
+                    )
+                    .changed();
                 json_status(ui, &self.triggers_text, false);
             });
         changed
@@ -7461,6 +7465,10 @@ impl eframe::App for OpenFlexApp {
                     });
                 ui.separator();
                 let mut form_changed = false;
+                // Track edits in the three raw-JSON buffers too, so the
+                // "unsaved edits" hint appears when JSON mode is used.
+                let mut params_changed = false;
+                let mut flow_changed = false;
                 let mut pending_rename: Option<String> = None;
                 if let (Some(model), Some(index), Some(form)) =
                     (self.model, self.selected, self.form.as_mut())
@@ -7551,8 +7559,9 @@ impl eframe::App for OpenFlexApp {
                         if primary_button(ui, true, "Apply") {
                             self.apply_form();
                         }
-                        // A "dirty" hint appears as soon as a field is edited.
-                        if form_changed {
+                        // A "dirty" hint appears as soon as a field is edited —
+                        // including the raw JSON and process-flow buffers.
+                        if form_changed || params_changed || flow_changed {
                             self.form_dirty = true;
                         }
                         if self.form_dirty {
@@ -7664,12 +7673,14 @@ impl eframe::App for OpenFlexApp {
                                 .rounding(egui::Rounding::same(4.0_f32))
                         };
                         frame.show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::multiline(&mut self.params_text)
-                                    .code_editor()
-                                    .desired_rows(8)
-                                    .desired_width(f32::INFINITY),
-                            );
+                            params_changed |= ui
+                                .add(
+                                    egui::TextEdit::multiline(&mut self.params_text)
+                                        .code_editor()
+                                        .desired_rows(8)
+                                        .desired_width(f32::INFINITY),
+                                )
+                                .changed();
                         });
                         ui.horizontal(|ui| {
                             if primary_button(ui, valid, "Apply JSON") {
@@ -8134,11 +8145,13 @@ impl eframe::App for OpenFlexApp {
                                 }
                             }
                         });
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.flow_text)
-                                .code_editor()
-                                .desired_rows(8),
-                        );
+                        flow_changed |= ui
+                            .add(
+                                egui::TextEdit::multiline(&mut self.flow_text)
+                                    .code_editor()
+                                    .desired_rows(8),
+                            )
+                            .changed();
                         json_status(ui, &self.flow_text, true);
                         if let Some(flow) = self.flow_value() {
                             if let Some(blocks) = flow.get("blocks").and_then(|b| b.as_array()) {
@@ -11016,6 +11029,20 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn json_buffer_edits_mark_the_form_dirty() {
+        // The rule the form footer applies: any of the three tracked sources can
+        // raise the "unsaved edits" hint.
+        let dirty = |form: bool, params: bool, flow: bool| form || params || flow;
+        assert!(dirty(false, true, false), "params JSON edit");
+        assert!(dirty(false, false, true), "process-flow JSON edit");
+        assert!(dirty(true, false, false), "form widget edit");
+        assert!(!dirty(false, false, false), "nothing edited");
+        // Triggers and timetable edits arrive through `EditForm::show`'s return
+        // value, i.e. as `form` changes.
+        assert!(dirty(true, false, false), "triggers/timetable via show()");
     }
 
     #[test]

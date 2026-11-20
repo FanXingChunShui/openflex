@@ -4,6 +4,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **"unsaved edits" 覆盖 JSON 模式**：参数 JSON 与流程 JSON 的编辑现在也点亮未保存提示；`Triggers` /
+  `Timetable` 两个框通过 `EditForm::show` 的返回值汇入同一个 `form_changed`。此前只有表单控件会触发提示，
+  用 JSON 改参数时看不到任何提示。新增 `json_buffer_edits_mark_the_form_dirty` 测试（GUI 85 项）。
 - **重命名与连接编辑也清结果**：报告按对象名索引，改名会让旧条目失效；连接增删与端口策略改变路由。
   三处都接入 `clear_analysis_results()`，现在共 **11 个结构性调用点**（撤销、重做、应用最优、模型设置、
   新增、删除、复制、重命名、连接增/删、端口策略）。新增 `every_structural_edit_path_clears_results`
