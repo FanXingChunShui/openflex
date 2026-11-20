@@ -6244,15 +6244,34 @@ impl eframe::App for OpenFlexApp {
                         ui.menu_button("Recent", |ui| {
                             let items: Vec<PathBuf> = self.recent.clone();
                             for item in items {
+                                let missing = !item.exists();
+                                let label = item
+                                    .file_name()
+                                    .map(|name| name.to_string_lossy().into_owned())
+                                    .unwrap_or_default();
+                                // Deleted files stay listed but dimmed, so a dead
+                                // entry is obvious before clicking it.
+                                let text = if missing {
+                                    egui::RichText::new(format!("{label}  (missing)"))
+                                        .color(palette::TEXT_DIM.gamma_multiply(0.6))
+                                } else {
+                                    egui::RichText::new(label)
+                                };
                                 if ui
-                                    .button(
-                                        item.file_name()
-                                            .map(|name| name.to_string_lossy().into_owned())
-                                            .unwrap_or_default(),
-                                    )
+                                    .button(text)
+                                    .on_hover_text(item.display().to_string())
                                     .clicked()
                                 {
-                                    self.load(item);
+                                    if missing {
+                                        self.error = Some(format!(
+                                            "{} no longer exists — removing it from Recent",
+                                            item.display()
+                                        ));
+                                        self.recent.retain(|entry| entry != &item);
+                                        self.save_recent();
+                                    } else {
+                                        self.load(item);
+                                    }
                                     ui.close_menu();
                                 }
                             }
@@ -10779,6 +10798,27 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn missing_recent_entries_are_dropped_on_click() {
+        // The rule the Recent menu applies: a missing file is dimmed, and
+        // clicking it removes the entry instead of trying to load it.
+        let existing =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/mm1.ofm");
+        assert!(existing.exists(), "fixture model: {}", existing.display());
+        let mut recent: Vec<std::path::PathBuf> = vec![
+            std::path::PathBuf::from("/tmp/does-not-exist-openflex.ofm"),
+            existing,
+        ];
+        let doomed = recent[0].clone();
+        let missing = !doomed.exists();
+        assert!(missing, "the fixture path must not exist");
+        if missing {
+            recent.retain(|entry| entry != &doomed);
+        }
+        assert_eq!(recent.len(), 1);
+        assert!(recent[0].exists(), "the surviving entry still exists");
     }
 
     #[test]

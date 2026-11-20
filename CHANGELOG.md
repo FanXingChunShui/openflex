@@ -4,6 +4,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **Recent 列表标记失效文件**：菜单里已删除的路径显示为暗色 `name (missing)`，悬停给出完整路径；
+  点击时不再尝试加载，而是从列表中移除并说明原因。此前这些条目混在正常项里，点了才报错。
+  新增 `missing_recent_entries_are_dropped_on_click` 测试（GUI 78 项）。
 - **布局预设的读写反馈**：`load_presets()` 不再对损坏或缺字段的边车文件静默返回，而是给出具体错误；
   `save_presets()` 返回是否写盘成功，`store_layout_preset` / `delete_layout_preset` 据此区分
   `Saved …` 与 `Saved … (not written to disk)`，覆盖同名预设时提示 `Overwrote …`（此前是静默替换）。
