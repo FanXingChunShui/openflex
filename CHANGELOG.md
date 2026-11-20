@@ -9,6 +9,8 @@
   行格式与 `openflex run --trace` 一致（`simulate_traced` 同一序列化路径）。
   此前桌面版的“事件日志”只记录 GUI 自己步进过的事件，看不到完整事件流。
 - 新增 `trace_export_lines_match_the_cli_jsonl` 测试（GUI 18 项）。
+- **新增对象摆放**：新对象落在模型右侧的**第一个空位**（列内向下避让），连续新增不再全堆在 `y=0` 一条线上；
+  新增 `new_objects_do_not_stack_on_one_spot` 测试（GUI 26 项）。
 - **编辑器缓冲清理**：撤销/重做与加载模型现在共享 `clear_object_editor()`，一并清空 `params_text`/`flow_text`/`rename_text`
   与插值缓存；此前撤销后侧栏仍留着旧对象的 JSON，继续编辑会把过期内容写回。
 - **撤销覆盖补齐**：`apply_form()` 与 `apply_model_settings()` 现在都会 `snapshot()`——此前改表单或 run 参数

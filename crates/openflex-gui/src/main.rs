@@ -3168,17 +3168,26 @@ idle,busy,blocked,down\n",
                 return;
             }
         };
+        // Place the new object on a free slot to the right of the model: walk
+        // down a column until the spot is not taken, so repeated adds do not
+        // pile up on one line.
         let max_x = model
             .objects
             .iter()
             .map(|object| object.pos[0])
             .fold(-8.0_f64, f64::max);
+        let mut slot_y = 0.0_f64;
+        while model.objects.iter().any(|object| {
+            (object.pos[0] - (max_x + 4.0)).abs() < 2.0 && (object.pos[1] - slot_y).abs() < 2.0
+        }) {
+            slot_y -= 4.0;
+        }
         self.snapshot();
         let mut copy = model.clone();
         copy.objects.push(openflex_model::model::Object {
             name: name.clone(),
             kind,
-            pos: [max_x + 4.0, 0.0],
+            pos: [max_x + 4.0, slot_y],
             z: 0.0,
             rot: None,
             params,
@@ -8832,6 +8841,29 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn new_objects_do_not_stack_on_one_spot() {
+        // Mirrors the slot search in `add_object`: each add walks down the
+        // column until the position is free.
+        let mut taken: Vec<[f64; 2]> = Vec::new();
+        let place = |taken: &mut Vec<[f64; 2]>, x: f64| {
+            let mut y = 0.0_f64;
+            while taken
+                .iter()
+                .any(|pos| (pos[0] - x).abs() < 2.0 && (pos[1] - y).abs() < 2.0)
+            {
+                y -= 4.0;
+            }
+            taken.push([x, y]);
+            [x, y]
+        };
+        assert_eq!(place(&mut taken, 10.0), [10.0, 0.0]);
+        assert_eq!(place(&mut taken, 10.0), [10.0, -4.0]);
+        assert_eq!(place(&mut taken, 10.0), [10.0, -8.0]);
+        // A different column starts at the top again.
+        assert_eq!(place(&mut taken, 14.0), [14.0, 0.0]);
     }
 
     #[test]
