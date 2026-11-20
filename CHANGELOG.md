@@ -4,6 +4,11 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **run 设置改用 f64**：`model_stop` / `model_warmup` 原是 `f32`，而 `DragValue` 的范围到 `1e9`——该量级下 f32
+  的整数精度只有 64，`1e9+1` 会变成 `1e9`。改为 f64 后与模型字段同类型，往返不失真。
+  新增 `run_settings_keep_precision_at_large_values` 测试（GUI 59 项）。
+- **分布步长防除零**：`batch_distribute` 的 `(last-first)/(count-1)` 加显式守卫（`count > 1` 才除），
+  即使前置检查将来被改动也不会 panic；`distribute_spacing_survives_a_two_object_selection` 测试（GUI 60 项）。
 - **窗口与面板状态持久化**：启用 eframe 的 `persistence`（纯 Rust，无新增系统依赖），把 `persistence_path` 指向
   `~/.config/openflex/app.ron`，窗口尺寸/位置、侧栏宽度与各折叠面板的开合状态重启后保留。
   另加 20 秒一次的 `request_repaint_after`——eframe 只在窗口事件时自动保存，只读不操作时状态原本不会落盘。

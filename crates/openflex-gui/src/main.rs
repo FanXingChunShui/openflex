@@ -1748,8 +1748,8 @@ struct OpenFlexApp {
     validity_cache: Option<(u64, Vec<openflex_model::ValidationIssue>)>,
     heatmap: u8,
     model_name: String,
-    model_stop: f32,
-    model_warmup: f32,
+    model_stop: f64,
+    model_warmup: f64,
     model_seed: String,
     model_replications: u32,
     model_unit: u8,
@@ -2530,8 +2530,8 @@ impl OpenFlexApp {
                 );
                 self.load_presets();
                 self.model_name = model.name.clone();
-                self.model_stop = model.run.stop_time as f32;
-                self.model_warmup = model.run.warmup as f32;
+                self.model_stop = model.run.stop_time;
+                self.model_warmup = model.run.warmup;
                 self.model_seed = model.run.seed.to_string();
                 self.model_replications = model.run.replications.max(1);
                 self.model_unit = match model.time_unit {
@@ -3813,8 +3813,8 @@ idle,busy,blocked,down\n",
         if !self.model_name.trim().is_empty() {
             copy.name = self.model_name.trim().to_string();
         }
-        copy.run.stop_time = (self.model_stop as f64).max(1.0);
-        copy.run.warmup = (self.model_warmup as f64).max(0.0);
+        copy.run.stop_time = self.model_stop.max(1.0);
+        copy.run.warmup = self.model_warmup.max(0.0);
         copy.run.seed = seed;
         copy.run.replications = self.model_replications.max(1);
         copy.time_unit = match self.model_unit {
@@ -4260,7 +4260,14 @@ idle,busy,blocked,down\n",
         } else {
             model.objects[*indices.last().expect("non-empty")].pos[1]
         };
-        let step = (last - first) / (indices.len() - 1) as f64;
+        // `indices.len() >= 3` is checked above, but keep the division safe so a
+        // future change cannot reintroduce a divide-by-zero panic.
+        let count = indices.len();
+        let step = if count > 1 {
+            (last - first) / (count - 1) as f64
+        } else {
+            0.0
+        };
         self.snapshot_labelled("distribute selection");
         let mut copy = model.clone();
         for (position, index) in indices.iter().enumerate() {
@@ -10429,6 +10436,34 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn distribute_spacing_survives_a_two_object_selection() {
+        // `batch_distribute` divides by (count - 1); the guard keeps a future
+        // caller from hitting a divide-by-zero.
+        let step = |count: usize, first: f64, last: f64| {
+            if count > 1 {
+                (last - first) / (count - 1) as f64
+            } else {
+                0.0
+            }
+        };
+        assert_eq!(step(3, 0.0, 10.0), 5.0);
+        assert_eq!(step(1, 4.0, 4.0), 0.0);
+        assert!(step(2, 0.0, 10.0).is_finite());
+    }
+
+    #[test]
+    fn run_settings_keep_precision_at_large_values() {
+        // f32 loses integer precision above 2^24; the form used to store
+        // stop_time as f32, so 1e9 + 1 rounds to 1e9.
+        let exact = 1_000_000_001.0_f64;
+        assert_eq!(exact as f32 as f64, 1_000_000_000.0, "f32 rounds");
+        assert_eq!(exact, 1_000_000_001.0, "f64 keeps the value");
+        // The clamp the form applies still behaves at that magnitude.
+        assert_eq!(exact.max(1.0), exact);
+        assert_eq!((-5.0_f64).max(0.0), 0.0);
     }
 
     #[test]
