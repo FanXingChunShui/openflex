@@ -1444,7 +1444,7 @@ type TraceOutcome =
     Result<(openflex_core::ReplicationResult, openflex_core::TraceLog), openflex_core::SimError>;
 
 /// Result delivered by the experiment worker: the rows plus how long it took.
-type ExpResult = (Vec<ExpRow>, usize, std::time::Duration);
+type ExpResult = (Vec<ExpRow>, usize, String, std::time::Duration);
 
 /// One stored layout preset: a name plus the `(position, object name)` pairs.
 type LayoutPreset = (String, Vec<([f64; 2], String)>);
@@ -1612,7 +1612,7 @@ struct OpenFlexApp {
     series: Vec<SeriesRow>,
     series_interval: f32,
     series_running: bool,
-    series_rx: Option<Receiver<Vec<SeriesRow>>>,
+    series_rx: Option<Receiver<(Vec<SeriesRow>, String)>>,
     series_object: String,
     series_metric: u8,
     opt_steps: u32,
@@ -1622,7 +1622,7 @@ struct OpenFlexApp {
     opt_secondary_stay: bool,
     opt_rows: Vec<OptRow>,
     opt_best: Option<OptRow>,
-    opt_rx: Option<Receiver<(Vec<OptRow>, std::time::Duration)>>,
+    opt_rx: Option<Receiver<(Vec<OptRow>, String, std::time::Duration)>>,
     opt_running: bool,
     replay_index: Option<usize>,
 }
@@ -2566,6 +2566,7 @@ impl OpenFlexApp {
         };
         let interval = (self.series_interval as f64).max(0.1);
         let stop = model.run.stop_time;
+        let source_model = model.name.clone();
         let (tx, rx) = channel();
         self.series_rx = Some(rx);
         self.series_running = true;
@@ -2603,7 +2604,7 @@ impl OpenFlexApp {
                     rows.push((state.now, row));
                 }
             }
-            let _ = tx.send(rows);
+            let _ = tx.send((rows, source_model));
         });
     }
 
@@ -2612,15 +2613,26 @@ impl OpenFlexApp {
             return;
         };
         match rx.try_recv() {
-            Ok(rows) => {
+            Ok((rows, source)) => {
                 let capped = rows.len() >= 20_000;
+                // The samples belong to the model that produced them; say so
+                // when the document changed while the worker ran.
+                let stale = self
+                    .model
+                    .map(|model| !model.name.is_empty() && model.name != source)
+                    .unwrap_or(false);
+                let suffix = if stale {
+                    format!(" for '{source}' (model changed since)")
+                } else {
+                    String::new()
+                };
                 self.status = if capped {
                     format!(
-                        "Time series: {} samples (capped — raise the interval to see the whole run)",
+                        "Time series: {} samples (capped — raise the interval to see the whole run){suffix}",
                         rows.len()
                     )
                 } else {
-                    format!("Time series: {} samples", rows.len())
+                    format!("Time series: {} samples{suffix}", rows.len())
                 };
                 self.series = rows;
                 self.series_running = false;
@@ -2669,6 +2681,10 @@ impl OpenFlexApp {
                 return;
             }
         }
+        let source_model = self
+            .model
+            .map(|model| model.name.clone())
+            .unwrap_or_default();
         let (tx, rx) = channel();
         self.opt_rx = Some(rx);
         self.opt_running = true;
@@ -2795,7 +2811,7 @@ impl OpenFlexApp {
                         let mut position = 0;
                         loop {
                             if position >= indices.len() {
-                                let _ = tx.send((rows, started.elapsed()));
+                                let _ = tx.send((rows, source_model, started.elapsed()));
                                 return;
                             }
                             indices[position] += 1;
@@ -2808,7 +2824,7 @@ impl OpenFlexApp {
                     }
                 }
             }
-            let _ = tx.send((rows, started.elapsed()));
+            let _ = tx.send((rows, source_model, started.elapsed()));
         });
     }
 
@@ -2817,13 +2833,22 @@ impl OpenFlexApp {
             return;
         };
         match rx.try_recv() {
-            Ok((mut rows, elapsed)) => {
+            Ok((mut rows, source, elapsed)) => {
                 rows.sort_by(|a, b| b.1.total_cmp(&a.1));
                 rows.truncate(20);
                 self.opt_best = rows.first().cloned();
+                let stale = self
+                    .model
+                    .map(|model| !model.name.is_empty() && model.name != source)
+                    .unwrap_or(false);
+                let stale_note = if stale {
+                    format!(" · from '{source}' (model changed since)")
+                } else {
+                    String::new()
+                };
                 self.status = match self.opt_best.as_ref() {
                     Some((values, score, _)) => format!(
-                        "Best (in {:.2}s): {} -> completed {score:.1}",
+                        "Best (in {:.2}s): {} -> completed {score:.1}{stale_note}",
                         elapsed.as_secs_f64(),
                         values
                             .iter()
@@ -4152,6 +4177,7 @@ idle,busy,blocked,down\n",
         } else {
             None
         };
+        let source_model = base.name.clone();
         let (tx, rx) = channel();
         self.exp_rx = Some(rx);
         self.exp_running = true;
@@ -4191,7 +4217,7 @@ idle,busy,blocked,down\n",
                     Err(_) => failed += 1,
                 }
             }
-            let _ = tx.send((rows, failed, started.elapsed()));
+            let _ = tx.send((rows, failed, source_model, started.elapsed()));
         });
     }
 
@@ -4200,18 +4226,25 @@ idle,busy,blocked,down\n",
             return;
         };
         match rx.try_recv() {
-            Ok((rows, failed, elapsed)) => {
+            Ok((rows, failed, source, elapsed)) => {
                 let seconds = elapsed.as_secs_f64();
                 let runs = rows.len().max(1);
+                let stale = self
+                    .model
+                    .map(|model| !model.name.is_empty() && model.name != source)
+                    .unwrap_or(false);
+                let mut note = if stale {
+                    format!(" · from '{source}' (model changed since)")
+                } else {
+                    String::new()
+                };
+                if failed > 0 {
+                    note.push_str(&format!(" · {failed} scenario(s) failed"));
+                }
                 self.status = format!(
-                    "Experiment finished in {seconds:.2}s: {} runs ({:.2}s each){}",
+                    "Experiment finished in {seconds:.2}s: {} runs ({:.2}s each){note}",
                     rows.len(),
-                    seconds / runs as f64,
-                    if failed > 0 {
-                        format!(" · {failed} scenario(s) failed")
-                    } else {
-                        String::new()
-                    }
+                    seconds / runs as f64
                 );
                 self.exp_rows = rows;
                 self.exp_running = false;
@@ -9814,6 +9847,28 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn every_worker_reports_the_model_it_ran() {
+        // Report / time series / experiment / optimiser all carry the model name
+        // so a result produced for a previous document can be labelled.
+        let source = include_str!("main.rs");
+        for needle in [
+            "source_model: model.name.clone()",
+            "source_model = base.name.clone()",
+            ".map(|model| model.name.clone())",
+        ] {
+            assert!(
+                source.contains(needle),
+                "a worker does not record the model it ran: {needle}"
+            );
+        }
+        // And each poll handler compares it before presenting the result.
+        assert!(
+            source.matches("model.name != source").count() >= 3,
+            "not every worker result is checked against the current model"
+        );
     }
 
     #[test]
