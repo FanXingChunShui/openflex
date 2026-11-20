@@ -4,6 +4,8 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **内置示例加载收尾**：`load_example()` 走内置示例的分支改为复用 `clear_object_editor()`，并同时清空事件日志、
+  撤销/重做与运行状态；此前只清了选中与表单，上一个模型的插值缓存、表格缓冲与事件日志会残留。
 - **全局表编辑收尾**：编辑缓冲随文档一起清空（撤销/加载模型时 `clear_object_editor()` 一并 `table_edit.clear()`），
   且 `commit_table_row()` 先校验行列形状**再**记快照——被拒绝的编辑不再留下空的历史项。
   新增 `edited_row_must_match_the_table_width` 测试（GUI 39 项）。

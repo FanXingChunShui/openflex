@@ -2098,15 +2098,19 @@ impl OpenFlexApp {
         if let Some(model) = crate::builtin_example(name) {
             self.model = Some(Box::leak(Box::new(model)));
             self.path = None;
-            self.handle = None;
-            self.sim_state = None;
             self.report = None;
             self.selection.clear();
-            self.selected = None;
-            self.form = None;
+            // The example is a different document: drop every buffer that still
+            // refers to the previous objects or tables.
+            self.clear_object_editor();
+            self.event_log.clear();
+            self.running = false;
+            self.paused = false;
             // No file on disk: saving it will prompt for a path.
             self.model_dirty = true;
             self.path_input.clear();
+            self.undo.clear();
+            self.redo.clear();
             self.status = format!("Loaded built-in example: {name} — not saved yet");
             return;
         }
