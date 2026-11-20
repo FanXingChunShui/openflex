@@ -6102,11 +6102,28 @@ impl eframe::App for OpenFlexApp {
                     if ui.button("New model").clicked() {
                         self.new_model();
                     }
-                    for example in ["mm1", "routing", "batch-queue", "agv-delivery", "fluid-line"] {
-                        if ui.button(format!("Open example: {example}")).clicked() {
-                            self.load_example(example);
+                    // Five examples would run down the whole panel one per row.
+                    ui.horizontal_wrapped(|ui| {
+                        for (example, hint) in [
+                            ("mm1", "single queue and processor"),
+                            ("routing", "round-robin to two processors"),
+                            ("batch-queue", "batching before processing"),
+                            ("agv-delivery", "dispatcher and one AGV"),
+                            ("fluid-line", "generator, tank, valve, sink"),
+                        ] {
+                            let button = egui::Button::new(
+                                egui::RichText::new(example)
+                                    .small()
+                                    .color(palette::TEXT),
+                            )
+                            .fill(palette::CARD)
+                            .stroke(egui::Stroke::new(1.0_f32, palette::STROKE))
+                            .rounding(egui::Rounding::same(10.0_f32));
+                            if ui.add(button).on_hover_text(hint).clicked() {
+                                self.load_example(example);
+                            }
                         }
-                    }
+                    });
                     return;
                 };
                 let needle = self.search.to_lowercase();
