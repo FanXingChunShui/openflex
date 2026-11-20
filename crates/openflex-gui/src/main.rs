@@ -3538,11 +3538,7 @@ impl OpenFlexApp {
                 ));
             }
         }
-        let path = self
-            .path
-            .as_ref()
-            .map(|path| path.with_extension("timeseries.csv"))
-            .unwrap_or_else(|| PathBuf::from("openflex-timeseries.csv"));
+        let path = self.report_path("timeseries.csv");
         match std::fs::write(&path, text) {
             Ok(()) => {
                 self.remember_output(&path);
@@ -3887,9 +3883,16 @@ idle,busy,blocked,down\n",
 
     /// Sidecar file that stores the named layout presets of the open model.
     fn preset_path(&self) -> Option<std::path::PathBuf> {
-        self.path
-            .as_ref()
-            .map(|path| path.with_extension("layout.json"))
+        if let Some(path) = self.path.as_ref() {
+            return Some(path.with_extension("layout.json"));
+        }
+        // An unsaved model still deserves presets: keep them in the per-user
+        // config directory keyed by model name until the model has a file.
+        let name = self
+            .model
+            .map(|model| model.name.clone())
+            .filter(|name| !name.trim().is_empty())?;
+        Self::recent_config_path().map(|path| path.with_file_name(format!("{name}.layout.json")))
     }
 
     fn load_presets(&mut self) {
@@ -5846,11 +5849,7 @@ idle,busy,blocked,down\n",
             ));
         }
         svg.push_str("</svg>\n");
-        let path = self
-            .path
-            .as_ref()
-            .map(|path| path.with_extension("view.svg"))
-            .unwrap_or_else(|| std::path::PathBuf::from("openflex-view.svg"));
+        let path = self.report_path("view.svg");
         match std::fs::write(&path, svg) {
             Ok(()) => {
                 self.remember_output(&path);
@@ -11096,6 +11095,27 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn preset_path_falls_back_to_the_config_dir() {
+        // A saved model keeps presets beside it; an unsaved one uses the config
+        // directory instead of silently failing.
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        if let Some(path) = app.preset_path() {
+            assert!(
+                path.to_string_lossy().ends_with("mm1.layout.json"),
+                "unexpected preset path: {}",
+                path.display()
+            );
+        }
+        app.path = Some(std::path::PathBuf::from("/tmp/demo/model.ofm"));
+        assert_eq!(
+            app.preset_path(),
+            Some(std::path::PathBuf::from("/tmp/demo/model.layout.json"))
+        );
     }
 
     #[test]

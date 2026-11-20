@@ -4,6 +4,10 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **文件路径统一走 `report_path()`**：时序 CSV 与视图 SVG 的备用文件名（`openflex-timeseries.csv`、
+  `openflex-view.svg`）改为与其它导出同一套「模型同目录 / `~/Documents`」规则；
+  `preset_path()` 对未保存的模型不再返回 `None`（那会让「保存布局预设」静默失败），改用
+  `~/.config/openflex/<模型名>.layout.json`。新增 `preset_path_falls_back_to_the_config_dir` 测试（GUI 89 项）。
 - **另存建议为绝对路径**：未保存的模型按 `Save` 时，对话框预填 `~/Documents/<name>.ofm`
   （没有 Documents 则落到家目录），不再是裸文件名 `untitled.ofm`——后者会保存到启动目录。
   新增 `save_as_suggestion_is_absolute` 测试（GUI 88 项）。
