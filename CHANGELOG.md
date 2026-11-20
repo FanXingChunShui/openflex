@@ -4,6 +4,11 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **全局表可编辑**：`Global tables` 面板从只读预览改为**逐单元格编辑**（等宽输入框，失焦即提交），
+  新增 `+ row`（追加一行默认值）与 `reset`（丢弃缓冲、从模型重新读取）；
+  `commit_table_row()` 走 `snapshot_labelled("edit global table")` 与 `validate()`，
+  单元格按文本自动识别为数字/布尔/字符串（`parse_table_cell()`）。新增
+  `table_cells_parse_by_looking_at_the_text` 测试（GUI 38 项）。
 - **界面偏好持久化**：`~/.config/openflex/ui.json` 保存 `flat_view / tree_by_stage / parallel / play_speed / show_json`，
   启动时 `load_ui_prefs()` 读回（速度会 clamp 到 0.25–8）；切换开关即写盘。新增 `ui_prefs_round_trip` 测试（GUI 37 项）。
 - **补回 `parallel` 开关**：`parallel_runs` 字段与两条运行路径一直在，但工具栏从未渲染过它可以关闭的控件——

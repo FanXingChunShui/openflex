@@ -1526,6 +1526,9 @@ struct OpenFlexApp {
     sim_state: Option<SimulationState>,
     event_log: Vec<EventEntry>,
     event_filter: String,
+    /// Per-cell text buffers for the editable global tables:
+    /// (table name, row, column) -> text being edited.
+    table_edit: std::collections::HashMap<(String, usize, usize), String>,
     /// Last title pushed to the OS window, to avoid redundant commands.
     window_title: String,
     /// Report table sort: column index (0 = name) and direction.
@@ -1658,6 +1661,7 @@ impl OpenFlexApp {
             sim_state: None,
             event_log: Vec::new(),
             event_filter: String::new(),
+            table_edit: std::collections::HashMap::new(),
             window_title: String::new(),
             stats_sort: None,
             stats_desc: true,
@@ -1783,6 +1787,85 @@ impl OpenFlexApp {
                 self.undo.remove(0);
             }
             self.redo.clear();
+        }
+    }
+
+    /// Parses one table cell from user text: a number when it parses as one,
+    /// `true`/`false` as booleans, everything else as a string.
+    fn parse_table_cell(text: &str) -> openflex_model::TableCell {
+        let trimmed = text.trim();
+        if let Ok(value) = trimmed.parse::<f64>() {
+            return openflex_model::TableCell::Number(value);
+        }
+        match trimmed.to_lowercase().as_str() {
+            "true" => openflex_model::TableCell::Bool(true),
+            "false" => openflex_model::TableCell::Bool(false),
+            _ => openflex_model::TableCell::Str(text.to_string()),
+        }
+    }
+
+    /// Writes one edited global-table row back into the model.
+    fn commit_table_row(&mut self, table_name: &str, row: usize, cells: Vec<String>) {
+        let Some(model) = self.model else {
+            return;
+        };
+        self.snapshot_labelled("edit global table");
+        let mut copy = model.clone();
+        let Some(table) = copy.global_tables.get_mut(table_name) else {
+            return;
+        };
+        if row >= table.rows.len() {
+            return;
+        }
+        if table.width() != cells.len() {
+            self.error = Some(format!(
+                "row {row} needs {} cell(s), got {}",
+                table.width(),
+                cells.len()
+            ));
+            return;
+        }
+        table.rows[row] = cells
+            .iter()
+            .map(|text| Self::parse_table_cell(text))
+            .collect();
+        match copy.validate() {
+            Ok(()) => {
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.status = format!("Updated {table_name} row {row}");
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    /// Appends a row of empty cells to a global table.
+    fn append_table_row(&mut self, table_name: &str) {
+        let Some(model) = self.model else {
+            return;
+        };
+        self.snapshot_labelled("add table row");
+        let mut copy = model.clone();
+        let Some(table) = copy.global_tables.get_mut(table_name) else {
+            return;
+        };
+        let width = table.width();
+        table.rows.push(
+            (0..width)
+                .map(|_| openflex_model::TableCell::Number(0.0))
+                .collect(),
+        );
+        let rows = table.rows.len();
+        match copy.validate() {
+            Ok(()) => {
+                // The new row starts with empty buffers so it is editable.
+                self.table_edit
+                    .retain(|(table, _, _), _| table != table_name);
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.status = format!("{table_name} now has {rows} row(s)");
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
         }
     }
 
@@ -6172,29 +6255,65 @@ impl eframe::App for OpenFlexApp {
                                 }
                             });
                         }
-                        for row in table.rows.iter().take(4) {
-                            ui.label(
-                                egui::RichText::new(
-                                    row.iter()
-                                        .map(|cell| format!("{cell:?}"))
-                                        .collect::<Vec<_>>()
-                                        .join("  "),
-                                )
-                                .small()
-                                .monospace()
-                                .color(palette::TEXT),
-                            );
+                        // Editable cells: each row is a text buffer, committed on
+                        // Enter/lost focus. Buffers live in `table_edit`.
+                        let rows = if table.rows.is_empty() {
+                            0
+                        } else {
+                            table.rows.len()
+                        };
+                        let mut commit: Option<(usize, Vec<String>)> = None;
+                        for row_index in 0..rows {
+                            ui.horizontal_wrapped(|ui| {
+                                for column_index in 0..table.width() {
+                                    let key = (name.clone(), row_index, column_index);
+                                    if !self.table_edit.contains_key(&key) {
+                                        self.table_edit.insert(
+                                            key.clone(),
+                                            table.rows[row_index][column_index]
+                                                .as_text(),
+                                        );
+                                    }
+                                    let buffer = self
+                                        .table_edit
+                                        .get_mut(&key)
+                                        .expect("buffer just inserted");
+                                    let response = ui.add(
+                                        egui::TextEdit::singleline(buffer)
+                                            .desired_width(78.0)
+                                            .font(egui::TextStyle::Monospace),
+                                    );
+                                    if response.lost_focus() {
+                                        let cells: Vec<String> = (0..table.width())
+                                            .map(|column| {
+                                                self.table_edit
+                                                    .get(&(name.clone(), row_index, column))
+                                                    .cloned()
+                                                    .unwrap_or_default()
+                                            })
+                                            .collect();
+                                        commit = Some((row_index, cells));
+                                    }
+                                }
+                            });
                         }
-                        if table.rows.len() > 4 {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "… {} more row(s)",
-                                    table.rows.len() - 4
-                                ))
-                                .size(9.0_f32)
-                                .color(palette::TEXT_DIM),
-                            );
+                        if let Some((row_index, cells)) = commit {
+                            self.commit_table_row(name, row_index, cells);
                         }
+                        ui.horizontal(|ui| {
+                            if ui
+                                .small_button("+ row")
+                                .on_hover_text("append a row of default cells")
+                                .clicked()
+                            {
+                                self.append_table_row(name);
+                            }
+                            if ui.small_button("reset").clicked() {
+                                // Drop the buffers so they reload from the model.
+                                self.table_edit
+                                    .retain(|(table, _, _), _| table != name);
+                            }
+                        });
                         ui.add_space(2.0);
                     }
                 });
@@ -9623,6 +9742,35 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn table_cells_parse_by_looking_at_the_text() {
+        use openflex_model::TableCell;
+        assert_eq!(OpenFlexApp::parse_table_cell("42"), TableCell::Number(42.0));
+        assert_eq!(
+            OpenFlexApp::parse_table_cell(" 3.5 "),
+            TableCell::Number(3.5),
+            "surrounding whitespace is ignored for numbers"
+        );
+        assert_eq!(
+            OpenFlexApp::parse_table_cell("-1e3"),
+            TableCell::Number(-1000.0)
+        );
+        assert_eq!(OpenFlexApp::parse_table_cell("true"), TableCell::Bool(true));
+        assert_eq!(
+            OpenFlexApp::parse_table_cell("FALSE"),
+            TableCell::Bool(false)
+        );
+        assert_eq!(
+            OpenFlexApp::parse_table_cell("route A"),
+            TableCell::Str("route A".into())
+        );
+        assert_eq!(
+            OpenFlexApp::parse_table_cell("007"),
+            TableCell::Number(7.0),
+            "numeric text becomes a number, like the CSV importer"
+        );
     }
 
     #[test]
