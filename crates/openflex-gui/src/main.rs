@@ -2366,7 +2366,9 @@ impl OpenFlexApp {
         let Some(model) = self.model else {
             return;
         };
-        self.snapshot_labelled("add table row");
+        if !model.global_tables.contains_key(table_name) {
+            return;
+        }
         let mut copy = model.clone();
         let Some(table) = copy.global_tables.get_mut(table_name) else {
             return;
@@ -2383,7 +2385,9 @@ impl OpenFlexApp {
                 // The new row starts with empty buffers so it is editable.
                 self.table_edit
                     .retain(|(table, _, _), _| table != table_name);
+                self.snapshot_labelled("add table row");
                 self.model = Some(Box::leak(Box::new(copy)));
+                self.clear_analysis_results();
                 self.status = format!("{table_name} now has {rows} row(s)");
                 self.error = None;
             }
@@ -11499,6 +11503,18 @@ mod tests {
     }
 
     #[test]
+    fn appending_a_row_to_a_missing_table_is_a_noop() {
+        // No undo entry, no change: the guard runs before the snapshot.
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        let before = app.undo.len();
+        app.append_table_row("does-not-exist");
+        assert_eq!(app.undo.len(), before, "no history entry for a no-op");
+        assert!(app.error.is_none());
+    }
+
+    #[test]
     fn table_errors_name_the_table() {
         // Multi-table models need the table name in the message, otherwise the
         // user cannot tell which grid was rejected.
@@ -11950,9 +11966,10 @@ mod tests {
         let calls = production.matches("self.clear_analysis_results();").count();
         // undo, redo, apply-best, model-settings, add, delete, duplicate, rename,
         // add-connection, remove-connection, set-strategy, add-global-table,
-        // delete-global-table, add-table-column, drop-table-row, rename-column.
+        // delete-global-table, add-table-column, drop-table-row, rename-column,
+        // add-table-row.
         assert_eq!(
-            calls, 16,
+            calls, 17,
             "structural call sites changed — check that the new one clears results"
         );
         let body = production
