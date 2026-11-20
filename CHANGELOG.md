@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v1.29.0 — 2026-11-20
+
+本轮把桌面 GUI 的**数据可信性**与**不丢工作**做实：所有会写回模型的数值统一为 f64、结果随模型结构变化失效、后台任务的结果都带来源模型；同时补齐「丢弃文档 / 批量删除 / 关闭窗口」的二次确认，并让导出与另存的落盘位置可预测。发布节奏保持**至少 3 小时一版**。
 
 ### 桌面 GUI（功能补齐）
 
@@ -143,6 +145,12 @@
   `travel/load/unload`、可 `up` 上移与 `x` 删除，另有 `+travel/+load/+unload` 追加与 `clear`；
   切换种类时保留该步原有的 `duration`/`condition`。新增 `task_steps_keep_their_details_when_the_kind_changes`
   测试（GUI 57 项）。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**601 passed / 0 failed**。
+- GUI 单元测试 **93 项**；其中「交互约定」九条各有一条测试锁住（见 `docs/GUI.md`）。
+- GUI `clippy` 0、`fmt` 干净；以 `mm1.ofm`、无效模型、`by_label` 队列、任务序列、全局表等模型启动均无 panic。
 
 ## v1.28.0 — 2026-11-20
 
