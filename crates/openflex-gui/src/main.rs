@@ -2053,11 +2053,12 @@ impl OpenFlexApp {
                 self.model = Some(Box::leak(Box::new(model)));
                 self.path = None;
                 self.path_input.clear();
-                self.selected = None;
-                self.form = None;
                 self.report = None;
-                self.handle = None;
-                self.sim_state = None;
+                // A new document shares no state with the previous one.
+                self.clear_object_editor();
+                self.event_log.clear();
+                self.running = false;
+                self.paused = false;
                 self.undo.clear();
                 self.redo.clear();
                 self.model_name = "untitled".into();
