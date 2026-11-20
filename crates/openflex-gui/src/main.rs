@@ -2440,6 +2440,11 @@ impl OpenFlexApp {
     /// Loads a model shipped with the repository (`examples/**`), trying the
     /// usual relative locations so the GUI works from the repo or a bundle.
     fn load_example(&mut self, name: &str) {
+        // The guard lives here so any caller (menu, empty state, shortcut) gets
+        // the same protection.
+        if !self.may_replace_document(&format!("Open example {name}")) {
+            return;
+        }
         let candidates = [
             format!("examples/{name}.ofm"),
             format!("examples/objects/{name}.ofm"),
@@ -2449,7 +2454,7 @@ impl OpenFlexApp {
         for candidate in candidates {
             let path = PathBuf::from(&candidate);
             if path.exists() {
-                self.load(path);
+                self.load_unchecked(path);
                 return;
             }
         }
@@ -2684,6 +2689,18 @@ impl OpenFlexApp {
     }
 
     fn load(&mut self, path: PathBuf) {
+        // Every entry point (toolbar, Recent, browser, example) must go through
+        // the discard guard: opening a model replaces the document.
+        let action = format!("Open {}", path.display());
+        if !self.may_replace_document(&action) {
+            return;
+        }
+        self.load_unchecked(path);
+    }
+
+    /// Loads a model without asking about unsaved edits (the caller has already
+    /// confirmed, e.g. example loading).
+    fn load_unchecked(&mut self, path: PathBuf) {
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(error) => {
@@ -7431,9 +7448,7 @@ impl eframe::App for OpenFlexApp {
                             .fill(palette::CARD)
                             .stroke(egui::Stroke::new(1.0_f32, palette::STROKE))
                             .rounding(egui::Rounding::same(10.0_f32));
-                            if ui.add(button).on_hover_text(hint).clicked()
-                                && self.may_replace_document("the example")
-                            {
+                            if ui.add(button).on_hover_text(hint).clicked() {
                                 self.load_example(example);
                             }
                         }
@@ -11095,6 +11110,37 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn the_discard_guard_keys_on_the_action_you_pressed() {
+        // Open asks under its own key, so pressing New first does not authorise
+        // an Open. The key includes the path, so a second Open of the *same*
+        // file is what confirms it.
+        let mut pending: Option<String> = None;
+        let mut decide = |dirty: bool, action: &str| {
+            if !dirty {
+                pending = None;
+                return true;
+            }
+            if pending.as_deref() == Some(action) {
+                pending = None;
+                return true;
+            }
+            pending = Some(action.to_string());
+            false
+        };
+        let _ = decide(true, "New");
+        assert!(
+            !decide(true, "Open /tmp/a.ofm"),
+            "New does not authorise Open"
+        );
+        assert!(decide(true, "Open /tmp/a.ofm"), "the same Open confirms");
+        let _ = decide(true, "Open /tmp/a.ofm");
+        assert!(
+            !decide(true, "Open /tmp/b.ofm"),
+            "a different file needs its own confirmation"
+        );
     }
 
     #[test]

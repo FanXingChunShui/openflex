@@ -4,6 +4,10 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **未保存守卫覆盖所有打开入口**：`load()` 内部先过 `may_replace_document()`，因此工具栏、`Recent` 菜单、
+  内置文件浏览器、示例加载都受保护（此前只有工具栏的两个按钮）；已确认过的示例加载改走
+  `load_unchecked()`，`load_example()` 自己持守卫，不会再重复问两次。
+  新增 `the_discard_guard_keys_on_the_action_you_pressed` 测试（GUI 90 项）。
 - **文件路径统一走 `report_path()`**：时序 CSV 与视图 SVG 的备用文件名（`openflex-timeseries.csv`、
   `openflex-view.svg`）改为与其它导出同一套「模型同目录 / `~/Documents`」规则；
   `preset_path()` 对未保存的模型不再返回 `None`（那会让「保存布局预设」静默失败），改用
