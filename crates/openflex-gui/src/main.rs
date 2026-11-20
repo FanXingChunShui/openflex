@@ -4268,6 +4268,26 @@ idle,busy,blocked,down\n",
 
     /// Writes the current layout/state as an SVG snapshot (same projection as
     /// the canvas, including rotation and the heatmap colours).
+    /// Projection used by the SVG export: the camera projection normally, a
+    /// plain top-down mapping in the flat 2D view.
+    fn project_for_export(
+        &self,
+        pos: [f64; 2],
+        z: f64,
+        center: egui::Pos2,
+        scale: f32,
+    ) -> egui::Pos2 {
+        if self.flat_view {
+            center
+                + egui::vec2(
+                    (pos[0] - self.focus[0] as f64) as f32 * scale,
+                    (pos[1] - self.focus[1] as f64) as f32 * scale,
+                )
+        } else {
+            self.project(pos, z, center, scale)
+        }
+    }
+
     fn export_svg(&mut self) {
         let Some(model) = self.model else {
             return;
@@ -4297,8 +4317,8 @@ idle,busy,blocked,down\n",
             else {
                 continue;
             };
-            let a = self.project(from.pos, 0.0, center, scale);
-            let b = self.project(to.pos, 0.0, center, scale);
+            let a = self.project_for_export(from.pos, 0.0, center, scale);
+            let b = self.project_for_export(to.pos, 0.0, center, scale);
             svg.push_str(&format!(
                 r##"<line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="#5a7896" stroke-width="2.4" stroke-opacity="0.35"/>
 <line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="#86a6c8" stroke-width="1.2"/>
@@ -4323,7 +4343,7 @@ idle,busy,blocked,down\n",
             }
         }
         for object in &model.objects {
-            let point = self.project(object.pos, object.z, center, scale);
+            let point = self.project_for_export(object.pos, object.z, center, scale);
             let base = match self.heatmap_fill(&object.name) {
                 Some(colour) => colour,
                 None => Self::kind_color(object.kind),
