@@ -2051,11 +2051,26 @@ impl OpenFlexApp {
             self.error = Some("process flow has no blocks array".into());
             return;
         };
-        let count = blocks.len() + 1;
-        let id = format!(
-            "{}{count}",
-            kind.chars().next().unwrap_or('B').to_uppercase()
-        );
+        // Ids are `C1`, `D2`, … derived from the kind prefix; reuse of a
+        // deleted id would make the flow ambiguous, so find a free number.
+        let prefix = kind
+            .chars()
+            .next()
+            .unwrap_or('B')
+            .to_uppercase()
+            .to_string();
+        let used: Vec<String> = blocks
+            .iter()
+            .filter_map(|block| block.get("id")?.as_str().map(str::to_string))
+            .collect();
+        let mut counter = used.len() + 1;
+        let id = loop {
+            let candidate = format!("{prefix}{counter}");
+            if !used.contains(&candidate) {
+                break candidate;
+            }
+            counter += 1;
+        };
         let block = match kind {
             "create" => serde_json::json!({
                 "id": id, "kind": "create", "quantity": 1, "first_arrival": 0.0,
@@ -8802,9 +8817,29 @@ mod tests {
     }
 
     #[test]
+    fn flow_block_ids_avoid_reuse() {
+        // Mirrors the allocation loop in `add_flow_block`.
+        let mut used: Vec<String> = vec!["C1".into(), "C3".into()];
+        let next = |prefix: &str, used: &[String]| {
+            let mut counter = used.len() + 1;
+            loop {
+                let candidate = format!("{prefix}{counter}");
+                if !used.iter().any(|id| id == &candidate) {
+                    return candidate;
+                }
+                counter += 1;
+            }
+        };
+        assert_eq!(next("C", &used), "C4");
+        used.push("C4".into());
+        assert_eq!(next("C", &used), "C5");
+        assert_eq!(next("D", &used), "D4", "other prefixes are independent");
+    }
+
+    #[test]
     fn flow_connection_input_rules() {
         // The rules the UI enforces before a connection is appended.
-        let ids = vec!["A".to_string(), "B".to_string()];
+        let ids = ["A".to_string(), "B".to_string()];
         let accepts = |from: &str, to: &str| {
             from != to && ids.contains(&from.to_string()) && ids.contains(&to.to_string())
         };
