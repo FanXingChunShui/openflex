@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **窗口标题同步**：操作系统标题栏改为 `OpenFlex — <模型名><未保存 *><— playing/— running>`，
+  有变化时才发 `ViewportCommand::Title`；`window_title_text()` + `window_title_reflects_document_state` 测试（GUI 31 项）。
 - **撤销历史列表**：撤销栈改为 `(json, label)` 二元组，16 个主要编辑入口（新增/删除/复制/移动/旋转/对齐/分布/网格/
   自动布局/重命名/连接增删/表单/JSON/模型设置/布局预设）都用 `snapshot_labelled()` 记录动作名；
   左侧新增 `History (n undo / m redo)` 面板，按序号列出每步并可**点击回退到该步**，状态栏显示 `Undo: <动作>`。

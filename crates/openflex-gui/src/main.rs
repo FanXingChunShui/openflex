@@ -1478,6 +1478,8 @@ struct OpenFlexApp {
     sim_state: Option<SimulationState>,
     event_log: Vec<EventEntry>,
     event_filter: String,
+    /// Last title pushed to the OS window, to avoid redundant commands.
+    window_title: String,
     /// Bumped whenever the model is replaced; keys the validation cache.
     model_gen: u64,
     /// Cached `validate_collect` result for `model_gen`.
@@ -1600,6 +1602,7 @@ impl OpenFlexApp {
             sim_state: None,
             event_log: Vec::new(),
             event_filter: String::new(),
+            window_title: String::new(),
             model_gen: 0,
             validity_cache: None,
             heatmap: 0,
@@ -1717,6 +1720,20 @@ impl OpenFlexApp {
             }
             self.redo.clear();
         }
+    }
+
+    /// Title bar text: `OpenFlex — <model><dirty><state>`.
+    fn window_title_text(model: Option<&str>, dirty: bool, playing: bool, running: bool) -> String {
+        let name = model.unwrap_or("no model");
+        let dirty = if dirty { " *" } else { "" };
+        let state = if playing {
+            " — playing"
+        } else if running {
+            " — running"
+        } else {
+            ""
+        };
+        format!("OpenFlex — {name}{dirty}{state}")
     }
 
     /// Drops the per-object editor buffers after the model changed underneath
@@ -5100,6 +5117,17 @@ idle,busy,blocked,down\n",
 impl eframe::App for OpenFlexApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.last_frame = ctx.input(|input| input.stable_dt) as f64;
+        // Keep the OS title bar in sync: model name, unsaved marker, run state.
+        let title = Self::window_title_text(
+            self.model.map(|model| model.name.as_str()),
+            self.model_dirty,
+            self.running && !self.paused,
+            self.report_running,
+        );
+        if title != self.window_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.window_title = title;
+        }
         self.poll_report();
         self.poll_experiment();
         self.poll_timeseries();
@@ -9206,6 +9234,31 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn window_title_reflects_document_state() {
+        assert_eq!(
+            OpenFlexApp::window_title_text(None, false, false, false),
+            "OpenFlex — no model"
+        );
+        assert_eq!(
+            OpenFlexApp::window_title_text(Some("demo"), false, false, false),
+            "OpenFlex — demo"
+        );
+        assert_eq!(
+            OpenFlexApp::window_title_text(Some("demo"), true, false, false),
+            "OpenFlex — demo *",
+            "unsaved marker"
+        );
+        assert_eq!(
+            OpenFlexApp::window_title_text(Some("demo"), true, true, false),
+            "OpenFlex — demo * — playing"
+        );
+        assert_eq!(
+            OpenFlexApp::window_title_text(Some("demo"), false, false, true),
+            "OpenFlex — demo — running"
+        );
     }
 
     #[test]
