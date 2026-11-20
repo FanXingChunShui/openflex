@@ -4,6 +4,8 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **`Delete` 删除选中**：新增 `Delete` / `Backspace` 快捷键（文本框有焦点时不触发），走 `batch_delete()` 的
+  引用清理与撤销路径；帮助对话框补上该键与 `2D on/off`、相机预设三项。
 - **两个内置示例**：空状态新增 `agv-delivery`（调度器 + AGV 把成品送到汇点）与 `fluid-line`
   （发电机 → 水箱 → 阀门 → 汇点），覆盖 AGV 与流体两条此前没有示例的路径。
   两者都用 CLI 跑过：`agv-delivery` 完成 30 件、Agv1 利用率 0.45；`fluid-line` 流量 4.0 → 3.63。

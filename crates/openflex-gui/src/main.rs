@@ -8503,11 +8503,17 @@ impl eframe::App for OpenFlexApp {
                                 ("Ctrl/Cmd + D", "duplicate the selection"),
                                 ("click", "select an object"),
                                 ("drag on empty space", "marquee select"),
+                                ("Delete / Backspace", "delete the selection"),
                             ][..],
                         ),
                         (
                             "VIEW",
-                            &[("drag", "rotate the camera"), ("wheel", "zoom")][..],
+                            &[
+                                ("drag", "rotate the camera"),
+                                ("wheel", "zoom"),
+                                ("2D on/off", "flat floor-plan view"),
+                                ("Top / Front / Side", "camera presets"),
+                            ][..],
                         ),
                         ("HELP", &[("F1", "toggle this dialog")][..]),
                     ] {
@@ -8801,6 +8807,13 @@ impl eframe::App for OpenFlexApp {
             }
             if !typing && input.consume_key(egui::Modifiers::COMMAND, egui::Key::D) {
                 self.duplicate_selection();
+            }
+            // Delete removes the selection (FlexSim uses the same key).
+            if !typing
+                && (input.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+                    || input.consume_key(egui::Modifiers::NONE, egui::Key::Backspace))
+            {
+                self.batch_delete();
             }
             // Right arrow steps the simulation by the current step size.
             if !typing && input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight) {
