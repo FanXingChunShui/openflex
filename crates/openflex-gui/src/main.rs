@@ -1123,11 +1123,39 @@ impl EditForm {
                                         changed = true;
                                     }
                                 }
-                                if matches!(p.order, QueueOrder::ByLabel(_)) {
-                                    ui.label("by_label(…) — edit via JSON");
+                                // `by_label` needs a label name: offer the
+                                // field instead of sending the user to JSON.
+                                let selected = matches!(p.order, QueueOrder::ByLabel(_));
+                                if ui
+                                    .selectable_label(selected, "by_label")
+                                    .on_hover_text("sort by a numeric item label")
+                                    .clicked()
+                                    && !selected
+                                {
+                                    p.order = QueueOrder::ByLabel("label".to_string());
+                                    changed = true;
                                 }
                             });
                     });
+                    if let QueueOrder::ByLabel(name) = &mut p.order {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("label")
+                                    .small()
+                                    .color(palette::TEXT_DIM),
+                            );
+                            if ui
+                                .add(
+                                    egui::TextEdit::singleline(name)
+                                        .hint_text("item label key")
+                                        .desired_width(140.0),
+                                )
+                                .changed()
+                            {
+                                changed = true;
+                            }
+                        });
+                    }
                 }
             }
             ObjectParams::Processor(p) => {
@@ -10305,6 +10333,23 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn queue_order_by_label_round_trips() {
+        use openflex_model::QueueOrder;
+        // The form writes `QueueOrder::ByLabel(String)`; the model serialises it
+        // as `{"by_label": "..."}`.
+        let order = QueueOrder::ByLabel("priority".to_string());
+        let json = serde_json::to_string(&order).expect("serialise");
+        assert_eq!(json, r#"{"by_label":"priority"}"#);
+        let back: QueueOrder = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back, order);
+        // Simple variants stay plain strings.
+        assert_eq!(
+            serde_json::to_string(&QueueOrder::Lifo).expect("serialise"),
+            r#""lifo""#
+        );
     }
 
     #[test]

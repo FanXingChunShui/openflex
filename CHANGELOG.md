@@ -8,6 +8,9 @@
   仍是 8；`gamma(shape 3, scale 4)` → `weibull` 不变；`integer_uniform(1..6)` → `triangular` 保留 1 和 6），
   没有共同字段才回落到默认值。此前每次切换都会重置成默认，手填的数值全丢。
   新增 `switching_distribution_keeps_shared_parameters` 测试（GUI 55 项）。
+- **`by_label` 队列排序可编辑**：队列 `order` 下拉新增 `by_label` 选项，并在其下给出标签输入框；
+  此前只有 `fifo/lifo/priority` 三项，`by_label` 显示为 `by_label(…) — edit via JSON`。
+  新增 `queue_order_by_label_round_trips` 测试（GUI 56 项），确认 `{"by_label":"…"}` 的序列化形式。
 
 ## v1.28.0 — 2026-11-20
 
