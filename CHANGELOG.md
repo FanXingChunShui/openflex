@@ -4,6 +4,10 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **采样可取消**：时序采样运行中按钮变成 `Cancel`，点击后工作线程通过原子标志提前停止，状态栏报告
+  `Sample cancelled after N sample(s) — partial data kept`；此前大模型采样期间面板被锁住，只能等它跑完。
+  新增 `sampling_can_be_cancelled` 测试（GUI 73 项）。
+- **保存成功清理标记**：普通 `Save` 成功后也清 `form_dirty` 与错误横幅，并把模型文件计入 `Outputs`。
 - **批量删除二次确认**：一次删除 3 个及以上对象时，第一次 `Delete` 只给出
   `Press Delete again to remove the selection`，再按一次才执行；删 1–2 个仍是一步完成。
   待确认的名单在选中变化（点击、全选、框选、组内全选）时立即失效，避免隔了很久误删。

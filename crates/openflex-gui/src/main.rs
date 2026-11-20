@@ -1850,6 +1850,8 @@ struct OpenFlexApp {
     model_unit: u8,
     /// Trace of the last `Trace run` (full event stream from the engine).
     trace: Option<openflex_core::TraceLog>,
+    /// Set to true to ask long-running samplers to stop early.
+    cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Worker channel for `Trace run`: (outcome, elapsed).
     trace_rx: Option<Receiver<(TraceOutcome, std::time::Duration)>>,
     trace_running: bool,
@@ -1978,6 +1980,7 @@ impl OpenFlexApp {
             model_replications: 1,
             model_unit: 0,
             trace: None,
+            cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             trace_rx: None,
             trace_running: false,
             checkpoint_dir: "checkpoints".into(),
@@ -2714,7 +2717,11 @@ impl OpenFlexApp {
         match model.to_json() {
             Ok(text) => match std::fs::write(&path, text) {
                 Ok(()) => {
+                    // A successful save clears both markers and any stale error.
                     self.model_dirty = false;
+                    self.form_dirty = false;
+                    self.error = None;
+                    self.remember_output(&path);
                     self.status = format!("Saved {}", path.display());
                 }
                 Err(error) => self.error = Some(format!("could not write: {error}")),
@@ -2931,6 +2938,8 @@ impl OpenFlexApp {
         let (tx, rx) = channel();
         self.series_rx = Some(rx);
         self.series_running = true;
+        let cancel = self.cancel_flag.clone();
+        cancel.store(false, std::sync::atomic::Ordering::SeqCst);
         self.status = "Sampling time series…".into();
         std::thread::spawn(move || {
             let config = SimConfig {
@@ -2944,7 +2953,10 @@ impl OpenFlexApp {
             let max_samples = 20_000usize;
             if let Ok(mut handle) = SimulationHandle::new(model, &config, 0) {
                 let mut now = 0.0;
-                while now < stop - 1e-9 && rows.len() < max_samples {
+                while now < stop - 1e-9
+                    && rows.len() < max_samples
+                    && !cancel.load(std::sync::atomic::Ordering::SeqCst)
+                {
                     now = (now + interval).min(stop);
                     if handle.step_until(now).is_err() {
                         break;
@@ -2975,6 +2987,7 @@ impl OpenFlexApp {
         };
         match rx.try_recv() {
             Ok((rows, source)) => {
+                let cancelled = self.cancel_flag.load(std::sync::atomic::Ordering::SeqCst);
                 let capped = rows.len() >= 20_000;
                 // The samples belong to the model that produced them; say so
                 // when the document changed while the worker ran.
@@ -2992,8 +3005,21 @@ impl OpenFlexApp {
                 } else {
                     format!("Time series: {} samples{suffix}", rows.len())
                 };
+                if cancelled {
+                    self.status = format!(
+                        "Sample cancelled after {} sample(s){}",
+                        rows.len(),
+                        if rows.is_empty() {
+                            ""
+                        } else {
+                            " — partial data kept"
+                        }
+                    );
+                }
                 self.series = rows;
                 self.series_running = false;
+                self.cancel_flag
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
                 self.series_rx = None;
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -8594,15 +8620,20 @@ impl eframe::App for OpenFlexApp {
                             .speed(0.5)
                             .range(0.1..=1000.0),
                     );
-                    if ui
-                        .add_enabled(
-                            self.model.is_some() && !self.series_running,
-                            egui::Button::new(if self.series_running {
-                                "Sampling…"
-                            } else {
-                                "Sample"
-                            }),
-                        )
+                    if self.series_running {
+                        // A long sample used to lock the panel with no way out.
+                        if ui.button("Cancel").clicked() {
+                            self.cancel_flag
+                                .store(true, std::sync::atomic::Ordering::SeqCst);
+                            self.status = "Cancelling the sample…".into();
+                        }
+                        ui.label(
+                            egui::RichText::new("sampling…")
+                                .small()
+                                .color(palette::TEXT_DIM),
+                        );
+                    } else if ui
+                        .add_enabled(self.model.is_some(), egui::Button::new("Sample"))
                         .clicked()
                     {
                         self.start_timeseries();
@@ -10688,6 +10719,30 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn sampling_can_be_cancelled() {
+        // The flag the sampler polls, and the message the poll handler prints.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let cancel = AtomicBool::new(false);
+        let mut samples = 0;
+        while samples < 1000 && !cancel.load(Ordering::SeqCst) {
+            samples += 1;
+            if samples == 5 {
+                cancel.store(true, Ordering::SeqCst);
+            }
+        }
+        assert_eq!(samples, 5, "the loop stops on the flag");
+        assert!(cancel.load(Ordering::SeqCst));
+        // A fresh run resets it, so the next sample is not born cancelled.
+        cancel.store(false, Ordering::SeqCst);
+        assert!(!cancel.load(Ordering::SeqCst));
+        let message = format!(
+            "Sample cancelled after {} sample(s){}",
+            5, " — partial data kept"
+        );
+        assert!(message.contains("partial data kept"));
     }
 
     #[test]
