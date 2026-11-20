@@ -11,6 +11,9 @@
   `checkpoint-100.00` 之后；改为解析文件名中的模型时间排序（`checkpoint_time()`），并加
   `checkpoints_sort_by_model_time_not_by_name` 测试（GUI 46 项）。
 - **实验柱状图**：最优场景的柱子改为绿色（表格里也仍以 `*` 标注），悬停时描边并在柱顶显示完成数。
+- **端口策略编辑可撤销**：`set_connection_strategy` 先做越界检查再记快照，并把动作名写进历史
+  （`connection: rr / random / hold / first / by type / by label / by percent / by condition`）；
+  此前用的是无标签的 `snapshot()`，越界时还会留下空历史项。
 - **连接删除提示**：连接列表的 `x` 悬停时提示 `remove A -> B`，避免在长列表里点错行。
 - **连接添加的校验**：`add_connection` 现在拒绝自连与重复边（流程连线早有同样规则，对象连线没有），
   错误信息为 `{from} -> {to} already exists` / `an object cannot connect to itself`。

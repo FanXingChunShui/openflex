@@ -4949,7 +4949,26 @@ idle,busy,blocked,down\n",
         let Some(model) = self.model else {
             return;
         };
-        self.snapshot();
+        // Bounds-check before touching the undo stack, and give the entry a
+        // label so the history list says what changed.
+        if index >= model.connections.len() {
+            return;
+        }
+        let label = match strategy {
+            Some(openflex_model::model::PortStrategy::RoundRobin) => "connection: rr",
+            Some(openflex_model::model::PortStrategy::Random) => "connection: random",
+            Some(openflex_model::model::PortStrategy::Hold) => "connection: hold",
+            Some(openflex_model::model::PortStrategy::ByItemType) => "connection: by type",
+            Some(openflex_model::model::PortStrategy::ByLabel { .. }) => "connection: by label",
+            Some(openflex_model::model::PortStrategy::ByPercentage { .. }) => {
+                "connection: by percent"
+            }
+            Some(openflex_model::model::PortStrategy::ByCondition { .. }) => {
+                "connection: by condition"
+            }
+            Some(openflex_model::model::PortStrategy::FirstAvailable) | None => "connection: first",
+        };
+        self.snapshot_labelled(label);
         let mut copy = model.clone();
         if let Some(connection) = copy.connections.get_mut(index) {
             connection.strategy = strategy;
