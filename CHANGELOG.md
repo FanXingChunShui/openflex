@@ -7,6 +7,7 @@
 - **基线归属校验**：`Load baseline` 时若基线报告的模型名与当前模型不同，状态栏提示
   `(warning: baseline is for 'X', current model is 'Y')`，避免把别的模型的报告当成本模型基线。
   新增 `baseline_note_only_fires_on_a_name_mismatch` 测试（GUI 42 项）。
+  四处判断随后收敛为 `result_is_stale(&source)` 一个辅助函数，避免再出现「只改了其中两处」的情况。
 - **四类异步结果都能溯源**：`Run` / 时序采样 / 实验 / 优化现在都把模型名随结果送回，
   若当前文档已改名或换模型，状态栏标注 `from 'X' (model changed since)`；此前换模型后旧时序曲线与新结果
   会被当成本模型的数据。新增 `every_worker_reports_the_model_it_ran` 测试（GUI 43 项）锁住这一点。

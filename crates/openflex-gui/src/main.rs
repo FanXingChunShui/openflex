@@ -2127,6 +2127,14 @@ impl OpenFlexApp {
         self.save_recent();
     }
 
+    /// Whether a result produced by a worker belongs to a different document
+    /// than the one currently open (an unnamed model cannot be compared).
+    fn result_is_stale(&self, source: &str) -> bool {
+        self.model
+            .map(|model| !model.name.is_empty() && model.name != source)
+            .unwrap_or(false)
+    }
+
     /// `~/.config/openflex/ui.json`: view preferences that survive restarts.
     fn ui_config_path() -> Option<std::path::PathBuf> {
         Self::recent_config_path().map(|path| path.with_file_name("ui.json"))
@@ -2617,10 +2625,7 @@ impl OpenFlexApp {
                 let capped = rows.len() >= 20_000;
                 // The samples belong to the model that produced them; say so
                 // when the document changed while the worker ran.
-                let stale = self
-                    .model
-                    .map(|model| !model.name.is_empty() && model.name != source)
-                    .unwrap_or(false);
+                let stale = self.result_is_stale(&source);
                 let suffix = if stale {
                     format!(" for '{source}' (model changed since)")
                 } else {
@@ -2837,10 +2842,7 @@ impl OpenFlexApp {
                 rows.sort_by(|a, b| b.1.total_cmp(&a.1));
                 rows.truncate(20);
                 self.opt_best = rows.first().cloned();
-                let stale = self
-                    .model
-                    .map(|model| !model.name.is_empty() && model.name != source)
-                    .unwrap_or(false);
+                let stale = self.result_is_stale(&source);
                 let stale_note = if stale {
                     format!(" · from '{source}' (model changed since)")
                 } else {
@@ -4229,10 +4231,7 @@ idle,busy,blocked,down\n",
             Ok((rows, failed, source, elapsed)) => {
                 let seconds = elapsed.as_secs_f64();
                 let runs = rows.len().max(1);
-                let stale = self
-                    .model
-                    .map(|model| !model.name.is_empty() && model.name != source)
-                    .unwrap_or(false);
+                let stale = self.result_is_stale(&source);
                 let mut note = if stale {
                     format!(" · from '{source}' (model changed since)")
                 } else {
@@ -9864,10 +9863,24 @@ mod tests {
                 "a worker does not record the model it ran: {needle}"
             );
         }
-        // And each poll handler compares it before presenting the result.
+        // And each poll handler goes through the shared staleness check, so a
+        // result produced for a previous document gets labelled.
+        // Count the calls before this test body so the assertion does not count
+        // its own literal.
+        let before_tests = source
+            .split("mod tests")
+            .next()
+            .expect("source before the test module");
+        assert_eq!(
+            before_tests
+                .matches("let stale = self.result_is_stale(&source);")
+                .count(),
+            3,
+            "the report, series and experiment handlers must all check provenance"
+        );
         assert!(
-            source.matches("model.name != source").count() >= 3,
-            "not every worker result is checked against the current model"
+            source.contains("fn result_is_stale"),
+            "the shared provenance check is missing"
         );
     }
 
