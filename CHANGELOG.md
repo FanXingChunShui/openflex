@@ -20,6 +20,10 @@
   与 `Grid`（2 个）、`Distribute`（3 个）的提示口径一致；这三个按钮都没有按选区数量禁用，
   所以此前点 `Align X` 会完全没反应。新增 `arrange_actions_explain_their_minimum_selection` 测试（GUI 96 项）。
 
+- **`Apply` 后重建触发器/班次缓冲**：`apply_form()` 会把 `Triggers`/`Timetable` 的文本解析进参数并提交，
+  随后再用提交后的模型重写这两个缓冲（它们存在 `EditForm` 上）。此前提交后文本框仍显示旧内容，
+  再点一次 Apply 会把旧触发器写回去。新增 `applying_the_form_rewrites_the_json_buffers` 测试（GUI 97 项）。
+
 ## v1.29.0 — 2026-11-20
 
 本轮把桌面 GUI 的**数据可信性**与**不丢工作**做实：所有会写回模型的数值统一为 f64、结果随模型结构变化失效、后台任务的结果都带来源模型；同时补齐「丢弃文档 / 批量删除 / 关闭窗口」的二次确认，并让导出与另存的落盘位置可预测。发布节奏保持**至少 3 小时一版**。

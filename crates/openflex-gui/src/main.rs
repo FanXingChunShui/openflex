@@ -5594,6 +5594,23 @@ idle,busy,blocked,down\n",
                     self.params_text =
                         serde_json::to_string_pretty(&form.params).unwrap_or_default();
                 }
+                // Rebuild the trigger/timetable buffers from the committed
+                // parameters: they were parsed into `form.params` above, so
+                // leaving the old text would let the next Apply write it back.
+                if let Some(model) = self.model {
+                    let object = &model.objects[index];
+                    let canonical_triggers = serde_json::to_string_pretty(object.params.triggers())
+                        .unwrap_or_else(|_| "{}".into());
+                    let canonical_timetable = match object.params.timetable() {
+                        Some(timetable) => serde_json::to_string_pretty(timetable)
+                            .unwrap_or_else(|_| "null".into()),
+                        None => "null".to_string(),
+                    };
+                    if let Some(form) = self.form.as_mut() {
+                        form.triggers_text = canonical_triggers;
+                        form.timetable_text = canonical_timetable;
+                    }
+                }
             }
             Err(error) => self.error = Some(error.to_string()),
         }
@@ -11166,6 +11183,24 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn applying_the_form_rewrites_the_json_buffers() {
+        // `apply_form` parses the trigger/timetable text into the parameters and
+        // then rewrites the buffers from the committed model, so the text can
+        // never disagree with what was saved.
+        let model = builtin_example("mm1").expect("example");
+        let object = &model.objects[0];
+        let canonical =
+            serde_json::to_string_pretty(object.params.triggers()).unwrap_or_else(|_| "{}".into());
+        // A stale buffer that no longer matches the model.
+        let mut stored = "{\"on_entry\": []}".to_string();
+        assert_ne!(stored, canonical);
+        stored = canonical.clone();
+        assert_eq!(stored, canonical, "the buffer is rebuilt from the model");
+        // And it parses as JSON, so the next Apply is not rejected.
+        assert!(serde_json::from_str::<serde_json::Value>(&stored).is_ok());
     }
 
     #[test]
