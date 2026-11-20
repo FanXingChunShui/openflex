@@ -5382,6 +5382,34 @@ impl eframe::App for OpenFlexApp {
                             .small()
                             .color(palette::TEXT_DIM),
                     );
+                    // Model validity is always visible here, not only while an
+                    // object happens to be selected.
+                    if let Some(model) = self.model {
+                        let issues = openflex_model::validate_collect(model);
+                        if issues.is_empty() {
+                            ui.label(
+                                egui::RichText::new("valid")
+                                    .size(9.0_f32)
+                                    .color(palette::OK.gamma_multiply(0.85)),
+                            )
+                            .on_hover_text("the model passes validation");
+                        } else {
+                            ui.label(
+                                egui::RichText::new(format!("{} issue(s)", issues.len()))
+                                    .size(9.0_f32)
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(226, 116, 96)),
+                            )
+                            .on_hover_text(
+                                issues
+                                    .iter()
+                                    .take(6)
+                                    .map(|issue| format!("{}: {}", issue.location, issue.message))
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
+                            );
+                        }
+                    }
                     if self.report_running
                         || self.exp_running
                         || self.series_running
@@ -8942,7 +8970,7 @@ mod tests {
 
     #[test]
     fn event_log_matches_filters_case_insensitively() {
-        let entries = vec![
+        let entries = [
             EventEntry {
                 time: 1.0,
                 kind: "arrive".into(),
