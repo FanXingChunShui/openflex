@@ -4,6 +4,11 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **窗口与面板状态持久化**：启用 eframe 的 `persistence`（纯 Rust，无新增系统依赖），把 `persistence_path` 指向
+  `~/.config/openflex/app.ron`，窗口尺寸/位置、侧栏宽度与各折叠面板的开合状态重启后保留。
+  另加 20 秒一次的 `request_repaint_after`——eframe 只在窗口事件时自动保存，只读不操作时状态原本不会落盘。
+  实测生成 5088 字节的 `app.ron`，内含窗口几何与各 CollapsingHeader 的 `open/open_height`。
+  新增 `persistence_path_is_a_file_next_to_the_other_configs` 测试（GUI 58 项）。
 - **切换分布保留参数**：在分布下拉里改类型时，新分布会继承旧分布里**同名字段**（`normal(mean 8)` → `exponential`
   仍是 8；`gamma(shape 3, scale 4)` → `weibull` 不变；`integer_uniform(1..6)` → `triangular` 保留 1 和 6），
   没有共同字段才回落到默认值。此前每次切换都会重置成默认，手填的数值全丢。

@@ -132,9 +132,26 @@ fn builtin_example(name: &str) -> Option<Model> {
     Model::from_json(json).ok()
 }
 
+/// File eframe uses for its window/panel state
+/// (`~/.config/openflex/app.ron`), next to `recent.json` and `ui.json`.
+fn persistence_file() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config"))
+        })
+        .or_else(|| std::env::var_os("APPDATA").map(std::path::PathBuf::from))?;
+    let dir = base.join("openflex");
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join("app.ron"))
+}
+
 fn main() -> eframe::Result<()> {
     let model = std::env::args().nth(1);
     let options = eframe::NativeOptions {
+        // Window size/position and collapsing-header state survive restarts.
+        persistence_path: persistence_file(),
+        persist_window: true,
         viewport: egui::ViewportBuilder::default()
             .with_icon(app_icon())
             .with_inner_size([1360.0, 860.0])
@@ -5830,6 +5847,10 @@ impl eframe::App for OpenFlexApp {
         {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
+        // eframe only autosaves on a window event; a slow repaint keeps the
+        // event loop alive so window size and panel state reach `app.ron`
+        // even when the user is just looking at the model.
+        ctx.request_repaint_after(std::time::Duration::from_secs(20));
         if self.running && !self.paused {
             // Playback speed multiplies the model time advanced per frame,
             // mirroring FlexSim's run-speed slider without changing the
@@ -10408,6 +10429,23 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn persistence_path_is_a_file_next_to_the_other_configs() {
+        // eframe appends the .ron contents to whatever path it gets: a directory
+        // there would silently never persist anything.
+        let path = persistence_file();
+        if let Some(path) = path {
+            assert!(
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".ron")),
+                "the persistence path must be a file: {}",
+                path.display()
+            );
+            assert!(path.parent().is_some());
+        }
     }
 
     #[test]
