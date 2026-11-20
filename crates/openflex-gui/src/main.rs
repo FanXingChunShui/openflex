@@ -1439,6 +1439,10 @@ type SeriesPoint = (String, f64, f64, f64); // object, content, throughput, util
 /// One scenario row of the experiment table: `(value, completed mean, ci95)`.
 type ExpRow = (f64, f64, f64);
 
+/// Result delivered by the trace worker: the run and its event log.
+type TraceOutcome =
+    Result<(openflex_core::ReplicationResult, openflex_core::TraceLog), openflex_core::SimError>;
+
 /// Result delivered by the experiment worker: the rows plus how long it took.
 type ExpResult = (Vec<ExpRow>, usize, std::time::Duration);
 
@@ -1542,6 +1546,9 @@ struct OpenFlexApp {
     model_unit: u8,
     /// Trace of the last `Trace run` (full event stream from the engine).
     trace: Option<openflex_core::TraceLog>,
+    /// Worker channel for `Trace run`: (outcome, elapsed).
+    trace_rx: Option<Receiver<(TraceOutcome, std::time::Duration)>>,
+    trace_running: bool,
     checkpoint_dir: String,
     checkpoint_status: String,
     layout_presets: Vec<LayoutPreset>,
@@ -1665,6 +1672,8 @@ impl OpenFlexApp {
             model_replications: 1,
             model_unit: 0,
             trace: None,
+            trace_rx: None,
+            trace_running: false,
             checkpoint_dir: "checkpoints".into(),
             checkpoint_status: String::new(),
             layout_presets: Vec::new(),
@@ -4042,28 +4051,65 @@ idle,busy,blocked,down\n",
         let Some(model) = self.model else {
             return;
         };
+        if self.trace_running {
+            return;
+        }
+        // A traced run is a full simulation: keep it off the UI thread so the
+        // window stays responsive on a large model.
         let config = SimConfig {
             stop_time: model.run.stop_time,
             warmup: model.run.warmup,
             seed: model.run.seed,
         };
-        match openflex_core::simulate_traced(model, &config, 0) {
-            Ok((result, trace)) => {
-                let truncated = trace.truncated;
-                self.trace = Some(trace);
-                self.status = format!(
-                    "Traced {} event(s){}{}",
-                    self.trace.as_ref().map(|trace| trace.len()).unwrap_or(0),
-                    if truncated { " (truncated)" } else { "" },
-                    if result.items_completed > 0 {
-                        format!(" · {} item(s) completed", result.items_completed)
-                    } else {
-                        String::new()
+        let owned = model.clone();
+        let (tx, rx) = channel();
+        self.trace_rx = Some(rx);
+        self.trace_running = true;
+        self.status = "Tracing…".into();
+        std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let outcome = openflex_core::simulate_traced(&owned, &config, 0);
+            let _ = tx.send((outcome, started.elapsed()));
+        });
+    }
+
+    fn poll_trace(&mut self) {
+        let Some(rx) = self.trace_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok((outcome, elapsed)) => {
+                self.trace_running = false;
+                self.trace_rx = None;
+                match outcome {
+                    Ok((result, trace)) => {
+                        let truncated = trace.truncated;
+                        let events = trace.events.len();
+                        self.trace = Some(trace);
+                        self.status = format!(
+                            "Traced {events} event(s) in {:.2}s{}{}",
+                            elapsed.as_secs_f64(),
+                            if truncated { " (truncated)" } else { "" },
+                            if result.items_completed > 0 {
+                                format!(" · {} item(s) completed", result.items_completed)
+                            } else {
+                                String::new()
+                            }
+                        );
+                        self.error = None;
                     }
-                );
-                self.error = None;
+                    Err(error) => {
+                        self.error = Some(error.to_string());
+                        self.status = "Trace failed".into();
+                    }
+                }
             }
-            Err(error) => self.error = Some(error.to_string()),
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.trace_running = false;
+                self.trace_rx = None;
+                self.status = "Trace worker stopped".into();
+            }
         }
     }
 
@@ -5259,7 +5305,13 @@ impl eframe::App for OpenFlexApp {
         self.poll_experiment();
         self.poll_timeseries();
         self.poll_optimize();
-        if self.report_running || self.exp_running || self.series_running || self.opt_running {
+        self.poll_trace();
+        if self.report_running
+            || self.exp_running
+            || self.series_running
+            || self.opt_running
+            || self.trace_running
+        {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         if self.running && !self.paused {
@@ -5469,7 +5521,14 @@ impl eframe::App for OpenFlexApp {
                     ui.separator();
                     tool_group(ui, "STATE");
                     if ui
-                        .add_enabled(self.model.is_some(), egui::Button::new("Trace run"))
+                        .add_enabled(
+                            self.model.is_some() && !self.trace_running,
+                            egui::Button::new(if self.trace_running {
+                                "Tracing…"
+                            } else {
+                                "Trace run"
+                            }),
+                        )
                         .on_hover_text("run once with the engine trace enabled")
                         .clicked()
                     {

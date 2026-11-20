@@ -4,6 +4,8 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **Trace run 移出 UI 线程**：`simulate_traced()` 改在后台线程执行（通道携带耗时），每帧 `poll_trace()` 收结果，
+  运行时按钮显示 `Tracing…` 并禁用，状态栏报告 `Traced N event(s) in X.XXs`；此前大模型会直接卡住窗口。
 - **`Delete` 删除选中**：新增 `Delete` / `Backspace` 快捷键（文本框有焦点时不触发），走 `batch_delete()` 的
   引用清理与撤销路径；帮助对话框补上该键与 `2D on/off`、相机预设三项。
   新增 `help_dialog_lists_every_shortcut` 测试（GUI 36 项）：帮助里列出的每个键都能在源码中找到对应的
