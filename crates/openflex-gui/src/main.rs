@@ -4118,6 +4118,7 @@ idle,busy,blocked,down\n",
     fn jump_to_event(&mut self, time: f64) {
         self.handle = None;
         if !self.new_handle() {
+            self.status = "Jump failed: the model could not be started".into();
             return;
         }
         let Some(handle) = self.handle.as_mut() else {

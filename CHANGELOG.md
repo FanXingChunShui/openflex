@@ -4,6 +4,8 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **跳转失败提示**：点击事件日志但模型无法启动时，状态栏给出 `Jump failed: the model could not be started`，
+  不再静默无反应。
 - **检查点自动扫描**：启动时调用一次 `refresh_checkpoints()`，已存在的 `checkpoints/*.json` 直接出现在列表里，
   不必先点 `Refresh list`。
 - **另存为收尾**：`Save as…` 成功后清空 `model_dirty`/`form_dirty` 并调用 `save_presets()`，
