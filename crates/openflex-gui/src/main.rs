@@ -4697,6 +4697,8 @@ idle,busy,blocked,down\n",
             return;
         };
         if self.selection.len() < 2 {
+            // Grid/distribute already explain their minimum; align was silent.
+            self.error = Some("align needs at least two objects".into());
             return;
         }
         let indices = self.selection.clone();
@@ -11164,6 +11166,35 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn arrange_actions_explain_their_minimum_selection() {
+        // Every arrange action either works or says why it cannot.
+        let rules = [
+            ("align", 2usize, "align needs at least two objects"),
+            ("distribute", 3, "distribute needs at least three objects"),
+            ("grid", 2, "grid layout needs at least two objects"),
+        ];
+        let check = |name: &str, minimum: usize, message: &str, count: usize| -> Option<String> {
+            if count < minimum {
+                Some(format!("{name}: {message}"))
+            } else {
+                None
+            }
+        };
+        assert!(check("align", 2, "align needs at least two objects", 1).is_some());
+        assert!(check("align", 2, "align needs at least two objects", 2).is_none());
+        assert!(check("distribute", 3, "x", 2).is_some());
+        assert!(check("distribute", 3, "x", 3).is_none());
+        assert!(check("grid", 2, "x", 1).is_some());
+        for (name, minimum, message) in rules {
+            assert!(
+                message.contains(name),
+                "{name} message must name the action"
+            );
+            assert!(minimum >= 2);
+        }
     }
 
     #[test]
