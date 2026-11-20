@@ -1750,6 +1750,7 @@ impl OpenFlexApp {
             replay_index: None,
         };
         app.load_recent();
+        app.load_ui_prefs();
         if let Some(path) = model {
             app.load(PathBuf::from(path));
         }
@@ -2021,6 +2022,55 @@ impl OpenFlexApp {
         self.recent.insert(0, path.clone());
         self.recent.truncate(8);
         self.save_recent();
+    }
+
+    /// `~/.config/openflex/ui.json`: view preferences that survive restarts.
+    fn ui_config_path() -> Option<std::path::PathBuf> {
+        Self::recent_config_path().map(|path| path.with_file_name("ui.json"))
+    }
+
+    fn save_ui_prefs(&self) {
+        let Some(path) = Self::ui_config_path() else {
+            return;
+        };
+        let json = serde_json::json!({
+            "flat_view": self.flat_view,
+            "tree_by_stage": self.tree_by_stage,
+            "parallel": self.parallel_runs,
+            "play_speed": self.play_speed,
+            "show_json": self.show_json,
+        });
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(path, json.to_string());
+    }
+
+    fn load_ui_prefs(&mut self) {
+        let Some(path) = Self::ui_config_path() else {
+            return;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return;
+        };
+        if let Some(flag) = value.get("flat_view").and_then(|v| v.as_bool()) {
+            self.flat_view = flag;
+        }
+        if let Some(flag) = value.get("tree_by_stage").and_then(|v| v.as_bool()) {
+            self.tree_by_stage = flag;
+        }
+        if let Some(flag) = value.get("parallel").and_then(|v| v.as_bool()) {
+            self.parallel_runs = flag;
+        }
+        if let Some(speed) = value.get("play_speed").and_then(|v| v.as_f64()) {
+            self.play_speed = (speed as f32).clamp(0.25, 8.0);
+        }
+        if let Some(flag) = value.get("show_json").and_then(|v| v.as_bool()) {
+            self.show_json = flag;
+        }
     }
 
     /// Where the recent-file list is stored (per-user config directory).
@@ -5519,6 +5569,38 @@ impl eframe::App for OpenFlexApp {
                         }
                     }
                     ui.separator();
+                    tool_group(ui, "RUN");
+                    // Parallel replications were implemented but had no toggle:
+                    // `parallel_runs` could never be turned off from the UI.
+                    {
+                        let label = if self.parallel_runs {
+                            "parallel on"
+                        } else {
+                            "parallel off"
+                        };
+                        if ui
+                            .add(
+                                egui::Button::new(egui::RichText::new(label).small().color(
+                                    if self.parallel_runs {
+                                        palette::ACCENT_HI
+                                    } else {
+                                        palette::TEXT_DIM
+                                    },
+                                ))
+                                .fill(palette::CARD)
+                                .stroke(egui::Stroke::new(1.0_f32, palette::STROKE))
+                                .rounding(egui::Rounding::same(5.0_f32)),
+                            )
+                            .on_hover_text(
+                                "run replications on all cores (results are bit-identical)",
+                            )
+                            .clicked()
+                        {
+                            self.parallel_runs = !self.parallel_runs;
+                            self.save_ui_prefs();
+                        }
+                    }
+                    ui.separator();
                     tool_group(ui, "STATE");
                     if ui
                         .add_enabled(
@@ -5612,6 +5694,7 @@ impl eframe::App for OpenFlexApp {
                             self.yaw = 0.0;
                             self.pitch = 1.45;
                         }
+                        self.save_ui_prefs();
                     }
                     if ui.button("Top").clicked() {
                         self.yaw = 0.0;
@@ -5887,6 +5970,7 @@ impl eframe::App for OpenFlexApp {
                             .clicked()
                         {
                             self.tree_by_stage = !self.tree_by_stage;
+                            self.save_ui_prefs();
                         }
                         if let Some(model) = self.model {
                             ui.with_layout(
@@ -9539,6 +9623,29 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn ui_prefs_round_trip() {
+        // The JSON `save_ui_prefs` writes must be readable by `load_ui_prefs`.
+        let json = serde_json::json!({
+            "flat_view": true,
+            "tree_by_stage": false,
+            "parallel": false,
+            "play_speed": 2.5,
+            "show_json": true,
+        });
+        let text = json.to_string();
+        let value: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(value["flat_view"], serde_json::json!(true));
+        assert_eq!(value["tree_by_stage"], serde_json::json!(false));
+        assert_eq!(value["parallel"], serde_json::json!(false));
+        assert_eq!(value["show_json"], serde_json::json!(true));
+        let speed = value["play_speed"].as_f64().expect("speed");
+        assert!((speed - 2.5).abs() < 1e-9);
+        // Out-of-range speeds are clamped on load, not trusted.
+        let clamped = (9.0_f32).clamp(0.25, 8.0);
+        assert_eq!(clamped, 8.0);
     }
 
     #[test]

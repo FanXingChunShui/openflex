@@ -4,6 +4,10 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **界面偏好持久化**：`~/.config/openflex/ui.json` 保存 `flat_view / tree_by_stage / parallel / play_speed / show_json`，
+  启动时 `load_ui_prefs()` 读回（速度会 clamp 到 0.25–8）；切换开关即写盘。新增 `ui_prefs_round_trip` 测试（GUI 37 项）。
+- **补回 `parallel` 开关**：`parallel_runs` 字段与两条运行路径一直在，但工具栏从未渲染过它可以关闭的控件——
+  在 `RUN` 组补上 `parallel on/off` 按钮，状态同样持久化。
 - **Trace run 移出 UI 线程**：`simulate_traced()` 改在后台线程执行（通道携带耗时），每帧 `poll_trace()` 收结果，
   运行时按钮显示 `Tracing…` 并禁用，状态栏报告 `Traced N event(s) in X.XXs`；此前大模型会直接卡住窗口。
 - **`Delete` 删除选中**：新增 `Delete` / `Backspace` 快捷键（文本框有焦点时不触发），走 `batch_delete()` 的
