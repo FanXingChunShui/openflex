@@ -6216,7 +6216,15 @@ impl eframe::App for OpenFlexApp {
                     }
                     ui.separator();
                     tool_group(ui, "RUN");
-                    if primary_button(ui, self.model.is_some() && !self.report_running, "Run") {
+                    if self.report_running {
+                        // The engine has no cancellation hook, so the UI drops the
+                        // result instead: pressing Stop detaches the worker.
+                        if ui.button("Stop run").clicked() {
+                            self.report_rx = None;
+                            self.report_running = false;
+                            self.status = "Run abandoned — its result will be ignored".into();
+                        }
+                    } else if primary_button(ui, self.model.is_some(), "Run") {
                         self.start_report();
                     }
                     if ui
@@ -8054,15 +8062,19 @@ impl eframe::App for OpenFlexApp {
                             .range(1..=50),
                     );
                 });
-                if ui
-                    .add_enabled(
-                        self.model.is_some() && !self.exp_running,
-                        egui::Button::new(if self.exp_running {
-                            "Running…"
-                        } else {
-                            "Run experiment"
-                        }),
-                    )
+                if self.exp_running {
+                    if ui
+                        .button("Stop experiment")
+                        .on_hover_text("detach the worker; its rows will be discarded")
+                        .clicked()
+                    {
+                        self.exp_rx = None;
+                        self.exp_running = false;
+                        self.status =
+                            "Experiment abandoned — its rows will be ignored".into();
+                    }
+                } else if ui
+                    .add_enabled(self.model.is_some(), egui::Button::new("Run experiment"))
                     .clicked()
                 {
                     self.start_experiment();
@@ -8267,15 +8279,19 @@ impl eframe::App for OpenFlexApp {
                     ui.checkbox(&mut self.opt_secondary_stay, "2nd: max stay");
                 });
                 ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(
-                            self.model.is_some() && !self.opt_running,
-                            egui::Button::new(if self.opt_running {
-                                "Optimising…"
-                            } else {
-                                "Run"
-                            }),
-                        )
+                    if self.opt_running {
+                        if ui
+                            .button("Stop")
+                            .on_hover_text("detach the worker; its rows will be discarded")
+                            .clicked()
+                        {
+                            self.opt_rx = None;
+                            self.opt_running = false;
+                            self.status =
+                                "Optimisation abandoned — its rows will be ignored".into();
+                        }
+                    } else if ui
+                        .add_enabled(self.model.is_some(), egui::Button::new("Run"))
                         .clicked()
                     {
                         self.start_optimize();
@@ -10719,6 +10735,25 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn abandoning_a_background_job_drops_its_channel() {
+        // Detaching the receiver is how the UI discards a late result: the poll
+        // handler returns immediately once `*_rx` is None.
+        let mut rx: Option<std::sync::mpsc::Receiver<u8>> = {
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(7).expect("send");
+            Some(rx)
+        };
+        assert_eq!(rx.as_ref().and_then(|r| r.try_recv().ok()), Some(7));
+        rx = None;
+        assert!(rx.is_none(), "an abandoned job has no receiver left");
+        // A new run installs a fresh channel.
+        let (tx, fresh) = std::sync::mpsc::channel::<u8>();
+        rx = Some(fresh);
+        tx.send(9).expect("send");
+        assert_eq!(rx.as_ref().and_then(|r| r.try_recv().ok()), Some(9));
     }
 
     #[test]

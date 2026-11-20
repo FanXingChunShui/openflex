@@ -4,6 +4,10 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **Run / 实验 / 优化可放弃**：三者运行中按钮分别变为 `Stop run` / `Stop experiment` / `Stop`，
+  点击后丢弃接收端，状态栏说明 `… abandoned — its result will be ignored`。引擎本身没有取消钩子
+  （`run_model` 一次跑完复现），因此这里放弃的是「结果落盘」，界面不再被锁住。
+  新增 `abandoning_a_background_job_drops_its_channel` 测试（GUI 74 项）。
 - **采样可取消**：时序采样运行中按钮变成 `Cancel`，点击后工作线程通过原子标志提前停止，状态栏报告
   `Sample cancelled after N sample(s) — partial data kept`；此前大模型采样期间面板被锁住，只能等它跑完。
   新增 `sampling_can_be_cancelled` 测试（GUI 73 项）。
