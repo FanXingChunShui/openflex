@@ -8,11 +8,13 @@ cargo build -p openflex-gui --release
 ./target/release/openflex-gui examples/mm1.ofm   # 也可以不带参数启动后在窗口内填路径
 ```
 
-## 当前能力（v1.24.0）
+## 当前能力（v1.26.0）
 
 | 区域 | 功能 |
 |---|---|
 | 文件 | **New**（生成 source→queue→processor→sink 模板）、Open（路径输入）、Save、**Save as…**、**Recent 最近 8 个（持久化到 `~/.config/openflex/recent.json`，含 hover 全路径与 Clear recent）**、加载时校验 |
+| 文件浏览 | 工具栏 `Browse…` 打开内置目录浏览器（文件夹在前、`.ofm` 在后，支持 `Up`/`Home`，选中即加载），不依赖 GTK |
+| 产物清单 | 右侧 `Outputs (n)` 列出本会话写出的文件（名称、大小、完整路径悬停），`Clear list` 清空 |
 | 快捷键 | `Ctrl/Cmd+A` 全选、`Ctrl/Cmd+D` 复制选中（自动 `_2` 命名 + 偏移）、`Ctrl/Cmd+O` 打开、`Ctrl/Cmd+N` 新建、`Ctrl/Cmd+S` 保存、`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 重做、`Space` 播放/暂停、`R` 重置、`F1` 快捷键帮助对话框、右方向键步进、上/下方向键调整步长 |
 | Studio 帮助 | 工具栏 `?` 按钮弹出快捷键面板（拖拽/滚轮/框选/方向键微调/撤销/保存/播放/删除，`data-help-panel`） |
 | Studio 复制 | 浏览器 Studio 对象操作区新增 `Duplicate`（深拷贝参数、自动 `_2` 后缀命名、位置偏移 +2，经 `/api/model` 保存并入历史） |
@@ -31,12 +33,19 @@ cargo build -p openflex-gui --release
 | 对象编辑 | `x/y/z` 拖拽数值、**按 kind 的参数表单**（Distribution 类型下拉 + 数值：source/queue/processor/conveyor/resource/transporter/person/robot/crane/asrs/agv）、Apply 校验后提交；JSON 高级模式（复选框） |
 | 连接编辑 | 列表 + 删除、from/to/port 添加（校验后原子替换模型） |
 | 3D 视图 | 透视投影、**地面网格**、对象地面阴影、按 kind 着色、连接线、选中高亮、拖拽旋转、滚轮缩放、点击选中、**相机预设 Iso/Top/Front/Side**、**按 kind 的几何体与明暗**（机台带顶板与指示灯、传送带带方向箭头、货架分层、源/汇圆鼓、人员/车辆胶囊、流体罐带液位、其余盒体）、**可旋转 footprint + 侧面挤出**（右键对象菜单 -15°/+15°/0°，写入 `Object.rot` 并随模型保存）、右侧挤出面模拟立体感 |
-| 单元测试 | `crates/openflex-gui` 内置 7 项测试（JSON 路径写入、参数解析、热力色带、明暗、Pareto 前沿、事件日志格式），CI 的 GUI Linux job 会执行 |
+| 单元测试 | `crates/openflex-gui` 内置 **29 项**测试（JSON 路径、参数解析、热力色带、明暗、Pareto、事件格式、XML 转义、取景、BFS 布局、内置示例、字体路径、重命名引用、删除清理、trace 行格式、平面命中、路径收集、字节格式、校验缓存等），CI 的 GUI Linux job 会执行 |
 | 外观 | 启动时应用深色主题（面板/窗口/画布分层配色），窗口与 macOS bundle 使用程序生成的 64×64 图标（无二进制资源） |
+| Trace | 工具栏 `Trace run` 用 `simulate_traced()` 跑一次并保留引擎事件流；`Export trace` 写 `<model>.trace.jsonl`（与 CLI `--trace` 同格式） |
+| 事件日志 | 右侧 `Events (n)`：过滤（kind/对象，忽略大小写）、点击跳转到该时刻、`CSV` 导出、`clear`；`Play` 与 `Step event` 都会填充 |
+| 平面 2D | 工具栏 `2D on/off`：俯视平面渲染（按 kind 的足迹尺寸、旋转多边形、多边形命中、中心标签、状态彩点），导出 SVG 同样走俯视投影 |
+| 校验状态 | 状态栏常驻 `valid` / `N issue(s)`（悬停列前 6 条）；表单内问题可点击定位对象；结果按模型世代缓存 |
+| 时间单位 | 进度条、状态栏时钟、`COMPLETED / unit` 卡片、时序轴、`Thru / unit` 列头都带 `s/min/h/d` |
+| warm-up | 进度条旁 `warm-up until X` → `measuring`；时序图对 warm-up 区加琥珀底色与分界线 |
+| CSV 自描述 | 报告/对比/时序/事件四类 CSV 顶部写 `# model / # time_unit / …` 注释行，Excel 自动跳过 |
+| 全局表 | 左侧 `Global tables (n)` 显示每张表的行×列、列名胶囊与前 4 行值 |
 | 检查点 | 右侧 `Checkpoints (n)` 面板列出目录内文件与模型时间，点击任意项即恢复该检查点；工具栏另有 `Save checkpoint` / `Load checkpoint`（最新）与目录输入：保存 `SimulationHandle::snapshot()` 为 `<dir>/checkpoint-<time>.json`，恢复时读取该目录最新文件并经 `Checkpoint::from_json_verified` 校验 |
 | 运行 |**`parallel` 开关**：`Run` 与实验用 `run_model_parallel(model, 0)` 在多核上跑复现（结果与串行逐位一致），关闭则退回串行 |
 | 运行 |**播放速度滑块（0.25–8×，对数刻度）**：Play 时每帧推进的模型时间与帧率随之缩放 |
-| 运行 |**`parallel` 开关**：`Run` 与实验用 `run_model_parallel(model, 0)` 在多核上跑复现（结果与串行逐位一致），关闭则退回串行 |
 | 运行 | `Run`（后台线程跑完整复现出报告）、`Step`（按 step 推进）、**`Step event`（逐事件推进并记录到事件日志）**、`Play`/`Pause`/`Resume`（`SimulationHandle`）、`Reset`、**进度条**、实时 `t`/created/completed |
 | 事件日志 | 右侧可折叠面板显示最近 200 条 `t / event / object`（`Step event` 或 `Play` 时填充，自动滚到底部）；**点击任一行可跳转到该事件的模型时间**（重建句柄并推进到该时刻） |
 | Studio trace 跳转 | Studio 的 trace 列表行可点击，把时间轴滑块移到该事件时间并同步 nearest 提示 |
@@ -107,10 +116,13 @@ wix build packaging\windows\openflex-gui.wxs -d Version=<ver> ^
 | P2 | 统计图表 | ✅ 利用率柱状图 + 状态饼图 + 时间序列（WIP/吞吐/利用率）+ 时间序列/报告 CSV + 报告 JSON 导出（v0.70.0） |
 | ~~P3~~ | 打包成 .app 双击启动（v0.58.0，universal v0.71.0）：`scripts/package-gui-app.sh` 生成 `OpenFlex.app` + zip；Windows 的 `.exe` 可直接双击（MSI 附带 GUI 仍未做） |
 
-## 路线图
+## 路线图（v1.26.0 之后）
 
-1. **参数表单**：按 kind 生成控件（数值/文本/分布），保留 JSON 视图作为高级模式。
-2. **3D 增强**：地面网格、方向光、对象按 kind 的简单体（盒子/圆柱）、相机预设（iso/top/front）。
-3. **运行可视化**：用 `SimulationHandle` 的事件流做 flow item 移动动画与状态着色。
-4. **实验/优化**：接入 `experiment`/`optimize` 的 Rust API，在 GUI 中显示结果表。
-5. **打包**：macOS `.app`（Info.plist + icon）与 Windows `.exe`（附 MSI 可选组件）。
+上面 1–5 项均已交付（参数表单 v0.52/v0.64、3D 增强 v0.75、运行可视化 v0.62、
+实验/优化 v0.69、macOS `.app` v0.58/universal v0.71 + Windows MSI）。当前的剩余项：
+
+1. **纹理与实时光照**：需要美术资源与 GPU 渲染路径，当前仍是程序化配色 + 伪造明暗。
+2. **多级层级树**：模型树现为「按 kind 分组」一层，没有父子嵌套。
+3. **协作/多窗口**：无文档共享编辑、无多视口。
+4. **完整 Undo 历史可视化**：只有 `Ctrl+Z`/`Ctrl+Shift+Z`，没有历史列表。
+5. **本地化**：界面文案仍以英文为主（中文标签依赖系统 CJK 字体回退）。
