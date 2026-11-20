@@ -1468,6 +1468,7 @@ struct OpenFlexApp {
     handle: Option<SimulationHandle<'static>>,
     sim_state: Option<SimulationState>,
     event_log: Vec<EventEntry>,
+    event_filter: String,
     heatmap: u8,
     model_name: String,
     model_stop: f32,
@@ -1585,6 +1586,7 @@ impl OpenFlexApp {
             handle: None,
             sim_state: None,
             event_log: Vec::new(),
+            event_filter: String::new(),
             heatmap: 0,
             model_name: String::new(),
             model_stop: 300.0,
@@ -2583,6 +2585,39 @@ impl OpenFlexApp {
         self.outputs.retain(|(existing, _)| existing != path);
         self.outputs.insert(0, (path.to_path_buf(), size));
         self.outputs.truncate(12);
+    }
+
+    /// Writes the recorded GUI event log as CSV next to the model.
+    fn export_event_log(&mut self) {
+        if self.event_log.is_empty() {
+            self.error = Some("the event log is empty".into());
+            return;
+        }
+        let mut text = String::from("time,event,object\n");
+        for entry in &self.event_log {
+            let object = entry
+                .object
+                .as_ref()
+                .map(|object| {
+                    // Quote names that would break the CSV shape.
+                    if object.contains(',') || object.contains('"') {
+                        format!("\"{}\"", object.replace('"', "\"\""))
+                    } else {
+                        object.clone()
+                    }
+                })
+                .unwrap_or_default();
+            text.push_str(&format!("{:.4},{},{object}\n", entry.time, entry.kind));
+        }
+        let path = self.report_path("events.csv");
+        match std::fs::write(&path, text) {
+            Ok(()) => {
+                self.remember_output(&path);
+                self.status = format!("Event log written to {}", path.display());
+                self.error = None;
+            }
+            Err(error) => self.error = Some(format!("could not write event log: {error}")),
+        }
     }
 
     fn report_path(&self, extension: &str) -> PathBuf {
@@ -7417,6 +7452,8 @@ impl eframe::App for OpenFlexApp {
                     }
                 });
                 let mut jump: Option<f64> = None;
+                let mut export_log = false;
+                let mut clear_log = false;
                 egui::CollapsingHeader::new(format!("Events ({})", self.event_log.len()))
                     .id_salt("event-log")
                     .show(ui, |ui| {
@@ -7428,20 +7465,61 @@ impl eframe::App for OpenFlexApp {
                             );
                             return;
                         }
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.event_filter)
+                                    .hint_text("filter kind or object")
+                                    .desired_width(150.0),
+                            );
+                            if ui.small_button("CSV").clicked() {
+                                export_log = true;
+                            }
+                            if ui.small_button("clear").clicked() {
+                                clear_log = true;
+                            }
+                        });
+                        let needle = self.event_filter.to_lowercase();
                         egui::ScrollArea::vertical()
                             .id_salt("event-scroll")
                             .max_height(140.0)
                             .stick_to_bottom(true)
                             .show(ui, |ui| {
+                                let mut shown = 0;
                                 for entry in &self.event_log {
+                                    if !needle.is_empty()
+                                        && !entry.kind.to_lowercase().contains(&needle)
+                                        && !entry
+                                            .object
+                                            .as_ref()
+                                            .is_some_and(|object| {
+                                                object.to_lowercase().contains(&needle)
+                                            })
+                                    {
+                                        continue;
+                                    }
+                                    shown += 1;
                                     let label =
                                         egui::RichText::new(entry.line()).monospace().small();
                                     if ui.selectable_label(false, label).clicked() {
                                         jump = Some(entry.time);
                                     }
                                 }
+                                if shown == 0 {
+                                    ui.label(
+                                        egui::RichText::new("no events match the filter")
+                                            .small()
+                                            .color(palette::TEXT_DIM),
+                                    );
+                                }
                             });
                     });
+                if clear_log {
+                    self.event_log.clear();
+                    self.status = "Event log cleared".into();
+                }
+                if export_log {
+                    self.export_event_log();
+                }
                 if let Some(time) = jump {
                     self.jump_to_event(time);
                 }
@@ -8860,6 +8938,41 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn event_log_matches_filters_case_insensitively() {
+        let entries = vec![
+            EventEntry {
+                time: 1.0,
+                kind: "arrive".into(),
+                object: Some("Queue1".into()),
+            },
+            EventEntry {
+                time: 2.0,
+                kind: "process_done".into(),
+                object: Some("Server".into()),
+            },
+            EventEntry {
+                time: 3.0,
+                kind: "flow".into(),
+                object: None,
+            },
+        ];
+        let matches = |needle: &str, entry: &EventEntry| {
+            let needle = needle.to_lowercase();
+            needle.is_empty()
+                || entry.kind.to_lowercase().contains(&needle)
+                || entry
+                    .object
+                    .as_ref()
+                    .is_some_and(|object| object.to_lowercase().contains(&needle))
+        };
+        assert_eq!(entries.iter().filter(|e| matches("", e)).count(), 3);
+        assert_eq!(entries.iter().filter(|e| matches("ARRIVE", e)).count(), 1);
+        assert_eq!(entries.iter().filter(|e| matches("queue", e)).count(), 1);
+        assert_eq!(entries.iter().filter(|e| matches("process", e)).count(), 1);
+        assert_eq!(entries.iter().filter(|e| matches("nothing", e)).count(), 0);
     }
 
     #[test]

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### 桌面 GUI（功能补齐）
+
+- **事件日志筛选/导出**：事件面板新增过滤框（按 `kind` 或对象名，忽略大小写）、`CSV` 导出（写出
+  `<model>.events.csv`，含逗号/引号的对象名会转义）与 `clear`；无匹配时提示 `no events match the filter`。
+  新增 `event_log_matches_filters_case_insensitively` 测试（GUI 27 项）。
+
 ## v1.26.0 — 2026-11-20
 
 本轮把桌面 GUI 的**平面视图**做成真正的二维布局（含旋转、命中、导出），补齐**产物清单**、**优化字段选择器**、**内置文件浏览器**与**真实 trace**，并修掉一批「静默丢弃 / 无法撤销 / 状态残留」的问题。发布节奏保持**至少 3 小时一版**。
