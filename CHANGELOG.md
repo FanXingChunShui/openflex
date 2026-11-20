@@ -7,6 +7,9 @@
 - **基线归属校验**：`Load baseline` 时若基线报告的模型名与当前模型不同，状态栏提示
   `(warning: baseline is for 'X', current model is 'Y')`，避免把别的模型的报告当成本模型基线。
   新增 `baseline_note_only_fires_on_a_name_mismatch` 测试（GUI 42 项）。
+- **检查点收尾**：恢复检查点后清空平滑插值、回放位置、事件日志与播放状态（此前会沿用上一次运行的动画与日志）；
+  保存在同一模型时间重复保存时改为加 `-2`、`-3` 后缀，不再静默覆盖。新增
+  `checkpoint_names_do_not_overwrite_each_other` 测试（GUI 45 项）。
 - **基线来源可见**：`BASELINE` 行在 `load` 旁显示 `from <模型名>`——与当前模型一致时为暗色，不一致时转**琥珀**并提示
   `baseline was captured from a different model`。新增 `baseline_ownership_matches_by_name` 测试（GUI 44 项）。
 - **四类异步结果都能溯源**：`Run` / 时序采样 / 实验 / 优化现在都把模型名随结果送回，

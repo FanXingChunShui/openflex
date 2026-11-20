@@ -3427,6 +3427,13 @@ idle,busy,blocked,down\n",
         match handle.restore(&checkpoint) {
             Ok(()) => {
                 self.sim_state = Some(handle.state());
+                // The restored run is a different timeline: drop the smoothed
+                // positions and the event log from the previous one.
+                self.smooth.clear();
+                self.replay_index = None;
+                self.event_log.clear();
+                self.running = false;
+                self.paused = false;
                 self.checkpoint_status = format!("restored {file}");
                 self.status = self.checkpoint_status.clone();
                 self.error = None;
@@ -3462,6 +3469,21 @@ idle,busy,blocked,down\n",
         }
         let name = format!("checkpoint-{:.2}.json", handle.now());
         let path = std::path::Path::new(&dir).join(name);
+        // Saving twice at the same model time would silently overwrite the
+        // earlier state; keep both by adding a numeric suffix instead.
+        let path = if path.exists() {
+            let stem = format!("checkpoint-{:.2}", handle.now());
+            let mut counter = 2;
+            loop {
+                let candidate = std::path::Path::new(&dir).join(format!("{stem}-{counter}.json"));
+                if !candidate.exists() {
+                    break candidate;
+                }
+                counter += 1;
+            }
+        } else {
+            path
+        };
         match std::fs::write(&path, text) {
             Ok(()) => {
                 self.checkpoint_status = format!("saved {}", path.display());
@@ -9870,6 +9892,36 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn checkpoint_names_do_not_overwrite_each_other() {
+        // Mirrors the suffix search in `save_checkpoint`.
+        let dir = std::env::temp_dir().join(format!("openflex-ckpt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let next = |stem: &str, taken: &[&str]| {
+            let mut candidate = format!("{stem}.json");
+            let mut counter = 2;
+            while taken.contains(&candidate.as_str()) {
+                candidate = format!("{stem}-{counter}.json");
+                counter += 1;
+            }
+            candidate
+        };
+        assert_eq!(next("checkpoint-10.00", &[]), "checkpoint-10.00.json");
+        assert_eq!(
+            next("checkpoint-10.00", &["checkpoint-10.00.json"]),
+            "checkpoint-10.00-2.json"
+        );
+        assert_eq!(
+            next(
+                "checkpoint-10.00",
+                &["checkpoint-10.00.json", "checkpoint-10.00-2.json"]
+            ),
+            "checkpoint-10.00-3.json"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
