@@ -3703,13 +3703,28 @@ idle,busy,blocked,down\n",
         let Some(path) = self.preset_path() else {
             return;
         };
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return;
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            // A missing sidecar file is normal (nothing saved yet).
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => {
+                self.error = Some(format!("could not read {}: {error}", path.display()));
+                return;
+            }
         };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-            return;
+        let value: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(value) => value,
+            Err(error) => {
+                // A corrupt sidecar silently emptied the list before.
+                self.error = Some(format!(
+                    "invalid layout presets in {}: {error}",
+                    path.display()
+                ));
+                return;
+            }
         };
         let Some(entries) = value.get("presets").and_then(|p| p.as_array()) else {
+            self.error = Some(format!("{} has no `presets` array", path.display()));
             return;
         };
         for entry in entries {
@@ -3733,9 +3748,9 @@ idle,busy,blocked,down\n",
         }
     }
 
-    fn save_presets(&mut self) {
+    fn save_presets(&mut self) -> bool {
         let Some(path) = self.preset_path() else {
-            return;
+            return false;
         };
         let presets: Vec<serde_json::Value> = self
             .layout_presets
@@ -3753,10 +3768,13 @@ idle,busy,blocked,down\n",
         let text = serde_json::json!({ "presets": presets }).to_string();
         match std::fs::write(&path, text) {
             Ok(()) => {
-                self.status = format!("Layout presets written to {}", path.display());
                 self.error = None;
+                true
             }
-            Err(error) => self.error = Some(format!("could not write presets: {error}")),
+            Err(error) => {
+                self.error = Some(format!("could not write presets: {error}"));
+                false
+            }
         }
     }
 
@@ -3774,12 +3792,21 @@ idle,busy,blocked,down\n",
             .iter()
             .map(|object| (object.pos, object.name.clone()))
             .collect();
+        let replaced = self
+            .layout_presets
+            .iter()
+            .any(|(existing, _)| existing == &name);
         self.layout_presets
             .retain(|(existing, _)| existing != &name);
         self.layout_presets.push((name.clone(), objects));
-        self.save_presets();
+        let written = self.save_presets();
         self.preset_name.clear();
-        self.status = format!("Saved layout preset '{name}'");
+        let action = if replaced { "Overwrote" } else { "Saved" };
+        self.status = if written {
+            format!("{action} layout preset '{name}'")
+        } else {
+            format!("{action} layout preset '{name}' (not written to disk)")
+        };
     }
 
     fn apply_layout_preset(&mut self, name: &str) {
@@ -3819,8 +3846,12 @@ idle,busy,blocked,down\n",
 
     fn delete_layout_preset(&mut self, name: &str) {
         self.layout_presets.retain(|(existing, _)| existing != name);
-        self.save_presets();
-        self.status = format!("Deleted preset '{name}'");
+        let written = self.save_presets();
+        self.status = if written {
+            format!("Deleted preset '{name}'")
+        } else {
+            format!("Deleted preset '{name}' (not written to disk)")
+        };
     }
 
     /// Re-reads the checkpoint directory for the list panel.
@@ -10748,6 +10779,34 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn preset_status_lines_distinguish_write_results() {
+        // The wording `store_layout_preset` / `delete_layout_preset` produce.
+        let status = |action: &str, name: &str, written: bool| {
+            if written {
+                format!("{action} layout preset '{name}'")
+            } else {
+                format!("{action} layout preset '{name}' (not written to disk)")
+            }
+        };
+        assert_eq!(status("Saved", "a", true), "Saved layout preset 'a'");
+        assert_eq!(
+            status("Overwrote", "a", true),
+            "Overwrote layout preset 'a'"
+        );
+        assert!(status("Saved", "a", false).ends_with("(not written to disk)"));
+        // Deletion uses the shorter phrasing.
+        let deleted = |name: &str, written: bool| {
+            if written {
+                format!("Deleted preset '{name}'")
+            } else {
+                format!("Deleted preset '{name}' (not written to disk)")
+            }
+        };
+        assert_eq!(deleted("a", true), "Deleted preset 'a'");
+        assert!(deleted("a", false).contains("not written"));
     }
 
     #[test]

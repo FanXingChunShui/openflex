@@ -4,6 +4,10 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **布局预设的读写反馈**：`load_presets()` 不再对损坏或缺字段的边车文件静默返回，而是给出具体错误；
+  `save_presets()` 返回是否写盘成功，`store_layout_preset` / `delete_layout_preset` 据此区分
+  `Saved …` 与 `Saved … (not written to disk)`，覆盖同名预设时提示 `Overwrote …`（此前是静默替换）。
+  新增 `preset_status_lines_distinguish_write_results` 测试（GUI 77 项）。
 - **被拒绝的编辑不再污染历史**：`add_connection` 原先在输入校验**之前**就记快照——空输入、无效端口、自连、
   重复边都会在历史里留下一条空记录；`batch_move`/`batch_rotate`/`apply_form`/`apply_json` 同样是先快照后
   `validate()`。五处统一改为「先校验、通过后才记快照」。新增 `rejected_edits_do_not_leave_history_entries`
