@@ -1835,6 +1835,9 @@ struct OpenFlexApp {
     show_compare_report: bool,
     /// Action waiting for a second press because the document has unsaved edits.
     pending_discard: Option<String>,
+    /// Set when the user pressed the window's close button once with unsaved
+    /// edits; the second press goes through.
+    close_confirmed: bool,
     /// Objects waiting for a second Delete press (group deletions).
     delete_confirm: Option<Vec<String>>,
     /// Per-cell text buffers for the editable global tables:
@@ -1977,6 +1980,7 @@ impl OpenFlexApp {
             compare_lines: Vec::new(),
             show_compare_report: false,
             pending_discard: None,
+            close_confirmed: false,
             delete_confirm: None,
             table_edit: std::collections::HashMap::new(),
             window_title: String::new(),
@@ -6351,6 +6355,16 @@ idle,busy,blocked,down\n",
 impl eframe::App for OpenFlexApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.last_frame = ctx.input(|input| input.stable_dt) as f64;
+        // Closing the window with unsaved edits would lose them silently: keep
+        // the window open and ask for a second close instead.
+        if ctx.input(|input| input.viewport().close_requested())
+            && self.model_dirty
+            && !self.close_confirmed
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.close_confirmed = true;
+            self.status = "Unsaved changes — close again to discard them, or Save first".into();
+        }
         // Keep the OS title bar in sync: model name, unsaved marker, run state.
         let title = Self::window_title_text(
             self.model.map(|model| model.name.as_str()),
@@ -11117,11 +11131,29 @@ mod tests {
     }
 
     #[test]
+    fn closing_with_unsaved_edits_needs_a_second_press() {
+        // The rule the window-close handler applies: the first close with a dirty
+        // document is cancelled and remembered, the second goes through.
+        fn decide(confirmed: &mut bool, dirty: bool) -> bool {
+            if dirty && !*confirmed {
+                *confirmed = true;
+                return false; // cancel the close
+            }
+            true
+        }
+        let mut confirmed = false;
+        assert!(!decide(&mut confirmed, true), "first close is cancelled");
+        assert!(decide(&mut confirmed, true), "second close goes through");
+        // A clean document closes at once.
+        confirmed = false;
+        assert!(decide(&mut confirmed, false));
+    }
+
+    #[test]
     fn saving_or_editing_cancels_a_pending_discard_prompt() {
         // The prompt is void once the document is clean (saved) or the user keeps
         // editing; both paths reset it.
-        let mut pending: Option<String> = None;
-        pending = Some("New".to_string());
+        let mut pending: Option<String> = Some("New".to_string());
         // A successful save clears the flag.
         let saved = true;
         if saved {

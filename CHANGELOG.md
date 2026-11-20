@@ -4,6 +4,10 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **关闭窗口前提示未保存**：窗口的关闭按钮在有未保存改动时第一次被 `CancelClose` 拦下，状态栏给出
+  `Unsaved changes — close again to discard them, or Save first`，第二次才真正退出。
+  此前点关闭就直接结束进程，未保存的改动全部丢失。新增
+  `closing_with_unsaved_edits_needs_a_second_press` 测试（GUI 92 项）。
 - **守卫状态及时失效**：成功保存或任何一次新编辑（`snapshot_labelled`）都会清除 `pending_discard`，
   不会出现「几十分钟前按过一次 New，现在按 Open 就直接丢改动」的残留提示。
   新增 `saving_or_editing_cancels_a_pending_discard_prompt` 测试（GUI 91 项）。
