@@ -7566,7 +7566,36 @@ impl eframe::App for OpenFlexApp {
                                 rect.bottom() - 4.0,
                             ),
                         );
-                        painter.rect_filled(bar, 2.0, egui::Color32::from_rgb(90, 150, 210));
+                        let is_best = self
+                            .exp_rows
+                            .iter()
+                            .map(|(_, completed, _)| *completed)
+                            .fold(f64::NEG_INFINITY, f64::max)
+                            == *completed;
+                        painter.rect_filled(
+                            bar,
+                            2.0,
+                            if is_best {
+                                palette::OK
+                            } else {
+                                egui::Color32::from_rgb(90, 150, 210)
+                            },
+                        );
+                        // Hovering a bar names the scenario value and its result.
+                        if response.hover_pos().is_some_and(|pos| bar.contains(pos)) {
+                            painter.rect_stroke(
+                                bar,
+                                2.0,
+                                egui::Stroke::new(1.0_f32, palette::ACCENT_HI),
+                            );
+                            painter.text(
+                                egui::pos2(bar.center().x, bar.top() - 2.0),
+                                egui::Align2::CENTER_BOTTOM,
+                                format!("{completed:.0}"),
+                                egui::FontId::proportional(9.0),
+                                palette::TEXT,
+                            );
+                        }
                     }
                     // The best scenario is highlighted in the table as well.
                     let best = self
