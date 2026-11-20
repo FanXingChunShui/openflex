@@ -2137,6 +2137,20 @@ impl OpenFlexApp {
         self.save_recent();
     }
 
+    /// Shares of the four states, normalised so they sum to 1 (an all-zero mix
+    /// yields zeros rather than NaN).
+    fn state_mix(totals: [f64; 4]) -> [f64; 4] {
+        let sum: f64 = totals.iter().sum();
+        if sum <= 1e-9 {
+            return [0.0; 4];
+        }
+        let mut out = [0.0; 4];
+        for (index, value) in totals.iter().enumerate() {
+            out[index] = value / sum;
+        }
+        out
+    }
+
     /// Sample index under a horizontal position in the chart, clamped to the
     /// available samples. Used by the time-series hover readout.
     fn series_index_at(fraction: f32, samples: usize) -> Option<usize> {
@@ -8788,6 +8802,70 @@ impl eframe::App for OpenFlexApp {
                         palette::OK,
                     );
                 });
+                // Fleet-wide state mix: the per-object bars below answer "which
+                // machine", this answers "how busy is the model overall".
+                {
+                    let totals = report.objects.values().fold(
+                        [0.0_f64; 4],
+                        |mut acc, stats| {
+                            acc[0] += stats.busy_fraction.mean;
+                            acc[1] += stats.blocked_fraction.mean;
+                            acc[2] += stats.idle_fraction.mean;
+                            acc[3] += stats.down_fraction.mean;
+                            acc
+                        },
+                    );
+                    let sum: f64 = totals.iter().sum();
+                    let mix = Self::state_mix(totals);
+                    if sum > 1e-9 {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("STATE MIX")
+                                    .size(9.0_f32)
+                                    .color(palette::TEXT_DIM),
+                            );
+                            let (bar, _) = ui.allocate_exact_size(
+                                egui::vec2(ui.available_width().min(200.0), 8.0),
+                                egui::Sense::hover(),
+                            );
+                            ui.painter().rect_filled(bar, 3.0, palette::ST_OFF);
+                            let mut left = bar.left();
+                            let colours = [
+                                palette::ST_BUSY,
+                                palette::ST_BLOCKED,
+                                palette::ST_IDLE,
+                                palette::ST_DOWN,
+                            ];
+                            for (index, colour) in colours.into_iter().enumerate() {
+                                let width = (bar.width() as f64 * mix[index]) as f32;
+                                if width <= 0.5 {
+                                    continue;
+                                }
+                                ui.painter().rect_filled(
+                                    egui::Rect::from_min_size(
+                                        egui::pos2(left, bar.top()),
+                                        egui::vec2(width, bar.height()),
+                                    ),
+                                    0.0,
+                                    colour,
+                                );
+                                left += width;
+                            }
+                        });
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "busy {:.0}% · blocked {:.0}% · idle {:.0}% · down {:.0}%",
+                                mix[0] * 100.0,
+                                mix[1] * 100.0,
+                                mix[2] * 100.0,
+                                mix[3] * 100.0
+                            ))
+                            .size(9.0_f32)
+                            .monospace()
+                            .color(palette::TEXT_DIM),
+                        );
+                    }
+                }
                 ui.separator();
                 let (response, painter) = ui.allocate_painter(
                     egui::vec2(ui.available_width(), 130.0),
@@ -10101,6 +10179,18 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn state_mix_normalises_and_handles_zero() {
+        let mix = OpenFlexApp::state_mix([2.0, 1.0, 1.0, 0.0]);
+        assert!((mix.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        assert!((mix[0] - 0.5).abs() < 1e-12);
+        assert!((mix[3] - 0.0).abs() < 1e-12);
+        // An empty model must not produce NaN.
+        assert_eq!(OpenFlexApp::state_mix([0.0; 4]), [0.0; 4]);
+        // Negative or tiny totals are treated as empty rather than exploding.
+        assert_eq!(OpenFlexApp::state_mix([1e-12; 4]), [0.0; 4]);
     }
 
     #[test]
