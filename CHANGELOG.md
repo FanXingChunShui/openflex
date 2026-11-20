@@ -4,6 +4,10 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **上下文菜单编辑补齐**：右键 `Reset position` 现在记快照、走 `validate()` 并刷新表单（此前三样都没有）；
+  右键旋转 `±15°` 后若该对象被选中，也会刷新侧栏表单，不再显示旧的 `rot`。
+- **网格排布基准**：`Grid N` 的原点改为选区**左上角**（与 `Align` 一致），不再取「先点选的那个」。
+  新增 `grid_layout_anchors_on_the_selection_corner` 测试（GUI 41 项）。
 - **`reset_for_new_document()`**：New / Load / 内置示例三条入口合并到同一个重置函数（编辑器缓冲、事件日志、
   运行状态、撤销栈），并新增 `opening_a_document_clears_every_buffer` 测试（GUI 40 项）锁住这一约定。
 - **`New model` 收尾**：同样改用 `clear_object_editor()` 并清空事件日志与播放状态；此前新建后上一个模型的

@@ -3554,6 +3554,12 @@ idle,busy,blocked,down\n",
             Ok(()) => {
                 let stored = copy.objects[index].rot.unwrap_or(0.0);
                 self.model = Some(Box::leak(Box::new(copy)));
+                // Refresh the form so the side panel shows the new rotation.
+                if self.selected == Some(index) {
+                    self.form = self
+                        .model
+                        .map(|model| EditForm::from_object(&model.objects[index]));
+                }
                 self.status = format!("{name} rotated to {stored:.0}°");
                 self.error = None;
             }
@@ -3967,7 +3973,18 @@ idle,busy,blocked,down\n",
         }
         let count = self.selection.len();
         let columns = (count as f64).sqrt().ceil() as usize;
-        let origin = model.objects[self.selection[0]].pos;
+        // Anchor on the selection's top-left corner, like Align does, so the
+        // result does not depend on which object was clicked first.
+        let origin = [
+            self.selection
+                .iter()
+                .map(|index| model.objects[*index].pos[0])
+                .fold(f64::INFINITY, f64::min),
+            self.selection
+                .iter()
+                .map(|index| model.objects[*index].pos[1])
+                .fold(f64::INFINITY, f64::min),
+        ];
         self.snapshot_labelled("grid layout");
         let mut copy = model.clone();
         for (position, index) in self.selection.clone().into_iter().enumerate() {
@@ -9573,10 +9590,25 @@ impl eframe::App for OpenFlexApp {
                         }
                         if ui.button("Reset position").clicked() {
                             if let (Some(index), Some(model)) = (self.selected, self.model) {
+                                // Same rules as every other edit: undo entry,
+                                // validation, refreshed form.
+                                self.snapshot_labelled("reset height");
                                 let mut copy = model.clone();
                                 copy.objects[index].z = 0.0;
-                                self.model = Some(Box::leak(Box::new(copy)));
-                                self.status = format!("Reset the height of {name}");
+                                match copy.validate() {
+                                    Ok(()) => {
+                                        self.model = Some(Box::leak(Box::new(copy)));
+                                        self.form = self
+                                            .model
+                                            .map(|model| {
+                                                EditForm::from_object(&model.objects[index])
+                                            });
+                                        self.status =
+                                            format!("Reset the height of {name}");
+                                        self.error = None;
+                                    }
+                                    Err(error) => self.error = Some(error.to_string()),
+                                }
                             }
                             self.context_menu_open = None;
                         }
@@ -9757,6 +9789,31 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn grid_layout_anchors_on_the_selection_corner() {
+        // Mirrors `batch_grid`: anchor = min x/y, then fill row-major.
+        let positions = [(4.0_f64, 5.0), (-2.0, 1.0), (7.0, -3.0), (0.0, 0.0)];
+        let min_x = positions.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+        let min_y = positions.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+        assert_eq!((min_x, min_y), (-2.0, -3.0));
+        let spacing = 4.0;
+        let columns = (positions.len() as f64).sqrt().ceil() as usize;
+        assert_eq!(columns, 2, "four objects make a 2x2 grid");
+        let placed: Vec<(f64, f64)> = (0..positions.len())
+            .map(|index| {
+                (
+                    min_x + (index % columns) as f64 * spacing,
+                    min_y + (index / columns) as f64 * spacing,
+                )
+            })
+            .collect();
+        assert_eq!(
+            placed,
+            vec![(-2.0, -3.0), (2.0, -3.0), (-2.0, 1.0), (2.0, 1.0)],
+            "row-major grid from the top-left corner"
+        );
     }
 
     #[test]
