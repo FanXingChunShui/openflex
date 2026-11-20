@@ -2316,7 +2316,15 @@ impl OpenFlexApp {
                 }
                 self.model = Some(Box::leak(Box::new(model)));
                 self.clear_object_editor();
-                self.status = format!("Undo: {label}");
+                // Every analysis result belongs to the model that produced it;
+                // undoing the model must not leave stale numbers on screen.
+                self.report = None;
+                self.exp_rows.clear();
+                self.opt_rows.clear();
+                self.opt_best = None;
+                self.series.clear();
+                self.trace = None;
+                self.status = format!("Undo: {label} (results cleared)");
                 true
             }
             Err(error) => {
@@ -2340,7 +2348,13 @@ impl OpenFlexApp {
                 }
                 self.model = Some(Box::leak(Box::new(model)));
                 self.clear_object_editor();
-                self.status = format!("Redo: {label}");
+                self.report = None;
+                self.exp_rows.clear();
+                self.opt_rows.clear();
+                self.opt_best = None;
+                self.series.clear();
+                self.trace = None;
+                self.status = format!("Redo: {label} (results cleared)");
                 true
             }
             Err(error) => {
@@ -10992,6 +11006,24 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn undo_and_redo_drop_stale_analysis_results() {
+        // Undoing the document invalidates every derived result; the status line
+        // says so, and each buffer is emptied.
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        app.snapshot_labelled("first edit");
+        app.exp_rows = vec![(1.0, 2.0, 0.1)];
+        app.opt_best = Some((vec![1.0], 2.0, 3.0));
+        app.status = "analysed".into();
+        assert!(app.restore());
+        assert!(app.exp_rows.is_empty(), "experiment rows cleared");
+        assert!(app.opt_best.is_none(), "best point cleared");
+        assert!(app.report.is_none());
+        assert!(app.status.contains("results cleared"), "{}", app.status);
     }
 
     #[test]

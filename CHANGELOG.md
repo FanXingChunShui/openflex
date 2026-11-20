@@ -4,6 +4,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **撤销/重做清空分析结果**：撤销或重做改变模型后，报告、实验结果、优化结果与最优解、时序采样、trace
+  一并清空，状态栏注明 `(results cleared)`。此前这些面板仍显示撤销前的数字，容易被当成本模型的结论。
+  新增 `undo_and_redo_drop_stale_analysis_results` 测试（GUI 82 项）。
 - **对比结果窗口**：`Compare to file` 的结果除了状态栏摘要，还会打开一个可滚动的窗口逐条列出
   （`+` 绿、`-` 红、`~` 琥珀、其余灰），长摘要不再被下一条状态消息顶掉。
   新增 `compare_report_lines_are_colour_coded` 测试（GUI 81 项）。
