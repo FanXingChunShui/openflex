@@ -10,6 +10,9 @@
 - **「最新检查点」排序修正**：`Load checkpoint` 原按文件名字典序取最后一项，`checkpoint-9.00` 会排在
   `checkpoint-100.00` 之后；改为解析文件名中的模型时间排序（`checkpoint_time()`），并加
   `checkpoints_sort_by_model_time_not_by_name` 测试（GUI 46 项）。
+- **时序图可读数**：图内新增 50% 刻度参考线与中点数值；鼠标悬停显示竖线标记与 `t=… min · <值>` 读数
+  （`series_index_at()`，越界与空样本都有定义）。此前只能看到曲线形状，读不出具体数值。
+  新增 `series_hover_index_stays_in_range` 测试（GUI 49 项）。
 - **热力图可解释**：没有报告时下拉项显示 `(run first)` 并禁用（此前静默回退到类型色）；
   选中指标后显示**色标**（绿→黄→红，两端标注实际 min/max，利用率固定 0–100%）。
   画布底部那三块无语义的色块改为一行 `coloured by <metric> · scale in the toolbar`。

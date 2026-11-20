@@ -2137,6 +2137,17 @@ impl OpenFlexApp {
         self.save_recent();
     }
 
+    /// Sample index under a horizontal position in the chart, clamped to the
+    /// available samples. Used by the time-series hover readout.
+    fn series_index_at(fraction: f32, samples: usize) -> Option<usize> {
+        if samples == 0 {
+            return None;
+        }
+        let fraction = fraction.clamp(0.0, 1.0);
+        let index = (fraction * (samples - 1) as f32).round() as usize;
+        Some(index.min(samples - 1))
+    }
+
     /// Whether a result produced by a worker belongs to a different document
     /// than the one currently open (an unnamed model cannot be compared).
     fn result_is_stale(&self, source: &str) -> bool {
@@ -8178,6 +8189,65 @@ impl eframe::App for OpenFlexApp {
                             egui::FontId::proportional(9.0),
                             palette::TEXT_DIM,
                         );
+                        // Mid-scale guide, so the curve can be read against a value.
+                        let mid_y = rect.bottom() - 6.0 - (rect.height() - 12.0) * 0.5;
+                        painter.line_segment(
+                            [
+                                egui::pos2(rect.left(), mid_y),
+                                egui::pos2(rect.right(), mid_y),
+                            ],
+                            egui::Stroke::new(
+                                1.0_f32,
+                                egui::Color32::from_rgba_unmultiplied(140, 160, 190, 30),
+                            ),
+                        );
+                        painter.text(
+                            rect.left_top() + egui::vec2(3.0, rect.height() * 0.5 - 9.0),
+                            egui::Align2::LEFT_TOP,
+                            format!("{:.1}", max * 0.5),
+                            egui::FontId::proportional(9.0),
+                            palette::TEXT_DIM,
+                        );
+                        // Hovering anywhere on the chart reads the sample under
+                        // the cursor: `t=… · value`.
+                        if let Some(pointer) = response.hover_pos()
+                            && pointer.x >= rect.left()
+                            && pointer.x <= rect.right()
+                        {
+                            let fraction =
+                                ((pointer.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+                            let index = Self::series_index_at(fraction, total).unwrap_or(0);
+                            if let Some((time, row)) = self.series.get(index) {
+                                let value = row
+                                    .iter()
+                                    .find(|(name, ..)| *name == self.series_object)
+                                    .map(value_of)
+                                    .unwrap_or(0.0);
+                                let marker_x = rect.left() + rect.width() * fraction;
+                                painter.line_segment(
+                                    [
+                                        egui::pos2(marker_x, rect.top()),
+                                        egui::pos2(marker_x, rect.bottom()),
+                                    ],
+                                    egui::Stroke::new(
+                                        1.0_f32,
+                                        palette::ACCENT_HI.gamma_multiply(0.5),
+                                    ),
+                                );
+                                painter.text(
+                                    egui::pos2(marker_x + 4.0, rect.top() + 2.0),
+                                    egui::Align2::LEFT_TOP,
+                                    format!(
+                                        "t={time:.0} {} · {value:.2}",
+                                        self.model
+                                            .map(|model| model.time_unit.label())
+                                            .unwrap_or("")
+                                    ),
+                                    egui::FontId::proportional(9.0),
+                                    palette::TEXT,
+                                );
+                            }
+                        }
                     }
                     // Warm-up boundary: samples before it do not enter the
                     // statistics, so shade that part of the chart.
@@ -10002,6 +10072,25 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn series_hover_index_stays_in_range() {
+        assert_eq!(OpenFlexApp::series_index_at(0.0, 10), Some(0));
+        assert_eq!(OpenFlexApp::series_index_at(1.0, 10), Some(9));
+        assert_eq!(OpenFlexApp::series_index_at(0.5, 10), Some(5));
+        assert_eq!(
+            OpenFlexApp::series_index_at(2.0, 10),
+            Some(9),
+            "a position past the right edge clamps"
+        );
+        assert_eq!(OpenFlexApp::series_index_at(-1.0, 10), Some(0));
+        assert_eq!(OpenFlexApp::series_index_at(0.5, 0), None, "no samples");
+        assert_eq!(
+            OpenFlexApp::series_index_at(0.5, 1),
+            Some(0),
+            "a single sample"
+        );
     }
 
     #[test]
