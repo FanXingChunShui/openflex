@@ -9,10 +9,10 @@
   新增 `baseline_note_only_fires_on_a_name_mismatch` 测试（GUI 42 项）。
 - **基线来源可见**：`BASELINE` 行在 `load` 旁显示 `from <模型名>`——与当前模型一致时为暗色，不一致时转**琥珀**并提示
   `baseline was captured from a different model`。新增 `baseline_ownership_matches_by_name` 测试（GUI 44 项）。
-  四处判断随后收敛为 `result_is_stale(&source)` 一个辅助函数，避免再出现「只改了其中两处」的情况。
 - **四类异步结果都能溯源**：`Run` / 时序采样 / 实验 / 优化现在都把模型名随结果送回，
   若当前文档已改名或换模型，状态栏标注 `from 'X' (model changed since)`；此前换模型后旧时序曲线与新结果
   会被当成本模型的数据。新增 `every_worker_reports_the_model_it_ran` 测试（GUI 43 项）锁住这一点。
+  四处判断收敛为 `result_is_stale(&source)` 一个辅助函数，避免再出现「只改了其中两处」的情况。
 - **报告与模型一致性**：`Run` 结束时若模型名与报告里的不一致（运行期间换了文档），状态栏追加
   `· model changed during the run`，避免把旧报告当新结果看待。
 - **上下文菜单编辑补齐**：右键 `Reset position` 现在记快照、走 `validate()` 并刷新表单（此前三样都没有）；
