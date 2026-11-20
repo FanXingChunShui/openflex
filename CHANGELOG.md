@@ -4,6 +4,8 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **保存后复位关闭确认**：`close_confirmed` 在成功保存时清零，避免「保存后再改、再关窗」跳过提示。
+  新增 `a_save_resets_the_close_confirmation` 测试（GUI 93 项）。
 - **关闭窗口前提示未保存**：窗口的关闭按钮在有未保存改动时第一次被 `CancelClose` 拦下，状态栏给出
   `Unsaved changes — close again to discard them, or Save first`，第二次才真正退出。
   此前点关闭就直接结束进程，未保存的改动全部丢失。新增

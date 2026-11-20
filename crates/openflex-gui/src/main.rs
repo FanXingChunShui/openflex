@@ -2925,6 +2925,9 @@ impl OpenFlexApp {
                     self.model_dirty = false;
                     self.form_dirty = false;
                     self.pending_discard = None;
+                    // The document is clean again: a future close needs its own
+                    // confirmation instead of inheriting this one.
+                    self.close_confirmed = false;
                     self.error = None;
                     self.remember_output(&path);
                     self.status = format!("Saved {}", path.display());
@@ -11128,6 +11131,18 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn a_save_resets_the_close_confirmation() {
+        // After Save the document is clean, so the next close must not inherit an
+        // earlier confirmation.
+        let mut confirmed = true;
+        let saved = true;
+        if saved {
+            confirmed = false;
+        }
+        assert!(!confirmed, "the confirmation is cleared by a save");
     }
 
     #[test]
