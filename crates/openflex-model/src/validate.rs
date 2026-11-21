@@ -1288,6 +1288,30 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                 ));
             }
         }
+        crate::model::ObjectParams::NetworkNode(params) => {
+            for (index, edge) in params.edges.iter().enumerate() {
+                if !edge.distance.is_finite() || edge.distance < 0.0 {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("edges[{index}].distance")),
+                        "must be finite and non-negative",
+                    ));
+                }
+            }
+        }
+        crate::model::ObjectParams::TrafficControl(params) => {
+            if params.capacity == 0 {
+                issues.push(ValidationIssue::new(
+                    location("capacity"),
+                    "must be at least 1 (0 would forbid every traveller)",
+                ));
+            }
+            if !params.speed_factor.is_finite() || params.speed_factor <= 0.0 {
+                issues.push(ValidationIssue::new(
+                    location("speed_factor"),
+                    "must be positive",
+                ));
+            }
+        }
         crate::model::ObjectParams::VisualTool(params) => {
             if params
                 .size

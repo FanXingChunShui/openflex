@@ -18,8 +18,13 @@
   （分流器提供逐端口百分比编辑并实时提示总和超 100%）。
 - 示例模型 `examples/fluid-plant.ofm`：`ticker → generator → processor → splitter(50/25/25)`
   分送水箱/混合器/打包桥，实测三条支路 `2.52 / 1.25 / 1.25` 体积每秒，与百分比一致。
+- **Travel Network 对象**：`network_node` 已是一等可摆放对象——节点间用普通 A 连接连成路网，
+  边长默认两节点直线距离、可用 `params.edges` 覆盖；运输腿走「起点→最近节点 → 最短路 →
+  最近节点→终点」，模型无节点时回退 `transporter.network` 或直线。新增 `traffic_control`
+  对象与 capacity/mode/speed_factor 参数（准入互斥尚未在引擎强制，已在矩阵中标注 🟡）。
+  实测：A→N1→N2→N3→B 绕行路径得到 92.43（直线仅 70），显式边长 10 覆盖 100 的直线距离。
 - 测试：模型层 `flexsim_parity`（10 项）、引擎行为 `flexsim_fluid_objects`（12 项）、
-  GUI 选择器与表单（2 项）。
+  引擎路网路由（3 项）、GUI 选择器与表单（2 项）。
 
 ## v1.32.0 — 2026-11-21
 

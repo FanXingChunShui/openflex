@@ -140,6 +140,8 @@ pub enum ObjectKind {
     ItemToFluid,
     FluidToItem,
     VisualTool,
+    NetworkNode,
+    TrafficControl,
 }
 
 impl ObjectKind {
@@ -181,6 +183,8 @@ impl ObjectKind {
             ObjectKind::ItemToFluid => "item_to_fluid",
             ObjectKind::FluidToItem => "fluid_to_item",
             ObjectKind::VisualTool => "visual_tool",
+            ObjectKind::NetworkNode => "network_node",
+            ObjectKind::TrafficControl => "traffic_control",
         }
     }
 
@@ -222,6 +226,8 @@ impl ObjectKind {
             "item_to_fluid" => ObjectKind::ItemToFluid,
             "fluid_to_item" => ObjectKind::FluidToItem,
             "visual_tool" => ObjectKind::VisualTool,
+            "network_node" => ObjectKind::NetworkNode,
+            "traffic_control" => ObjectKind::TrafficControl,
             _ => return None,
         })
     }
@@ -265,6 +271,8 @@ impl ObjectKind {
             ObjectKind::ItemToFluid,
             ObjectKind::FluidToItem,
             ObjectKind::VisualTool,
+            ObjectKind::NetworkNode,
+            ObjectKind::TrafficControl,
         ]
     }
 }
@@ -428,6 +436,8 @@ pub enum ObjectParams {
     ItemToFluid(ItemToFluidParams),
     FluidToItem(FluidToItemParams),
     VisualTool(VisualToolParams),
+    NetworkNode(NetworkNodeParams),
+    TrafficControl(TrafficControlParams),
 }
 
 fn decode<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, String> {
@@ -473,6 +483,8 @@ impl ObjectParams {
             ObjectParams::ItemToFluid(_) => ObjectKind::ItemToFluid,
             ObjectParams::FluidToItem(_) => ObjectKind::FluidToItem,
             ObjectParams::VisualTool(_) => ObjectKind::VisualTool,
+            ObjectParams::NetworkNode(_) => ObjectKind::NetworkNode,
+            ObjectParams::TrafficControl(_) => ObjectKind::TrafficControl,
         }
     }
 
@@ -515,6 +527,8 @@ impl ObjectParams {
             ObjectParams::ItemToFluid(p) => &p.triggers,
             ObjectParams::FluidToItem(p) => &p.triggers,
             ObjectParams::VisualTool(p) => &p.triggers,
+            ObjectParams::NetworkNode(p) => &p.triggers,
+            ObjectParams::TrafficControl(p) => &p.triggers,
         }
     }
 
@@ -557,6 +571,8 @@ impl ObjectParams {
             ObjectParams::ItemToFluid(p) => &mut p.triggers,
             ObjectParams::FluidToItem(p) => &mut p.triggers,
             ObjectParams::VisualTool(p) => &mut p.triggers,
+            ObjectParams::NetworkNode(p) => &mut p.triggers,
+            ObjectParams::TrafficControl(p) => &mut p.triggers,
         }
     }
 
@@ -599,6 +615,8 @@ impl ObjectParams {
             ObjectParams::ItemToFluid(_) => None,
             ObjectParams::FluidToItem(_) => None,
             ObjectParams::VisualTool(_) => None,
+            ObjectParams::NetworkNode(_) => None,
+            ObjectParams::TrafficControl(_) => None,
         }
     }
 
@@ -644,6 +662,8 @@ impl ObjectParams {
             ObjectParams::ItemToFluid(_) => None,
             ObjectParams::FluidToItem(_) => None,
             ObjectParams::VisualTool(_) => None,
+            ObjectParams::NetworkNode(_) => None,
+            ObjectParams::TrafficControl(_) => None,
         }
     }
 
@@ -705,6 +725,8 @@ impl ObjectParams {
             ObjectParams::ItemToFluid(_) => return None,
             ObjectParams::FluidToItem(_) => return None,
             ObjectParams::VisualTool(_) => return None,
+            ObjectParams::NetworkNode(_) => return None,
+            ObjectParams::TrafficControl(_) => return None,
         }
         Some(())
     }
@@ -748,6 +770,8 @@ impl ObjectParams {
             ObjectParams::ItemToFluid(_) => None,
             ObjectParams::FluidToItem(_) => None,
             ObjectParams::VisualTool(_) => None,
+            ObjectParams::NetworkNode(_) => None,
+            ObjectParams::TrafficControl(_) => None,
         }
     }
 
@@ -790,6 +814,8 @@ impl ObjectParams {
             ObjectParams::ItemToFluid(_) => None,
             ObjectParams::FluidToItem(_) => None,
             ObjectParams::VisualTool(_) => None,
+            ObjectParams::NetworkNode(_) => None,
+            ObjectParams::TrafficControl(_) => None,
         }
     }
 
@@ -832,6 +858,8 @@ impl ObjectParams {
             ObjectParams::ItemToFluid(_) => &[],
             ObjectParams::FluidToItem(_) => &[],
             ObjectParams::VisualTool(_) => &[],
+            ObjectParams::NetworkNode(_) => &[],
+            ObjectParams::TrafficControl(_) => &[],
         }
     }
 
@@ -874,6 +902,8 @@ impl ObjectParams {
             ObjectKind::ItemToFluid => ObjectParams::ItemToFluid(decode(value)?),
             ObjectKind::FluidToItem => ObjectParams::FluidToItem(decode(value)?),
             ObjectKind::VisualTool => ObjectParams::VisualTool(decode(value)?),
+            ObjectKind::NetworkNode => ObjectParams::NetworkNode(decode(value)?),
+            ObjectKind::TrafficControl => ObjectParams::TrafficControl(decode(value)?),
         })
     }
 }
@@ -918,6 +948,8 @@ impl Serialize for ObjectParams {
             ObjectParams::ItemToFluid(p) => p.serialize(serializer),
             ObjectParams::FluidToItem(p) => p.serialize(serializer),
             ObjectParams::VisualTool(p) => p.serialize(serializer),
+            ObjectParams::NetworkNode(p) => p.serialize(serializer),
+            ObjectParams::TrafficControl(p) => p.serialize(serializer),
         }
     }
 }
@@ -2932,6 +2964,82 @@ impl Default for VisualToolParams {
         }
     }
 }
+/// Traffic control mode (FlexSim `TrafficControl` "Mutual Exclusion" tab).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrafficMode {
+    /// Only `capacity` travellers may occupy the area at the same time.
+    #[default]
+    MutualExclusion,
+    /// Travellers enter freely; only the speed limit applies.
+    UnTimed,
+}
+
+impl TrafficMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TrafficMode::MutualExclusion => "mutual_exclusion",
+            TrafficMode::UnTimed => "un_timed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<TrafficMode> {
+        Some(match value {
+            "mutual_exclusion" => TrafficMode::MutualExclusion,
+            "un_timed" => TrafficMode::UnTimed,
+            _ => return None,
+        })
+    }
+}
+
+/// `network_node`: one node of the travel network.
+///
+/// Nodes connect to each other with ordinary A connections; the edge length is
+/// the straight-line distance between their positions unless `edges` overrides
+/// it (FlexSim's "Configuring Paths" / distance table).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkNodeParams {
+    /// Explicit edge lengths to other nodes (overrides the euclidean default).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<NetworkEdge>,
+    /// FlexSim "Maximum Number of Travelers" (0 = unlimited).
+    #[serde(default)]
+    pub max_travelers: u32,
+    #[serde(default)]
+    pub triggers: Triggers,
+}
+
+/// `traffic_control`: limits how many travellers occupy a set of nodes.
+///
+/// The controlled nodes are the ones connected to this object.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrafficControlParams {
+    /// How many travellers may be inside the area at once.
+    #[serde(default = "one_u32")]
+    pub capacity: u32,
+    /// What happens when the area is full.
+    #[serde(default)]
+    pub mode: TrafficMode,
+    /// Multiplier applied to traveller speed inside the area (1.0 = unchanged).
+    #[serde(default = "one_f64")]
+    pub speed_factor: f64,
+    #[serde(default)]
+    pub triggers: Triggers,
+}
+
+impl Default for TrafficControlParams {
+    fn default() -> Self {
+        Self {
+            capacity: 1,
+            mode: TrafficMode::MutualExclusion,
+            speed_factor: 1.0,
+            triggers: Triggers::default(),
+        }
+    }
+}
+
 fn hundred_f64() -> f64 {
     100.0
 }

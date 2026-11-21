@@ -36,6 +36,8 @@ fn every_new_kind_round_trips() {
         ObjectKind::ItemToFluid,
         ObjectKind::FluidToItem,
         ObjectKind::VisualTool,
+        ObjectKind::NetworkNode,
+        ObjectKind::TrafficControl,
     ] {
         let text = kind.as_str();
         assert_eq!(
@@ -70,8 +72,8 @@ fn new_kinds_appear_in_the_catalogue() {
     }
     assert_eq!(
         all.len(),
-        28 + 8,
-        "28 previous kinds plus the 8 FlexSim 7.5 additions"
+        28 + 10,
+        "28 previous kinds plus the 10 FlexSim 7.5 additions"
     );
 }
 

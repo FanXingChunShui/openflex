@@ -653,6 +653,8 @@ fn parse_params(kind: ObjectKind, value: serde_json::Value) -> Result<ObjectPara
         ObjectKind::ItemToFluid => ObjectParams::ItemToFluid(decode(value)?),
         ObjectKind::FluidToItem => ObjectParams::FluidToItem(decode(value)?),
         ObjectKind::VisualTool => ObjectParams::VisualTool(decode(value)?),
+        ObjectKind::NetworkNode => ObjectParams::NetworkNode(decode(value)?),
+        ObjectKind::TrafficControl => ObjectParams::TrafficControl(decode(value)?),
     })
 }
 
@@ -698,6 +700,8 @@ const KINDS: &[&str] = &[
     "item_to_fluid",
     "fluid_to_item",
     "visual_tool",
+    "network_node",
+    "traffic_control",
 ];
 
 const DIST_CHOICES: &[&str] = &[
@@ -1875,6 +1879,64 @@ impl EditForm {
                         .size(9.0_f32)
                         .monospace()
                         .color(palette::TEXT_DIM),
+                );
+            }
+            ObjectParams::NetworkNode(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.max_travelers)
+                            .speed(1.0)
+                            .prefix("max travellers "),
+                    )
+                    .changed();
+                ui.label(
+                    egui::RichText::new(format!("{} explicit edge(s)", p.edges.len()))
+                        .size(9.0_f32)
+                        .monospace()
+                        .color(palette::TEXT_DIM),
+                );
+                ui.label(
+                    egui::RichText::new("Connect nodes to each other to form the travel network.")
+                        .size(9.0_f32)
+                        .color(palette::TEXT_DIM),
+                );
+            }
+            ObjectParams::TrafficControl(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.capacity)
+                            .speed(1.0)
+                            .range(1..=1000)
+                            .prefix("capacity "),
+                    )
+                    .changed();
+                egui::ComboBox::from_id_salt("traffic-mode")
+                    .selected_text(p.mode.as_str())
+                    .show_ui(ui, |ui| {
+                        for mode in [
+                            openflex_model::TrafficMode::MutualExclusion,
+                            openflex_model::TrafficMode::UnTimed,
+                        ] {
+                            if ui.selectable_label(p.mode == mode, mode.as_str()).clicked() {
+                                p.mode = mode;
+                                changed = true;
+                            }
+                        }
+                    });
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.speed_factor)
+                            .speed(0.05)
+                            .range(0.01..=10.0)
+                            .prefix("speed factor "),
+                    )
+                    .changed();
+                ui.label(
+                    egui::RichText::new(
+                        "Connect network nodes to this object to define the controlled area.",
+                    )
+                    .size(9.0_f32)
+                    .color(palette::TEXT_DIM),
                 );
             }
             ObjectParams::VisualTool(p) => {
@@ -6899,6 +6961,9 @@ idle,busy,blocked,down\n",
             // Decoration is deliberately neutral so it never reads as an object
             // that participates in the flow.
             ObjectKind::VisualTool => egui::Color32::from_rgb(140, 144, 152),
+            // Travel-network furniture: nodes and their traffic controllers.
+            ObjectKind::NetworkNode => egui::Color32::from_rgb(120, 150, 130),
+            ObjectKind::TrafficControl => egui::Color32::from_rgb(150, 132, 108),
             _ => egui::Color32::from_rgb(124, 136, 152),
         }
     }

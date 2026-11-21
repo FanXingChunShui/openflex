@@ -124,6 +124,14 @@ pub fn describe_kind(kind: ObjectKind) -> (&'static str, &'static str) {
             "Packs fluid back into discrete flow items.",
             "fluid_per_item: volume consumed by one flow item, default 1\nunits_per_item: discrete units represented by one flow item, default 1",
         ),
+        ObjectKind::NetworkNode => (
+            "A node of the travel network that transporters and operators follow.",
+            "edges: optional [{ from, to, distance, directed }] overriding the euclidean edge length\nmax_travelers: how many travellers may stand on this node, 0 = unlimited",
+        ),
+        ObjectKind::TrafficControl => (
+            "Limits how many travellers occupy an area of the travel network at once.",
+            "capacity: travellers allowed inside at the same time, default 1\nmode: mutual_exclusion | un_timed\nspeed_factor: multiplier applied to traveller speed inside the area, default 1",
+        ),
         ObjectKind::VisualTool => (
             "Scenery or a container for other objects; no simulation behaviour.",
             "shape: box | plane | column | sphere\nsize: [x, y, z] in model units\ncolor: optional #rrggbb\ntext: optional caption",

@@ -3646,6 +3646,8 @@ impl<'m> Simulation<'m> {
             | ObjectParams::FluidBlender(_)
             | ObjectParams::FluidSplitter(_)
             | ObjectParams::FluidProcessor(_)
+            | ObjectParams::NetworkNode(_)
+            | ObjectParams::TrafficControl(_)
             | ObjectParams::VisualTool(_) => false,
             // The two bridges accept discrete flow items one at a time.
             ObjectParams::ItemToFluid(_) | ObjectParams::FluidToItem(_) => {
@@ -7429,6 +7431,14 @@ impl<'m> Simulation<'m> {
         {
             return distance;
         }
+        // FlexSim `NetworkNode`: a node graph laid out in the model wins over the
+        // per-transporter edge table, which stays the fallback for models that
+        // declare their roads inline.
+        if let Some(routed) =
+            node_network_distance(self.model, &self.objects[from], &self.objects[to])
+        {
+            return routed;
+        }
         let edges: Vec<NetworkEdge> = match &self.model.objects[transporter].params {
             ObjectParams::Transporter(params)
             | ObjectParams::Person(params)
@@ -9129,6 +9139,96 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
 ///
 /// Edges are bidirectional; the graph is small, so Dijkstra uses a linear scan
 /// for the next node instead of a priority queue.
+/// FlexSim `NetworkNode` routing: the shortest path over the model's nodes.
+///
+/// Nodes connect to each other with ordinary A connections; an edge is as long
+/// as the straight line between the two positions unless the node overrides it
+/// with an explicit `edges` entry. A leg additionally walks straight from the
+/// endpoint object to its nearest node and back out again.
+fn node_network_distance(model: &Model, from: &ObjectRt, to: &ObjectRt) -> Option<f64> {
+    let nodes: Vec<(&str, [f64; 2])> = model
+        .objects
+        .iter()
+        .filter(|object| object.kind == ObjectKind::NetworkNode)
+        .map(|object| (object.name.as_str(), object.pos))
+        .collect();
+    if nodes.len() < 2 {
+        return None;
+    }
+    // Edges: explicit ones from the node parameters, then every A connection
+    // between two nodes (euclidean unless already covered by an explicit edge).
+    let mut edges: Vec<NetworkEdge> = Vec::new();
+    for object in model
+        .objects
+        .iter()
+        .filter(|object| object.kind == ObjectKind::NetworkNode)
+    {
+        if let ObjectParams::NetworkNode(params) = &object.params {
+            edges.extend(params.edges.iter().cloned());
+        }
+    }
+    // A plain function rather than a closure so `edges` stays free to grow.
+    fn connects(edges: &[NetworkEdge], from_name: &str, to_name: &str) -> bool {
+        edges.iter().any(|edge| {
+            (edge.from == from_name && edge.to == to_name)
+                || (!edge.directed && edge.from == to_name && edge.to == from_name)
+        })
+    }
+    for connection in &model.connections {
+        let Some(from_source) = model.object(&connection.from) else {
+            continue;
+        };
+        let Some(to_target) = model.object(&connection.to) else {
+            continue;
+        };
+        if from_source.kind != ObjectKind::NetworkNode || to_target.kind != ObjectKind::NetworkNode
+        {
+            continue;
+        }
+        if connects(&edges, &connection.from, &connection.to) {
+            continue;
+        }
+        edges.push(NetworkEdge {
+            from: connection.from.clone(),
+            to: connection.to.clone(),
+            distance: distance(from_source.pos, to_target.pos),
+            directed: false,
+        });
+    }
+    let nearest = |position: [f64; 2]| -> &str {
+        nodes
+            .iter()
+            .min_by(|left, right| {
+                distance(left.1, position)
+                    .partial_cmp(&distance(right.1, position))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|node| node.0)
+            .unwrap_or("")
+    };
+    let from_node = nearest(from.position);
+    let to_node = nearest(to.position);
+    if from_node.is_empty() || to_node.is_empty() {
+        return None;
+    }
+    if from_node == to_node {
+        return Some(distance(from.position, to.position));
+    }
+    let path = shortest_network_distance(&edges, from_node, to_node)?;
+    let node_positions: Vec<[f64; 2]> = nodes
+        .iter()
+        .filter(|node| node.0 == from_node || node.0 == to_node)
+        .map(|node| node.1)
+        .collect();
+    let lead = node_positions
+        .first()
+        .map_or(0.0, |start| distance(from.position, *start));
+    let trail = node_positions
+        .last()
+        .map_or(0.0, |end| distance(*end, to.position));
+    Some(path + lead + trail)
+}
+
 fn shortest_network_distance(edges: &[NetworkEdge], from: &str, to: &str) -> Option<f64> {
     if from == to {
         return Some(0.0);
@@ -10011,6 +10111,152 @@ fn queue_params_of(object: &Object) -> openflex_model::QueueParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn network_nodes_route_over_the_shortest_path() {
+        // A -> N1 -> N2 -> N3 -> B is a detour; the node graph must be used
+        // instead of the straight line between the endpoints.
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "nodes",
+          "run": { "stop_time": 100.0 },
+          "objects": [
+            { "name": "S", "kind": "source", "pos": [-40, 0], "params": {} },
+            { "name": "A", "kind": "queue", "pos": [-30, 0], "params": {} },
+            { "name": "B", "kind": "sink", "pos": [40, 0], "params": {} },
+            { "name": "N1", "kind": "network_node", "pos": [-30, 0], "params": {} },
+            { "name": "N2", "kind": "network_node", "pos": [0, 30], "params": {} },
+            { "name": "N3", "kind": "network_node", "pos": [40, 0], "params": {} }
+          ],
+          "connections": [
+            { "from": "A", "to": "B" },
+            { "from": "N1", "to": "N2" },
+            { "from": "N2", "to": "N3" }
+          ]
+        }"#,
+        )
+        .expect("model");
+        let sim = Simulation::new(
+            &model,
+            SimConfig {
+                stop_time: 100.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            false,
+        )
+        .expect("sim");
+        let from = sim
+            .objects
+            .iter()
+            .position(|object| object.name == "A")
+            .expect("A");
+        let to = sim
+            .objects
+            .iter()
+            .position(|object| object.name == "B")
+            .expect("B");
+        let routed = node_network_distance(&model, &sim.objects[from], &sim.objects[to])
+            .expect("the node graph must answer");
+        // N1 -> N2 = 42.43, N2 -> N3 = 50, plus A->N1 = 0 and N3->B = 0.
+        assert!(
+            (routed - 92.43).abs() < 0.1,
+            "expected the detour 92.43, got {routed}"
+        );
+        assert!(
+            routed > distance(sim.objects[from].position, sim.objects[to].position),
+            "the node path must be longer than the straight line"
+        );
+    }
+
+    #[test]
+    fn a_single_node_falls_back_to_the_straight_line() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "one",
+          "run": { "stop_time": 10.0 },
+          "objects": [
+            { "name": "S", "kind": "source", "pos": [-5, 0], "params": {} },
+            { "name": "A", "kind": "queue", "pos": [0, 0], "params": {} },
+            { "name": "B", "kind": "sink", "pos": [10, 0], "params": {} },
+            { "name": "N1", "kind": "network_node", "pos": [5, 0], "params": {} }
+          ],
+          "connections": [ { "from": "A", "to": "B" } ]
+        }"#,
+        )
+        .expect("model");
+        let sim = Simulation::new(
+            &model,
+            SimConfig {
+                stop_time: 10.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            false,
+        )
+        .expect("sim");
+        let from = sim
+            .objects
+            .iter()
+            .position(|object| object.name == "A")
+            .expect("A");
+        let to = sim
+            .objects
+            .iter()
+            .position(|object| object.name == "B")
+            .expect("B");
+        assert!(
+            node_network_distance(&model, &sim.objects[from], &sim.objects[to]).is_none(),
+            "one node cannot form a network"
+        );
+    }
+
+    #[test]
+    fn node_edges_override_the_euclidean_length() {
+        // N1 and N2 are 100 apart, but the modeller declares a 10 m road.
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "short",
+          "run": { "stop_time": 10.0 },
+          "objects": [
+            { "name": "S", "kind": "source", "pos": [-10, 0], "params": {} },
+            { "name": "A", "kind": "queue", "pos": [0, 0], "params": {} },
+            { "name": "B", "kind": "sink", "pos": [100, 0], "params": {} },
+            { "name": "N1", "kind": "network_node", "pos": [0, 0],
+              "params": { "edges": [ { "from": "N1", "to": "N2", "distance": 10.0 } ] } },
+            { "name": "N2", "kind": "network_node", "pos": [100, 0], "params": {} }
+          ],
+          "connections": [ { "from": "A", "to": "B" } ]
+        }"#,
+        )
+        .expect("model");
+        let sim = Simulation::new(
+            &model,
+            SimConfig {
+                stop_time: 10.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            false,
+        )
+        .expect("sim");
+        let from = sim
+            .objects
+            .iter()
+            .position(|object| object.name == "A")
+            .expect("A");
+        let to = sim
+            .objects
+            .iter()
+            .position(|object| object.name == "B")
+            .expect("B");
+        let routed =
+            node_network_distance(&model, &sim.objects[from], &sim.objects[to]).expect("routed");
+        assert!(
+            (routed - 10.0).abs() < 1e-9,
+            "the explicit edge length must win, got {routed}"
+        );
+    }
 
     fn capacity_model() -> Model {
         Model::from_json(

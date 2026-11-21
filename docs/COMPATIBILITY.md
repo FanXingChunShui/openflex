@@ -45,12 +45,14 @@
 | ItemToFluid | `item_to_fluid` | ✅ |
 | FluidToItem | `fluid_to_item` | ✅ |
 | VisualTool | `visual_tool` | ✅ |
-| NetworkNode | — | ⛔ 待补：路网节点作为一等对象 |
-| TrafficControl | — | ⛔ 待补：交通控制区互斥 |
+| NetworkNode | `network_node` | ✅ 节点可摆放、节点间用 A 连接成边、最短路绕行 |
+| TrafficControl | `traffic_control` | 🟡 对象与参数（capacity/mode/speed_factor）已建模，**准入互斥尚未在引擎中强制** |
 
-> FlexSim 的 `NetworkNode` / `TrafficControl` 目前以 `transporter.network` 边表
-> （`[{from, to, distance}]`）的形式存在，能算最短路，但不是可摆放、可连线的对象，
-> 也没有「交通控制区」的互斥语义。这是对象库对齐后仅剩的两个缺口。
+> `network_node` 已是一等对象：节点之间用普通 A 连接连成路网，边长默认取两节点直线距离，
+> 可用 `params.edges` 覆盖（FlexSim 的 distance table）；运输腿取「起点→最近节点 → 最短路 →
+> 最近节点→终点」，模型里没有节点时回退到 `transporter.network` 边表或直线距离。
+> 仍有缺口：`traffic_control` 的互斥准入（一次只允许 N 辆进入控制区）只是参数，
+> 引擎尚未在进入时做占用/释放判定。
 
 ## 对象库
 
