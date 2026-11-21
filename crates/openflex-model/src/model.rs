@@ -3895,6 +3895,27 @@ where
     deserialize_named_map(deserializer, "pick list")
 }
 
+/// Model-level triggers (FlexSim model start / reset / stop).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelTriggers {
+    /// Executed once before the first event of a fresh run.
+    #[serde(default)]
+    pub on_start: Vec<Action>,
+    /// Executed when the warm-up boundary resets the statistics.
+    #[serde(default)]
+    pub on_reset: Vec<Action>,
+    /// Executed when the run reaches its stop time.
+    #[serde(default)]
+    pub on_stop: Vec<Action>,
+}
+
+impl ModelTriggers {
+    pub fn is_empty(&self) -> bool {
+        self.on_start.is_empty() && self.on_reset.is_empty() && self.on_stop.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Model {
@@ -3947,6 +3968,9 @@ pub struct Model {
         deserialize_with = "deserialize_picklists"
     )]
     pub picklists: BTreeMap<String, PickList>,
+    /// Model-level `on_start` / `on_reset` / `on_stop` triggers.
+    #[serde(default, skip_serializing_if = "ModelTriggers::is_empty")]
+    pub model_triggers: ModelTriggers,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
 }

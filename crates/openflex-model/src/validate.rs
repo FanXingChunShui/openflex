@@ -235,6 +235,7 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
         }
     }
     issues.extend(validate_fluid(model));
+    issues.extend(validate_model_triggers(model));
 
     issues
 }
@@ -1346,6 +1347,29 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
     issues
 }
 
+/// Model-level trigger actions (scripts must compile before the run starts).
+fn validate_model_triggers(model: &Model) -> Vec<ValidationIssue> {
+    let mut issues = Vec::new();
+    let triggers = &model.model_triggers;
+    let lists = [
+        ("on_start", &triggers.on_start),
+        ("on_reset", &triggers.on_reset),
+        ("on_stop", &triggers.on_stop),
+    ];
+    for (trigger, actions) in lists {
+        for (position, action) in actions.iter().enumerate() {
+            if let crate::action::Action::Script { source } = action {
+                validate_script_source(
+                    source,
+                    &format!("model_triggers.{trigger}[{position}].source"),
+                    &mut issues,
+                );
+            }
+        }
+    }
+    issues
+}
+
 /// `#rrggbb` (or `#rgb`), the only colour form the GUI and SVG export accept.
 fn is_hex_color(value: &str) -> bool {
     let hex = match value.strip_prefix('#') {
@@ -1492,6 +1516,8 @@ fn validate_trigger_scripts(object: &Object) -> Vec<ValidationIssue> {
         ("on_stop", &triggers.on_stop),
         ("on_resume", &triggers.on_resume),
         ("on_draw", &triggers.on_draw),
+        ("setup_finish", &triggers.on_setup_finish),
+        ("process_finish", &triggers.on_process_finish),
     ];
     for (trigger, actions) in lists {
         for (position, action) in actions.iter().enumerate() {
@@ -2099,6 +2125,7 @@ mod tests {
             global_tables: Default::default(),
             global_variables: Default::default(),
             picklists: Default::default(),
+            model_triggers: Default::default(),
             metadata: Default::default(),
         }
     }

@@ -44,6 +44,16 @@
   `home`/`charger`/`shaft` 列全部对象名（按字母序）；输错名字时旁边出现琥珀色 `unknown` 提示而不是静默接受。
   这补上 `docs/FEATURE_PARITY_75.md` 里「Sampler ⛔」这一行。GUI 测试 **125 项**。
 
+- **加工时点钩子与模型触发器**：`SimTrigger` 新增 `setup_finish` / `process_finish`，在处理器的
+  「setup 结束」与「加工时钟结束」两个边界触发（早于 `on_exit`；`setup_time = 0` 无独立 setup 阶段故不触发）；
+  `Model` 新增 `model_triggers`（`on_start` / `on_reset` / `on_stop`），分别在第 0 秒前、预热边界、
+  到达 stop_time 时执行，失败作为 `SimError::Script` 上报而不是静默；顺带把对象 14 类触发器的脚本
+  预编译补齐（此前只覆盖 8 类）。新增 3 项引擎测试。
+- **表达式可读全局变量与 PickList**：`$Name` 引用全局变量（按声明的 kind 返回数字或字符串），
+  裸名 `Name` 仅在引擎无同名值时回退到全局变量（保证 `time`/`item.type` 等既有路径语义不变），
+  `picklist("Shift","Night")` 返回条目取值；未定义变量/列表/条目、以及字符串参与算术都是明确的
+  求值错误，绝不静默成 0。`EvalContext` 用带默认实现的新方法扩展，外部调用点零破坏。
+
 ## v1.32.0 — 2026-11-21
 
 本轮把 `SimReport` 里**一直存在却没在桌面版显示**的统计数据全部接出来（流程 token 与块级统计、流体液位与流量、Little 定律校验、逐复现明细、峰值内容），并统一了「利用率」在四处展示中的对象范围。发布节奏保持**至少 3 小时一版**。

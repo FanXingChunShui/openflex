@@ -1459,6 +1459,7 @@ pub fn simulate_until(
         ));
     }
     let mut sim = Simulation::new(model, config.clone(), false)?;
+    sim.start()?;
     sim.pause_at = Some(stop_at);
     sim.run_events()?;
     sim.now = stop_at;
@@ -1502,6 +1503,11 @@ pub fn resume_from_checkpoint(
     }
     sim.run_events()?;
     sim.now = resume_at;
+    let stop_actions = sim.model.model_triggers.on_stop.clone();
+    sim.fire_model_actions("model_triggers.on_stop", stop_actions);
+    if let Some(error) = sim.trigger_error.take() {
+        return Err(error);
+    }
     sim.finalize_stats();
     Ok(sim.replication_result(index, resume_at))
 }
@@ -1976,7 +1982,8 @@ impl<'m> SimulationHandle<'m> {
         if config.stop_time <= 0.0 {
             return Err(SimError::Config("stop_time must be positive".into()));
         }
-        let sim = Simulation::new(model, config.clone(), false)?;
+        let mut sim = Simulation::new(model, config.clone(), false)?;
+        sim.start()?;
         Ok(Self {
             sim,
             index,
@@ -2126,9 +2133,16 @@ fn simulate_run(
     let mut sim = Simulation::new(model, config.clone(), trace)?;
     if let Some(checkpoint) = resume {
         sim.restore(checkpoint)?;
+    } else {
+        sim.start()?;
     }
     sim.run_events()?;
     sim.advance_to_stop();
+    let stop_actions = sim.model.model_triggers.on_stop.clone();
+    sim.fire_model_actions("model_triggers.on_stop", stop_actions);
+    if let Some(error) = sim.trigger_error.take() {
+        return Err(error);
+    }
     let checkpoint = if save_checkpoint {
         Some(sim.snapshot())
     } else {
@@ -3167,6 +3181,64 @@ impl<'m> Simulation<'m> {
         if let Err(err) = result {
             self.trigger_error = Some(err);
         }
+    }
+
+    /// task-152: execute model-level triggers (on_start / on_reset / on_stop).
+    /// Actions run with a synthetic item; scripts may still send messages,
+    /// create/move items and log. The first failure is parked in
+    /// `trigger_error`, exactly like object lifecycle triggers.
+    fn fire_model_actions(&mut self, location: &str, actions: Vec<Action>) {
+        for action in actions {
+            if let Err(error) = self.apply_model_action(location, action) {
+                self.trigger_error = Some(error);
+                break;
+            }
+        }
+    }
+
+    fn apply_model_action(&mut self, location: &str, action: Action) -> Result<(), SimError> {
+        let mut probe = FlowItem::probe(self.now);
+        match action {
+            Action::SetLabel { value, .. } | Action::SetItemType { value } => {
+                // Model triggers have no flow item; the expression is still
+                // evaluated so bad references surface as errors.
+                let _ = self.eval_expr(location, &probe, &value)?;
+            }
+            Action::IncrementLabel { by, .. } => {
+                let _ = self.eval_expr(location, &probe, &by)?;
+            }
+            Action::SendMessage { target, delay } => {
+                let delay = self.eval_expr(location, &probe, &delay)?;
+                let delay = delay.as_number().unwrap_or(0.0).max(0.0);
+                if let Some(&target_index) = self.by_name.get(&target) {
+                    self.schedule(self.now + delay, EventKind::Message(target_index));
+                }
+            }
+            Action::DestroyItem | Action::ReleaseItem => {
+                // No current item/object at model level: nothing to release.
+            }
+            Action::Script { source } => {
+                self.action_location = location.to_string();
+                self.run_script_action(
+                    &source,
+                    &format!("{location} script action"),
+                    "model",
+                    &mut probe,
+                    None,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// task-152: run the model's `on_start` triggers before the first event.
+    fn start(&mut self) -> Result<(), SimError> {
+        let actions = self.model.model_triggers.on_start.clone();
+        self.fire_model_actions("model_triggers.on_start", actions);
+        if let Some(error) = self.trigger_error.take() {
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Enter the blocked state with a statistics reason (A12).
@@ -4832,6 +4904,10 @@ impl<'m> Simulation<'m> {
                 }
                 self.set_phase(index, Phase::Idle);
                 self.objects[index].ready_for_process = true;
+                // task-152: the setup clock just reached zero. This is not
+                // OnReceive/OnEntry (those fire when the item arrives); the
+                // processing clock starts right after this hook.
+                self.fire_lifecycle_trigger(index, SimTrigger::SetupFinish);
                 self.flow_processor(index)
             }
             ObjectKind::Combiner => self.handle_combiner_setup_done(index),
@@ -4901,6 +4977,9 @@ impl<'m> Simulation<'m> {
         self.objects[index].touch();
         self.set_phase(index, Phase::WaitingForOutput);
         self.release_operator(index)?;
+        // task-152: the processing clock just reached zero; the item is not yet
+        // delivered (on_exit fires later, when it leaves the object).
+        self.fire_lifecycle_trigger(index, SimTrigger::ProcessFinish);
         // `flow` delivers the finished item and, when there is another item
         // waiting, starts the next setup/process step.
         self.flow(index)?;
@@ -8160,6 +8239,9 @@ impl<'m> Simulation<'m> {
                 self.now + process,
                 EventKind::MpDone(index, lane, next_token),
             );
+            // task-152: this slot's setup phase just finished (processing starts
+            // now; OnReceive/OnEntry fire earlier when the item arrives).
+            self.fire_lifecycle_trigger(index, SimTrigger::SetupFinish);
             self.refresh_multiprocessor(index)?;
             return Ok(());
         }
@@ -8176,6 +8258,9 @@ impl<'m> Simulation<'m> {
         self.objects[index].lanes[lane].phase = Phase::Idle;
         self.objects[index].lanes[lane].token += 1;
         self.objects[index].touch();
+        // task-152: this slot's processing clock finished; the item is still
+        // pending delivery (on_exit fires later).
+        self.fire_lifecycle_trigger(index, SimTrigger::ProcessFinish);
         // Deliver the finished item and start the next one in a free slot.
         self.flow(index)?;
         self.refresh_multiprocessor(index)?;
@@ -9002,66 +9087,7 @@ impl<'m> Simulation<'m> {
                     } else {
                         format!("{} script action", self.action_location)
                     };
-                    let script =
-                        self.scripts
-                            .get(&source)
-                            .cloned()
-                            .ok_or_else(|| SimError::Script {
-                                location: location.clone(),
-                                source: ScriptError::Compile(
-                                    "script source was not precompiled with the model".into(),
-                                ),
-                            })?;
-                    let mut context = ScriptContext::new(self.now, item.item_type, item.id);
-                    context.labels = item.labels.clone();
-                    context.objects = self.script_objects();
-                    let outcome = script.run(&mut context).map_err(|error| SimError::Script {
-                        location: location.clone(),
-                        source: error,
-                    })?;
-                    item.labels = outcome.labels;
-                    if let Some(item_type) = outcome.item_type {
-                        item.item_type = item_type;
-                    }
-                    for message in &outcome.messages {
-                        if let Some(&target) = self.by_name.get(&message.target) {
-                            self.schedule(
-                                self.now + message.delay.max(0.0),
-                                EventKind::Message(target),
-                            );
-                        }
-                    }
-                    if outcome.release_item {
-                        // Same semantics as `release_item` (A4): lift the hold
-                        // and retry the delivery in this instant.
-                        self.objects[index].hold_release = false;
-                        if self.has_held_item(index) {
-                            self.objects[index].release_bypass = true;
-                        }
-                        self.schedule(self.now, EventKind::Flow(index));
-                    }
-                    if let Some(state_name) = &outcome.state {
-                        self.apply_script_state(index, state_name);
-                    }
-                    for (target, count) in &outcome.create_items {
-                        self.apply_script_create(target, *count)?;
-                    }
-                    for (from, to) in &outcome.move_items {
-                        self.apply_script_move(from, to)?;
-                    }
-                    for log in &outcome.logs {
-                        if self.trace.is_some() {
-                            let time = self.now;
-                            let seq = self.next_seq;
-                            self.next_seq += 1;
-                            if let Some(trace) = self.trace.as_mut() {
-                                trace.push(
-                                    TraceEvent::new(time, seq, "script_log", object_name.clone())
-                                        .with_message(log.clone()),
-                                );
-                            }
-                        }
-                    }
+                    self.run_script_action(&source, &location, &object_name, item, Some(index))?;
                 }
                 Action::ReleaseItem => {
                     // A4: clear the hold and retry the delivery in the same
@@ -9073,6 +9099,82 @@ impl<'m> Simulation<'m> {
                         self.objects[index].release_bypass = true;
                     }
                     self.schedule(self.now, EventKind::Flow(index));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// task-152: execute one sandboxed script action. `object_index` is the
+    /// object whose hold/state the script may change; model-level triggers pass
+    /// `None` (message/create/move/log still apply).
+    fn run_script_action(
+        &mut self,
+        source: &str,
+        location: &str,
+        object_name: &str,
+        item: &mut FlowItem,
+        object_index: Option<usize>,
+    ) -> Result<(), SimError> {
+        let script = self
+            .scripts
+            .get(source)
+            .cloned()
+            .ok_or_else(|| SimError::Script {
+                location: location.to_string(),
+                source: ScriptError::Compile(
+                    "script source was not precompiled with the model".into(),
+                ),
+            })?;
+        let mut context = ScriptContext::new(self.now, item.item_type, item.id);
+        context.labels = item.labels.clone();
+        context.objects = self.script_objects();
+        let outcome = script.run(&mut context).map_err(|error| SimError::Script {
+            location: location.to_string(),
+            source: error,
+        })?;
+        item.labels = outcome.labels;
+        if let Some(item_type) = outcome.item_type {
+            item.item_type = item_type;
+        }
+        for message in &outcome.messages {
+            if let Some(&target) = self.by_name.get(&message.target) {
+                self.schedule(
+                    self.now + message.delay.max(0.0),
+                    EventKind::Message(target),
+                );
+            }
+        }
+        if let Some(index) = object_index {
+            if outcome.release_item {
+                // Same semantics as `release_item` (A4): lift the hold and
+                // retry the delivery in this instant.
+                self.objects[index].hold_release = false;
+                if self.has_held_item(index) {
+                    self.objects[index].release_bypass = true;
+                }
+                self.schedule(self.now, EventKind::Flow(index));
+            }
+            if let Some(state_name) = &outcome.state {
+                self.apply_script_state(index, state_name);
+            }
+        }
+        for (target, count) in &outcome.create_items {
+            self.apply_script_create(target, *count)?;
+        }
+        for (from, to) in &outcome.move_items {
+            self.apply_script_move(from, to)?;
+        }
+        for log in &outcome.logs {
+            if self.trace.is_some() {
+                let time = self.now;
+                let seq = self.next_seq;
+                self.next_seq += 1;
+                if let Some(trace) = self.trace.as_mut() {
+                    trace.push(
+                        TraceEvent::new(time, seq, "script_log", object_name.to_string())
+                            .with_message(log.clone()),
+                    );
                 }
             }
         }
@@ -9241,6 +9343,8 @@ impl<'m> Simulation<'m> {
         for index in 0..self.objects.len() {
             self.fire_lifecycle_trigger(index, SimTrigger::OnReset);
         }
+        let actions = self.model.model_triggers.on_reset.clone();
+        self.fire_model_actions("model_triggers.on_reset", actions);
     }
 }
 
@@ -10002,6 +10106,14 @@ fn collect_model_scripts(model: &Model) -> Vec<(String, String)> {
             ("on_breakdown", &triggers.on_breakdown),
             ("on_repair", &triggers.on_repair),
             ("on_photo_eye", &triggers.on_photo_eye),
+            ("on_content_change", &triggers.on_content_change),
+            ("on_state_change", &triggers.on_state_change),
+            ("on_reset", &triggers.on_reset),
+            ("on_stop", &triggers.on_stop),
+            ("on_resume", &triggers.on_resume),
+            ("on_draw", &triggers.on_draw),
+            ("setup_finish", &triggers.on_setup_finish),
+            ("process_finish", &triggers.on_process_finish),
         ];
         for (trigger, actions) in lists {
             for (position, action) in actions.iter().enumerate() {
@@ -10012,6 +10124,21 @@ fn collect_model_scripts(model: &Model) -> Vec<(String, String)> {
                         format!("objects.{}.triggers.{trigger}[{position}]", object.name),
                     );
                 }
+            }
+        }
+    }
+    for (trigger, actions) in [
+        ("on_start", &model.model_triggers.on_start),
+        ("on_reset", &model.model_triggers.on_reset),
+        ("on_stop", &model.model_triggers.on_stop),
+    ] {
+        for (position, action) in actions.iter().enumerate() {
+            if let Action::Script { source } = action {
+                push(
+                    &mut sources,
+                    source,
+                    format!("model_triggers.{trigger}[{position}]"),
+                );
             }
         }
     }
@@ -11930,5 +12057,138 @@ mod tests {
         let (direct, _) =
             crate::simulate_with_checkpoint(&model, &second, 0, None).expect("direct");
         assert_eq!(resumed, direct, "checkpointed admissions must not leak");
+    }
+
+    fn log_messages(trace: &TraceLog) -> Vec<(f64, String)> {
+        trace
+            .events
+            .iter()
+            .filter(|event| event.event == "script_log")
+            .map(|event| (event.time, event.message.clone()))
+            .collect()
+    }
+
+    /// task-152: SetupFinish fires when the setup clock ends (before processing
+    /// starts); ProcessFinish fires when the processing clock ends, before the
+    /// item leaves the processor.
+    #[test]
+    fn setup_and_process_finish_hooks_fire_at_the_phase_boundaries() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "phase-hooks",
+          "run": { "stop_time": 20.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1000.0 },
+                "max_arrivals": 1, "first_arrival": 0.0 } },
+            { "name": "P", "kind": "processor", "params": {
+                "setup_time": { "distribution": "constant", "value": 2.0 },
+                "process_time": { "distribution": "constant", "value": 3.0 },
+                "triggers": {
+                  "on_setup_finish": [{ "action": "script", "source": "log(\"setup_finish\");" }],
+                  "on_process_finish": [{ "action": "script", "source": "log(\"process_finish\");" }]
+                } } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [{ "from": "S", "to": "P" }, { "from": "P", "to": "K" }]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 20.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let logs = log_messages(&trace);
+        let setup: Vec<f64> = logs
+            .iter()
+            .filter(|(_, message)| message == "setup_finish")
+            .map(|(time, _)| *time)
+            .collect();
+        let process: Vec<f64> = logs
+            .iter()
+            .filter(|(_, message)| message == "process_finish")
+            .map(|(time, _)| *time)
+            .collect();
+        assert_eq!(setup.len(), 1, "setup finish fires once");
+        assert_eq!(process.len(), 1, "process finish fires once");
+        assert!((setup[0] - 2.0).abs() < 1e-9, "setup ends at t=2");
+        assert!((process[0] - 5.0).abs() < 1e-9, "process ends at t=5");
+    }
+
+    /// task-152: model triggers run once at start (t=0), reset (warm-up) and
+    /// stop time, in that order.
+    #[test]
+    fn model_triggers_fire_at_start_reset_and_stop() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "model-triggers",
+          "run": { "stop_time": 10.0, "warmup": 3.0, "seed": 1, "replications": 1 },
+          "model_triggers": {
+            "on_start": [{ "action": "script", "source": "log(\"start\");" }],
+            "on_reset": [{ "action": "script", "source": "log(\"reset\");" }],
+            "on_stop": [{ "action": "script", "source": "log(\"stop\");" }]
+          },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1000.0 },
+                "max_arrivals": 1 } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [{ "from": "S", "to": "K" }]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 10.0,
+            warmup: 3.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let logs = log_messages(&trace);
+        let counts = |name: &str| logs.iter().filter(|(_, message)| message == name).count();
+        assert_eq!(counts("start"), 1, "on_start once");
+        assert_eq!(counts("reset"), 1, "on_reset once");
+        assert_eq!(counts("stop"), 1, "on_stop once");
+        let start = logs
+            .iter()
+            .find(|(_, message)| message == "start")
+            .expect("start");
+        let reset = logs
+            .iter()
+            .find(|(_, message)| message == "reset")
+            .expect("reset");
+        let stop = logs
+            .iter()
+            .find(|(_, message)| message == "stop")
+            .expect("stop");
+        assert!(start.0 < 1e-9, "on_start before the first event");
+        assert!((reset.0 - 3.0).abs() < 1e-9, "on_reset at the warm-up");
+        assert!((stop.0 - 10.0).abs() < 1e-9, "on_stop at stop_time");
+    }
+
+    /// task-152: a failing model trigger is an error, not a silent no-op.
+    #[test]
+    fn model_trigger_errors_are_reported() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "model-trigger-error",
+          "run": { "stop_time": 10.0, "seed": 1, "replications": 1 },
+          "model_triggers": {
+            "on_start": [{ "action": "script", "source": "nope();" }]
+          },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [{ "from": "S", "to": "K" }]
+        }"#,
+        )
+        .expect("model");
+        let error = crate::run_model(&model).expect_err("on_start error");
+        let text = error.to_string();
+        assert!(text.contains("script error at"), "{text}");
+        assert!(text.contains("model_triggers.on_start"), "{text}");
     }
 }

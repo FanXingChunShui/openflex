@@ -177,7 +177,9 @@ fn definitions() -> Value {
                 "on_reset": { "type": "array", "items": { "$ref": "#/$defs/action" } },
                 "on_stop": { "type": "array", "items": { "$ref": "#/$defs/action" } },
                 "on_resume": { "type": "array", "items": { "$ref": "#/$defs/action" } },
-                "on_draw": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+                "on_draw": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_setup_finish": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_process_finish": { "type": "array", "items": { "$ref": "#/$defs/action" } }
             },
             "additionalProperties": false
         }),
@@ -565,6 +567,18 @@ fn definitions() -> Value {
         }),
     );
     defs.insert(
+        "model_triggers".into(),
+        json!({
+            "type": "object",
+            "properties": {
+                "on_start": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_reset": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_stop": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+            },
+            "additionalProperties": false
+        }),
+    );
+    defs.insert(
         "grid".into(),
         json!({
             "type": "object",
@@ -731,6 +745,7 @@ fn model_schema() -> Value {
                 "description": "Named pick lists (FlexSim PickLists/).",
                 "additionalProperties": { "$ref": "#/$defs/picklist" }
             },
+            "model_triggers": { "$ref": "#/$defs/model_triggers" },
             "metadata": { "type": "object" }
         },
         "required": ["name"],

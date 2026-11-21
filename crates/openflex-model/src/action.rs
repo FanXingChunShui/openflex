@@ -176,6 +176,11 @@ pub enum SimTrigger {
     OnRepair,
     /// A conveyor photo eye was crossed (B3).
     OnPhotoEye,
+    /// The processor/multiprocessor setup phase just finished (processing
+    /// has not started yet).
+    SetupFinish,
+    /// The processing phase just finished (the item is not yet delivered).
+    ProcessFinish,
     /// The content (number of items) of the object changed.
     OnContentChange,
     /// The object changed its state (idle/busy/blocked/…).
@@ -203,6 +208,8 @@ impl SimTrigger {
             SimTrigger::OnBreakdown => "on_breakdown",
             SimTrigger::OnRepair => "on_repair",
             SimTrigger::OnPhotoEye => "on_photo_eye",
+            SimTrigger::SetupFinish => "setup_finish",
+            SimTrigger::ProcessFinish => "process_finish",
             SimTrigger::OnContentChange => "on_content_change",
             SimTrigger::OnStateChange => "on_state_change",
             SimTrigger::OnReset => "on_reset",
@@ -210,6 +217,29 @@ impl SimTrigger {
             SimTrigger::OnResume => "on_resume",
             SimTrigger::OnDraw => "on_draw",
         }
+    }
+
+    /// Parse the JSON/schema spelling of a trigger point.
+    pub fn parse(value: &str) -> Option<SimTrigger> {
+        Some(match value {
+            "on_create" => SimTrigger::OnCreate,
+            "on_entry" => SimTrigger::OnEntry,
+            "on_exit" => SimTrigger::OnExit,
+            "on_receive" => SimTrigger::OnReceive,
+            "on_message" => SimTrigger::OnMessage,
+            "on_breakdown" => SimTrigger::OnBreakdown,
+            "on_repair" => SimTrigger::OnRepair,
+            "on_photo_eye" => SimTrigger::OnPhotoEye,
+            "on_content_change" => SimTrigger::OnContentChange,
+            "on_state_change" => SimTrigger::OnStateChange,
+            "on_reset" => SimTrigger::OnReset,
+            "on_stop" => SimTrigger::OnStop,
+            "on_resume" => SimTrigger::OnResume,
+            "on_draw" => SimTrigger::OnDraw,
+            "setup_finish" => SimTrigger::SetupFinish,
+            "process_finish" => SimTrigger::ProcessFinish,
+            _ => return None,
+        })
     }
 }
 
@@ -252,6 +282,12 @@ pub struct Triggers {
     /// only, the renderer integration is a follow-up.
     #[serde(default)]
     pub on_draw: Vec<Action>,
+    /// The setup phase just finished (see [`SimTrigger::SetupFinish`]).
+    #[serde(default)]
+    pub on_setup_finish: Vec<Action>,
+    /// The processing phase just finished (see [`SimTrigger::ProcessFinish`]).
+    #[serde(default)]
+    pub on_process_finish: Vec<Action>,
 }
 
 impl Triggers {
@@ -271,6 +307,8 @@ impl Triggers {
             SimTrigger::OnStop => self.on_stop.clone(),
             SimTrigger::OnResume => self.on_resume.clone(),
             SimTrigger::OnDraw => self.on_draw.clone(),
+            SimTrigger::SetupFinish => self.on_setup_finish.clone(),
+            SimTrigger::ProcessFinish => self.on_process_finish.clone(),
         }
     }
 
@@ -289,5 +327,7 @@ impl Triggers {
             && self.on_stop.is_empty()
             && self.on_resume.is_empty()
             && self.on_draw.is_empty()
+            && self.on_setup_finish.is_empty()
+            && self.on_process_finish.is_empty()
     }
 }
