@@ -211,9 +211,9 @@
 | Reports and Statistics：Model Documentation（自动生成模型文档） | 无 | ⛔ | 无文档生成 |
 | Dashboard Concepts（仪表盘容器，运行中实时刷新） | Studio Dashboard（运行中刷新） | 🟡 | 有仪表盘；无 FlexSim 的"图表对象 + 数据源绑定"模型 |
 | Dashboard Statistics Page（把对象统计画成图） | Studio 时间序列/柱状图 | 🟡 | 有吞吐柱状与多对象时序；无按"统计项选择器"自由组合 |
-| Dashboard Tracked Variables（把 tracked variable 画成图） | 无 tracked variable | ⛔ | 依赖 §6 的 Tracked Variables |
-| Dashboard Utilization Analysis（利用率分析专用图） | 报告有 utilization 字段 | 🟡 | 有数据；无专用分析图（按状态堆叠的利用率分解） |
-| Dashboard Item Trace（单个流项目的轨迹追踪） | 无 | ⛔ | 无逐件轨迹 |
+| Dashboard Tracked Variables（把 tracked variable 画成图） | `tracked_series` / `tracked_summaries` + GUI 迷你折线 | 🟡 | 数据与类型体系（level/state/staytime/kinetic）已具备；GUI 有 84×14 迷你折线，无独立图表对象 |
+| Dashboard Utilization Analysis（利用率分析专用图） | 报告 utilization + 执行器状态细分列 | 🟡 | 数据已细到 `travel_empty/loaded/loading/unloading/utilize`；仍无「按状态堆叠」的专用分析图 |
+| Dashboard Item Trace（单个流项目的轨迹追踪） | `openflex trace --item` / `--items` / `--paths` | ✅ | 单件路径表（Time/Object/Event + 步数/对象数/跨度）、跨件路径分组（覆盖率恒等有测试）；trace 事件带 `data["item"]` 与真实 `enter`/`exit`。见 §1a 上方的说明 |
 | Dashboard Objects Page / Associations / Colors / Data / General / Financial Objects / HTML Statistic / DateTimeDisplay（图表属性页） | Studio 图表有有限属性 | ⛔ | 这一组是图表引擎的属性页；OpenFlex 无通用图表 DSL（Financial Objects、HTML Statistic 等完全无对应） |
 | Dashboard ModelInput / ModelInputProperties（把模型输入做成可交互控件） | `--set`/Scenario 可改参数 | 🟡 | 有参数覆盖；无"仪表盘上的输入控件" |
 | Custom Chart（自定义图表脚本） | 无 | ⛔ | 无图表脚本 |
