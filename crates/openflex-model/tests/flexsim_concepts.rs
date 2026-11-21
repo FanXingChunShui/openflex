@@ -549,3 +549,176 @@ fn schema_rejects_malformed_global_variables_and_picklists() {
         "schema leaves value typing to validate: {errors:#?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Expressions over global variables and pick lists (task-153)
+// ---------------------------------------------------------------------------
+
+/// A document with one number variable, one string variable, a mixed pick list
+/// and a bare number variable used through the implicit spelling.
+fn expression_model() -> Model {
+    Model::from_json(&model(&format!(
+        r#"{VARIABLES},
+        "picklists": {{
+            "Shift": {{ "entries": [
+                {{ "name": "Day", "value": "1" }},
+                {{ "name": "Night", "value": "2" }}
+            ] }},
+            "Recipe": {{ "entries": [ {{ "name": "Standard", "value": "std" }} ] }}
+        }}"#
+    )))
+    .expect("expression model")
+}
+
+fn eval_in(
+    model: &Model,
+    source: &str,
+) -> Result<openflex_model::Value, openflex_model::ExprError> {
+    openflex_model::Expr::parse(source)
+        .expect("expression parses")
+        .eval_in_model(model)
+}
+
+#[test]
+fn numeric_global_variable_takes_part_in_arithmetic() {
+    let model = expression_model();
+    assert_eq!(
+        eval_in(&model, "$BatchSize * 2 + 1").expect("evaluates"),
+        openflex_model::Value::Number(25.0)
+    );
+    // The bare identifier spelling resolves through the same data (the model
+    // has no engine value named `BatchSize`).
+    assert_eq!(
+        eval_in(&model, "BatchSize / 4").expect("evaluates"),
+        openflex_model::Value::Number(3.0)
+    );
+}
+
+#[test]
+fn string_global_variable_takes_part_in_comparison() {
+    let model = expression_model();
+    assert_eq!(
+        eval_in(&model, r#"$Recipe == "standard""#).expect("evaluates"),
+        openflex_model::Value::Bool(true)
+    );
+    assert_eq!(
+        eval_in(&model, r#"upper(Recipe) == "STANDARD""#).expect("evaluates"),
+        openflex_model::Value::Bool(true)
+    );
+}
+
+#[test]
+fn undefined_global_variable_is_a_strict_error() {
+    let model = expression_model();
+    let error = eval_in(&model, "$Missing + 1").expect_err("must not be zero");
+    assert!(
+        error
+            .to_string()
+            .contains("unknown global variable 'Missing'"),
+        "{error}"
+    );
+
+    let error = eval_in(&model, "Missing + 1").expect_err("must not be zero");
+    assert!(
+        error.to_string().contains("unknown variable 'Missing'"),
+        "{error}"
+    );
+}
+
+#[test]
+fn string_global_variable_in_arithmetic_is_a_type_error() {
+    let model = expression_model();
+    let error = eval_in(&model, "$Recipe * 2").expect_err("string is not a number");
+    assert!(error.to_string().contains("standard"), "{error}");
+    assert!(error.to_string().contains("expected a number"), "{error}");
+}
+
+#[test]
+fn picklist_lookup_returns_the_entry_value() {
+    let model = expression_model();
+    assert_eq!(
+        eval_in(&model, r#"picklist("Shift", "Night")"#).expect("evaluates"),
+        openflex_model::Value::Str("2".into())
+    );
+    // The value is text, so numeric-looking entries need an explicit cast…
+    assert_eq!(
+        eval_in(&model, r#"len(picklist("Shift", "Day"))"#).expect("evaluates"),
+        openflex_model::Value::Number(1.0)
+    );
+    // …and text entries compare directly, including inside a condition.
+    assert_eq!(
+        eval_in(
+            &model,
+            r#"if(picklist("Recipe", "Standard") == "std", 1, 0)"#
+        )
+        .expect("evaluates"),
+        openflex_model::Value::Number(1.0)
+    );
+}
+
+#[test]
+fn unknown_picklist_and_unknown_entry_are_distinct_errors() {
+    let model = expression_model();
+    let error = eval_in(&model, r#"picklist("Missing", "Day")"#).expect_err("unknown list");
+    assert!(
+        error.to_string().contains("unknown pick list 'Missing'"),
+        "{error}"
+    );
+
+    let error = eval_in(&model, r#"picklist("Shift", "Evening")"#).expect_err("unknown entry");
+    assert!(
+        error
+            .to_string()
+            .contains("pick list 'Shift' has no entry 'Evening'"),
+        "{error}"
+    );
+}
+
+#[test]
+fn expressions_without_model_data_still_work() {
+    // The default trait methods keep contexts without model data strict, and
+    // `picklist` is simply unavailable there.
+    struct Empty;
+    impl openflex_model::EvalContext for Empty {
+        fn lookup(&self, _path: &str) -> Option<openflex_model::Value> {
+            None
+        }
+    }
+    let error = openflex_model::Expr::parse("1 + 1")
+        .expect("parse")
+        .eval(&Empty)
+        .expect("plain arithmetic still works");
+    assert_eq!(error, openflex_model::Value::Number(2.0));
+    let error = openflex_model::Expr::parse("$X")
+        .expect("parse")
+        .eval(&Empty)
+        .expect_err("no model data");
+    assert!(matches!(
+        error,
+        openflex_model::ExprError::UnknownGlobalVariable(_)
+    ));
+    let error = openflex_model::Expr::parse(r#"picklist("Shift", "Day")"#)
+        .expect("parse")
+        .eval(&Empty)
+        .expect_err("no model data");
+    assert!(matches!(
+        error,
+        openflex_model::ExprError::UnknownPickList(_)
+    ));
+}
+
+#[test]
+fn builtin_lists_document_the_new_capabilities() {
+    assert!(
+        openflex_model::BUILTIN_VARIABLES
+            .iter()
+            .any(|(name, _)| *name == "$<Name>")
+    );
+    assert!(
+        openflex_model::expr::BUILTIN_FUNCTIONS
+            .iter()
+            .any(|(name, _)| name.starts_with("picklist("))
+    );
+    // `$` cannot stand alone.
+    assert!(openflex_model::Expr::parse("$ + 1").is_err());
+}

@@ -6,6 +6,21 @@
 //! arithmetic/comparison behaviour) while using a tiny expression language that
 //! cannot run arbitrary code. Expressions are parsed when the model is loaded,
 //! so syntax errors surface in `openflex validate` instead of mid-run.
+//!
+//! # Model data
+//!
+//! Besides the values the engine supplies through [`EvalContext::lookup`], an
+//! expression can read the model's named data:
+//!
+//! * a global variable, either explicitly as `$Name` or — when no engine value
+//!   has that exact name — as the bare identifier `Name`; the value keeps the
+//!   kind declared in the model (`number` → number, `string` → string);
+//! * a pick list entry through `picklist("<list>", "<entry>")`, which yields
+//!   the entry's value as a string.
+//!
+//! Both are **strict**: an undefined global variable, an unknown pick list or
+//! an unknown entry is a [`ExprError`], never a silent zero. Model-layer tools
+//! can use [`ModelEvalContext`], which answers both from a [`Model`].
 
 use serde::de::{self, Deserializer, Visitor};
 use serde::ser::Serializer;
@@ -108,7 +123,94 @@ pub trait EvalContext {
     /// The engine (not this crate) provides the values. The paths the engine
     /// resolves out of the box are listed in [`BUILTIN_VARIABLES`]; model
     /// defined paths are `object.<Name>.<field>` and `<Name>.<field>`.
+    ///
+    /// Returning `None` means "this context does not define the path"; the
+    /// evaluator then tries a global variable of that name before reporting an
+    /// error.
     fn lookup(&self, path: &str) -> Option<Value>;
+
+    /// Resolve a global variable (`$Name` or the bare identifier `Name`).
+    ///
+    /// The default implementation defines no global variables, so a context
+    /// that does not carry model data keeps rejecting them (strictly). A
+    /// context with a [`Model`](crate::model::Model) can either implement this
+    /// from `model.global_variable(name)` or delegate to
+    /// [`ModelEvalContext`].
+    fn global_variable(&self, _name: &str) -> Option<Value> {
+        None
+    }
+
+    /// Resolve one entry of a pick list (`picklist("<list>", "<entry>")`).
+    ///
+    /// The default implementation knows no lists; the result distinguishes an
+    /// unknown list from a missing entry so the evaluator can report the exact
+    /// problem.
+    fn picklist_entry(&self, _list: &str, _entry: &str) -> PickListLookup {
+        PickListLookup::UnknownList
+    }
+}
+
+/// Result of [`EvalContext::picklist_entry`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PickListLookup {
+    /// The entry was found; this is its `value` text.
+    Value(String),
+    /// The model defines no pick list with that name.
+    UnknownList,
+    /// The list exists but has no entry with that name.
+    UnknownEntry,
+}
+
+/// An [`EvalContext`] backed by model data only.
+///
+/// It answers global variables (`$Name` or bare `Name`) and
+/// `picklist("<list>", "<entry>")` from a [`Model`](crate::model::Model) and
+/// nothing else: engine values such as `time` or `item.type` stay `None` here.
+/// Model-layer tools use it directly; the engine combines it with its own
+/// lookup by overriding [`EvalContext::lookup`] and delegating the other two
+/// methods (or by calling [`ModelEvalContext`] as a fallback).
+#[derive(Debug, Clone, Copy)]
+pub struct ModelEvalContext<'a> {
+    model: &'a crate::model::Model,
+}
+
+impl<'a> ModelEvalContext<'a> {
+    /// Wrap a model.
+    pub fn new(model: &'a crate::model::Model) -> Self {
+        Self { model }
+    }
+
+    /// The wrapped model.
+    pub fn model(&self) -> &'a crate::model::Model {
+        self.model
+    }
+}
+
+impl EvalContext for ModelEvalContext<'_> {
+    fn lookup(&self, _path: &str) -> Option<Value> {
+        // No engine state: `time`, `item.*` and object fields are not model data.
+        None
+    }
+
+    fn global_variable(&self, name: &str) -> Option<Value> {
+        let variable = self.model.global_variable(name)?;
+        Some(match variable.kind {
+            crate::model::GlobalVariableKind::Number => Value::Number(variable.value.as_f64()?),
+            crate::model::GlobalVariableKind::String => {
+                Value::Str(variable.value.as_str()?.to_string())
+            }
+        })
+    }
+
+    fn picklist_entry(&self, list: &str, entry: &str) -> PickListLookup {
+        let Some(picklist) = self.model.picklist(list) else {
+            return PickListLookup::UnknownList;
+        };
+        match picklist.value_of(entry) {
+            Some(value) => PickListLookup::Value(value.to_string()),
+            None => PickListLookup::UnknownEntry,
+        }
+    }
 }
 
 /// Variables the engine resolves without a model-defined object.
@@ -137,6 +239,37 @@ pub const BUILTIN_VARIABLES: &[(&str, &str)] = &[
     ("<Name>.state", "string"),
     ("table.<Name>.<column>", "any"),
     ("table.<Name>.<row>.<column>", "any"),
+    (
+        "$<Name>",
+        "number|string (global variable, explicit spelling)",
+    ),
+    (
+        "<Name>",
+        "number|string (global variable; only when no engine value of that name exists)",
+    ),
+];
+
+/// Functions an expression can call, with the shape of their result.
+///
+/// `picklist(<list>, <entry>)` reads a model pick list; the rest are the
+/// arithmetic/text helpers documented at the crate level.
+pub const BUILTIN_FUNCTIONS: &[(&str, &str)] = &[
+    ("if(condition, then, else)", "any"),
+    ("min(a, b, …)", "number"),
+    ("max(a, b, …)", "number"),
+    ("abs(x)", "number"),
+    ("round(x)", "number"),
+    ("floor(x)", "number"),
+    ("ceil(x)", "number"),
+    ("sqrt(x)", "number"),
+    ("len(text)", "number"),
+    ("contains(text, needle)", "boolean"),
+    ("starts_with(text, prefix)", "boolean"),
+    ("ends_with(text, suffix)", "boolean"),
+    ("upper(text)", "string"),
+    ("lower(text)", "string"),
+    ("concat(a, b, …)", "string"),
+    ("picklist(<list>, <entry>)", "string"),
 ];
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -163,6 +296,12 @@ pub enum ExprError {
     DivideByZero,
     #[error("unknown variable '{0}'")]
     UnknownVariable(String),
+    #[error("unknown global variable '{0}' (declare it under global_variables)")]
+    UnknownGlobalVariable(String),
+    #[error("unknown pick list '{0}' (declare it under picklists)")]
+    UnknownPickList(String),
+    #[error("pick list '{list}' has no entry '{entry}'")]
+    UnknownPickListEntry { list: String, entry: String },
     #[error("{0}")]
     TypeError(String),
 }
@@ -196,9 +335,7 @@ impl Expr {
             Expr::Number(n) => Ok(Value::Number(*n)),
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::Str(s) => Ok(Value::Str(s.clone())),
-            Expr::Path(path) => ctx
-                .lookup(path)
-                .ok_or_else(|| ExprError::UnknownVariable(path.clone())),
+            Expr::Path(path) => resolve_path(path, ctx),
             Expr::Unary(op, inner) => {
                 let value = inner.eval(ctx)?;
                 match op {
@@ -229,6 +366,15 @@ impl Expr {
         }
     }
 
+    /// Evaluate against a model's global variables and pick lists only.
+    ///
+    /// Convenience for tooling (`openflex expr` style previews); the engine
+    /// uses its own context that also supplies `time`, `item.*` and object
+    /// fields.
+    pub fn eval_in_model(&self, model: &crate::model::Model) -> Result<Value, ExprError> {
+        self.eval(&ModelEvalContext::new(model))
+    }
+
     /// True when the expression only references the given paths (plus literals).
     /// Used by validation to spot misspelled variables early.
     pub fn referenced_paths(&self) -> Vec<String> {
@@ -253,6 +399,30 @@ impl Expr {
             Expr::Number(_) | Expr::Bool(_) | Expr::Str(_) => {}
         }
     }
+}
+
+/// Resolve a path: explicit `$Name` global variable, then the context's own
+/// values, then a bare global variable name.
+///
+/// Every branch is strict: an unresolved name is an error, never `0`.
+fn resolve_path(path: &str, ctx: &dyn EvalContext) -> Result<Value, ExprError> {
+    if let Some(name) = path.strip_prefix('$') {
+        return ctx
+            .global_variable(name)
+            .ok_or_else(|| ExprError::UnknownGlobalVariable(name.to_string()));
+    }
+    if let Some(value) = ctx.lookup(path) {
+        return Ok(value);
+    }
+    // A bare identifier may name a global variable. Dotted paths are object
+    // fields and are never looked up as global variables (their names cannot
+    // contain a dot).
+    if !path.contains('.')
+        && let Some(value) = ctx.global_variable(path)
+    {
+        return Ok(value);
+    }
+    Err(ExprError::UnknownVariable(path.to_string()))
 }
 
 fn eval_binary(op: BinOp, a: &Value, b: &Value) -> Result<Value, ExprError> {
@@ -437,6 +607,24 @@ fn eval_call(name: &str, args: &[Expr], ctx: &dyn EvalContext) -> Result<Value, 
             let row = if row < 0.0 { 0 } else { row as usize };
             let path = format!("table.{table}.{row}.{column}");
             ctx.lookup(&path).ok_or(ExprError::UnknownVariable(path))
+        }
+        "picklist" => {
+            if args.len() != 2 {
+                return Err(ExprError::Arity {
+                    name: "picklist".into(),
+                    expected: 2,
+                    found: args.len(),
+                });
+            }
+            let list = args[0].eval(ctx)?.as_str();
+            let entry = args[1].eval(ctx)?.as_str();
+            match ctx.picklist_entry(&list, &entry) {
+                PickListLookup::Value(value) => Ok(Value::Str(value)),
+                PickListLookup::UnknownList => Err(ExprError::UnknownPickList(list)),
+                PickListLookup::UnknownEntry => {
+                    Err(ExprError::UnknownPickListEntry { list, entry })
+                }
+            }
         }
         _ => Err(ExprError::UnknownFunction(name.to_string())),
     }
@@ -663,6 +851,15 @@ impl<'a> Lexer<'a> {
                     } else {
                         return Err(ExprError::UnexpectedChar('|', self.pos - 1));
                     }
+                }
+                // `$Name` is the explicit spelling of a global variable; the
+                // path keeps the `$` so evaluation can tell the two apart.
+                '$' => {
+                    self.pos += 1;
+                    if !matches!(self.peek_char(), Some(c) if c.is_alphabetic() || c == '_') {
+                        return Err(ExprError::UnexpectedChar('$', self.pos - 1));
+                    }
+                    tokens.push(Token::Ident(format!("${}", self.identifier())));
                 }
                 c if c.is_alphabetic() || c == '_' => {
                     let ident = self.identifier();
