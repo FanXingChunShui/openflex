@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v1.35.0 — 2026-11-21
+
+这一轮有三条主线：**让模型能自己声明「量」与「路线」**（只读 SQL、Tracked Variable 四种类型、`explicit` 固定路线、`utilize`/`break` 任务腿），**让「这一件走了哪条路径」可回答**（trace 带 flow item id + 真实 `enter`/`exit`、`openflex trace` 的单件与跨件视图），以及**终端里能看的图表**（`openflex chart`）。
+多轮里两次因为「无法正确实现」而主动缩小范围并把设计写进缺口清单，没有留下近似实现。
+发布节奏保持**至少 3 小时一版**。
 
 ### 报告与 CLI
 
@@ -81,6 +85,17 @@
   未接线的上下文会报 `query() needs an evaluation context that can read model global tables`，
   而不是误导性的「未知表」。实测 `SELECT name FROM Shipments ORDER BY prio LIMIT 2` 得 `b\nc`。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**839 passed / 0 failed**。
+- GUI **132 项**、`openflex-model` **184 项**、`openflex-core --lib` **125 项**、report+CLI **187 项**。
+- `clippy` 0 警告、`fmt` 干净；示例模型全部 validate 通过。
+- 独立实测：`explicit` 路线 `{position:[15,2]}` 耗时 **5.385 = √(5²+2²)**；
+  `query("SELECT name FROM Shipments ORDER BY prio LIMIT 2")` 得 `b\nc`；
+  Tracked 四型并存（`kinetic` 首点 0 后恒 3、`staytime` 的 p50 = 加工时长）；
+  Item Trace 单件 13 步 / 4 对象 / 跨度 42；`--paths` 三组覆盖率 100%；
+  `chart` 利用率条与统计表口径一致（`Server` 79.8%）。
 
 ## v1.34.0 — 2026-11-21
 
