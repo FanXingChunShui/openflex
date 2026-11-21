@@ -136,7 +136,7 @@ use openflex_model::{
     DowntimeWindow, EvalContext, Expr, FlowBlockKind, GlobalVariableKind, Grid, Model, NetworkEdge,
     Object, ObjectKind, ObjectParams, PickListLookup, PortStrategy, ProcessFlow, PullParams,
     QueueOrder, RackPickPolicy, RackType, SeparateMode, SimTrigger, TableCell, TaskStepKind,
-    TrafficMode, TransferMode, Value,
+    TrackedKind, TrafficMode, TransferMode, Value,
 };
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
@@ -150,7 +150,7 @@ use crate::script::{CompiledScript, ScriptContext, ScriptEngine, ScriptError, Sc
 use crate::shifts;
 use crate::stats::{
     ObjectStats, ReplicationFlow, ReplicationFlowBlock, ReplicationFluid, ReplicationFluidObject,
-    ReplicationResult, SimConfig, SimReport, StateTimes,
+    ReplicationResult, SimConfig, SimReport, StateTimes, StaytimeSummary, TrackedSummary,
 };
 use crate::trace::{TraceEvent, TraceLog};
 
@@ -2336,6 +2336,7 @@ fn simulate_run(
         fluid: sim.fluid_replication(elapsed),
         performance_measures: sim.evaluate_performance_measures()?,
         tracked_series: sim.tracked_series.clone(),
+        tracked_summaries: sim.tracked_summaries(elapsed),
     };
     Ok((result, checkpoint, sim.trace.unwrap_or_default()))
 }
@@ -2347,6 +2348,40 @@ pub fn derive_seed(base: u64, index: u32) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
+}
+
+/// task-168: percentile with linear interpolation between order statistics.
+fn percentile(sorted: &[f64], q: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let rank = q.clamp(0.0, 1.0) * (sorted.len() - 1) as f64;
+    let lower = rank.floor() as usize;
+    let upper = rank.ceil() as usize;
+    if lower == upper {
+        sorted[lower]
+    } else {
+        let fraction = rank - lower as f64;
+        sorted[lower] * (1.0 - fraction) + sorted[upper] * fraction
+    }
+}
+
+fn staytime_summary(samples: &[f64]) -> StaytimeSummary {
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mean = if sorted.is_empty() {
+        0.0
+    } else {
+        sorted.iter().sum::<f64>() / sorted.len() as f64
+    };
+    StaytimeSummary {
+        n: sorted.len() as u64,
+        min: sorted.first().copied().unwrap_or(0.0),
+        p50: percentile(&sorted, 0.5),
+        p90: percentile(&sorted, 0.9),
+        max: sorted.last().copied().unwrap_or(0.0),
+        mean,
+    }
 }
 
 struct Simulation<'m> {
@@ -2392,10 +2427,15 @@ struct Simulation<'m> {
     traffic_occupancy: Vec<u32>,
     /// task-154: FIFO waiters per control area (transporter indices).
     traffic_waiters: Vec<VecDeque<usize>>,
-    /// task-158: parsed tracked-variable expressions and their sampled series.
-    tracked_exprs: Vec<(String, Expr)>,
+    /// task-158/168: parsed tracked-variable expressions and their kinds.
+    tracked_exprs: Vec<(String, Expr, TrackedKind)>,
     tracked_interval: f64,
     tracked_series: BTreeMap<String, Vec<(f64, f64)>>,
+    /// task-168: previous raw value for `kinetic` (time, value).
+    tracked_prev: BTreeMap<String, (f64, f64)>,
+    /// task-168: completed-item stay times for `staytime` summaries.
+    stay_samples: Vec<f64>,
+    track_staytime: bool,
     /// task-56: cached shortest distances for transport legs, keyed by
     /// `(task executer, from object, to object)`. Object positions are fixed
     /// for the whole run, so a hit is always correct; restoring a checkpoint
@@ -2546,8 +2586,11 @@ impl<'m> Simulation<'m> {
                     location: format!("tracked_variables.{}", variable.name),
                     detail: format!("expression does not compile: {error}"),
                 })?;
-            tracked_exprs.push((variable.name.clone(), expression));
+            tracked_exprs.push((variable.name.clone(), expression, variable.kind));
         }
+        let track_staytime = tracked_exprs
+            .iter()
+            .any(|(_, _, kind)| *kind == TrackedKind::Staytime);
         let tracked_interval = model.tracked_interval.unwrap_or(1.0);
         if !tracked_exprs.is_empty() && (!tracked_interval.is_finite() || tracked_interval <= 0.0) {
             return Err(SimError::Config(
@@ -2586,6 +2629,9 @@ impl<'m> Simulation<'m> {
             tracked_exprs,
             tracked_interval,
             tracked_series: BTreeMap::new(),
+            tracked_prev: BTreeMap::new(),
+            stay_samples: Vec::new(),
+            track_staytime,
             pause_at: None,
             shaft_owner: HashMap::new(),
             trigger_depth: 0,
@@ -2670,7 +2716,11 @@ impl<'m> Simulation<'m> {
         // task-158: model-declared tracked variables sample on a fixed interval
         // from the end of warm-up up to (but not including) the stop time; the
         // final sample at the stop time is added by `finalize_stats`.
-        if !self.tracked_exprs.is_empty() {
+        if self
+            .tracked_exprs
+            .iter()
+            .any(|(_, _, kind)| matches!(kind, TrackedKind::Level | TrackedKind::Kinetic))
+        {
             let first = self.config.warmup + self.tracked_interval;
             if first < self.config.stop_time - EPS {
                 self.schedule(first, EventKind::TrackedSample);
@@ -3133,6 +3183,7 @@ impl<'m> Simulation<'m> {
             fluid: self.fluid_replication(elapsed),
             performance_measures,
             tracked_series: self.tracked_series.clone(),
+            tracked_summaries: self.tracked_summaries(elapsed),
         }
     }
 
@@ -3145,8 +3196,70 @@ impl<'m> Simulation<'m> {
 
     /// task-158: evaluate every tracked expression and append `(time, value)`
     /// samples. A failing expression is reported with the variable name.
+    /// task-168: build `state`/`staytime` summaries for one replication.
+    fn tracked_summaries(&self, elapsed: f64) -> BTreeMap<String, TrackedSummary> {
+        let mut out = BTreeMap::new();
+        let wants_state = self
+            .tracked_exprs
+            .iter()
+            .any(|(_, _, kind)| *kind == TrackedKind::State);
+        let state_shares = wants_state.then(|| {
+            let mut totals: BTreeMap<String, f64> = BTreeMap::new();
+            for object in &self.objects {
+                if object.kind == ObjectKind::VisualTool {
+                    continue;
+                }
+                let states = object.stats(elapsed).state_times;
+                for (name, value) in [
+                    ("idle", states.idle),
+                    ("busy", states.busy),
+                    ("blocked", states.blocked),
+                    ("down", states.down),
+                    ("off_shift", states.off_shift),
+                ] {
+                    *totals.entry(name.to_string()).or_default() += value;
+                }
+            }
+            let total: f64 = totals.values().sum();
+            if total <= 0.0 {
+                BTreeMap::new()
+            } else {
+                // Model-wide fallback: the expression is compile-checked but
+                // not used to select one object (documented limitation).
+                totals
+                    .into_iter()
+                    .map(|(name, value)| (name, value / total))
+                    .collect()
+            }
+        });
+        let wants_staytime = self
+            .tracked_exprs
+            .iter()
+            .any(|(_, _, kind)| *kind == TrackedKind::Staytime);
+        let staytime = wants_staytime.then(|| staytime_summary(&self.stay_samples));
+        for (name, _, kind) in &self.tracked_exprs {
+            let summary = match kind {
+                TrackedKind::State => TrackedSummary {
+                    state_shares: state_shares.clone(),
+                    staytime: None,
+                },
+                TrackedKind::Staytime => TrackedSummary {
+                    state_shares: None,
+                    staytime: staytime.clone(),
+                },
+                TrackedKind::Level | TrackedKind::Kinetic => continue,
+            };
+            out.insert(name.clone(), summary);
+        }
+        out
+    }
+
     fn sample_tracked_variables(&mut self, at: f64) -> Result<(), SimError> {
-        if self.tracked_exprs.is_empty() {
+        if self
+            .tracked_exprs
+            .iter()
+            .all(|(_, _, kind)| !matches!(kind, TrackedKind::Level | TrackedKind::Kinetic))
+        {
             return Ok(());
         }
         if !self.tracked_series.is_empty()
@@ -3159,7 +3272,10 @@ impl<'m> Simulation<'m> {
             return Ok(());
         }
         let expressions = self.tracked_exprs.clone();
-        for (name, expression) in expressions {
+        for (name, expression, kind) in expressions {
+            if !matches!(kind, TrackedKind::Level | TrackedKind::Kinetic) {
+                continue;
+            }
             let location = format!("tracked_variables.{name}");
             let value = expression
                 .eval(&ExprContext::new(self, None))
@@ -3173,14 +3289,27 @@ impl<'m> Simulation<'m> {
                     "tracked variable '{name}' must evaluate to a number, got {value:?}"
                 ),
             })?;
-            let samples = self.tracked_series.entry(name).or_default();
+            let samples = self.tracked_series.entry(name.clone()).or_default();
             if samples
                 .last()
                 .is_some_and(|(time, _)| (at - *time).abs() <= EPS)
             {
                 continue;
             }
-            samples.push((at, number));
+            let sampled = match kind {
+                TrackedKind::Level => number,
+                TrackedKind::Kinetic => match self.tracked_prev.get(&name).copied() {
+                    // First kinetic sample has no previous point: record 0.
+                    None => 0.0,
+                    Some((previous_time, previous_value)) => {
+                        let interval = (at - previous_time).max(EPS);
+                        (number - previous_value) / interval
+                    }
+                },
+                TrackedKind::State | TrackedKind::Staytime => unreachable!(),
+            };
+            self.tracked_prev.insert(name, (at, number));
+            samples.push((at, sampled));
         }
         Ok(())
     }
@@ -4371,6 +4500,9 @@ impl<'m> Simulation<'m> {
                 self.objects[target].acc.output += 1;
                 if item.created + EPS >= self.config.warmup {
                     self.stats_completed += 1;
+                    if self.track_staytime {
+                        self.stay_samples.push((now - item.created).max(0.0));
+                    }
                 }
                 self.objects[target].acc.stay_sum += now - item.entry_time;
                 self.objects[target].acc.stay_count += 1;
@@ -13550,5 +13682,150 @@ mod tests {
         assert!((empty.mean - 30.0).abs() < 1e-6);
         let loaded = object.travel_loaded.as_ref().expect("travel_loaded");
         assert!((loaded.mean - 20.0).abs() < 1e-6);
+    }
+
+    /// task-168: omitting `kind` keeps the old model JSON and the old level
+    /// sampling behaviour.
+    #[test]
+    fn tracked_kind_defaults_to_level_without_changing_json() {
+        let json = tracked_model(r#"{ "name": "Clock", "expression": "time" }"#, "");
+        let model = Model::from_json(&json).expect("model");
+        let value = serde_json::to_value(&model).expect("json");
+        assert!(
+            value["tracked_variables"][0].get("kind").is_none(),
+            "default level must not add a kind field"
+        );
+        let report = crate::run_model(&model).expect("run");
+        assert_eq!(
+            report.tracked_series["Clock"],
+            vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0), (5.0, 5.0)]
+        );
+        assert!(report.tracked_summaries.is_empty());
+        // Explicit `level` is equivalent to the omitted kind, including the
+        // serialized (old-format) report JSON.
+        let explicit = Model::from_json(&tracked_model(
+            r#"{ "name": "Clock", "expression": "time", "kind": "level" }"#,
+            "",
+        ))
+        .expect("explicit level");
+        let explicit_report = crate::run_model(&explicit).expect("run explicit");
+        assert_eq!(
+            serde_json::to_string(&report).expect("json"),
+            serde_json::to_string(&explicit_report).expect("json")
+        );
+    }
+
+    /// task-168: kinetic samples are the difference between the current and
+    /// previous expression values divided by the actual interval.
+    #[test]
+    fn kinetic_tracked_variable_reports_the_rate_of_change() {
+        let model = Model::from_json(&tracked_model(
+            r#"{ "name": "Slope", "expression": "time * 3", "kind": "kinetic" }"#,
+            "",
+        ))
+        .expect("model");
+        let report = crate::run_model(&model).expect("run");
+        let samples = &report.tracked_series["Slope"];
+        assert_eq!(samples.len(), 5);
+        assert_eq!(samples[0], (1.0, 0.0), "first sample has no previous value");
+        for pair in samples.windows(2) {
+            let interval = pair[1].0 - pair[0].0;
+            let expected = 3.0;
+            assert!(
+                (pair[1].1 - expected).abs() < 1e-9,
+                "kinetic sample {:?} over interval {interval}",
+                pair[1]
+            );
+        }
+    }
+
+    /// task-168: `state` reports model-wide state shares that sum to one.
+    #[test]
+    fn state_tracked_variable_reports_state_shares() {
+        let model = Model::from_json(&tracked_model(
+            r#"{ "name": "States", "expression": "time", "kind": "state" }"#,
+            "",
+        ))
+        .expect("model");
+        let report = crate::run_model(&model).expect("run");
+        let shares = report.tracked_summaries["States"]
+            .state_shares
+            .as_ref()
+            .expect("state shares");
+        let total: f64 = shares.values().sum();
+        assert!((total - 1.0).abs() < 1e-9, "{shares:?}");
+        assert!(shares["idle"] > 0.0);
+        assert!(report.tracked_series.is_empty());
+    }
+
+    /// task-168: `staytime` reports the stay-time distribution of completed
+    /// items; n tracks completions and p50 sits inside [min, max].
+    #[test]
+    fn staytime_tracked_variable_reports_the_distribution() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "staytime",
+          "run": { "stop_time": 30.0, "seed": 1, "replications": 1 },
+          "tracked_variables": [
+            { "name": "Stay", "expression": "time", "kind": "staytime" }
+          ],
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1.0 },
+                "max_arrivals": 5 } },
+            { "name": "P", "kind": "processor", "params": {
+                "process_time": { "distribution": "constant", "value": 2.0 } } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [
+            { "from": "S", "to": "P" }, { "from": "P", "to": "K" }
+          ]
+        }"#,
+        )
+        .expect("model");
+        let report = crate::run_model(&model).expect("run");
+        let summary = report.tracked_summaries["Stay"]
+            .staytime
+            .as_ref()
+            .expect("staytime summary");
+        assert_eq!(summary.n, report.replications[0].items_completed);
+        assert!(summary.n > 0);
+        assert!(summary.p50 >= summary.min && summary.p50 <= summary.max);
+        assert!(summary.p90 >= summary.p50 && summary.p90 <= summary.max);
+    }
+
+    /// task-168: all four kinds coexist without leaking into each other's slots.
+    #[test]
+    fn tracked_kinds_are_independent() {
+        let model = Model::from_json(&tracked_model(
+            r#"{ "name": "L", "expression": "time", "kind": "level" },
+               { "name": "K", "expression": "time * 2", "kind": "kinetic" },
+               { "name": "S", "expression": "time", "kind": "state" },
+               { "name": "T", "expression": "time", "kind": "staytime" }"#,
+            "",
+        ))
+        .expect("model");
+        let report = crate::run_model(&model).expect("run");
+        assert_eq!(report.tracked_series.len(), 2);
+        assert_eq!(report.tracked_summaries.len(), 2);
+        assert!(report.tracked_series.contains_key("L"));
+        assert!(report.tracked_series.contains_key("K"));
+        assert!(report.tracked_summaries["S"].state_shares.is_some());
+        assert!(report.tracked_summaries["T"].staytime.is_some());
+        assert!(!report.tracked_series.contains_key("S"));
+        assert!(!report.tracked_series.contains_key("T"));
+    }
+
+    /// task-168: schema/serde rejects an unknown tracked-variable kind.
+    #[test]
+    fn invalid_tracked_kind_is_rejected() {
+        let json = tracked_model(
+            r#"{ "name": "Bad", "expression": "time", "kind": "bogus" }"#,
+            "",
+        );
+        let error = Model::from_json(&json).expect_err("bad kind");
+        let text = error.to_string();
+        assert!(text.contains("bogus"), "{text}");
+        assert!(text.contains("unknown variant"), "{text}");
     }
 }

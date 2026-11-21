@@ -153,6 +153,29 @@ impl StateTimes {
     }
 }
 
+/// task-168: end-of-replication stay-time distribution summary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StaytimeSummary {
+    pub n: u64,
+    pub min: f64,
+    pub p50: f64,
+    pub p90: f64,
+    pub max: f64,
+    pub mean: f64,
+}
+
+/// task-168: summary produced by `state`/`staytime` tracked variables.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrackedSummary {
+    /// Model-wide state shares (`state` tracked variables). The expression is
+    /// compile-checked but not otherwise used yet (documented limitation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_shares: Option<BTreeMap<String, f64>>,
+    /// Item stay-time distribution (`staytime` tracked variables).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staytime: Option<StaytimeSummary>,
+}
+
 /// Statistics for one object in one replication.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObjectStats {
@@ -289,6 +312,9 @@ pub struct ReplicationResult {
     /// Model-declared tracked-variable samples (time, value).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tracked_series: BTreeMap<String, Vec<(f64, f64)>>,
+    /// Model-declared tracked-variable summaries (`state`/`staytime`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tracked_summaries: BTreeMap<String, TrackedSummary>,
 }
 
 /// Aggregated metric across replications.
@@ -553,6 +579,9 @@ pub struct SimReport {
     /// Tracked-variable samples of the first replication (empty when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tracked_series: BTreeMap<String, Vec<(f64, f64)>>,
+    /// Tracked-variable summaries of the first replication (empty when none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tracked_summaries: BTreeMap<String, TrackedSummary>,
     /// Little's law (`L = λW`) self-check; `None` only for reports built by
     /// hand that do not want the check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -586,6 +615,10 @@ impl SimReport {
             .first()
             .map(|replication| replication.tracked_series.clone())
             .unwrap_or_default();
+        let tracked_summaries = replications
+            .first()
+            .map(|replication| replication.tracked_summaries.clone())
+            .unwrap_or_default();
         Self {
             model: model.name.clone(),
             description: model.description.clone(),
@@ -601,6 +634,7 @@ impl SimReport {
             fluid,
             performance_measures,
             tracked_series,
+            tracked_summaries,
             little_check,
         }
     }

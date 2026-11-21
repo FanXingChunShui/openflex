@@ -3914,17 +3914,41 @@ pub struct PerformanceMeasure {
     pub unit: Option<String>,
 }
 
-/// A model-declared time-series variable (FlexSim Tracked Variables).
+/// Kind of a model-declared tracked variable (FlexSim Tracked Variables).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackedKind {
+    /// Instantaneous numeric expression sampled on the interval (default).
+    #[default]
+    Level,
+    /// End-of-replication per-state shares (model-wide fallback).
+    State,
+    /// End-of-replication item stay-time distribution summary.
+    Staytime,
+    /// Rate of change of the expression between samples.
+    Kinetic,
+}
+
+impl TrackedKind {
+    pub fn is_level(&self) -> bool {
+        matches!(self, TrackedKind::Level)
+    }
+}
+
+/// A model-declared tracked variable (FlexSim Tracked Variables).
 ///
-/// The expression is sampled on a fixed model-time interval during the run;
-/// samples appear in `SimReport::tracked_series`.
+/// `level`/`kinetic` are sampled on a fixed model-time interval; `state` and
+/// `staytime` produce one summary per replication instead of a series.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrackedVariable {
-    /// Identifier used as the series name.
+    /// Identifier used as the series/summary name.
     pub name: String,
-    /// Expression sampled at every interval.
+    /// Expression sampled at every interval (or compile-checked for summaries).
     pub expression: String,
+    /// Variable kind; absent means `level`, so old models are unchanged.
+    #[serde(default, skip_serializing_if = "TrackedKind::is_level")]
+    pub kind: TrackedKind,
 }
 
 /// Model-level triggers (FlexSim model start / reset / stop).

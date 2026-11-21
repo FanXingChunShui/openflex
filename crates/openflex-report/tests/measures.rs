@@ -58,6 +58,7 @@ fn base_report(name: &str, replications: u32) -> SimReport {
         fluid: None,
         performance_measures: BTreeMap::new(),
         tracked_series: BTreeMap::new(),
+        tracked_summaries: BTreeMap::new(),
     }
     .with_replication_count(replications)
 }
@@ -90,6 +91,7 @@ fn fake_replication(index: u32) -> openflex_core::ReplicationResult {
         fluid: None,
         performance_measures: BTreeMap::new(),
         tracked_series: BTreeMap::new(),
+        tracked_summaries: BTreeMap::new(),
     }
 }
 

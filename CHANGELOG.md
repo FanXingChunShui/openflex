@@ -4,6 +4,16 @@
 
 ### 模型与引擎
 
+- **Tracked Variable 类型体系**：`tracked_variables` 增加 `kind: level | state | staytime | kinetic`
+  （**缺省 `level` 且序列化时不写该键**，旧模型 JSON 与行为逐位不变）：
+  - `level` —— 按间隔采样瞬时值（原行为）；
+  - `kinetic` —— 相邻采样的变化率 `(vₙ−vₙ₋₁)/(tₙ−tₙ₋₁)`，首采样为 0；
+  - `state` —— 复现结束时给出全模型各状态（idle/busy/blocked/down/off_shift）累计占比；
+  - `staytime` —— 复现结束时给出停留时间分布（n / min / p50 / p90 / max / mean，分位数线性插值）。
+  结果分两处：`tracked_series`（level/kinetic，语义不变）与新增的 `tracked_summaries`
+  （state/staytime，空时不序列化）。实测同一模型四种并存：`Clock` 1..10、`Rate` 首点 0 后恒 3、
+  `States` 合计 1、`Stay` 的 n 与 `items_completed` 一致且 p50 = 加工时长 5.0。
+
 - **只读 SQL 子集 `query()`**：`query("SELECT <cols|*> FROM <table> [WHERE <expr>] [ORDER BY <col> [ASC|DESC]] [LIMIT n]")`
   查询模型的全局表；`WHERE` 复用既有表达式语言（`$全局变量`、`picklist(...)` 都能用），
   返回文本（列 `|`、行 `\n`，无匹配返回空串而非错误）。解析器独立在 `crates/openflex-model/src/sql.rs`，

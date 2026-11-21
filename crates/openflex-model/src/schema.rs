@@ -586,7 +586,12 @@ fn definitions() -> Value {
             "description": "A model-declared time-series variable (FlexSim Tracked Variables).",
             "properties": {
                 "name": { "type": "string" },
-                "expression": { "type": "string" }
+                "expression": { "type": "string" },
+                "kind": {
+                    "type": "string",
+                    "enum": ["level", "state", "staytime", "kinetic"],
+                    "default": "level"
+                }
             },
             "required": ["name", "expression"],
             "additionalProperties": false
