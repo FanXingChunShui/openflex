@@ -10353,7 +10353,13 @@ impl eframe::App for OpenFlexApp {
                                     ui.label(format!("{:.0}", stats.output_count.mean));
                                     ui.label(format!("{:.1}", stats.avg_content.mean));
                                     ui.label(format!("{:.1}", stats.avg_stay_time.mean));
-                                    ui.label(format!("{:.0}%", stats.utilization.mean * 100.0));
+                                    // A 0% for a source would read as "underused"
+                                    // rather than "not applicable".
+                                    ui.label(if Self::counts_for_utilization(stats.kind) {
+                                        format!("{:.0}%", stats.utilization.mean * 100.0)
+                                    } else {
+                                        "—".to_string()
+                                    });
                                     ui.label(format!("{:.2}", stats.throughput.mean));
                                     // With a single replication there is no
                                     // interval to show: `±0.000` would read as
@@ -11598,6 +11604,22 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn the_per_object_util_column_marks_not_applicable() {
+        // Source/sink rows show an em dash instead of a misleading 0%.
+        let cell = |kind: ObjectKind, util: f64| {
+            if OpenFlexApp::counts_for_utilization(kind) {
+                format!("{:.0}%", util * 100.0)
+            } else {
+                "—".to_string()
+            }
+        };
+        assert_eq!(cell(ObjectKind::Source, 0.0), "—");
+        assert_eq!(cell(ObjectKind::Queue, 0.0), "—");
+        assert_eq!(cell(ObjectKind::Processor, 0.798), "80%");
+        assert_eq!(cell(ObjectKind::Transporter, 0.42), "42%");
     }
 
     #[test]
