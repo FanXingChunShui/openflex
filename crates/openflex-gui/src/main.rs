@@ -3934,11 +3934,13 @@ impl OpenFlexApp {
             return;
         };
         let mut text = format!(
-            "# OpenFlex baseline comparison\n# model: {}\n# time_unit: {}\n# baseline completed: {:.1}\n# current completed: {:.1}\n",
+            "# OpenFlex baseline comparison\n# model: {}\n# time_unit: {}\n# baseline completed: {:.1} ({} replication(s))\n# current completed: {:.1} ({} replication(s))\n",
             report.model,
             report.time_unit.label(),
             baseline.completed.mean,
-            report.completed.mean
+            baseline.replications.len(),
+            report.completed.mean,
+            report.replications.len()
         );
         text.push_str("object,metric,baseline,current,delta,delta_percent\n");
         let mut push = |object: &str, metric: &str, old: f64, new: f64| {
@@ -10334,6 +10336,19 @@ impl eframe::App for OpenFlexApp {
                                 ))
                                 .strong(),
                             );
+                            // Comparing a single-run baseline with a five-run
+                            // report measures noise as much as the change.
+                            if baseline.replications.len() != report.replications.len() {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "different replication counts: baseline {} vs current {}",
+                                        baseline.replications.len(),
+                                        report.replications.len()
+                                    ))
+                                    .size(9.0_f32)
+                                    .color(palette::AMBER),
+                                );
+                            }
                             egui::Grid::new("compare-grid")
                                 .striped(true)
                                 .num_columns(4)
@@ -11543,14 +11558,32 @@ mod tests {
     }
 
     #[test]
+    fn comparisons_flag_mismatched_replication_counts() {
+        // The warning the compare table shows when the two runs are not
+        // statistically comparable.
+        let warn = |baseline: usize, current: usize| {
+            if baseline != current {
+                Some(format!(
+                    "different replication counts: baseline {baseline} vs current {current}"
+                ))
+            } else {
+                None
+            }
+        };
+        assert_eq!(warn(5, 5), None);
+        assert_eq!(
+            warn(1, 5).as_deref(),
+            Some("different replication counts: baseline 1 vs current 5")
+        );
+        assert!(warn(5, 1).is_some());
+    }
+
+    #[test]
     fn agv_tooltip_adds_the_battery_line() {
         // The extra line only appears when the engine reports a battery.
-        let line = |battery: Option<f64>, charging: f64| match battery {
-            Some(battery) => Some(format!(
-                "battery {battery:.0}% · charging {:.0}%",
-                charging * 100.0
-            )),
-            None => None,
+        let line = |battery: Option<f64>, charging: f64| {
+            battery
+                .map(|battery| format!("battery {battery:.0}% · charging {:.0}%", charging * 100.0))
         };
         assert_eq!(
             line(Some(73.4), 0.25).as_deref(),

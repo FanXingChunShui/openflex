@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### 桌面 GUI（功能补齐）
+
+- **对比结果标明可比较性**：报告 JSON→CSV 的对比表在两边复现次数不同时给出琥珀提示
+  `different replication counts: baseline 1 vs current 5`；对比 CSV 的注释头也写明各自的
+  `(N replication(s))`。此前拿单次运行当基线、与 5 次复现比较时，Δ 会把噪声当成改进。
+  新增 `comparisons_flag_mismatched_replication_counts` 测试（GUI 109 项）。
+
 ## v1.31.0 — 2026-11-21
 
 本轮集中在**报告的可信度**：单次复现不再伪装成高精度、预热时间被明确标注、AGV 电量进入画布提示；并让 `Add row` 与其余表操作一样遵守「先校验后快照」。发布节奏保持**至少 3 小时一版**。
