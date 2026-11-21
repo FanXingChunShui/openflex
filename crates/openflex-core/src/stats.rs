@@ -258,6 +258,10 @@ pub struct ReplicationResult {
     /// Fluid statistics; `None` when the model has no fluid objects.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fluid: Option<ReplicationFluid>,
+    /// Model-defined performance measures, keyed by their name; empty when the
+    /// model declares none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub performance_measures: BTreeMap<String, f64>,
 }
 
 /// Aggregated metric across replications.
@@ -505,6 +509,9 @@ pub struct SimReport {
     /// Fluid statistics; `None` when the model has no fluid objects.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fluid: Option<FluidReport>,
+    /// Model-defined performance measures, aggregated over the replications.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub performance_measures: BTreeMap<String, Aggregate>,
     /// Little's law (`L = λW`) self-check; `None` only for reports built by
     /// hand that do not want the check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -533,6 +540,7 @@ impl SimReport {
         let little_check = Some(LittleCheck::from_objects(&objects));
         let process_flow = aggregate_flow(&replications);
         let fluid = aggregate_fluid(&replications);
+        let performance_measures = aggregate_performance_measures(&replications);
         Self {
             model: model.name.clone(),
             description: model.description.clone(),
@@ -546,6 +554,7 @@ impl SimReport {
             created,
             process_flow,
             fluid,
+            performance_measures,
             little_check,
         }
     }
@@ -609,6 +618,22 @@ fn aggregate_flow(replications: &[ReplicationResult]) -> Option<FlowReport> {
         tokens_completed,
         blocks,
     })
+}
+
+/// Average each model-defined performance measure over the replications.
+fn aggregate_performance_measures(
+    replications: &[ReplicationResult],
+) -> BTreeMap<String, Aggregate> {
+    let mut samples: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
+    for replication in replications {
+        for (name, value) in &replication.performance_measures {
+            samples.entry(name.as_str()).or_default().push(*value);
+        }
+    }
+    samples
+        .into_iter()
+        .map(|(name, values)| (name.to_string(), Aggregate::from_samples(&values)))
+        .collect()
 }
 
 /// Average the fluid statistics over the replications.

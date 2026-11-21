@@ -36,6 +36,7 @@ mod templates;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -43,7 +44,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, anyhow, bail};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use openflex_core::{
-    SimConfig, SimReport, derive_seed, simulate, simulate_traced, simulate_with_checkpoint,
+    Aggregate, SimConfig, SimReport, derive_seed, simulate, simulate_traced,
+    simulate_with_checkpoint,
 };
 use openflex_model::{Model, ObjectKind, Scenario, TimeUnit};
 use openflex_report::{self as report, i18n};
@@ -845,14 +847,18 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                 (Some(path), None) => {
                     let sim = report::read_report(&path)
                         .map_err(|error| Failure::from(error).with_path(&path))?;
-                    report::render_sim_with_options(
+                    let mut text = report::render_sim_with_options(
                         &sim,
                         format.into(),
                         flow,
                         fluid,
                         batch_batches,
                         batch_means_objects,
-                    )?
+                    )?;
+                    if format == Format::Table && !sim.performance_measures.is_empty() {
+                        text.push_str(&performance_measures_table(&sim.performance_measures));
+                    }
+                    text
                 }
                 (None, Some(directory)) => {
                     if batch_batches.is_some() {
@@ -1865,6 +1871,21 @@ fn run_experiments(
 }
 
 /// Write rendered text to `output`, or print it.
+/// task-155: text-table section for model-defined performance measures.
+fn performance_measures_table(measures: &BTreeMap<String, Aggregate>) -> String {
+    let mut out = String::new();
+    out.push_str("\nPerformance measures\n");
+    out.push_str("--------------------\n");
+    for (name, aggregate) in measures {
+        let _ = writeln!(
+            out,
+            "{name:<28} mean {:>10.3}  ci95 ±{:.3}  n {}",
+            aggregate.mean, aggregate.ci95, aggregate.n
+        );
+    }
+    out
+}
+
 fn emit(text: &str, output: Option<&Path>, quiet: bool) -> Result<(), Failure> {
     match output {
         Some(path) => {

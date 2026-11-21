@@ -398,6 +398,7 @@ mod tests {
             little_check: None,
             process_flow: None,
             fluid: None,
+            performance_measures: BTreeMap::new(),
         }
     }
 

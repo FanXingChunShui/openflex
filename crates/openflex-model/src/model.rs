@@ -3895,6 +3895,23 @@ where
     deserialize_named_map(deserializer, "pick list")
 }
 
+/// A user-defined performance measure (FlexSim Performance Measure).
+///
+/// The expression is evaluated once at the end of every replication against
+/// the built-in variables (`time`, `created`, `completed`), global variables
+/// and object fields; the reported statistic is its mean over replications.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PerformanceMeasure {
+    /// Identifier shown in the report and accepted by dashboards.
+    pub name: String,
+    /// Expression text (same language as trigger conditions).
+    pub expression: String,
+    /// Optional display unit, e.g. `"items"` or `"min"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+}
+
 /// Model-level triggers (FlexSim model start / reset / stop).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -3971,6 +3988,9 @@ pub struct Model {
     /// Model-level `on_start` / `on_reset` / `on_stop` triggers.
     #[serde(default, skip_serializing_if = "ModelTriggers::is_empty")]
     pub model_triggers: ModelTriggers,
+    /// User-defined performance measures, evaluated per replication.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub performance_measures: Vec<PerformanceMeasure>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
 }

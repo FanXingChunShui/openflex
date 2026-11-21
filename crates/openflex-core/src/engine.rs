@@ -133,7 +133,7 @@ use std::path::{Path, PathBuf};
 
 use openflex_model::{
     Action, ArrivalStyle, CombinerMode, ConditionalPort, ConnectionKind, Distribution,
-    DowntimeWindow, EvalContext, FlowBlockKind, GlobalVariableKind, Grid, Model, NetworkEdge,
+    DowntimeWindow, EvalContext, Expr, FlowBlockKind, GlobalVariableKind, Grid, Model, NetworkEdge,
     Object, ObjectKind, ObjectParams, PickListLookup, PortStrategy, ProcessFlow, PullParams,
     QueueOrder, RackPickPolicy, RackType, SeparateMode, SimTrigger, TableCell, TaskStepKind,
     TrafficMode, TransferMode, Value,
@@ -1482,7 +1482,7 @@ pub fn simulate_until(
     sim.drain_instant_events()?;
     sim.finalize_stats();
     let checkpoint = sim.snapshot();
-    let result = sim.replication_result(index, stop_at);
+    let result = sim.replication_result(index, stop_at)?;
     Ok((result, checkpoint))
 }
 
@@ -1519,7 +1519,7 @@ pub fn resume_from_checkpoint(
         return Err(error);
     }
     sim.finalize_stats();
-    Ok(sim.replication_result(index, resume_at))
+    sim.replication_result(index, resume_at)
 }
 
 /// Summary of one scheduled event (task-50).
@@ -2094,7 +2094,20 @@ impl<'m> SimulationHandle<'m> {
     }
 
     /// The replication result at the current time.
+    ///
+    /// Stepping cannot return an error; a failing performance-measure
+    /// expression is surfaced by [`SimulationHandle::try_result`], and this
+    /// convenience method falls back to a result without measures.
     pub fn result(&self) -> ReplicationResult {
+        self.try_result().unwrap_or_else(|_| {
+            self.sim
+                .raw_replication_result(self.index, self.sim.now, BTreeMap::new())
+        })
+    }
+
+    /// Fallible variant of [`SimulationHandle::result`] (task-155): a failing
+    /// performance measure is reported instead of being silently omitted.
+    pub fn try_result(&self) -> Result<ReplicationResult, SimError> {
         self.sim.replication_result(self.index, self.sim.now)
     }
 
@@ -2186,6 +2199,7 @@ fn simulate_run(
         objects,
         process_flow: sim.flow_replication(elapsed),
         fluid: sim.fluid_replication(elapsed),
+        performance_measures: sim.evaluate_performance_measures()?,
     };
     Ok((result, checkpoint, sim.trace.unwrap_or_default()))
 }
@@ -2881,7 +2895,51 @@ impl<'m> Simulation<'m> {
 
     /// Build the replication result at `final_time` (the caller finalised the
     /// accumulators first).
-    fn replication_result(&self, index: u32, final_time: f64) -> ReplicationResult {
+    /// task-155: evaluate the model's performance measures once per
+    /// replication. Expressions may read `time`, `created`, `completed`,
+    /// global variables and object fields; a bad expression is a hard error
+    /// that names the measure.
+    fn evaluate_performance_measures(&self) -> Result<BTreeMap<String, f64>, SimError> {
+        let mut values = BTreeMap::new();
+        for measure in &self.model.performance_measures {
+            let location = format!("performance_measures.{}", measure.name);
+            let expression =
+                Expr::parse(&measure.expression).map_err(|error| SimError::Expression {
+                    location: location.clone(),
+                    detail: format!("expression does not compile: {error}"),
+                })?;
+            let value = expression
+                .eval(&ExprContext::new(self, None))
+                .map_err(|error| SimError::Expression {
+                    location: location.clone(),
+                    detail: error.to_string(),
+                })?;
+            let number = value.as_number().map_err(|_| SimError::Expression {
+                location: location.clone(),
+                detail: format!(
+                    "performance measure '{}' must evaluate to a number, got {value:?}",
+                    measure.name
+                ),
+            })?;
+            values.insert(measure.name.clone(), number);
+        }
+        Ok(values)
+    }
+
+    fn replication_result(
+        &self,
+        index: u32,
+        final_time: f64,
+    ) -> Result<ReplicationResult, SimError> {
+        Ok(self.raw_replication_result(index, final_time, self.evaluate_performance_measures()?))
+    }
+
+    fn raw_replication_result(
+        &self,
+        index: u32,
+        final_time: f64,
+        performance_measures: BTreeMap<String, f64>,
+    ) -> ReplicationResult {
         let elapsed = (final_time - self.config.warmup).max(0.0);
         let mut objects = BTreeMap::new();
         for object in &self.objects {
@@ -2906,6 +2964,7 @@ impl<'m> Simulation<'m> {
             objects,
             process_flow: self.flow_replication(elapsed),
             fluid: self.fluid_replication(elapsed),
+            performance_measures,
         }
     }
 
@@ -9730,8 +9789,11 @@ impl EvalContext for ExprContext<'_, '_> {
     fn lookup(&self, path: &str) -> Option<Value> {
         match path {
             "time" | "sim.time" | "now" => return Some(Value::Number(self.sim.now)),
-            "sim.items_created" => {
+            "created" | "sim.created" | "sim.items_created" => {
                 return Some(Value::Number(self.sim.stats_created as f64));
+            }
+            "completed" | "sim.completed" => {
+                return Some(Value::Number(self.sim.stats_completed as f64));
             }
             _ => {}
         }
@@ -12361,5 +12423,106 @@ mod tests {
         let text = error.to_string();
         assert!(text.contains("Missing"), "{text}");
         assert!(text.contains("global variable"), "{text}");
+    }
+
+    fn performance_measure_model(replications: u32) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "measures",
+          "run": {{ "stop_time": 20.0, "seed": 1, "replications": {replications} }},
+          "performance_measures": [
+            {{ "name": "WIP", "expression": "completed", "unit": "items" }}
+          ],
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "exponential", "mean": 1.0 }},
+                "first_arrival": 0.0 }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [{{ "from": "S", "to": "K" }}]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    /// task-155: `WIP = completed` is evaluated per replication and aggregated
+    /// with the mean and a 95% CI over replications.
+    #[test]
+    fn performance_measure_single_and_multi_replication_stats() {
+        let single = crate::run_model(&performance_measure_model(1)).expect("single");
+        let measure = &single.performance_measures["WIP"];
+        let replication = &single.replications[0];
+        assert_eq!(
+            measure.mean, replication.performance_measures["WIP"],
+            "single replication mean is its value"
+        );
+        assert_eq!(measure.ci95, 0.0, "no interval for one sample");
+        assert_eq!(measure.n, 1);
+
+        let multi = crate::run_model(&performance_measure_model(3)).expect("multi");
+        let measure = &multi.performance_measures["WIP"];
+        assert_eq!(measure.n, 3);
+        let expected = multi
+            .replications
+            .iter()
+            .map(|replication| replication.performance_measures["WIP"])
+            .sum::<f64>()
+            / 3.0;
+        assert!((measure.mean - expected).abs() < 1e-12);
+        assert!(measure.std_dev.is_finite());
+        assert!(measure.ci95 >= 0.0);
+        assert!(measure.min <= measure.mean && measure.mean <= measure.max);
+    }
+
+    /// task-155: a failing expression names the measure instead of silently
+    /// reporting zero.
+    #[test]
+    fn unknown_performance_measure_variable_is_an_error() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "bad-measure",
+          "run": { "stop_time": 10.0, "seed": 1, "replications": 1 },
+          "performance_measures": [
+            { "name": "Broken", "expression": "missing_variable + 1" }
+          ],
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1.0 },
+                "max_arrivals": 1 } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [{ "from": "S", "to": "K" }]
+        }"#,
+        )
+        .expect("model");
+        let error = crate::run_model(&model).expect_err("bad measure");
+        let text = error.to_string();
+        assert!(text.contains("Broken"), "{text}");
+        assert!(text.contains("missing_variable"), "{text}");
+    }
+
+    /// task-155: models without measures keep exactly the old JSON/run output.
+    #[test]
+    fn models_without_performance_measures_are_unchanged() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "old-model",
+          "run": { "stop_time": 10.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1.0 },
+                "max_arrivals": 2 } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [{ "from": "S", "to": "K" }]
+        }"#,
+        )
+        .expect("model");
+        let value = serde_json::to_value(&model).expect("model json");
+        assert!(value.get("performance_measures").is_none());
+        let report = crate::run_model(&model).expect("run");
+        assert!(report.performance_measures.is_empty());
+        let report_json = serde_json::to_value(&report).expect("report json");
+        assert!(report_json.get("performance_measures").is_none());
     }
 }

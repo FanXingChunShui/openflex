@@ -236,6 +236,7 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
     }
     issues.extend(validate_fluid(model));
     issues.extend(validate_model_triggers(model));
+    issues.extend(validate_performance_measures(model));
 
     issues
 }
@@ -1347,6 +1348,39 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
     issues
 }
 
+/// Performance-measure names are identifiers and unique; expressions must be
+/// parseable so a run cannot fail with a late syntax error.
+fn validate_performance_measures(model: &Model) -> Vec<ValidationIssue> {
+    let mut issues = Vec::new();
+    let mut names = std::collections::BTreeSet::new();
+    for (position, measure) in model.performance_measures.iter().enumerate() {
+        let at = format!("performance_measures[{position}]");
+        if !is_identifier(&measure.name) {
+            issues.push(ValidationIssue::new(
+                format!("{at}.name"),
+                "must be a valid identifier (letters, digits and _; not starting with a digit)",
+            ));
+        } else if !names.insert(measure.name.as_str()) {
+            issues.push(ValidationIssue::new(
+                format!("{at}.name"),
+                "duplicate performance measure name",
+            ));
+        }
+        if measure.expression.trim().is_empty() {
+            issues.push(ValidationIssue::new(
+                format!("{at}.expression"),
+                "expression cannot be empty",
+            ));
+        } else if let Err(error) = crate::expr::Expr::parse(&measure.expression) {
+            issues.push(ValidationIssue::new(
+                format!("{at}.expression"),
+                format!("expression does not compile: {error}"),
+            ));
+        }
+    }
+    issues
+}
+
 /// Model-level trigger actions (scripts must compile before the run starts).
 fn validate_model_triggers(model: &Model) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
@@ -2126,6 +2160,7 @@ mod tests {
             global_variables: Default::default(),
             picklists: Default::default(),
             model_triggers: Default::default(),
+            performance_measures: Vec::new(),
             metadata: Default::default(),
         }
     }
@@ -2202,5 +2237,56 @@ mod tests {
                 .iter()
                 .any(|issue| issue.message.contains("sum to 100"))
         );
+    }
+
+    /// task-155: performance measures need identifier/unique names and a
+    /// compileable expression; the location names the entry.
+    #[test]
+    fn performance_measures_validate_names_and_expressions() {
+        let mut model = base_model();
+        model.performance_measures = vec![
+            PerformanceMeasure {
+                name: "Bad Name".into(),
+                expression: "1 +".into(),
+                unit: None,
+            },
+            PerformanceMeasure {
+                name: "Dup".into(),
+                expression: "completed".into(),
+                unit: Some("items".into()),
+            },
+            PerformanceMeasure {
+                name: "Dup".into(),
+                expression: "created".into(),
+                unit: None,
+            },
+        ];
+        let issues = validate_collect(&model);
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.location == "performance_measures[0].name"),
+            "{issues:?}"
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.location == "performance_measures[0].expression"),
+            "{issues:?}"
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.location == "performance_measures[2].name"
+                    && issue.message.contains("duplicate")),
+            "{issues:?}"
+        );
+
+        model.performance_measures = vec![PerformanceMeasure {
+            name: "WIP".into(),
+            expression: "completed".into(),
+            unit: Some("items".into()),
+        }];
+        assert!(validate_collect(&model).is_empty());
     }
 }

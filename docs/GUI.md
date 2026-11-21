@@ -8,7 +8,7 @@ cargo build -p openflex-gui --release
 ./target/release/openflex-gui examples/mm1.ofm   # 也可以不带参数启动后在窗口内填路径
 ```
 
-## 当前能力（v1.30.0）
+## 当前能力（v1.33.0）
 
 | 区域 | 功能 |
 |---|---|
@@ -33,7 +33,7 @@ cargo build -p openflex-gui --release
 | 对象编辑 | `x/y/z` 拖拽数值、**按 kind 的参数表单**（Distribution 类型下拉 + 数值：source/queue/processor/conveyor/resource/transporter/person/robot/crane/asrs/agv）、Apply 校验后提交；JSON 高级模式（复选框） |
 | 连接编辑 | 列表 + 删除、from/to/port 添加（校验后原子替换模型） |
 | 3D 视图 | 透视投影、**地面网格**、对象地面阴影、按 kind 着色、连接线、选中高亮、拖拽旋转、滚轮缩放、点击选中、**相机预设 Iso/Top/Front/Side**、**按 kind 的几何体与明暗**（机台带顶板与指示灯、传送带带方向箭头、货架分层、源/汇圆鼓、人员/车辆胶囊、流体罐带液位、其余盒体）、**可旋转 footprint + 侧面挤出**（右键对象菜单 -15°/+15°/0°，写入 `Object.rot` 并随模型保存）、右侧挤出面模拟立体感 |
-| 单元测试 | `crates/openflex-gui` 内置 **104 项**测试（交互约定见下节），CI 的 GUI Linux job 会执行 |
+| 单元测试 | `crates/openflex-gui` 内置 **126 项**测试（交互约定见下节），CI 的 GUI Linux job 会执行 |
 | 外观 | 启动时应用深色主题（面板/窗口/画布分层配色），窗口与 macOS bundle 使用程序生成的 64×64 图标（无二进制资源） |
 | Trace | 工具栏 `Trace run` 用 `simulate_traced()` 跑一次并保留引擎事件流；`Export trace` 写 `<model>.trace.jsonl`（与 CLI `--trace` 同格式） |
 | 事件日志 | 右侧 `Events (n)`：过滤（kind/对象，忽略大小写）、点击跳转到该时刻、`CSV` 导出、`clear`；`Play` 与 `Step event` 都会填充 |
@@ -44,6 +44,13 @@ cargo build -p openflex-gui --release
 | CSV 自描述 | 报告/对比/时序/事件四类 CSV 顶部写 `# model / # time_unit / …` 注释行，Excel 自动跳过 |
 | 全局表 | 左侧 `Global tables (n)`：`+ table` 建表、`x` 删整表、列名可直接重命名、`+ col` / `- row` 调整形状，
   单元格逐格编辑（数字/布尔/文本自动识别） |
+| 全局变量 | 左侧 `Global variables (n)`：输入名字 `+ variable` 新建（默认 number 型、初值 0、重名被拒），
+   逐条改值（失焦提交，保持声明的 `kind`），`x` 删除；表达式用 `$Name` 读取 |
+| 取列表 | 左侧 `Pick lists (n)`：输入名字 `+ pick list` 新建（自动带一个起始条目），
+   列表内可增删改条目（`name` / `value` 逐格编辑，条目名重复被拒），`x` 删整表；
+   **每个列表至少保留一个条目**（删最后一条被拒并给出原因）；表达式用 `picklist("list","entry")` 取值 |
+| 模型触发器 | 左侧 `Model triggers` 折叠区：三段多行文本编辑器，分别对应 `on start`（首个事件前）、
+   `on reset`（预热边界）、`on stop`（到达 stop_time），`Apply model triggers` 解析为动作列表并经校验写回 |
 | 检查点 | 右侧 `Checkpoints (n)` 面板列出目录内文件与模型时间，点击任意项即恢复该检查点；工具栏另有 `Save checkpoint` / `Load checkpoint`（最新）与目录输入：保存 `SimulationHandle::snapshot()` 为 `<dir>/checkpoint-<time>.json`，恢复时读取该目录最新文件并经 `Checkpoint::from_json_verified` 校验 |
 | 运行 |**`parallel` 开关**：`Run` 与实验用 `run_model_parallel(model, 0)` 在多核上跑复现（结果与串行逐位一致），关闭则退回串行 |
 | 运行 |**播放速度滑块（0.25–8×，对数刻度）**：Play 时每帧推进的模型时间与帧率随之缩放 |
@@ -109,6 +116,7 @@ wix build packaging\windows\openflex-gui.wxs -d Version=<ver> ^
 | 约定 | 行为 | 测试 |
 |---|---|---|
 | **先校验后快照** | 任何编辑先 `validate()`，通过后才写撤销栈；被拒绝的编辑不留下空历史项 | `rejected_edits_do_not_leave_history_entries` |
+| **单一编辑入口** | `commit_model_edit(label, edit)` 是所有结构性编辑的唯一入口：在模型副本上执行改动 → `validate()` → 通过后才 `snapshot_labelled()` 入撤销栈、采用副本、并调用 `clear_analysis_results()` 清掉过期结果；校验失败则原样保留旧模型并暴露原因。新增编辑器一律走它 | `a_model_edit_goes_through_one_funnel` |
 | **结果随模型失效** | 撤销/重做、新增/删除/复制/重命名、连接增删、端口策略、应用最优、模型设置都会调用 `clear_analysis_results()`（报告、实验、优化、时序、trace） | `every_structural_edit_path_clears_results` |
 | **位置操作不清结果** | 移动/旋转/对齐/分布/网格/自动布局不改变统计，故保留结果 | `structural_edits_invalidate_results_but_moves_do_not` |
 | **丢弃文档要二次确认** | `New` / `Open`（含 Recent、文件浏览器、示例）与关闭窗口，在 `model_dirty` 时第一次只提示，第二次才执行 | `closing_with_unsaved_edits_needs_a_second_press` |

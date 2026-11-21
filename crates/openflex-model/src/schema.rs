@@ -567,6 +567,19 @@ fn definitions() -> Value {
         }),
     );
     defs.insert(
+        "performance_measure".into(),
+        json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "expression": { "type": "string", "minLength": 1 },
+                "unit": { "type": ["string", "null"] }
+            },
+            "required": ["name", "expression"],
+            "additionalProperties": false
+        }),
+    );
+    defs.insert(
         "model_triggers".into(),
         json!({
             "type": "object",
@@ -746,6 +759,10 @@ fn model_schema() -> Value {
                 "additionalProperties": { "$ref": "#/$defs/picklist" }
             },
             "model_triggers": { "$ref": "#/$defs/model_triggers" },
+            "performance_measures": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/performance_measure" }
+            },
             "metadata": { "type": "object" }
         },
         "required": ["name"],
@@ -1308,5 +1325,18 @@ mod tests {
             }),
             "action script variant"
         );
+    }
+
+    /// task-155: the JSON Schema exposes the performance-measure definition.
+    #[test]
+    fn schema_covers_performance_measures() {
+        let schema = json_schema();
+        let def = &schema["$defs"]["performance_measure"];
+        assert_eq!(def["required"], json!(["name", "expression"]));
+        assert_eq!(
+            schema["$defs"]["model"]["properties"]["performance_measures"]["items"]["$ref"],
+            json!("#/$defs/performance_measure")
+        );
+        assert_eq!(def["properties"]["unit"]["type"], json!(["string", "null"]));
     }
 }

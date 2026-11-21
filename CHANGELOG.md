@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 模型与引擎（FlexSim 7.5 剩余缺口）
+
+- **自定义性能指标（Performance Measure）**：模型新增 `performance_measures: [{ name, expression, unit }]`，
+  复现结束时用表达式求值（可读 `time` / `created` / `completed`、全局变量、对象字段），
+  `SimReport` 聚合成 `name → Aggregate`（多复现给 mean/std/CI/min/max/n），
+  `openflex run --format json` 自动输出、`openflex report --format table` 追加 `Performance measures` 一节。
+  未定义变量是明确错误：`expression error at performance_measures.X: unknown global variable 'Missing'`。
+  实测 `$Batch * 2` 精确给出 20.0（CI 0）、`completed / time` 给出 0.27、`completed` 给出 137.33 ±34.81（n=3）。
+
 ### 桌面 GUI（功能补齐）
 
 - **模型触发器面板**：左侧新增 `Model triggers` 折叠面板，`on start` / `on reset` / `on stop`
