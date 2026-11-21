@@ -11224,6 +11224,59 @@ impl eframe::App for OpenFlexApp {
                         }
                     }
                 }
+                // Model-defined KPIs: the modeller decides what matters, so they
+                // get their own headline block rather than a row in the table.
+                if !report.performance_measures.is_empty() {
+                    panel_heading(ui, "Performance measures");
+                    egui::Grid::new("kpi-grid")
+                        .striped(true)
+                        .num_columns(4)
+                        .spacing([12.0, 3.0])
+                        .show(ui, |ui| {
+                            for header in ["measure", "mean", "±95%", "n"] {
+                                ui.label(
+                                    egui::RichText::new(header)
+                                        .strong()
+                                        .size(9.0_f32)
+                                        .color(palette::TEXT_DIM),
+                                );
+                            }
+                            ui.end_row();
+                            for (name, measure) in &report.performance_measures {
+                                ui.label(
+                                    egui::RichText::new(name)
+                                        .small()
+                                        .monospace()
+                                        .color(palette::ACCENT_HI),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("{:.3}", measure.mean))
+                                        .small()
+                                        .monospace(),
+                                );
+                                // One replication has no interval to show: a
+                                // ±0.000 would read as "very precise".
+                                ui.label(
+                                    egui::RichText::new(if measure.n < 2 {
+                                        "—".to_string()
+                                    } else {
+                                        format!("±{:.3}", measure.ci95)
+                                    })
+                                    .small()
+                                    .monospace()
+                                    .color(palette::TEXT_DIM),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("{}", measure.n))
+                                        .small()
+                                        .monospace()
+                                        .color(palette::TEXT_DIM),
+                                );
+                                ui.end_row();
+                            }
+                        });
+                    ui.separator();
+                }
                 // Per-replication detail: seed and item counts make a run
                 // reproducible and let the user see the spread behind a mean.
                 if report.replications.len() > 1 {
@@ -12918,6 +12971,29 @@ mod tests {
         // A model without objects offer nothing rather than panicking.
         let empty = SamplerNames::from_model(None);
         assert!(empty.any.is_empty() && empty.operators.is_empty());
+    }
+
+    #[test]
+    fn performance_measures_show_no_interval_for_one_replication() {
+        // The KPI grid obeys the same n<2 rule as the object table.
+        let cell = |n: u32, ci: f64| {
+            if n < 2 {
+                "—".to_string()
+            } else {
+                format!("±{ci:.3}")
+            }
+        };
+        assert_eq!(cell(1, 0.0), "—");
+        assert_eq!(cell(3, 12.504), "±12.504");
+        // The grid is driven by the report, so a model without measures shows
+        // no block at all.
+        let json = r#"{"format":"openflex-model","version":1,"name":"m",
+          "run":{"stop_time":10.0},
+          "objects":[{"name":"S","kind":"source","params":{"interarrival":{"distribution":"constant","value":1.0}}},
+                     {"name":"K","kind":"sink","params":{}}],
+          "connections":[{"from":"S","to":"K"}]}"#;
+        let model = Model::from_json(json).expect("model");
+        assert!(model.performance_measures.is_empty());
     }
 
     #[test]

@@ -13,6 +13,10 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **报告展示自定义性能指标**：模型声明了 `performance_measures` 时，报告面板新增
+  `Performance measures` 表格（measure / mean / ±95% / n），复用既有的「n<2 不显示区间」规则。
+  无指标的模型不出现该块。GUI 测试 **127 项**。
+
 - **模型触发器面板**：左侧新增 `Model triggers` 折叠面板，`on start` / `on reset` / `on stop`
   各一个 JSON 编辑区（空缓冲区只在模型里有动作时才预填，避免覆盖用户输入），
   点 `Apply model triggers` 走 `commit_model_edit` 单一入口——JSON 不合法时先报错、模型不动。
