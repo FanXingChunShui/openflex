@@ -1633,6 +1633,35 @@ impl EditForm {
                 for (index, step) in p.task_sequence.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
                         let current = step.kind();
+                        // `utilize` / `break` legs carry a duration the combo has
+                        // no editor for: show them read-only rather than let a
+                        // click silently turn them into a plain travel/load leg
+                        // (which would drop the duration).
+                        if let TaskStep::Extra { kind, duration, .. } = &*step {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} {}  (JSON only)",
+                                    match kind {
+                                        openflex_model::ExtraTaskLegKind::Utilize => "utilize",
+                                        openflex_model::ExtraTaskLegKind::Break => "break",
+                                    },
+                                    duration
+                                        .as_ref()
+                                        .and_then(|distribution| distribution.mean())
+                                        .unwrap_or(0.0)
+                                ))
+                                .size(9.0_f32)
+                                .monospace()
+                                .color(palette::AMBER),
+                            )
+                            .on_hover_text(
+                                "edit this leg in the JSON below; the kind picker cannot express it",
+                            );
+                            if ui.small_button("x").on_hover_text("remove this step").clicked() {
+                                remove = Some(index);
+                            }
+                            return;
+                        }
                         egui::ComboBox::from_id_salt(("task-step", index))
                             .selected_text(match current {
                                 TaskStepKind::Travel => "travel",
@@ -1661,6 +1690,9 @@ impl EditForm {
                                                 condition: condition.clone(),
                                             },
                                             TaskStep::Simple(_) => TaskStep::Simple(kind),
+                                            // task-169: extra-only legs are not
+                                            // editable through this combo yet.
+                                            TaskStep::Extra { .. } => TaskStep::Simple(kind),
                                         };
                                         changed = true;
                                     }
@@ -14939,6 +14971,33 @@ mod tests {
     }
 
     #[test]
+    fn an_extra_task_leg_keeps_its_duration() {
+        // `utilize` / `break` legs carry a duration the kind picker cannot
+        // express; the editor shows them read-only so a click can never drop it.
+        use openflex_model::Distribution;
+        use openflex_model::model::{ExtraTaskLegKind, TaskStep};
+        let step = TaskStep::Extra {
+            kind: ExtraTaskLegKind::Utilize,
+            duration: Some(Distribution::Constant { value: 5.0 }),
+            condition: None,
+        };
+        let json = serde_json::to_string(&step).expect("json");
+        assert!(json.contains("utilize"), "kind survives: {json}");
+        assert!(json.contains("5"), "duration survives: {json}");
+        let back: TaskStep = serde_json::from_str(&json).expect("round trip");
+        match back {
+            TaskStep::Extra { kind, duration, .. } => {
+                assert_eq!(kind, ExtraTaskLegKind::Utilize);
+                assert_eq!(
+                    duration.and_then(|distribution| distribution.mean()),
+                    Some(5.0)
+                );
+            }
+            other => panic!("extra leg lost its identity: {other:?}"),
+        }
+    }
+
+    #[test]
     fn task_steps_keep_their_details_when_the_kind_changes() {
         use openflex_model::Distribution;
         use openflex_model::model::{TaskStep, TaskStepKind};
@@ -14960,6 +15019,11 @@ mod tests {
                 condition,
             },
             TaskStep::Simple(_) => TaskStep::Simple(TaskStepKind::Load),
+            // The combo box shows extra-only legs read-only, so this arm is not
+            // reachable from the fixture above; it exists for exhaustiveness.
+            TaskStep::Extra { .. } => {
+                unreachable!("the combo does not rewrite an extra-only leg")
+            }
         };
         match switched {
             TaskStep::Detailed { kind, duration, .. } => {

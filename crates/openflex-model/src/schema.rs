@@ -482,7 +482,27 @@ fn definitions() -> Value {
     );
     defs.insert(
         "dispatcher_params".into(),
-        params_schema(json!({ "max_tasks": { "type": "integer", "minimum": 0, "default": 0 } })),
+        params_schema(json!({
+            "max_tasks": { "type": "integer", "minimum": 0, "default": 0 },
+            "task_sequence": {
+                "type": "array",
+                "items": {
+                    "oneOf": [
+                        { "enum": ["travel", "load", "unload"] },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "kind": { "enum": ["travel", "load", "unload", "utilize", "break"] },
+                                "duration": { "$ref": "#/$defs/distribution" },
+                                "condition": { "type": "string" }
+                            },
+                            "required": ["kind"],
+                            "additionalProperties": false
+                        }
+                    ]
+                }
+            }
+        })),
     );
     defs.insert(
         "resource_params".into(),

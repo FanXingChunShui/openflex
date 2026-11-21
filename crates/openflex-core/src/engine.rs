@@ -133,10 +133,10 @@ use std::path::{Path, PathBuf};
 
 use openflex_model::{
     Action, ArrivalStyle, CombinerMode, ConditionalPort, ConnectionKind, Distribution,
-    DowntimeWindow, EvalContext, Expr, FlowBlockKind, GlobalVariableKind, Grid, Model, NetworkEdge,
-    Object, ObjectKind, ObjectParams, PickListLookup, PortStrategy, ProcessFlow, PullParams,
-    QueueOrder, RackPickPolicy, RackType, SeparateMode, SimTrigger, TableCell, TaskStepKind,
-    TrackedKind, TrafficMode, TransferMode, Value,
+    DowntimeWindow, EvalContext, Expr, ExtraTaskLegKind, FlowBlockKind, GlobalVariableKind, Grid,
+    Model, NetworkEdge, Object, ObjectKind, ObjectParams, PickListLookup, PortStrategy,
+    ProcessFlow, PullParams, QueueOrder, RackPickPolicy, RackType, SeparateMode, SimTrigger,
+    TableCell, TaskStepKind, TrackedKind, TrafficMode, TransferMode, Value,
 };
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
@@ -543,6 +543,17 @@ struct StateDetail {
     utilize: f64,
 }
 
+/// task-169: one dispatched task leg (old append kinds plus utilize/break).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PendingLeg {
+    Travel,
+    Load,
+    Unload,
+    Utilize,
+    Break,
+}
+
 /// task-166: sub-state of a task executer, subdividing the busy state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -783,7 +794,7 @@ pub(crate) struct ObjectRt {
     person_target: Option<usize>,
     /// task-68: durations of the extra task-sequence legs still to run.
     #[serde(default)]
-    pending_steps: Vec<f64>,
+    pending_steps: Vec<(PendingLeg, f64)>,
     /// task-65: model time of the last preemption (a request is not preempted
     /// twice at the same instant, which would otherwise loop forever).
     #[serde(default = "negative_one")]
@@ -8508,7 +8519,7 @@ impl<'m> Simulation<'m> {
     /// task-68: durations of the task-sequence legs beyond the standard ones
     /// (two travel legs, one load, one unload). Skipped steps and steps with a
     /// false condition contribute nothing.
-    fn task_sequence_steps(&mut self, transporter: usize) -> Vec<f64> {
+    fn task_sequence_steps(&mut self, transporter: usize) -> Vec<(PendingLeg, f64)> {
         let Some(dispatcher) = self.objects[transporter].assigned_dispatcher else {
             return Vec::new();
         };
@@ -8543,39 +8554,62 @@ impl<'m> Simulation<'m> {
                     continue;
                 }
             }
-            let default = match step.kind() {
-                TaskStepKind::Travel => trip,
-                TaskStepKind::Load => load,
-                TaskStepKind::Unload => unload,
+            let (kind, baseline) = match step.extra_kind() {
+                Some(ExtraTaskLegKind::Utilize) => (PendingLeg::Utilize, None),
+                Some(ExtraTaskLegKind::Break) => (PendingLeg::Break, None),
+                None => match step.kind() {
+                    TaskStepKind::Travel => (PendingLeg::Travel, Some(&mut base_travels)),
+                    TaskStepKind::Load => (PendingLeg::Load, Some(&mut base_loads)),
+                    TaskStepKind::Unload => (PendingLeg::Unload, Some(&mut base_unloads)),
+                },
+            };
+            let default = match kind {
+                PendingLeg::Travel => trip,
+                PendingLeg::Load => load,
+                PendingLeg::Unload => unload,
+                // utilize/break have no default; validation requires duration.
+                PendingLeg::Utilize | PendingLeg::Break => 0.0,
             };
             let duration = match step.duration() {
                 Some(distribution) => self.sample(distribution).max(0.0),
                 None => default,
             };
-            let baseline = match step.kind() {
-                TaskStepKind::Travel => &mut base_travels,
-                TaskStepKind::Load => &mut base_loads,
-                TaskStepKind::Unload => &mut base_unloads,
-            };
-            if *baseline > 0 {
+            if let Some(baseline) = baseline
+                && *baseline > 0
+            {
                 *baseline -= 1;
                 continue;
             }
-            steps.push(duration);
+            steps.push((kind, duration));
         }
         steps
     }
 
     /// task-68: arm the next extra task-sequence leg (or finish the task).
     fn schedule_pending_step(&mut self, transporter: usize) -> Result<(), SimError> {
-        let Some(&duration) = self.objects[transporter].pending_steps.first() else {
+        let Some(&(kind, duration)) = self.objects[transporter].pending_steps.first() else {
             return self.finish_task(transporter);
         };
         let at = self.now + duration;
         if at < self.config.stop_time - EPS {
-            self.set_state(transporter, State::Busy);
-            // task-166: extra task-sequence legs are on-site task time.
-            self.set_executor_activity(transporter, ExecutorActivity::Utilize);
+            match kind {
+                PendingLeg::Break => {
+                    // A break is off-duty time: it counts as `idle` (not
+                    // `blocked`, since nothing is waiting on a resource) and the
+                    // task still holds capacity, so the dispatcher cannot assign
+                    // this executer a new task while the break runs.
+                    self.clear_executor_activity(transporter);
+                    self.set_state(transporter, State::Idle);
+                }
+                PendingLeg::Travel
+                | PendingLeg::Load
+                | PendingLeg::Unload
+                | PendingLeg::Utilize => {
+                    self.set_state(transporter, State::Busy);
+                    // task-166/169: extra legs and utilize are on-site task time.
+                    self.set_executor_activity(transporter, ExecutorActivity::Utilize);
+                }
+            }
             self.schedule(at, EventKind::TaskStepDone(transporter));
             Ok(())
         } else {
@@ -13827,5 +13861,215 @@ mod tests {
         let text = error.to_string();
         assert!(text.contains("bogus"), "{text}");
         assert!(text.contains("unknown variant"), "{text}");
+    }
+
+    fn append_leg_model(extra: &str) -> String {
+        format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "extra-legs",
+          "run": {{ "stop_time": 100.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S1", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "S2", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "P1", "kind": "processor", "pos": [10.0, 0.0], "params": {{
+                "process_time": {{ "distribution": "constant", "value": 1.0 }},
+                "process_operator": "D" }} }},
+            {{ "name": "P2", "kind": "processor", "pos": [10.0, 0.0], "params": {{
+                "process_time": {{ "distribution": "constant", "value": 1.0 }},
+                "process_operator": "D" }} }},
+            {{ "name": "K1", "kind": "sink", "params": {{}} }},
+            {{ "name": "K2", "kind": "sink", "params": {{}} }},
+            {{ "name": "D", "kind": "dispatcher", "pos": [0.0, 0.0], "params": {{
+                "task_sequence": ["travel", "travel", "load", "unload"{extra}] }} }},
+            {{ "name": "T", "kind": "transporter", "pos": [0.0, 0.0], "params": {{
+                "speed": 1.0, "load_time": {{ "distribution": "constant", "value": 2.0 }},
+                "unload_time": {{ "distribution": "constant", "value": 3.0 }},
+                "home": "D" }} }}
+          ],
+          "connections": [
+            {{ "from": "S1", "to": "P1" }}, {{ "from": "P1", "to": "K1" }},
+            {{ "from": "S2", "to": "P2" }}, {{ "from": "P2", "to": "K2" }},
+            {{ "from": "D", "to": "T" }}
+          ]
+        }}"#
+        )
+    }
+
+    fn task_step_done_times(trace: &TraceLog) -> Vec<f64> {
+        trace
+            .object("T")
+            .filter(|event| event.event == "task_step_done")
+            .map(|event| event.time)
+            .collect()
+    }
+
+    /// task-169: the old append legs (travel/load/unload) stay deterministic and
+    /// byte-identical across runs.
+    #[test]
+    fn legacy_append_legs_are_deterministic_and_unchanged() {
+        let model = Model::from_json(&append_leg_model(r#", "unload", "load""#)).expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (first, first_trace) = crate::simulate_traced(&model, &config, 0).expect("first run");
+        let (second, second_trace) =
+            crate::simulate_traced(&model, &config, 0).expect("second run");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
+        assert_eq!(
+            task_step_done_times(&first_trace),
+            task_step_done_times(&second_trace)
+        );
+        // Two queued tasks, each with the two extra append legs.
+        assert_eq!(task_step_done_times(&first_trace).len(), 4);
+    }
+
+    /// task-169: utilize consumes real wall time in the executer and keeps it
+    /// unavailable for the next queued task; it is charged to the utilize detail.
+    #[test]
+    fn utilize_extra_leg_occupies_the_executer() {
+        let model = Model::from_json(&append_leg_model(
+            r#", {"kind": "utilize", "duration": {"distribution": "constant", "value": 5.0}}"#,
+        ))
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (result, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let home = trace
+            .object("T")
+            .filter(|event| event.event == "transport_home")
+            .map(|event| event.time)
+            .next()
+            .expect("home");
+        let done = task_step_done_times(&trace);
+        assert!(done.len() >= 2, "{done:?}");
+        assert!((done[0] - home - 5.0).abs() < 1e-9, "{done:?} home={home}");
+        assert!(result.objects["T"].state_times.utilize >= 5.0 - 1e-9);
+        let pickups: Vec<f64> = trace
+            .object("T")
+            .filter(|event| event.event == "transport_pickup")
+            .map(|event| event.time)
+            .collect();
+        assert!(pickups.len() >= 2, "{pickups:?}");
+        assert!(
+            pickups[1] >= done[0] - 1e-9,
+            "the queued task may not start during utilize: {pickups:?} done={done:?}"
+        );
+    }
+
+    /// task-169: a break is idle time (not blocked), blocks new assignment while
+    /// it runs, and does not inflate the utilize detail.
+    #[test]
+    fn break_extra_leg_is_idle_and_occupies_the_executer() {
+        let model = Model::from_json(&append_leg_model(
+            r#", {"kind": "break", "duration": {"distribution": "constant", "value": 7.0}}"#,
+        ))
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (result, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let home = trace
+            .object("T")
+            .filter(|event| event.event == "transport_home")
+            .map(|event| event.time)
+            .next()
+            .expect("home");
+        let done = task_step_done_times(&trace);
+        assert!(done.len() >= 2, "{done:?}");
+        assert!((done[0] - home - 7.0).abs() < 1e-9, "{done:?} home={home}");
+        assert!(result.objects["T"].state_times.idle >= 7.0 - 1e-9);
+        assert!(result.objects["T"].state_times.blocked < 1e-9);
+        let pickups: Vec<f64> = trace
+            .object("T")
+            .filter(|event| event.event == "transport_pickup")
+            .map(|event| event.time)
+            .collect();
+        assert!(pickups.len() >= 2, "{pickups:?}");
+        assert!(pickups[1] >= done[0] - 1e-9, "{pickups:?} done={done:?}");
+    }
+
+    /// task-169: utilization/break validation rejects missing or non-positive
+    /// durations (unknown kinds are rejected by the enum/serde layer).
+    #[test]
+    fn invalid_extra_legs_are_rejected() {
+        let missing = Model::from_json(&append_leg_model(r#", {"kind": "utilize"}"#));
+        let error = missing.expect_err("missing duration");
+        assert!(
+            error.to_string().contains("task_sequence[4].duration"),
+            "{error}"
+        );
+
+        let zero = Model::from_json(&append_leg_model(
+            r#", {"kind": "break", "duration": {"distribution": "constant", "value": 0.0}}"#,
+        ));
+        let error = zero.expect_err("non-positive duration");
+        assert!(error.to_string().contains("must be positive"), "{error}");
+
+        let unknown = Model::from_json(&append_leg_model(
+            r#", {"kind": "teleport", "duration": {"distribution": "constant", "value": 1.0}}"#,
+        ));
+        assert!(unknown.is_err(), "unknown kind must be rejected");
+    }
+
+    /// task-169: models without `task_sequence` serialize and run exactly as
+    /// before (no new fields, deterministic same-seed repeat).
+    #[test]
+    fn models_without_task_sequence_are_unchanged() {
+        let plain = Model::from_json(
+            r#"{
+              "format": "openflex-model", "version": 1, "name": "plain",
+              "run": { "stop_time": 5.0, "seed": 1, "replications": 1 },
+              "objects": [
+                { "name": "S", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 1.0 },
+                    "max_arrivals": 2 } },
+                { "name": "P", "kind": "processor", "params": {
+                    "process_time": { "distribution": "constant", "value": 1.0 } } },
+                { "name": "K", "kind": "sink", "params": {} }
+              ],
+              "connections": [{ "from": "S", "to": "P" }, { "from": "P", "to": "K" }]
+            }"#,
+        )
+        .expect("plain");
+        let with_empty = Model::from_json(
+            r#"{
+              "format": "openflex-model", "version": 1, "name": "plain",
+              "run": { "stop_time": 5.0, "seed": 1, "replications": 1 },
+              "objects": [
+                { "name": "S", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 1.0 },
+                    "max_arrivals": 2 } },
+                { "name": "P", "kind": "processor", "params": {
+                    "process_time": { "distribution": "constant", "value": 1.0 } } },
+                { "name": "K", "kind": "sink", "params": {} }
+              ],
+              "connections": [{ "from": "S", "to": "P" }, { "from": "P", "to": "K" }]
+            }"#,
+        )
+        .expect("empty");
+        let a = crate::run_model(&plain).expect("run");
+        let b = crate::run_model(&with_empty).expect("run");
+        assert_eq!(
+            serde_json::to_string(&a).expect("json"),
+            serde_json::to_string(&b).expect("json")
+        );
+        assert_eq!(
+            serde_json::to_string(&a).expect("json"),
+            serde_json::to_string(&crate::run_model(&plain).expect("repeat")).expect("json")
+        );
     }
 }

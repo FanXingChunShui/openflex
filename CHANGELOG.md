@@ -4,6 +4,18 @@
 
 ### 模型与引擎
 
+- **任务腿 `utilize` / `break`**：`TaskStep` 新增 `Extra { kind, duration, condition }`，
+  在既有 append 机制里作为额外腿执行（**不引入 `task_sequence_mode`**，旧 travel/load/unload 的
+  数值与顺序逐位不变）：`utilize` 计入执行器 `utilize` 细分并保持 Busy、不可派新活；
+  `break` 计入 `idle` 但任务槽仍占用（计划内休整既不是可派活的空闲，也不是资源阻塞，
+  用 blocked 会污染等待统计）。GUI 的组合框对这类腿**只读展示**（附带 `x` 可删除），
+  避免点一下就把 duration 静默丢掉；JSON 里可正常编辑。
+  实测同一模型三种情形：append `utilize 3.0 / idle 0.0 / completed 3`、
+  `utilize ×3` 得 `utilize 12.0 / completed 2`、`break ×2` 得 `idle 14.0 / completed 2`——
+  两种腿都真实占用了执行器的时间。
+  已知缺口：**`explicit` 整链模式未实现**（需要链状态机重写 + travel 目标语义 + 与
+  `OperatorReleased` 的同步），设计草案已写入 `docs/FEATURE_PARITY_75.md` 供下一轮照做。
+
 - **Tracked Variable 类型体系**：`tracked_variables` 增加 `kind: level | state | staytime | kinetic`
   （**缺省 `level` 且序列化时不写该键**，旧模型 JSON 与行为逐位不变）：
   - `level` —— 按间隔采样瞬时值（原行为）；

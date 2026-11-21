@@ -2071,7 +2071,12 @@ impl Default for ElevatorParams {
 /// counts (the first two `travel`s, the first `load` and the first `unload`
 /// are consumed by the baseline) and every entry beyond its baseline is
 /// appended as an **extra** leg, in the listed order, after the standard task
-/// has completed.
+/// has completed. The extra-only `utilize` / `break` legs require an explicit
+/// positive duration and are never consumed by the standard chain.
+///
+/// Not implemented: a fully explicit (`mode: "explicit"`) chain, cooperative
+/// tasks, procedural `createemptytasksequence` construction and a task-sequence
+/// object model. Those are tracked as gaps rather than approximated.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum TaskStep {
@@ -2087,6 +2092,16 @@ pub enum TaskStep {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         condition: Option<Expr>,
     },
+    /// task-169: an extra-only `utilize`/`break` leg; duration is required by
+    /// validation (kept optional here so the validator can report it instead
+    /// of failing in serde).
+    Extra {
+        kind: ExtraTaskLegKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration: Option<Distribution>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        condition: Option<Expr>,
+    },
 }
 
 impl TaskStep {
@@ -2095,6 +2110,15 @@ impl TaskStep {
         match self {
             TaskStep::Simple(kind) => *kind,
             TaskStep::Detailed { kind, .. } => *kind,
+            TaskStep::Extra { .. } => TaskStepKind::Travel,
+        }
+    }
+
+    /// task-169: `Some` for the extra-only utilize/break legs.
+    pub fn extra_kind(&self) -> Option<ExtraTaskLegKind> {
+        match self {
+            TaskStep::Extra { kind, .. } => Some(*kind),
+            _ => None,
         }
     }
 
@@ -2102,7 +2126,9 @@ impl TaskStep {
     pub fn duration(&self) -> Option<&Distribution> {
         match self {
             TaskStep::Simple(_) => None,
-            TaskStep::Detailed { duration, .. } => duration.as_ref(),
+            TaskStep::Detailed { duration, .. } | TaskStep::Extra { duration, .. } => {
+                duration.as_ref()
+            }
         }
     }
 
@@ -2110,7 +2136,9 @@ impl TaskStep {
     pub fn condition(&self) -> Option<&Expr> {
         match self {
             TaskStep::Simple(_) => None,
-            TaskStep::Detailed { condition, .. } => condition.as_ref(),
+            TaskStep::Detailed { condition, .. } | TaskStep::Extra { condition, .. } => {
+                condition.as_ref()
+            }
         }
     }
 }
@@ -2126,6 +2154,16 @@ pub enum TaskStepKind {
     Load,
     /// The task executer's unload time.
     Unload,
+}
+
+/// task-169: extra-only task legs that are not part of the standard three kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtraTaskLegKind {
+    /// On-site extra time; requires a positive duration.
+    Utilize,
+    /// Off-duty extra time; requires a positive duration.
+    Break,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

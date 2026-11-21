@@ -1338,10 +1338,35 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
             }
         }
         crate::model::ObjectParams::FluidSink(_) => {}
+        crate::model::ObjectParams::Dispatcher(params) => {
+            for (position, step) in params.task_sequence.iter().enumerate() {
+                let field = format!("task_sequence[{position}].duration");
+                if let Some(_extra) = step.extra_kind() {
+                    let Some(duration) = step.duration() else {
+                        issues.push(ValidationIssue::new(
+                            location(&field),
+                            "utilize/break legs require an explicit duration",
+                        ));
+                        continue;
+                    };
+                    if let Err(error) = duration.validate() {
+                        issues.push(ValidationIssue::new(location(&field), error));
+                    } else if duration.mean().is_none_or(|mean| mean <= 0.0) {
+                        issues.push(ValidationIssue::new(
+                            location(&field),
+                            "utilize/break duration must be positive",
+                        ));
+                    }
+                } else if let Some(duration) = step.duration()
+                    && let Err(error) = duration.validate()
+                {
+                    issues.push(ValidationIssue::new(location(&field), error));
+                }
+            }
+        }
         crate::model::ObjectParams::Sink(_)
         | crate::model::ObjectParams::Merge(_)
         | crate::model::ObjectParams::Split(_)
-        | crate::model::ObjectParams::Dispatcher(_)
         | crate::model::ObjectParams::BasicFr(_) => {}
     }
 
