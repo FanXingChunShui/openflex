@@ -5,7 +5,7 @@
 > 以及本仓库 `crates/`、`docs/` 的当前实现。**未接触 FlexSim 源代码、二进制、安装包或反编译产物。**
 > 帮助文档页面本身是厂商公开发布的用户手册，属于净室可用的公开材料。
 
-> **两份文档的分工**（避免读者以为口径矛盾）：本文件 = 面向**帮助文档全量功能面**，
+> **两份文档的分工**（避免读者以为口径矛盾）：本文件 = 面向**帮助文档全量功能面**（361 页 = 主帮助 326 + Conveyor 模块 35），
 > 把 326 页里出现的每一个功能点（含 GUI 编辑器、3D 媒体、C++ 编译期、许可证等生态环境）
 > 都记成一行，所以 ⛔ 自然更多；`docs/COMPATIBILITY.md` = 面向**建模语义**的覆盖
 > （对象库与核心机制、路由、统计、运行），不把 GUI/脚本生态计入，所以它的 ⛔ 很少。
@@ -397,6 +397,30 @@ waiting_for_release / release_seen / leg_started_at`。关键同步规则：
 **测试计划**：自定义 target 几何正确 / `OperatorLoaded` 恰一次且 release 前不离开 /
 腿顺序与表一致 / traffic 阻塞不计 travel / break=idle、utilize=utilize /
 非法 target 被 validate 拒 / 同 seed 两跑逐位相同 / append 旧数值不变。
+
+## 17b. Conveyor 模块（35 页，此前未计入清点）
+
+**口径修正**：主帮助目录是 326 页，但 FlexSim 把传送带深水区放在**模块自带帮助**里：
+`modules/Conveyor/help/` 另有 **35 页**。真实语料是 **361 页**。本节的 35 页此前完全没被清点，
+所以「Conveyor 完整行为」这一项的真实缺口比 Top-10 里写的大。
+
+| Conveyor 模块功能 | OpenFlex 现状 | 状态 | 缺口说明 |
+|---|---|---|---|
+| Conveyor（直/弯）、Join Conveyor | `conveyor`（`curve`/`segments`/`join_inputs`） | ✅ | 直段与曲段都有，join 用 `join_inputs` |
+| Merge Controller（对象） | `conveyor.merge_mode` + `merge_weight`（**参数而非对象**） | 🟡 | 三种释放策略已实现（round_robin/weighted/by_item_type）；但没有独立的 controller 对象，也没有「一个 controller 管多组合流」 |
+| Photo Eye（对象四状态） | `conveyor.photo_eyes`（位置 + `on_photo_eye`） | 🟡 | 只有「经过即触发」；缺 Blocked/Cleared/Blocking/Clearing 四状态与两个跃迁触发器（task-179 进行中） |
+| Decision Point | 无 | ⛔ | 无独立决策点对象 |
+| Transfer（Entry/Exit，三种） | 无 | ⛔ | 连接时自动产生的传送点类型未建模 |
+| Motor（开/关控制、同步 dog gap） | 可用 `shifts`/`timetable` 间接表达停线 | 🟡 | 没有 Motor 对象，也没有 power-and-free 的 dog gap 同步 |
+| Gapping（间隙成型） | `item_spacing` + `batch_size` | 🟡 | 静态最小间距有；缺按类型/按决策点的动态间隙与 gap 控制策略 |
+| Sorting（分拣） | 可用 conveyor + 路由/`split` 表达 | 🟡 | 没有 sorter 对象与分拣策略表 |
+| Power and Free | 无 | ⛔ | 完全未建模 |
+| ConveyorSystemTool（类型作为全局设置） | 每对象参数 | ⛔（有意差异） | FlexSim 用「类型库 + 工具」批量套用；OpenFlex 用每对象参数 + JSON 复用，**不计划实现类型工具** |
+| Behaviors/PickList（AreaRestriction / Condition / ConveyorSpeed / Movement / SendItem / StopResume） | 分散在参数的 trigger/条件里 | 🟡 | 语义大多能用既有机制表达，但不是可点选的 behaviour 列表 |
+
+**结论**：conveyor 的**基础行为**（速度/间距/容量/曲线/迭代积分/精确停位）与**两片深水**（slug 组、
+合流释放策略）已一致；剩下的是**独立对象化的那部分**（Decision Point / Transfer / Motor / sorter /
+Power-and-Free）与类型工具。后者我倾向把「类型工具」记为有意差异，其余按需求优先级逐项补。
 
 ## 18. 剩余缺口 Top 10（v1.33.0 后重排）
 
