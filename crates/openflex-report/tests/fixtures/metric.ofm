@@ -1,0 +1,23 @@
+{
+  "format": "openflex-model", "version": 1, "name": "metric",
+  "time_unit": "seconds",
+  "run": { "stop_time": 200.0, "warmup": 0.0, "seed": 3, "replications": 2 },
+  "global_variables": { "Batch": { "kind": "number", "value": 10 } },
+  "performance_measures": [
+    { "name": "DoubleBatch", "expression": "$Batch * 2" },
+    { "name": "done_per_time", "expression": "completed / time" },
+    { "name": "完成量", "expression": "completed" }
+  ],
+  "objects": [
+    { "name": "Source1", "kind": "source", "params": { "interarrival": { "distribution": "exponential", "mean": 5.0 } } },
+    { "name": "Queue1", "kind": "queue", "params": {} },
+    { "name": "Sink1", "kind": "sink", "params": {} }
+  ],
+  "connections": [ { "from": "Source1", "to": "Queue1" }, { "from": "Queue1", "to": "Sink1" } ],
+  "experiments": [
+    { "name": "perf", "replications": 2, "scenarios": [
+      { "name": "baseline", "overrides": [] },
+      { "name": "wide", "overrides": [ { "object": "Source1", "param": "interarrival", "value": { "distribution": "exponential", "mean": 3.0 } } ] }
+    ] }
+  ]
+}

@@ -42,13 +42,14 @@ pub use chart::{
 };
 pub use compare::{Comparison, MetricComparison, ObjectComparison, ReportRef, compare_reports};
 pub use experiment::{
-    ExperimentReport, ScenarioReport, sanitize, write_experiment_reports,
-    write_experiment_reports_with_sections,
+    ExperimentOptions, ExperimentReport, ScenarioErrorKind, ScenarioOutcome, ScenarioReport,
+    experiment_reports, run_declared_experiments, run_declared_experiments_with_options, sanitize,
+    write_experiment_reports, write_experiment_reports_with_sections,
 };
 pub use item_trace::{
     ItemTrace, ItemTraceStep, PathGroup, compress_path, item_event_count, item_of, item_trace,
     item_traces, path_groups, read_trace_file, render_item_list, render_item_trace,
-    render_path_groups, render_trace_summary, traced_items, visit_sequence,
+    render_path_groups, render_trace_summary, traced_items, visit_sequence, write_trace_jsonl,
 };
 pub use sim::{
     REPLICATIONS_CSV, REPORT_CSV, REPORT_JSON, REPORT_MARKDOWN, to_csv, to_csv_with_flow,

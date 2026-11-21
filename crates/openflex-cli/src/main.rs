@@ -45,7 +45,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use openflex_core::{
     SimConfig, SimReport, derive_seed, simulate, simulate_traced, simulate_with_checkpoint,
 };
-use openflex_model::{Model, ObjectKind, Scenario, TimeUnit};
+use openflex_model::{Model, ObjectKind, TimeUnit};
 use openflex_report::{self as report, i18n};
 use report::i18n::Language;
 
@@ -1938,62 +1938,6 @@ fn write_trace(path: &Path, trace: &openflex_core::TraceLog) -> Result<(), Failu
     Ok(())
 }
 
-/// Run every replication of one scenario with tracing enabled.
-///
-/// The files land in `directory`, which is the same directory
-/// `write_experiment_reports` uses for the scenario's own report. One
-/// replication writes `trace.jsonl`; several write `trace.rep0.jsonl`, …
-fn execute_scenario_traced(
-    model: &Model,
-    directory: &Path,
-    quiet: bool,
-) -> Result<SimReport, Failure> {
-    let configs = run_configs(model, &[]);
-    let several = configs.len() > 1;
-    let mut results = Vec::with_capacity(configs.len());
-    for (index, config) in &configs {
-        let (result, log) = simulate_traced(model, config, *index)?;
-        let file = if several {
-            directory.join(format!("trace.rep{index}.jsonl"))
-        } else {
-            directory.join("trace.jsonl")
-        };
-        write_trace(&file, &log)?;
-        note(
-            quiet,
-            &format!(
-                "{} {} ({} events{})",
-                i18n::t("wrote"),
-                file.display(),
-                log.len(),
-                if log.truncated {
-                    ", truncated at the event limit"
-                } else {
-                    ""
-                }
-            ),
-        );
-        results.push(result);
-    }
-    Ok(SimReport::from_replications(model, results))
-}
-
-/// task-164: run one experiment/scenario lifecycle hook and print its logs.
-fn fire_experiment_hook(
-    model: &Model,
-    config: &SimConfig,
-    actions: Vec<openflex_model::Action>,
-    location: &str,
-    quiet: bool,
-) -> Result<(), Failure> {
-    let trace = openflex_core::engine::fire_model_hook_actions(model, config, actions, location)
-        .map_err(Failure::runtime)?;
-    for message in openflex_core::engine::hook_logs(&trace) {
-        note(quiet, &message);
-    }
-    Ok(())
-}
-
 fn run_experiments(
     model: &Model,
     name: Option<&str>,
@@ -2003,120 +1947,74 @@ fn run_experiments(
     sections: Sections,
     quiet: bool,
 ) -> Result<(), Failure> {
-    let experiments: Vec<_> = model
+    // The execution itself lives in `openflex-report`, so the GUI can run the
+    // same declared experiments. The CLI keeps only filtering, rendering,
+    // archiving and exit-code mapping here.
+    let selected: Vec<String> = model
         .experiments
         .iter()
         .filter(|experiment| name.is_none_or(|wanted| experiment.name == wanted))
+        .map(|experiment| experiment.name.clone())
         .collect();
-    if experiments.is_empty() {
+    if selected.is_empty() {
         return Err(Failure::usage(anyhow!(
             "the model defines no experiments; add an `experiments` array or run `openflex run`"
         )));
     }
-    for experiment in experiments {
-        let experiment_config = SimConfig::from_run_settings(&model.run, model.run.seed);
-        fire_experiment_hook(
-            model,
-            &experiment_config,
-            model.model_triggers.start_of_experiment.clone(),
-            "model_triggers.start_of_experiment",
-            quiet,
-        )?;
-        let scenarios = if experiment.scenarios.is_empty() {
-            vec![Scenario {
-                name: "baseline".into(),
-                ..Default::default()
-            }]
-        } else {
-            experiment.scenarios.clone()
+
+    let trace_root = if trace {
+        report_dir.map(Path::to_path_buf)
+    } else {
+        None
+    };
+
+    // One experiment per call keeps the hook logs and the tables interleaved in
+    // declaration order, exactly as before the extraction.
+    for experiment_name in selected {
+        let options = report::ExperimentOptions {
+            parallel: None,
+            experiment: Some(experiment_name),
+            trace_root: trace_root.clone(),
         };
-        let mut scenario_reports = Vec::with_capacity(scenarios.len());
-        for scenario in scenarios {
-            let mut scenario_model = model.clone();
-            for over in &scenario.overrides {
-                scenario_model = scenario_model
-                    .with_override(&over.object, &over.param, over.value.clone())
-                    .map_err(|error| {
-                        Failure::usage(anyhow::Error::new(error).context(format!(
-                            "experiment {} scenario {}",
-                            experiment.name, scenario.name
-                        )))
-                    })?;
+        let outcomes = report::run_declared_experiments_with_options(model, &options);
+        for outcome in &outcomes {
+            for log in &outcome.logs {
+                note(quiet, log);
             }
-            scenario_model.run.replications = experiment.replications;
-            if let Some(stop_time) = scenario.stop_time {
-                scenario_model.run.stop_time = stop_time;
+            for file in &outcome.trace_files {
+                note(quiet, &format!("{} {}", i18n::t("wrote"), file.display()));
             }
-            if let Some(warmup) = scenario.warmup {
-                scenario_model.run.warmup = warmup;
-            }
-            // Traces go next to the scenario's archived report, mirroring the
-            // layout `write_experiment_reports` uses below.
-            let trace_dir = if trace {
-                report_dir.map(|root| {
-                    root.join(report::sanitize(&experiment.name))
-                        .join(report::sanitize(&scenario.name))
-                })
-            } else {
-                None
-            };
-            let scenario_config =
-                SimConfig::from_run_settings(&scenario_model.run, scenario_model.run.seed);
-            fire_experiment_hook(
-                &scenario_model,
-                &scenario_config,
-                scenario_model.model_triggers.start_of_scenario.clone(),
-                "model_triggers.start_of_scenario",
-                quiet,
-            )?;
-            let report = match trace_dir.as_deref() {
-                Some(directory) => execute_scenario_traced(&scenario_model, directory, quiet)?,
-                None => execute(&scenario_model, &[], None, false)?,
-            };
-            fire_experiment_hook(
-                &scenario_model,
-                &scenario_config,
-                scenario_model.model_triggers.end_of_scenario.clone(),
-                "model_triggers.end_of_scenario",
-                quiet,
-            )?;
-            scenario_reports.push(report::ScenarioReport {
-                name: scenario.name.clone(),
-                overrides: scenario.overrides.clone(),
-                report,
+        }
+        // A failed scenario aborts the command with its own severity; the CLI
+        // never renders a partial experiment report.
+        if let Some(outcome) = outcomes.iter().find(|outcome| outcome.error.is_some()) {
+            let message = outcome.error.clone().unwrap_or_default();
+            return Err(match outcome.error_kind {
+                Some(report::ScenarioErrorKind::Usage) => Failure::usage(anyhow!(message)),
+                _ => Failure::runtime(anyhow!(message)),
             });
         }
-        fire_experiment_hook(
-            model,
-            &experiment_config,
-            model.model_triggers.end_of_experiment.clone(),
-            "model_triggers.end_of_experiment",
-            quiet,
-        )?;
-        let experiment_report = report::ExperimentReport {
-            experiment: experiment.name.clone(),
-            model: model.name.clone(),
-            time_unit: model.time_unit,
-            scenarios: scenario_reports,
-        };
-        let text = report::render_experiment_with_sections(
-            &experiment_report,
-            format.into(),
-            sections.flow,
-            sections.fluid,
-        )?;
-        emit(&text, None, quiet)?;
-        if let Some(root) = report_dir {
-            let files = report::write_experiment_reports_with_sections(
+
+        for experiment_report in report::experiment_reports(&outcomes, model) {
+            let text = report::render_experiment_with_sections(
                 &experiment_report,
-                root,
+                format.into(),
                 sections.flow,
                 sections.fluid,
             )?;
-            note(
-                quiet,
-                &format!("{} {}", i18n::t("wrote"), join_paths(&files)),
-            );
+            emit(&text, None, quiet)?;
+            if let Some(root) = report_dir {
+                let files = report::write_experiment_reports_with_sections(
+                    &experiment_report,
+                    root,
+                    sections.flow,
+                    sections.fluid,
+                )?;
+                note(
+                    quiet,
+                    &format!("{} {}", i18n::t("wrote"), join_paths(&files)),
+                );
+            }
         }
     }
     Ok(())

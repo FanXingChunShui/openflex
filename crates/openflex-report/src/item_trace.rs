@@ -15,6 +15,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::io::Write as _;
 use std::path::Path;
 
 use openflex_core::{TraceEvent, TraceLog};
@@ -449,6 +450,58 @@ pub fn item_event_count(log: &TraceLog) -> usize {
 // ---------------------------------------------------------------------------
 // Reading a trace file
 // ---------------------------------------------------------------------------
+
+/// One line of a JSONL trace file.
+///
+/// The shape is a contract: five keys on every line, `data` included even when
+/// empty, so a consumer can read the file as a table without special-casing
+/// the first line.
+#[derive(serde::Serialize)]
+struct TraceLine<'a> {
+    time: f64,
+    seq: u64,
+    event: &'a str,
+    object: &'a str,
+    data: &'a BTreeMap<String, f64>,
+}
+
+/// Write a [`TraceLog`] as JSON Lines, one event per line.
+pub fn write_trace_jsonl(path: &Path, trace: &TraceLog) -> Result<(), crate::ReportError> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|source| crate::ReportError::Io {
+            path: parent.display().to_string(),
+            source,
+        })?;
+    }
+    let file = std::fs::File::create(path).map_err(|source| crate::ReportError::Io {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let mut writer = std::io::BufWriter::new(file);
+    for event in &trace.events {
+        let line = TraceLine {
+            time: event.time,
+            seq: event.seq,
+            event: &event.event,
+            object: &event.object,
+            data: &event.data,
+        };
+        serde_json::to_writer(&mut writer, &line).map_err(crate::ReportError::Json)?;
+        writer
+            .write_all(b"\n")
+            .map_err(|source| crate::ReportError::Io {
+                path: path.display().to_string(),
+                source,
+            })?;
+    }
+    writer.flush().map_err(|source| crate::ReportError::Io {
+        path: path.display().to_string(),
+        source,
+    })?;
+    Ok(())
+}
 
 /// Read a JSONL trace written by `openflex run --trace`.
 ///

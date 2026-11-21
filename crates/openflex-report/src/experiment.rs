@@ -8,8 +8,11 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use openflex_core::SimReport;
-use openflex_model::{ObjectKind, Override, TimeUnit};
+use openflex_core::engine::{fire_model_hook_actions, hook_logs};
+use openflex_core::{
+    SimConfig, SimError, SimReport, run_model, run_model_parallel, simulate_traced,
+};
+use openflex_model::{Action, Experiment, Model, ObjectKind, Override, Scenario, TimeUnit};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -560,6 +563,413 @@ pub fn sanitize(name: &str) -> String {
         "unnamed".to_string()
     } else {
         cleaned
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Running the experiments declared in a model
+// ---------------------------------------------------------------------------
+//
+// The CLI used to own this loop. Moving it here (next to the renderers that
+// consume its output) lets any host — the desktop GUI, a notebook, a CI job —
+// run the scenarios a model declares and get the full reports back, without
+// re-implementing override application, replication counts or lifecycle hooks.
+
+/// How a scenario failed, so a caller can map it to its own severity (the CLI
+/// turns `Usage` into exit code 2 and `Runtime` into exit code 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScenarioErrorKind {
+    /// The model or the scenario definition is wrong: a bad override, a bad
+    /// stop time, an invalid parameter.
+    Usage,
+    /// The simulation ran and failed.
+    Runtime,
+}
+
+/// One scenario of one declared experiment, with the report it produced.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScenarioOutcome {
+    /// Name of the experiment that declares this scenario.
+    pub experiment: String,
+    /// Scenario name (`baseline` when the experiment declares none).
+    pub scenario: String,
+    /// Parameter replacements that were applied before the run.
+    #[serde(default)]
+    pub overrides: Vec<Override>,
+    /// The complete report: objects, aggregates, measures, tracked series, …
+    /// `None` when the scenario failed.
+    pub report: Option<SimReport>,
+    /// Failure text, using the same wording the CLI reports.
+    pub error: Option<String>,
+    /// Classification of `error`; `None` when the scenario succeeded.
+    pub error_kind: Option<ScenarioErrorKind>,
+    /// Trace files written for this scenario (empty unless tracing).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trace_files: Vec<PathBuf>,
+    /// `log` lines emitted by the model lifecycle hooks around this scenario.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub logs: Vec<String>,
+}
+
+impl ScenarioOutcome {
+    /// Whether the scenario produced a report.
+    pub fn succeeded(&self) -> bool {
+        self.report.is_some()
+    }
+
+    /// The report, if the scenario succeeded.
+    pub fn report(&self) -> Option<&SimReport> {
+        self.report.as_ref()
+    }
+}
+
+/// Options for [`run_declared_experiments_with_options`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ExperimentOptions {
+    /// Workers for the replications of each scenario; `None` runs serially.
+    ///
+    /// `Some(0)` means "use the available parallelism", matching the engine.
+    pub parallel: Option<usize>,
+    /// Only run the experiment with this name.
+    pub experiment: Option<String>,
+    /// Write one JSONL trace per replication under
+    /// `<root>/<experiment>/<scenario>/`.
+    pub trace_root: Option<PathBuf>,
+}
+
+/// Run every experiment declared by `model`, one outcome per scenario, in
+/// declaration order (experiments as declared, then their scenarios).
+///
+/// `parallel` spreads the replications of each scenario over the available
+/// cores; the reports are bit-for-bit identical to a serial run.
+pub fn run_declared_experiments(model: &Model, parallel: bool) -> Vec<ScenarioOutcome> {
+    let options = ExperimentOptions {
+        parallel: if parallel {
+            // 0 = "available parallelism", the engine's own convention.
+            Some(0)
+        } else {
+            None
+        },
+        ..ExperimentOptions::default()
+    };
+    run_declared_experiments_with_options(model, &options)
+}
+
+/// [`run_declared_experiments`] with explicit options.
+///
+/// A scenario that fails does not stop the experiment: its outcome carries the
+/// error and the remaining scenarios still run, which is what a GUI needs to
+/// show "3 of 4 scenarios ran".
+pub fn run_declared_experiments_with_options(
+    model: &Model,
+    options: &ExperimentOptions,
+) -> Vec<ScenarioOutcome> {
+    let selected: Vec<&Experiment> = model
+        .experiments
+        .iter()
+        .filter(|experiment| {
+            options
+                .experiment
+                .as_deref()
+                .is_none_or(|wanted| experiment.name == wanted)
+        })
+        .collect();
+
+    let mut outcomes = Vec::new();
+    for experiment in selected {
+        let scenarios = scenarios_of(experiment);
+        let experiment_config = SimConfig::from_run_settings(&model.run, model.run.seed);
+        let mut experiment_logs = Vec::new();
+        if let Err(error) = fire_hook(
+            model,
+            &experiment_config,
+            model.model_triggers.start_of_experiment.clone(),
+            "model_triggers.start_of_experiment",
+            &mut experiment_logs,
+        ) {
+            // The experiment cannot start; every scenario is reported as
+            // failed with the same reason instead of silently disappearing.
+            for scenario in &scenarios {
+                outcomes.push(failed_outcome(
+                    experiment,
+                    scenario,
+                    ScenarioErrorKind::Runtime,
+                    error.to_string(),
+                    Vec::new(),
+                    experiment_logs.clone(),
+                ));
+            }
+            continue;
+        }
+
+        for scenario in &scenarios {
+            let scenario_model = match prepare_scenario(model, experiment, scenario) {
+                Ok(model) => model,
+                Err(error) => {
+                    outcomes.push(failed_outcome(
+                        experiment,
+                        scenario,
+                        ScenarioErrorKind::Usage,
+                        format!(
+                            "experiment {} scenario {}: {error}",
+                            experiment.name, scenario.name
+                        ),
+                        Vec::new(),
+                        experiment_logs.clone(),
+                    ));
+                    continue;
+                }
+            };
+
+            let scenario_config =
+                SimConfig::from_run_settings(&scenario_model.run, scenario_model.run.seed);
+            let mut logs = experiment_logs.clone();
+            if let Err(error) = fire_hook(
+                &scenario_model,
+                &scenario_config,
+                scenario_model.model_triggers.start_of_scenario.clone(),
+                "model_triggers.start_of_scenario",
+                &mut logs,
+            ) {
+                outcomes.push(failed_outcome(
+                    experiment,
+                    scenario,
+                    ScenarioErrorKind::Runtime,
+                    error.to_string(),
+                    Vec::new(),
+                    logs,
+                ));
+                continue;
+            }
+
+            let trace_dir = options.trace_root.as_ref().map(|root| {
+                root.join(sanitize(&experiment.name))
+                    .join(sanitize(&scenario.name))
+            });
+            let (report, trace_files) =
+                match run_scenario(&scenario_model, options, trace_dir.as_deref()) {
+                    Ok(result) => result,
+                    Err((kind, message)) => {
+                        outcomes.push(failed_outcome(
+                            experiment,
+                            scenario,
+                            kind,
+                            message,
+                            Vec::new(),
+                            logs,
+                        ));
+                        continue;
+                    }
+                };
+
+            if let Err(error) = fire_hook(
+                &scenario_model,
+                &scenario_config,
+                scenario_model.model_triggers.end_of_scenario.clone(),
+                "model_triggers.end_of_scenario",
+                &mut logs,
+            ) {
+                // The run itself succeeded; keep the report and surface the
+                // end-of-scenario hook failure as the scenario's error.
+                outcomes.push(ScenarioOutcome {
+                    experiment: experiment.name.clone(),
+                    scenario: scenario.name.clone(),
+                    overrides: scenario.overrides.clone(),
+                    report: Some(report),
+                    error: Some(error.to_string()),
+                    error_kind: Some(ScenarioErrorKind::Runtime),
+                    trace_files,
+                    logs,
+                });
+                continue;
+            }
+
+            outcomes.push(ScenarioOutcome {
+                experiment: experiment.name.clone(),
+                scenario: scenario.name.clone(),
+                overrides: scenario.overrides.clone(),
+                report: Some(report),
+                error: None,
+                error_kind: None,
+                trace_files,
+                logs,
+            });
+        }
+
+        let mut end_logs = experiment_logs;
+        if fire_hook(
+            model,
+            &experiment_config,
+            model.model_triggers.end_of_experiment.clone(),
+            "model_triggers.end_of_experiment",
+            &mut end_logs,
+        )
+        .is_ok()
+        {
+            // Attach the end-of-experiment log lines to the experiment's last
+            // outcome so a host does not lose them.
+            if let Some(last) = outcomes
+                .last_mut()
+                .filter(|outcome| outcome.experiment == experiment.name)
+            {
+                last.logs = end_logs;
+            }
+        }
+    }
+    outcomes
+}
+
+/// Group outcomes into the per-experiment reports the renderers consume.
+///
+/// Only successful scenarios appear; a host that wants to show failures reads
+/// [`ScenarioOutcome::error`] from the outcomes themselves.
+pub fn experiment_reports(outcomes: &[ScenarioOutcome], model: &Model) -> Vec<ExperimentReport> {
+    let mut reports: Vec<ExperimentReport> = Vec::new();
+    for outcome in outcomes {
+        let Some(report) = &outcome.report else {
+            continue;
+        };
+        let index = match reports
+            .iter()
+            .position(|existing| existing.experiment == outcome.experiment)
+        {
+            Some(index) => index,
+            None => {
+                reports.push(ExperimentReport {
+                    experiment: outcome.experiment.clone(),
+                    model: model.name.clone(),
+                    time_unit: model.time_unit,
+                    scenarios: Vec::new(),
+                });
+                reports.len() - 1
+            }
+        };
+        reports[index].scenarios.push(ScenarioReport {
+            name: outcome.scenario.clone(),
+            overrides: outcome.overrides.clone(),
+            report: report.clone(),
+        });
+    }
+    reports
+}
+
+/// Scenarios of an experiment, defaulting to a single `baseline`.
+fn scenarios_of(experiment: &Experiment) -> Vec<Scenario> {
+    if experiment.scenarios.is_empty() {
+        vec![Scenario {
+            name: "baseline".into(),
+            ..Scenario::default()
+        }]
+    } else {
+        experiment.scenarios.clone()
+    }
+}
+
+/// Apply the scenario's overrides and run settings to a copy of the model.
+fn prepare_scenario(
+    model: &Model,
+    experiment: &Experiment,
+    scenario: &Scenario,
+) -> Result<Model, openflex_model::ModelError> {
+    let mut scenario_model = model.clone();
+    for over in &scenario.overrides {
+        scenario_model =
+            scenario_model.with_override(&over.object, &over.param, over.value.clone())?;
+    }
+    scenario_model.run.replications = experiment.replications;
+    if let Some(stop_time) = scenario.stop_time {
+        scenario_model.run.stop_time = stop_time;
+    }
+    if let Some(warmup) = scenario.warmup {
+        scenario_model.run.warmup = warmup;
+    }
+    Ok(scenario_model)
+}
+
+/// Run one scenario, optionally writing a trace per replication.
+fn run_scenario(
+    model: &Model,
+    options: &ExperimentOptions,
+    trace_dir: Option<&Path>,
+) -> Result<(SimReport, Vec<PathBuf>), (ScenarioErrorKind, String)> {
+    match trace_dir {
+        Some(directory) => {
+            std::fs::create_dir_all(directory).map_err(|error| {
+                (
+                    ScenarioErrorKind::Runtime,
+                    format!("could not create {}: {error}", directory.display()),
+                )
+            })?;
+            let count = model.run.replications.max(1);
+            let several = count > 1;
+            let mut results = Vec::with_capacity(count as usize);
+            let mut files = Vec::new();
+            for index in 0..count {
+                let seed = openflex_core::derive_seed(model.run.seed, index);
+                let config = SimConfig::from_run_settings(&model.run, seed);
+                let (result, log) = simulate_traced(model, &config, index)
+                    .map_err(|error| (sim_error_kind(&error), error.to_string()))?;
+                let file = if several {
+                    directory.join(format!("trace.rep{index}.jsonl"))
+                } else {
+                    directory.join("trace.jsonl")
+                };
+                crate::write_trace_jsonl(&file, &log)
+                    .map_err(|error| (ScenarioErrorKind::Runtime, error.to_string()))?;
+                files.push(file);
+                results.push(result);
+            }
+            Ok((SimReport::from_replications(model, results), files))
+        }
+        None => {
+            let report = match options.parallel {
+                Some(workers) => run_model_parallel(model, workers),
+                None => run_model(model),
+            }
+            .map_err(|error| (sim_error_kind(&error), error.to_string()))?;
+            Ok((report, Vec::new()))
+        }
+    }
+}
+
+/// Map an engine error onto the CLI/UI severity it deserves.
+fn sim_error_kind(error: &SimError) -> ScenarioErrorKind {
+    match error {
+        SimError::Config(_) | SimError::Model(_) => ScenarioErrorKind::Usage,
+        _ => ScenarioErrorKind::Runtime,
+    }
+}
+
+fn fire_hook(
+    model: &Model,
+    config: &SimConfig,
+    actions: Vec<Action>,
+    location: &str,
+    logs: &mut Vec<String>,
+) -> Result<(), SimError> {
+    let trace = fire_model_hook_actions(model, config, actions, location)?;
+    logs.extend(hook_logs(&trace));
+    Ok(())
+}
+
+fn failed_outcome(
+    experiment: &Experiment,
+    scenario: &Scenario,
+    kind: ScenarioErrorKind,
+    error: String,
+    trace_files: Vec<PathBuf>,
+    logs: Vec<String>,
+) -> ScenarioOutcome {
+    ScenarioOutcome {
+        experiment: experiment.name.clone(),
+        scenario: scenario.name.clone(),
+        overrides: scenario.overrides.clone(),
+        report: None,
+        error: Some(error),
+        error_kind: Some(kind),
+        trace_files,
+        logs,
     }
 }
 

@@ -1,0 +1,50 @@
+OpenFlex experiment: perf
+model: metric (2 scenarios, 2 replications each)
+
+Scenario            Reps    Created     ±95%   Completed     ±95%  Throughput   AvgWIP     Util   DoubleBatch done_per_time         完成量
+----------------------------------------------------------------------------------------------------------------------------------
+baseline               2       39.5     44.5        39.5     44.5      0.1975     0.00     0.0% 20.000 ±0.000  0.198 ±0.222 39.500 ±44.471
+wide                   2       69.0     63.5        69.0     63.5      0.3450     0.00     0.0% 20.000 ±0.000  0.345 ±0.318 69.000 ±63.530
+
+-- Scenario: baseline --
+OpenFlex report: metric
+stop time 200.00 s, warm-up 0.00 s, replications 2, base seed 3
+
+Object                       In      Out   AvgWIP   MaxWIP  Stay (s) Util (%) door_open door_opening door_closing
+------------------------------------------------------------------------------------------------------------------------
+Queue1                     39.5     39.5     0.00      1.0      0.00     0.0     0.00     0.00     0.00
+Sink1                      39.5     39.5     0.00      0.0      0.00     0.0     0.00     0.00     0.00
+Source1                     0.0     39.5     0.00      0.0      0.00     0.0     0.00     0.00     0.00
+------------------------------------------------------------------------------------------------------------------------
+Items created               39.5  (95% CI ±44.5)
+Items completed             39.5  (95% CI ±44.5)
+Items in system              0.0  (95% CI ±0.0)
+
+Performance measures
+------------------------
+DoubleBatch     Mean     20.000  95% CI   ±0.000  Samples 2
+done_per_time   Mean      0.198  95% CI   ±0.222  Samples 2
+完成量          Mean     39.500  95% CI  ±44.471  Samples 2
+
+
+-- Scenario: wide --
+   override Source1.interarrival = {"distribution":"exponential","mean":3.0}
+OpenFlex report: metric
+stop time 200.00 s, warm-up 0.00 s, replications 2, base seed 3
+
+Object                       In      Out   AvgWIP   MaxWIP  Stay (s) Util (%) door_open door_opening door_closing
+------------------------------------------------------------------------------------------------------------------------
+Queue1                     69.0     69.0     0.00      1.0      0.00     0.0     0.00     0.00     0.00
+Sink1                      69.0     69.0     0.00      0.0      0.00     0.0     0.00     0.00     0.00
+Source1                     0.0     69.0     0.00      0.0      0.00     0.0     0.00     0.00     0.00
+------------------------------------------------------------------------------------------------------------------------
+Items created               69.0  (95% CI ±63.5)
+Items completed             69.0  (95% CI ±63.5)
+Items in system              0.0  (95% CI ±0.0)
+
+Performance measures
+------------------------
+DoubleBatch     Mean     20.000  95% CI   ±0.000  Samples 2
+done_per_time   Mean      0.345  95% CI   ±0.318  Samples 2
+完成量          Mean     69.000  95% CI  ±63.530  Samples 2
+

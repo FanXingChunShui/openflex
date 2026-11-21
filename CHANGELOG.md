@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### 报告与 CLI
+
+- **实验执行提取为可复用 API**：模型声明的 `experiments` 执行逻辑此前埋在 CLI 的 `main.rs` 里，GUI 完全用不上
+  （GUI 只能跑自己的参数扫描，看不到模型里的场景）。现在移到 `openflex-report`：
+  `run_declared_experiments(model, parallel)` / `run_declared_experiments_with_options` 返回
+  `ScenarioOutcome { experiment, scenario, overrides, report: Option<SimReport>, error, error_kind, trace_files, logs }`
+  ——**每条带完整 `SimReport`**，另有 `experiment_reports()` 分组成可直接渲染的 `ExperimentReport`。
+  失败不中断：某场景失败不影响其它场景，`error_kind` 区分 `usage` / `runtime`。
+  CLI 改为调用它，**三格式输出逐字节不变**（用改动前快照 + 逐字符 `assert_eq` 锁住，13 个 stdout 输出与 9 个归档文件 sha256 相同）。
+  一处行为差异如实记录：`experiment --trace` 的 stderr 进度提示不再带事件数。
+
+
 ## v1.37.0 — 2026-11-22
 
 本轮把 FlexSim **Conveyor 模块**（主帮助之外的 35 页）当作正式规格来补：**光电门四状态**（并让边界穿越成为皮带事件，触发时刻精确到 `10∓0.5`）、**决策点**（按件求值条件后执行动作）、GUI 侧的光电门/决策点编辑器与**显式路线可视化**，并新增一个同时演示 slug / 加权合流 / 光电门 / 决策点的示例模型。

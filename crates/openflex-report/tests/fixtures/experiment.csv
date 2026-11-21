@@ -1,0 +1,4 @@
+# performance measures: one column pair per measure (mean and 95% CI); ci95 is empty when n < 2
+experiment,scenario,replications,created,created_ci95,completed,completed_ci95,throughput,avg_wip,avg_utilization,DoubleBatch,DoubleBatch_ci95,done_per_time,done_per_time_ci95,完成量,完成量_ci95
+perf,baseline,2,39.500,44.471,39.500,44.471,0.197500,0.0000,0.0000,20.000000,0.000000,0.197500,0.222355,39.500000,44.471000
+perf,wide,2,69.000,63.530,69.000,63.530,0.345000,0.0000,0.0000,20.000000,0.000000,0.345000,0.317650,69.000000,63.530000
