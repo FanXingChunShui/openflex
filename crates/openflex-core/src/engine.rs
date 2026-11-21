@@ -715,8 +715,18 @@ struct BeltStop {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 enum BeltStopKind {
-    PhotoEye,
+    PhotoEye(usize),
     Station(usize),
+}
+
+/// task-179: four-state Photo Eye machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+enum PhotoEyeState {
+    #[default]
+    Cleared,
+    Blocking,
+    Blocked,
+    Clearing,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -837,6 +847,12 @@ pub(crate) struct ObjectRt {
     /// B3: per-item flags of the stops already handled, aligned with
     /// `belt_items` (front first).
     belt_handled: Vec<Vec<bool>>,
+    /// task-179: current state of each Photo Eye on this belt.
+    #[serde(default)]
+    photo_eye_states: Vec<PhotoEyeState>,
+    /// task-179: sensing half-width for each Photo Eye.
+    #[serde(default)]
+    photo_eye_ranges: Vec<f64>,
     /// B3: number of upstream belts merged onto this belt (0/1 = disabled).
     join_inputs: u32,
     /// task-178: merge-controller mode and its state.
@@ -984,6 +1000,8 @@ impl ObjectRt {
             rack_slots: 0,
             belt_stops: Vec::new(),
             belt_handled: Vec::new(),
+            photo_eye_states: Vec::new(),
+            photo_eye_ranges: Vec::new(),
             join_inputs: 0,
             merge_mode: MergeMode::RoundRobin,
             merge_weight: Vec::new(),
@@ -1080,12 +1098,18 @@ impl ObjectRt {
                     params.slug_min_gap.unwrap_or(params.item_spacing).max(0.0);
                 runtime.belt = Some(belt);
                 let mut stops: Vec<BeltStop> = Vec::new();
-                for photo_eye in &params.photo_eyes {
+                for (eye_index, photo_eye) in params.photo_eyes.iter().enumerate() {
                     stops.push(BeltStop {
                         position: photo_eye.position,
-                        kind: BeltStopKind::PhotoEye,
+                        kind: BeltStopKind::PhotoEye(eye_index),
                     });
                 }
+                runtime.photo_eye_states = vec![PhotoEyeState::Cleared; params.photo_eyes.len()];
+                runtime.photo_eye_ranges = params
+                    .photo_eyes
+                    .iter()
+                    .map(|eye| eye.range.unwrap_or(0.5).max(EPS))
+                    .collect();
                 for (station, conveyor_station) in params.stations.iter().enumerate() {
                     stops.push(BeltStop {
                         position: conveyor_station.position,
@@ -4883,6 +4907,13 @@ impl<'m> Simulation<'m> {
         None
     }
 
+    /// task-179 note: Photo Eyes do not notify the merge controller when a slug
+    /// clears. The controller only needs its own successful-admission counts
+    /// (`merge_counts`) and the ready/held state of its inputs; adding a Photo
+    /// Eye notification would be redundant state, so it is intentionally not
+    /// implemented (the FlexSim Merging help describes that coupling, but our
+    /// controller owns the decision).
+    ///
     /// B3/task-178: the input port a join conveyor should serve next.
     ///
     /// `round_robin` is the original fair cursor; `weighted` picks the ready
@@ -9733,7 +9764,7 @@ impl<'m> Simulation<'m> {
                     belt.set_position(item_index, stop.position);
                 }
                 match stop.kind {
-                    BeltStopKind::PhotoEye => self.fire_photo_eye(index, item_index)?,
+                    BeltStopKind::PhotoEye(_) => self.fire_photo_eye(index, item_index)?,
                     BeltStopKind::Station(station) => {
                         let dwell = self.sample_station_time(index, station);
                         if let Some(belt) = self.objects[index].belt.as_mut() {
@@ -9743,7 +9774,110 @@ impl<'m> Simulation<'m> {
                 }
             }
         }
+        self.update_photo_eyes(index)?;
         Ok(())
+    }
+
+    /// task-179: update the four-state Photo Eye machine after a belt tick.
+    ///
+    /// The beam is blocked while an item sits exactly on the eye (the normal
+    /// stop-clamping path or a station hold). Blocking/Clearing are the transient
+    /// entry states; with no Block Time / Clear Time settings yet they resolve
+    /// immediately, so only entering Blocked and Cleared fires hooks. This is
+    /// deliberately additive: the legacy per-item `on_photo_eye` is unchanged.
+    fn update_photo_eyes(&mut self, index: usize) -> Result<(), SimError> {
+        let stops: Vec<(usize, f64, f64)> = self.objects[index]
+            .belt_stops
+            .iter()
+            .filter_map(|stop| match stop.kind {
+                BeltStopKind::PhotoEye(eye) => Some((
+                    eye,
+                    stop.position,
+                    self.objects[index]
+                        .photo_eye_ranges
+                        .get(eye)
+                        .copied()
+                        .unwrap_or(0.5)
+                        .max(EPS),
+                )),
+                BeltStopKind::Station(_) => None,
+            })
+            .collect();
+        if stops.is_empty() {
+            return Ok(());
+        }
+        let positions = self.objects[index]
+            .belt
+            .as_ref()
+            .map(|belt| belt.positions.clone())
+            .unwrap_or_default();
+        let eye_count = match &self.model.objects[index].params {
+            ObjectParams::Conveyor(params) => params.photo_eyes.len(),
+            _ => 0,
+        };
+        if self.objects[index].photo_eye_states.len() < eye_count {
+            self.objects[index]
+                .photo_eye_states
+                .resize(eye_count, PhotoEyeState::Cleared);
+        }
+        for (eye, position, range) in stops {
+            // Our own sensing granularity: `range` is a half-width around the
+            // eye (default 0.5 distance units). This is an OpenFlex choice, not
+            // a published FlexSim value; it keeps a contiguous slug inside the
+            // beam so the state does not jitter per item.
+            let covered = positions
+                .iter()
+                .any(|item| *item >= position - range && *item <= position + range);
+            let state = self.objects[index]
+                .photo_eye_states
+                .get(eye)
+                .copied()
+                .unwrap_or(PhotoEyeState::Cleared);
+            match (state, covered) {
+                (PhotoEyeState::Cleared | PhotoEyeState::Clearing, true) => {
+                    // Enter Blocking then Blocked (zero transition time).
+                    self.objects[index].photo_eye_states[eye] = PhotoEyeState::Blocking;
+                    self.objects[index].photo_eye_states[eye] = PhotoEyeState::Blocked;
+                    self.fire_photo_eye_state(index, eye, PhotoEyeState::Blocked)?;
+                }
+                (PhotoEyeState::Blocked | PhotoEyeState::Blocking, false) => {
+                    self.objects[index].photo_eye_states[eye] = PhotoEyeState::Clearing;
+                    self.objects[index].photo_eye_states[eye] = PhotoEyeState::Cleared;
+                    self.fire_photo_eye_state(index, eye, PhotoEyeState::Cleared)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn fire_photo_eye_state(
+        &mut self,
+        index: usize,
+        eye: usize,
+        state: PhotoEyeState,
+    ) -> Result<(), SimError> {
+        let params = match &self.model.objects[index].params {
+            ObjectParams::Conveyor(params) => params,
+            _ => return Ok(()),
+        };
+        let Some(photo_eye) = params.photo_eyes.get(eye) else {
+            return Ok(());
+        };
+        let (name, actions) = match state {
+            PhotoEyeState::Blocked => ("on_blocked", photo_eye.triggers.on_blocked.clone()),
+            PhotoEyeState::Cleared => ("on_cleared", photo_eye.triggers.on_cleared.clone()),
+            _ => return Ok(()),
+        };
+        if actions.is_empty() {
+            return Ok(());
+        }
+        let mut probe = FlowItem::probe(self.now);
+        self.action_location = format!(
+            "{}.photo_eyes[{eye}].triggers.{name}",
+            self.objects[index].name
+        );
+        self.apply_actions(index, &mut probe, actions)
     }
 
     /// Run the conveyor's `on_photo_eye` trigger against one item.
@@ -11621,6 +11755,27 @@ fn collect_model_scripts(model: &Model) -> Vec<(String, String)> {
                         source,
                         format!("objects.{}.triggers.{trigger}[{position}]", object.name),
                     );
+                }
+            }
+        }
+        if let ObjectParams::Conveyor(params) = &object.params {
+            for (eye_index, eye) in params.photo_eyes.iter().enumerate() {
+                for (trigger, actions) in [
+                    ("on_blocked", &eye.triggers.on_blocked),
+                    ("on_cleared", &eye.triggers.on_cleared),
+                ] {
+                    for (position, action) in actions.iter().enumerate() {
+                        if let Action::Script { source } = action {
+                            push(
+                                &mut sources,
+                                source,
+                                format!(
+                                    "objects.{}.photo_eyes[{eye_index}].triggers.{trigger}[{position}]",
+                                    object.name
+                                ),
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -16087,5 +16242,245 @@ mod tests {
         sim.objects[c].belt.as_mut().expect("belt").holds.clear();
         sim.deliver(qa, conn, item()).expect("delivery");
         assert!(sim.objects[c].merge_counts[0] > 0.0);
+    }
+
+    fn photo_eye_model(
+        slug: &str,
+        eye_extras: &str,
+        max_arrivals: u32,
+        interarrival: f64,
+    ) -> Model {
+        let json = format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "photo-eye",
+          "run": {{ "stop_time": 30.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": {interarrival} }},
+                "max_arrivals": {max_arrivals}, "first_arrival": 0.0 }} }},
+            {{ "name": "C", "kind": "conveyor", "params": {{
+                "speed": 1.0, "length": 10.0, "item_spacing": 1.0,
+                "accumulating": true{slug},
+                "photo_eyes": [{{ "position": 2.0, "name": "PE"{eye_extras} }}],
+                "triggers": {{ "on_photo_eye": [
+                    {{ "action": "script", "source": "log(\"photo\");" }} ] }} }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [{{ "from": "S", "to": "C" }}, {{ "from": "C", "to": "K" }}]
+        }}"#
+        );
+        Model::parse_json(&json).expect("model")
+    }
+
+    fn photo_logs(trace: &TraceLog, message: &str) -> usize {
+        trace
+            .events
+            .iter()
+            .filter(|event| event.event == "script_log" && event.message == message)
+            .count()
+    }
+
+    /// task-179: one item entering/leaving the beam fires Blocked and Cleared
+    /// exactly once; the legacy on_photo_eye still fires per crossing.
+    #[test]
+    fn photo_eye_four_states_fire_blocked_and_cleared_once() {
+        let model = photo_eye_model(
+            "",
+            r#", "triggers": {
+                "on_blocked": [{ "action": "script", "source": "log(\"blocked\");" }],
+                "on_cleared": [{ "action": "script", "source": "log(\"cleared\");" }]
+            }"#,
+            1,
+            5.0,
+        );
+        let config = SimConfig {
+            stop_time: 30.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        assert_eq!(photo_logs(&trace, "blocked"), 1);
+        assert_eq!(photo_logs(&trace, "cleared"), 1);
+        assert_eq!(photo_logs(&trace, "photo"), 1);
+        let blocked = trace
+            .events
+            .iter()
+            .find(|event| event.message == "blocked")
+            .map(|event| event.time)
+            .expect("blocked");
+        let cleared = trace
+            .events
+            .iter()
+            .find(|event| event.message == "cleared")
+            .map(|event| event.time)
+            .expect("cleared");
+        assert!(blocked < cleared, "Blocked must precede Cleared");
+    }
+
+    /// task-179: contiguous items on a slug do not re-fire Blocked until the
+    /// beam actually clears.
+    #[test]
+    fn photo_eye_slug_stays_blocked_for_contiguous_items() {
+        let model = photo_eye_model(
+            r#", "slug": true, "slug_min_gap": 2.0"#,
+            r#", "range": 2.0, "triggers": {
+                "on_blocked": [{ "action": "script", "source": "log(\"blocked\");" }],
+                "on_cleared": [{ "action": "script", "source": "log(\"cleared\");" }]
+            }"#,
+            2,
+            1.0,
+        );
+        let config = SimConfig {
+            stop_time: 30.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        assert_eq!(
+            photo_logs(&trace, "blocked"),
+            1,
+            "contiguous slug should stay blocked"
+        );
+        assert_eq!(photo_logs(&trace, "cleared"), 1);
+        assert_eq!(
+            photo_logs(&trace, "photo"),
+            2,
+            "legacy trigger remains per item"
+        );
+    }
+
+    /// task-179: photo-eye trigger scripts are compiled by validate/check-scripts.
+    #[test]
+    fn photo_eye_trigger_scripts_are_validated() {
+        let model = photo_eye_model(
+            "",
+            r#", "triggers": {
+                "on_blocked": [{ "action": "script", "source": "let broken = ;" }]
+            }"#,
+            1,
+            5.0,
+        );
+        // The helper uses from_json, which would fail; parse without validation
+        // to inspect the issue.
+        let json = serde_json::to_string(&model).expect("json");
+        let raw = Model::parse_json(&json).expect("parse");
+        let error = raw.validate().expect_err("compile error");
+        assert!(
+            error
+                .to_string()
+                .contains("objects.C.photo_eyes[0].triggers.on_blocked[0]"),
+            "{error}"
+        );
+    }
+
+    /// task-179: empty triggers are omitted from old model JSON.
+    #[test]
+    fn photo_eye_old_json_is_unchanged() {
+        let model = photo_eye_model("", "", 1, 5.0);
+        let value = serde_json::to_value(&model).expect("json");
+        assert!(
+            value["objects"][1]["params"]["photo_eyes"][0]
+                .get("triggers")
+                .is_none(),
+            "empty photo-eye triggers must not serialize"
+        );
+    }
+
+    /// task-179: two items inside the same beam keep a single Blocked state;
+    /// holding them there does not repeat a transition.
+    #[test]
+    fn photo_eye_two_items_do_not_jitter_or_retrigger() {
+        let model = photo_eye_model(
+            "",
+            r#", "triggers": {
+                "on_blocked": [{ "action": "script", "source": "log(\"blocked\");" }],
+                "on_cleared": [{ "action": "script", "source": "log(\"cleared\");" }]
+            }"#,
+            1,
+            5.0,
+        );
+        let config = SimConfig {
+            stop_time: 30.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, true).expect("sim");
+        let c = sim.by_name["C"];
+        sim.objects[c].belt.as_mut().expect("belt").positions = vec![2.0, 2.0];
+        sim.objects[c].belt.as_mut().expect("belt").holds = vec![0.0; 2];
+        sim.update_photo_eyes(c).expect("blocked");
+        assert_eq!(sim.objects[c].photo_eye_states[0], PhotoEyeState::Blocked);
+        // Re-running while items are still held at the eye repeats nothing.
+        sim.update_photo_eyes(c).expect("still blocked");
+        assert_eq!(sim.objects[c].photo_eye_states[0], PhotoEyeState::Blocked);
+        let blocked = sim
+            .trace
+            .as_ref()
+            .expect("trace")
+            .events
+            .iter()
+            .filter(|event| event.message == "blocked")
+            .count();
+        assert_eq!(blocked, 1, "Blocked transition fired more than once");
+        sim.objects[c]
+            .belt
+            .as_mut()
+            .expect("belt")
+            .positions
+            .clear();
+        sim.update_photo_eyes(c).expect("cleared");
+        assert_eq!(sim.objects[c].photo_eye_states[0], PhotoEyeState::Cleared);
+    }
+
+    /// task-179: a photo eye without triggers leaves the model/report JSON
+    /// unchanged (empty triggers serialize like an absent block).
+    #[test]
+    fn photo_eye_without_triggers_is_unchanged() {
+        let absent = photo_eye_model("", "", 1, 5.0);
+        let mut with_empty: Model =
+            Model::parse_json(&serde_json::to_string(&absent).expect("json")).expect("parse");
+        if let ObjectParams::Conveyor(params) = &mut with_empty.objects[1].params {
+            params.photo_eyes[0].triggers = Default::default();
+        }
+        let a = crate::run_model(&absent).expect("run absent");
+        let b = crate::run_model(&with_empty).expect("run empty");
+        assert_eq!(
+            serde_json::to_string(&a).expect("json"),
+            serde_json::to_string(&b).expect("json")
+        );
+    }
+
+    /// task-179: photo-eye state/trigger runs are deterministic for one seed.
+    #[test]
+    fn photo_eye_triggers_are_deterministic() {
+        let model = photo_eye_model(
+            "",
+            r#", "triggers": {
+                "on_blocked": [{ "action": "script", "source": "log(\"blocked\");" }],
+                "on_cleared": [{ "action": "script", "source": "log(\"cleared\");" }]
+            }"#,
+            1,
+            5.0,
+        );
+        let config = SimConfig {
+            stop_time: 30.0,
+            warmup: 0.0,
+            seed: 3,
+        };
+        let (first, first_trace) = crate::simulate_traced(&model, &config, 0).expect("first");
+        let (second, second_trace) = crate::simulate_traced(&model, &config, 0).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
+        let logs = |trace: &TraceLog| -> Vec<(f64, String)> {
+            trace
+                .events
+                .iter()
+                .filter(|event| event.event == "script_log")
+                .map(|event| (event.time, event.message.clone()))
+                .collect()
+        };
+        assert_eq!(logs(&first_trace), logs(&second_trace));
     }
 }

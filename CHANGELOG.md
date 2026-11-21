@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### 模型与引擎
+
+- **conveyor 光电门四状态**：`PhotoEye` 新增 `range`（感应半宽，缺省 0.5，**注释已说明这是本项目自选粒度而非 FlexSim 公开值**）
+  与 `triggers { on_blocked, on_cleared }`（空时不序列化，旧 JSON 与行为逐位不变）。
+  引擎为每个光电门维护 `Cleared / Blocking / Blocked / Clearing` 四状态，
+  **只在进入 Blocked 与进入 Cleared 两个跃迁各触发一次**；旧的「经过即触发」`on_photo_eye` 保持不动（附加而非替换）。
+  依据是 Conveyor 模块自带帮助（`modules/Conveyor/help/`）的两页，而非主帮助目录。
+  实测一件经过：`on_blocked`、`on_cleared` 各一次且顺序正确。
+  **已知限制**：状态只在既有皮带事件（tick）上求值，所以 `cleared` 可能晚于物件真正离开感应区
+  ——实测物件 9.5 进入、10.5 离开，`cleared` 到 t=20（出口事件）才发出。已记为待改进项。
+
+
 ## v1.36.0 — 2026-11-22
 
 本轮把 conveyor 补齐两片（**slug 组**与**合流控制器**），把**脚本错误**变成能定位的诊断（并修掉一处会重复打印的缺陷），GUI 补上 **state/staytime 跟踪汇总**面板。

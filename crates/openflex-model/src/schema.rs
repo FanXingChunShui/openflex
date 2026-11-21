@@ -392,7 +392,16 @@ fn definitions() -> Value {
                     "type": "object",
                     "properties": {
                         "position": { "type": "number", "exclusiveMinimum": 0 },
-                        "name": { "type": "string", "default": "" }
+                        "name": { "type": "string", "default": "" },
+                        "range": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+                        "triggers": {
+                            "type": "object",
+                            "properties": {
+                                "on_blocked": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                                "on_cleared": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+                            },
+                            "additionalProperties": false
+                        }
                     },
                     "required": ["position"],
                     "additionalProperties": false

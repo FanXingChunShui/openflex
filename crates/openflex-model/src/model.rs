@@ -1653,6 +1653,28 @@ pub struct PhotoEye {
     /// Optional name, useful in diagnostics.
     #[serde(default)]
     pub name: String,
+    /// task-179: sensing half-width around `position` (default 0.5 distance units).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<f64>,
+    /// task-179: four-state photo-eye triggers (on_photo_eye stays unchanged).
+    #[serde(default, skip_serializing_if = "PhotoEyeTriggers::is_empty")]
+    pub triggers: PhotoEyeTriggers,
+}
+
+/// task-179: Photo Eye state transitions: only Blocked and Cleared have hooks.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PhotoEyeTriggers {
+    #[serde(default)]
+    pub on_blocked: Vec<Action>,
+    #[serde(default)]
+    pub on_cleared: Vec<Action>,
+}
+
+impl PhotoEyeTriggers {
+    pub fn is_empty(&self) -> bool {
+        self.on_blocked.is_empty() && self.on_cleared.is_empty()
+    }
 }
 
 /// A processing station on a conveyor (B3).

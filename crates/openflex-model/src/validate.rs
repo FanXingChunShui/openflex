@@ -737,6 +737,31 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                         "must be inside the belt (0 < position < length)",
                     ));
                 }
+                if let Some(range) = eye.range
+                    && (!range.is_finite() || range <= 0.0)
+                {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("photo_eyes[{i}].range")),
+                        "must be positive",
+                    ));
+                }
+                for (trigger, actions) in [
+                    ("on_blocked", &eye.triggers.on_blocked),
+                    ("on_cleared", &eye.triggers.on_cleared),
+                ] {
+                    for (position, action) in actions.iter().enumerate() {
+                        if let crate::action::Action::Script { source } = action {
+                            validate_script_source(
+                                source,
+                                &format!(
+                                    "objects.{}.photo_eyes[{i}].triggers.{trigger}[{position}].source",
+                                    object.name
+                                ),
+                                &mut issues,
+                            );
+                        }
+                    }
+                }
             }
             if let Some(inputs) = params.join_inputs
                 && inputs < 2
