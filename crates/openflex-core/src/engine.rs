@@ -9732,6 +9732,9 @@ impl<'m> Simulation<'m> {
         if self.objects[index].belt_stops.is_empty() {
             return Ok(());
         }
+        // task-180: evaluate the photo-eye state before legacy stop clamping, so
+        // a boundary event at position+range can clear the beam at that instant.
+        self.update_photo_eyes(index)?;
         let stops = self.objects[index].belt_stops.clone();
         let items = self.objects[index].belt_items.len();
         for item_index in 0..items {
@@ -9774,7 +9777,6 @@ impl<'m> Simulation<'m> {
                 }
             }
         }
-        self.update_photo_eyes(index)?;
         Ok(())
     }
 
@@ -9827,7 +9829,13 @@ impl<'m> Simulation<'m> {
             // beam so the state does not jitter per item.
             let covered = positions
                 .iter()
-                .any(|item| *item >= position - range && *item <= position + range);
+                .any(|item| *item >= position - range - EPS && *item < position + range - EPS);
+            if std::env::var_os("OPENFLEX_DEBUG_EYE").is_some() {
+                eprintln!(
+                    "eye {eye} at {} pos={positions:?} range={range} covered={covered}",
+                    self.now
+                );
+            }
             let state = self.objects[index]
                 .photo_eye_states
                 .get(eye)
@@ -9913,6 +9921,70 @@ impl<'m> Simulation<'m> {
     }
 
     /// Schedule the next movement boundary, if the belt is moving.
+    /// task-180: earliest Photo Eye boundary crossing candidate. Boundaries are
+    /// `position ± range`; only reachable, non-zero-time crossings count, so an
+    /// item resting on an eye cannot create a zero-interval self-spin. An eye
+    /// whose range covers the whole belt is ignored.
+    fn photo_eye_next_event(&self, index: usize) -> Option<f64> {
+        let belt = self.objects[index].belt.as_ref()?;
+        if belt.is_empty() {
+            return None;
+        }
+        let stops: Vec<f64> = self.objects[index]
+            .belt_stops
+            .iter()
+            .filter_map(|stop| match stop.kind {
+                BeltStopKind::PhotoEye(eye) => Some(stop.position).map(|position| (eye, position)),
+                BeltStopKind::Station(_) => None,
+            })
+            .map(|(_, position)| position)
+            .collect();
+        let mut next: Option<f64> = None;
+        for (eye_index, position) in stops.iter().enumerate() {
+            let range = self.objects[index]
+                .photo_eye_ranges
+                .get(eye_index)
+                .copied()
+                .unwrap_or(0.5)
+                .max(EPS);
+            let lower = position - range;
+            let upper = position + range;
+            if lower <= EPS && upper >= belt.length - EPS {
+                // Range covers the whole belt: boundary events would fire every tick.
+                continue;
+            }
+            for item in 0..belt.positions.len() {
+                if belt.hold_remaining(item) > EPS {
+                    continue;
+                }
+                let current = belt.positions[item];
+                let limit = if item == 0 {
+                    belt.length
+                } else {
+                    (belt.positions[item - 1] - belt.spacing).max(current)
+                };
+                let boundary = if current < lower - EPS {
+                    lower
+                } else if current < upper - EPS {
+                    upper
+                } else {
+                    continue;
+                };
+                if boundary <= current + EPS
+                    || boundary > limit + EPS
+                    || boundary > belt.length + EPS
+                {
+                    continue;
+                }
+                let time = belt.time_to_reach(current, boundary);
+                if time > EPS {
+                    next = Some(next.map_or(time, |value: f64| value.min(time)));
+                }
+            }
+        }
+        next
+    }
+
     fn schedule_belt_tick(&mut self, index: usize) {
         let stops = self.belt_stop_positions(index);
         let next = if self.objects[index].belt_slug {
@@ -9923,7 +9995,12 @@ impl<'m> Simulation<'m> {
                 .as_ref()
                 .and_then(|belt| belt.time_to_next_event_with_stops(&stops))
         };
-        let Some(dt) = next else {
+        let photo = self.photo_eye_next_event(index);
+        let next_dt = match (next, photo) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let Some(dt) = next_dt else {
             return;
         };
         if dt <= EPS {
@@ -9983,6 +10060,7 @@ impl<'m> Simulation<'m> {
             self.objects[index].acc.output += 1;
             self.objects[index].acc.stay_sum += now - item.entry_time;
             self.objects[index].acc.stay_count += 1;
+            self.update_photo_eyes(index)?;
             self.notify_upstreams(index)?;
         }
         if self.objects[index].belt_items.is_empty() {
@@ -16482,5 +16560,170 @@ mod tests {
                 .collect()
         };
         assert_eq!(logs(&first_trace), logs(&second_trace));
+    }
+
+    fn photo_eye_timing_model(
+        length: f64,
+        eye: f64,
+        range: Option<f64>,
+        max_arrivals: u32,
+        interval: f64,
+        station: bool,
+    ) -> Model {
+        let range = range.map_or_else(String::new, |range| format!(r#", "range": {range}"#));
+        let station = if station {
+            r#", "stations": [{ "position": 10.0, "process_time": {
+                "distribution": "constant", "value": 10.0 } }]"#
+                .to_string()
+        } else {
+            String::new()
+        };
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "eye-timing",
+          "run": {{ "stop_time": 40.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": {interval} }},
+                "max_arrivals": {max_arrivals}, "first_arrival": 0.0 }} }},
+            {{ "name": "C", "kind": "conveyor", "params": {{
+                "speed": 1.0, "length": {length}, "item_spacing": 1.0,
+                "accumulating": true{station},
+                "photo_eyes": [{{ "position": {eye}, "name": "PE"{range},
+                    "triggers": {{
+                        "on_blocked": [{{ "action": "script", "source": "log(\"blocked\");" }}],
+                        "on_cleared": [{{ "action": "script", "source": "log(\"cleared\");" }}]
+                    }} }}] }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [{{ "from": "S", "to": "C" }}, {{ "from": "C", "to": "K" }}]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    fn photo_time(trace: &TraceLog, message: &str) -> Option<f64> {
+        trace
+            .events
+            .iter()
+            .find(|event| event.event == "script_log" && event.message == message)
+            .map(|event| event.time)
+    }
+
+    /// task-180: boundary crossing itself is a belt event, so a single item
+    /// produces Blocked at 9.5 and Cleared at 10.5, not at the exit.
+    #[test]
+    fn photo_eye_boundary_events_are_timely() {
+        let model = photo_eye_timing_model(20.0, 10.0, None, 1, 5.0, false);
+        let config = SimConfig {
+            stop_time: 40.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let blocked = photo_time(&trace, "blocked").expect("blocked");
+        let cleared = photo_time(&trace, "cleared").expect("cleared");
+        assert!((blocked - 9.5).abs() < 0.01, "blocked at {blocked}");
+        assert!((cleared - 10.5).abs() < 0.01, "cleared at {cleared}");
+    }
+
+    /// task-180: with three items in the beam, Blocked is one transition and
+    /// Cleared happens only after the last one has left the sensing span.
+    #[test]
+    fn photo_eye_clears_when_last_item_leaves_the_span() {
+        let model = photo_eye_timing_model(20.0, 10.0, None, 1, 5.0, false);
+        let config = SimConfig {
+            stop_time: 40.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, true).expect("sim");
+        let c = sim.by_name["C"];
+        sim.objects[c].belt.as_mut().expect("belt").positions = vec![10.6, 9.6, 8.6];
+        sim.objects[c].belt.as_mut().expect("belt").holds = vec![0.0; 3];
+        sim.now = 9.5;
+        sim.update_photo_eyes(c).expect("blocked");
+        assert_eq!(sim.objects[c].photo_eye_states[0], PhotoEyeState::Blocked);
+        // All three have moved out of [9.5, 10.5); the last one leaves at 10.5.
+        sim.objects[c].belt.as_mut().expect("belt").positions = vec![12.0, 11.0, 10.6];
+        sim.now = 10.5;
+        sim.update_photo_eyes(c).expect("cleared");
+        assert_eq!(sim.objects[c].photo_eye_states[0], PhotoEyeState::Cleared);
+        let logs: Vec<(f64, String)> = sim
+            .trace
+            .as_ref()
+            .expect("trace")
+            .events
+            .iter()
+            .filter(|event| event.event == "script_log")
+            .map(|event| (event.time, event.message.clone()))
+            .collect();
+        assert_eq!(
+            logs,
+            vec![(9.5, "blocked".to_string()), (10.5, "cleared".to_string())]
+        );
+    }
+
+    /// task-180: a held item on the eye does not create a zero-interval spin.
+    #[test]
+    fn photo_eye_on_a_held_item_does_not_spin() {
+        let model = photo_eye_timing_model(20.0, 10.0, None, 1, 5.0, true);
+        let config = SimConfig {
+            stop_time: 40.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let cleared = photo_time(&trace, "cleared").expect("cleared");
+        assert!(
+            cleared >= 19.0,
+            "station hold should delay clearing: {cleared}"
+        );
+        assert!(
+            trace.events.len() < 100,
+            "unexpected photo-eye event spin: {}",
+            trace.events.len()
+        );
+    }
+
+    /// task-180: photo-eye timing is deterministic for one seed.
+    #[test]
+    fn photo_eye_boundary_events_are_deterministic() {
+        let model = photo_eye_timing_model(20.0, 10.0, None, 3, 1.0, false);
+        let config = SimConfig {
+            stop_time: 40.0,
+            warmup: 0.0,
+            seed: 3,
+        };
+        let (first, first_trace) = crate::simulate_traced(&model, &config, 0).expect("first");
+        let (second, second_trace) = crate::simulate_traced(&model, &config, 0).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
+        assert_eq!(first_trace, second_trace);
+    }
+
+    /// task-180: no photo-eye conveyor keeps the old report exactly.
+    #[test]
+    fn photo_eye_boundary_events_do_not_touch_plain_conveyors() {
+        let json = serde_json::to_string(&photo_eye_timing_model(20.0, 10.0, None, 1, 5.0, false))
+            .expect("json");
+        let plain = Model::from_json(&json.replacen(
+            r#", "photo_eyes": [{ "position": 10.0, "name": "PE", "triggers": {
+                        "on_blocked": [{ "action": "script", "source": "log("blocked");" }],
+                        "on_cleared": [{ "action": "script", "source": "log("cleared");" }]
+                    } }]"#,
+            "",
+            1,
+        ))
+        .expect("plain");
+        let a = crate::run_model(&plain).expect("first");
+        let b = crate::run_model(&plain).expect("second");
+        assert_eq!(
+            serde_json::to_string(&a).expect("json"),
+            serde_json::to_string(&b).expect("json")
+        );
+        assert!(a.tracked_series.is_empty());
     }
 }
