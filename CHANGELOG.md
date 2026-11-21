@@ -43,6 +43,11 @@
   GUI 从未展示；用 `generator → tank → valve → sink` 实测得到 `inflow 4.00 · throughput 3.63 · overflow 0.00`。
   新增 `the_fluid_report_names_levels_and_flows` 测试（GUI 116 项）。
 
+- **Little 定律校验可见**：报告区新增 `Little's law check (…)` 面板——标题区分「全部在容差内」与
+  `N mismatch(es)`，表内逐对象给出 `WIP / 预测值 / 相对误差`，超容差的行走琥珀色。这是 CLI 用来判定
+  「结果可信」的关卡，GUI 此前完全没有展示（`mm1` 上三个对象误差均 < 0.008%）。
+  新增 `the_little_check_panel_reports_each_object` 测试（GUI 117 项）。
+
 ## v1.31.0 — 2026-11-21
 
 本轮集中在**报告的可信度**：单次复现不再伪装成高精度、预热时间被明确标注、AGV 电量进入画布提示；并让 `Add row` 与其余表操作一样遵守「先校验后快照」。发布节奏保持**至少 3 小时一版**。

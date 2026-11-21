@@ -10217,6 +10217,81 @@ impl eframe::App for OpenFlexApp {
                         }
                     }
                 }
+                // Little's law check: the CLI uses it as a correctness gate, so
+                // showing only "valid" would hide which objects were checked.
+                if let Some(check) = report.little_check.as_ref() {
+                    let ok = check.mismatches.is_empty();
+                    egui::CollapsingHeader::new(if ok {
+                        "Little's law check (all objects within tolerance)".to_string()
+                    } else {
+                        format!("Little's law check ({} mismatch(es))", check.mismatches.len())
+                    })
+                    .id_salt("little-check")
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "tolerance {:.0}% · {} object(s) checked",
+                                check.tolerance * 100.0,
+                                check.objects.len()
+                            ))
+                            .size(9.0_f32)
+                            .monospace()
+                            .color(if ok { palette::OK } else { palette::AMBER }),
+                        );
+                        egui::Grid::new("little-grid")
+                            .striped(true)
+                            .num_columns(4)
+                            .spacing([10.0, 2.0])
+                            .show(ui, |ui| {
+                                for header in ["object", "WIP", "predicted", "error"] {
+                                    ui.label(
+                                        egui::RichText::new(header)
+                                            .strong()
+                                            .size(9.0_f32)
+                                            .color(palette::TEXT_DIM),
+                                    );
+                                }
+                                ui.end_row();
+                                for (name, entry) in &check.objects {
+                                    let colour = if entry.ok { palette::TEXT } else { palette::AMBER };
+                                    ui.label(
+                                        egui::RichText::new(name)
+                                            .small()
+                                            .monospace()
+                                            .color(colour),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{:.2}",
+                                            entry.content_avg
+                                        ))
+                                        .small()
+                                        .monospace()
+                                        .color(colour),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{:.2}",
+                                            entry.predicted_content
+                                        ))
+                                        .small()
+                                        .monospace()
+                                        .color(colour),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{:.3}%",
+                                            entry.relative_error * 100.0
+                                        ))
+                                        .small()
+                                        .monospace()
+                                        .color(colour),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                    });
+                }
                 // Fluid statistics: the CLI prints per-object levels and flows;
                 // the GUI showed none of it.
                 if let Some(fluid) = report.fluid.as_ref() {
@@ -11743,6 +11818,29 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn the_little_check_panel_reports_each_object() {
+        // Header text depends on whether anything exceeded the tolerance.
+        let header = |mismatches: usize| {
+            if mismatches == 0 {
+                "Little's law check (all objects within tolerance)".to_string()
+            } else {
+                format!("Little's law check ({mismatches} mismatch(es))")
+            }
+        };
+        assert_eq!(
+            header(0),
+            "Little's law check (all objects within tolerance)"
+        );
+        assert_eq!(header(2), "Little's law check (2 mismatch(es))");
+        // The four columns the table draws.
+        let headers = ["object", "WIP", "predicted", "error"];
+        assert_eq!(headers.len(), 4);
+        // An object within tolerance renders a small relative error.
+        let error = 7.476317408706492e-06_f64;
+        assert_eq!(format!("{:.3}%", error * 100.0), "0.001%");
     }
 
     #[test]
