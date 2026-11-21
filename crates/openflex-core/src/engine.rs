@@ -853,6 +853,11 @@ pub(crate) struct ObjectRt {
     /// task-179: sensing half-width for each Photo Eye.
     #[serde(default)]
     photo_eye_ranges: Vec<f64>,
+    /// task-181: sensing half-width and per-item once flags for decision points.
+    #[serde(default)]
+    decision_point_ranges: Vec<f64>,
+    #[serde(default)]
+    decision_handled: Vec<Vec<bool>>,
     /// B3: number of upstream belts merged onto this belt (0/1 = disabled).
     join_inputs: u32,
     /// task-178: merge-controller mode and its state.
@@ -1002,6 +1007,8 @@ impl ObjectRt {
             belt_handled: Vec::new(),
             photo_eye_states: Vec::new(),
             photo_eye_ranges: Vec::new(),
+            decision_point_ranges: Vec::new(),
+            decision_handled: Vec::new(),
             join_inputs: 0,
             merge_mode: MergeMode::RoundRobin,
             merge_weight: Vec::new(),
@@ -1109,6 +1116,11 @@ impl ObjectRt {
                     .photo_eyes
                     .iter()
                     .map(|eye| eye.range.unwrap_or(0.5).max(EPS))
+                    .collect();
+                runtime.decision_point_ranges = params
+                    .decision_points
+                    .iter()
+                    .map(|point| point.range.max(EPS))
                     .collect();
                 for (station, conveyor_station) in params.stations.iter().enumerate() {
                     stops.push(BeltStop {
@@ -4743,6 +4755,10 @@ impl<'m> Simulation<'m> {
                     belt.admit();
                 }
                 self.objects[target].belt_items.push(item);
+                let point_count = self.objects[target].decision_point_ranges.len();
+                self.objects[target]
+                    .decision_handled
+                    .push(vec![false; point_count]);
                 let stop_count = self.objects[target].belt_stops.len();
                 self.objects[target]
                     .belt_handled
@@ -9780,6 +9796,90 @@ impl<'m> Simulation<'m> {
         Ok(())
     }
 
+    /// task-181: evaluate decision points for each item in range. Actions are
+    /// applied to that item; `once_per_item` is reset when it leaves the range.
+    fn update_decision_points(&mut self, index: usize) -> Result<(), SimError> {
+        let points = match &self.model.objects[index].params {
+            ObjectParams::Conveyor(params) => params.decision_points.clone(),
+            _ => return Ok(()),
+        };
+        if points.is_empty() {
+            return Ok(());
+        }
+        let positions = self.objects[index]
+            .belt
+            .as_ref()
+            .map(|belt| belt.positions.clone())
+            .unwrap_or_default();
+        let ranges = self.objects[index].decision_point_ranges.clone();
+        let item_count = self.objects[index].belt_items.len();
+        if self.objects[index].decision_handled.len() < item_count {
+            self.objects[index]
+                .decision_handled
+                .resize_with(item_count, || vec![false; points.len()]);
+        }
+        for item_index in 0..self.objects[index].belt_items.len() {
+            for (point_index, point) in points.iter().enumerate() {
+                let range = ranges.get(point_index).copied().unwrap_or(0.5).max(EPS);
+                let position = positions.get(item_index).copied().unwrap_or(0.0);
+                let covered = position >= point.position - range - EPS
+                    && position < point.position + range - EPS;
+                let handled = self.objects[index]
+                    .decision_handled
+                    .get(item_index)
+                    .and_then(|flags| flags.get(point_index))
+                    .copied()
+                    .unwrap_or(false);
+                if !covered {
+                    if let Some(flags) = self.objects[index].decision_handled.get_mut(item_index)
+                        && let Some(flag) = flags.get_mut(point_index)
+                    {
+                        *flag = false;
+                    }
+                    continue;
+                }
+                if point.once_per_item && handled {
+                    continue;
+                }
+                let Some(mut item) = self.objects[index].belt_items.get(item_index).cloned() else {
+                    continue;
+                };
+                let matched = match &point.condition {
+                    Some(condition) => {
+                        let value = condition
+                            .eval(&ExprContext::new(self, Some(&item)))
+                            .map_err(|error| SimError::Expression {
+                                location: format!(
+                                    "{}.decision_points[{point_index}] (item {})",
+                                    self.objects[index].name, item.id
+                                ),
+                                detail: format!("t={}: {error}", self.now),
+                            })?;
+                        value.as_bool()
+                    }
+                    None => true,
+                };
+                if matched {
+                    self.action_location = format!(
+                        "{}.decision_points[{point_index}].actions",
+                        self.objects[index].name
+                    );
+                    self.apply_actions(index, &mut item, point.actions.clone())?;
+                    if let Some(slot) = self.objects[index].belt_items.get_mut(item_index) {
+                        *slot = item;
+                    }
+                }
+                if point.once_per_item
+                    && let Some(flags) = self.objects[index].decision_handled.get_mut(item_index)
+                    && let Some(flag) = flags.get_mut(point_index)
+                {
+                    *flag = true;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// task-179: update the four-state Photo Eye machine after a belt tick.
     ///
     /// The beam is blocked while an item sits exactly on the eye (the normal
@@ -9985,6 +10085,62 @@ impl<'m> Simulation<'m> {
         next
     }
 
+    /// task-181: earliest decision-point boundary candidate (same boundary
+    /// mechanism as Photo Eyes, so no separate time model).
+    fn decision_point_next_event(&self, index: usize) -> Option<f64> {
+        let belt = self.objects[index].belt.as_ref()?;
+        if belt.is_empty() {
+            return None;
+        }
+        let points = match &self.model.objects[index].params {
+            ObjectParams::Conveyor(params) => &params.decision_points,
+            _ => return None,
+        };
+        let mut next: Option<f64> = None;
+        for (point_index, point) in points.iter().enumerate() {
+            let range = self.objects[index]
+                .decision_point_ranges
+                .get(point_index)
+                .copied()
+                .unwrap_or(0.5)
+                .max(EPS);
+            let lower = point.position - range;
+            let upper = point.position + range;
+            if lower <= EPS && upper >= belt.length - EPS {
+                continue;
+            }
+            for item in 0..belt.positions.len() {
+                if belt.hold_remaining(item) > EPS {
+                    continue;
+                }
+                let current = belt.positions[item];
+                let limit = if item == 0 {
+                    belt.length
+                } else {
+                    (belt.positions[item - 1] - belt.spacing).max(current)
+                };
+                let boundary = if current < lower - EPS {
+                    lower
+                } else if current < upper - EPS {
+                    upper
+                } else {
+                    continue;
+                };
+                if boundary <= current + EPS
+                    || boundary > limit + EPS
+                    || boundary > belt.length + EPS
+                {
+                    continue;
+                }
+                let time = belt.time_to_reach(current, boundary);
+                if time > EPS {
+                    next = Some(next.map_or(time, |value: f64| value.min(time)));
+                }
+            }
+        }
+        next
+    }
+
     fn schedule_belt_tick(&mut self, index: usize) {
         let stops = self.belt_stop_positions(index);
         let next = if self.objects[index].belt_slug {
@@ -9996,10 +10152,11 @@ impl<'m> Simulation<'m> {
                 .and_then(|belt| belt.time_to_next_event_with_stops(&stops))
         };
         let photo = self.photo_eye_next_event(index);
-        let next_dt = match (next, photo) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        let decision = self.decision_point_next_event(index);
+        let next_dt = [next, photo, decision]
+            .into_iter()
+            .flatten()
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let Some(dt) = next_dt else {
             return;
         };
@@ -10016,6 +10173,7 @@ impl<'m> Simulation<'m> {
     fn handle_belt_tick(&mut self, index: usize) -> Result<(), SimError> {
         self.objects[index].belt_tick_at = f64::INFINITY;
         self.sync_belt(index);
+        self.update_decision_points(index)?;
         self.process_belt_stops(index)?;
         self.flow(index)?;
         self.notify_upstreams(index)
@@ -10023,6 +10181,7 @@ impl<'m> Simulation<'m> {
 
     fn flow_conveyor(&mut self, index: usize) -> Result<(), SimError> {
         self.sync_belt(index);
+        self.update_decision_points(index)?;
         self.process_belt_stops(index)?;
         loop {
             let ready = self.objects[index]
@@ -10055,6 +10214,9 @@ impl<'m> Simulation<'m> {
             }
             if !self.objects[index].belt_handled.is_empty() {
                 self.objects[index].belt_handled.remove(0);
+            }
+            if !self.objects[index].decision_handled.is_empty() {
+                self.objects[index].decision_handled.remove(0);
             }
             self.objects[index].touch();
             self.objects[index].acc.output += 1;
@@ -11837,6 +11999,20 @@ fn collect_model_scripts(model: &Model) -> Vec<(String, String)> {
             }
         }
         if let ObjectParams::Conveyor(params) = &object.params {
+            for (point_index, point) in params.decision_points.iter().enumerate() {
+                for (position, action) in point.actions.iter().enumerate() {
+                    if let Action::Script { source } = action {
+                        push(
+                            &mut sources,
+                            source,
+                            format!(
+                                "objects.{}.decision_points[{point_index}].actions[{position}]",
+                                object.name
+                            ),
+                        );
+                    }
+                }
+            }
             for (eye_index, eye) in params.photo_eyes.iter().enumerate() {
                 for (trigger, actions) in [
                     ("on_blocked", &eye.triggers.on_blocked),
@@ -11981,8 +12157,10 @@ fn enrich_script_error(error: ScriptError, source: &str, location: &str, time: f
     );
     if undefined {
         context.push_str("\n  available: ");
+        // Use the script surface, not the expression paths: a rhai script cannot
+        // resolve `item.type`, so advertising it would send the user the wrong way.
         context.push_str(
-            &openflex_model::BUILTIN_VARIABLES
+            &crate::script::SCRIPT_VARIABLES
                 .iter()
                 .map(|(name, _)| *name)
                 .collect::<Vec<_>>()
@@ -16050,6 +16228,36 @@ mod tests {
         assert!(text.contains("Variable not found"), "{text}");
     }
 
+    /// The `available:` hint must list the *script* surface. `item.type` is an
+    /// expression path a rhai script cannot resolve, so advertising it sends the
+    /// user somewhere that cannot work.
+    #[test]
+    fn script_hint_lists_script_identifiers_not_expression_paths() {
+        let model = script_check_model("log(nope_variable);", true);
+        let error = crate::run_model(&model).expect_err("runtime script error");
+        let text = error.to_string();
+        let hint = text
+            .lines()
+            .find(|line| line.trim_start().starts_with("available:"))
+            .unwrap_or_else(|| panic!("no hint line in {text}"));
+        assert!(
+            hint.contains("item_type"),
+            "the script variable is listed: {hint}"
+        );
+        assert!(hint.contains("set_label("), "functions are listed: {hint}");
+        assert!(
+            !hint.contains("item.type"),
+            "an expression path leaked into a script hint: {hint}"
+        );
+        // The same wording is shared with the expression layer, so they cannot
+        // drift apart silently.
+        assert!(
+            crate::script::SCRIPT_VARIABLES
+                .iter()
+                .any(|(name, _)| *name == "item_type")
+        );
+    }
+
     /// The diagnostic is printed once: `SimError::Script`'s field is not called
     /// `source`, so a cause-chain printer (anyhow's `{:?}`) does not repeat text
     /// that the `Display` already inlines.
@@ -16725,5 +16933,215 @@ mod tests {
             serde_json::to_string(&b).expect("json")
         );
         assert!(a.tracked_series.is_empty());
+    }
+
+    fn decision_point_model(condition: &str, once: bool, item_type: u32) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "decision-point",
+          "run": {{ "stop_time": 20.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0, "item_type": {item_type} }} }},
+            {{ "name": "C", "kind": "conveyor", "params": {{
+                "speed": 1.0, "length": 20.0, "item_spacing": 1.0, "accumulating": true,
+                "decision_points": [{{
+                    "position": 5.0, "range": 0.5, "condition": "{condition}",
+                    "once_per_item": {once},
+                    "actions": [{{ "action": "script", "source": "log(\"dp\");" }}]
+                }}] }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [{{ "from": "S", "to": "C" }}, {{ "from": "C", "to": "K" }}]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    /// task-181: decision point evaluates item condition and runs actions at
+    /// the sensing boundary (not at the exit).
+    #[test]
+    fn decision_point_runs_actions_for_matching_item() {
+        let model = decision_point_model("item.type == 0", true, 0);
+        let config = SimConfig {
+            stop_time: 20.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let logs: Vec<f64> = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "script_log" && event.message == "dp")
+            .map(|event| event.time)
+            .collect();
+        assert_eq!(logs.len(), 1, "{logs:?}");
+        assert!((logs[0] - 4.5).abs() < 0.01, "decision at {logs:?}");
+    }
+
+    /// task-181: a false item condition executes nothing.
+    #[test]
+    fn decision_point_skips_non_matching_item() {
+        let model = decision_point_model("item.type == 0", true, 1);
+        let config = SimConfig {
+            stop_time: 20.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        assert!(
+            !trace
+                .events
+                .iter()
+                .any(|event| event.event == "script_log" && event.message == "dp")
+        );
+    }
+
+    /// task-181: an invalid decision condition/actions and position are rejected.
+    #[test]
+    fn decision_point_validation_rejects_bad_points() {
+        let model = decision_point_model("item.type == 0", true, 0);
+        let mut raw =
+            Model::parse_json(&serde_json::to_string(&model).expect("json")).expect("parse");
+        if let ObjectParams::Conveyor(params) = &mut raw.objects[1].params {
+            params.decision_points[0].position = 99.0;
+        }
+        let error = raw.validate().expect_err("position");
+        assert!(
+            error.to_string().contains("decision_points[0].position"),
+            "{error}"
+        );
+
+        let mut raw =
+            Model::parse_json(&serde_json::to_string(&model).expect("json")).expect("parse");
+        if let ObjectParams::Conveyor(params) = &mut raw.objects[1].params {
+            params.decision_points[0].actions = vec![openflex_model::Action::Script {
+                source: "let broken = ;".into(),
+            }];
+        }
+        let error = raw.validate().expect_err("action");
+        assert!(
+            error.to_string().contains("decision_points[0].actions"),
+            "{error}"
+        );
+    }
+
+    /// task-181: decision points are deterministic and absent decision points
+    /// leave a conveyor report unchanged.
+    #[test]
+    fn decision_points_are_deterministic_and_optional() {
+        let model = decision_point_model("item.type == 0", true, 0);
+        let config = SimConfig {
+            stop_time: 20.0,
+            warmup: 0.0,
+            seed: 3,
+        };
+        let (first, first_trace) = crate::simulate_traced(&model, &config, 0).expect("first");
+        let (second, second_trace) = crate::simulate_traced(&model, &config, 0).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
+        assert_eq!(first_trace, second_trace);
+
+        let no_points = Model::from_json(
+            r#"{
+              "format": "openflex-model", "version": 1, "name": "no-dp",
+              "run": { "stop_time": 20.0, "seed": 1 },
+              "objects": [
+                { "name": "S", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 1.0 },
+                    "max_arrivals": 1 } },
+                { "name": "C", "kind": "conveyor", "params": { "speed": 1.0, "length": 10.0 } },
+                { "name": "K", "kind": "sink", "params": {} }
+              ],
+              "connections": [
+                { "from": "S", "to": "C" }, { "from": "C", "to": "K" }
+              ]
+            }"#,
+        )
+        .expect("model");
+        let a = crate::run_model(&no_points).expect("a");
+        let b = crate::run_model(&no_points).expect("b");
+        assert_eq!(
+            serde_json::to_string(&a).expect("json"),
+            serde_json::to_string(&b).expect("json")
+        );
+    }
+
+    /// task-181: once_per_item suppresses repeat actions while the item stays
+    /// inside the sensing range; false re-evaluates on each update.
+    #[test]
+    fn decision_point_once_per_item_controls_repeats() {
+        for once in [true, false] {
+            let model = decision_point_model("item.type == 0", once, 0);
+            let config = SimConfig {
+                stop_time: 20.0,
+                warmup: 0.0,
+                seed: 1,
+            };
+            let mut sim = Simulation::new(&model, config, true).expect("sim");
+            let c = sim.by_name["C"];
+            sim.objects[c].belt.as_mut().expect("belt").positions = vec![5.0];
+            sim.objects[c].belt_items.push(item());
+            sim.update_decision_points(c).expect("first");
+            sim.update_decision_points(c).expect("second");
+            let count = sim
+                .trace
+                .as_ref()
+                .expect("trace")
+                .events
+                .iter()
+                .filter(|event| event.event == "script_log" && event.message == "dp")
+                .count();
+            assert_eq!(count, if once { 1 } else { 2 }, "once={once}");
+        }
+    }
+
+    /// task-181: a condition evaluation failure is a SimError naming the point,
+    /// item id and model time; it is never silently treated as false.
+    #[test]
+    fn decision_point_condition_error_is_reported() {
+        let model = decision_point_model("1 / 0 > 0", true, 0);
+        let error = crate::run_model(&model).expect_err("condition error");
+        let text = error.to_string();
+        assert!(text.contains("decision_points[0]"), "{text}");
+        assert!(text.contains("item 1"), "{text}");
+        assert!(text.contains("t="), "{text}");
+    }
+
+    /// task-181: a decision point and a Photo Eye at the same position are
+    /// independent sources of events/actions.
+    #[test]
+    fn decision_point_and_photo_eye_coexist() {
+        let mut model = decision_point_model("item.type == 0", true, 0);
+        if let ObjectParams::Conveyor(params) = &mut model.objects[1].params {
+            params.photo_eyes.push(openflex_model::PhotoEye {
+                position: 5.0,
+                name: "PE".into(),
+                range: Some(0.5),
+                triggers: openflex_model::PhotoEyeTriggers {
+                    on_blocked: vec![openflex_model::Action::Script {
+                        source: "log(\"eye\");".into(),
+                    }],
+                    on_cleared: Vec::new(),
+                },
+            });
+        }
+        let config = SimConfig {
+            stop_time: 20.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let logs: Vec<&str> = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "script_log")
+            .map(|event| event.message.as_str())
+            .collect();
+        assert_eq!(logs.iter().filter(|message| **message == "dp").count(), 1);
+        assert_eq!(logs.iter().filter(|message| **message == "eye").count(), 1);
     }
 }

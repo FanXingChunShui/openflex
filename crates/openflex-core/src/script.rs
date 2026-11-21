@@ -327,6 +327,32 @@ struct RunState {
     move_items: Vec<(String, String)>,
 }
 
+/// The identifiers a sandboxed script can actually use, with a one-line gloss.
+///
+/// Diagnostics list these (not the *expression* language's paths) so an
+/// "unknown variable" hint never advertises something the sandbox cannot
+/// resolve — `item.type` belongs to expressions, `item_type` to scripts.
+pub const SCRIPT_VARIABLES: &[(&str, &str)] = &[
+    ("time", "model time"),
+    ("item_type", "flow item type"),
+    ("item_id", "flow item id"),
+    ("label(name)", "numeric label of the item"),
+    ("set_label(name, value)", "set a numeric label"),
+    ("set_item_type(value)", "change the item type"),
+    ("send_message(target, delay)", "schedule a message"),
+    ("release_item()", "release the held item"),
+    ("log(message)", "append to the simulation log"),
+    ("object_content(name)", "buffered items of another object"),
+    ("object_state(name)", "state of another object"),
+    (
+        "object_utilization(name)",
+        "busy fraction of another object",
+    ),
+    ("set_state(name)", "request a finite state"),
+    ("create_item(object, count)", "create flow items"),
+    ("move_item(from, to)", "move one buffered item"),
+];
+
 /// Register the documented sandbox API on a per-run engine.
 ///
 /// The closures share [`RunState`] through an `Arc<Mutex<_>>`; this keeps the

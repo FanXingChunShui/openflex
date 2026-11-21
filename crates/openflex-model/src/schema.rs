@@ -393,7 +393,7 @@ fn definitions() -> Value {
                     "properties": {
                         "position": { "type": "number", "exclusiveMinimum": 0 },
                         "name": { "type": "string", "default": "" },
-                        "range": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+                        "range": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
                         "triggers": {
                             "type": "object",
                             "properties": {
@@ -428,6 +428,22 @@ fn definitions() -> Value {
             "merge_weight": {
                 "type": ["array", "null"],
                 "items": { "type": "number", "exclusiveMinimum": 0 }
+            },
+            "decision_points": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "position": { "type": "number", "exclusiveMinimum": 0 },
+                        "range": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+                        "condition": { "$ref": "#/$defs/expression" },
+                        "actions": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                        "once_per_item": { "type": "boolean", "default": false },
+                        "name": { "type": "string", "default": "" }
+                    },
+                    "required": ["position"],
+                    "additionalProperties": false
+                }
             }
         })),
     );

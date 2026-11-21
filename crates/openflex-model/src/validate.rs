@@ -763,6 +763,35 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                     }
                 }
             }
+            for (i, point) in params.decision_points.iter().enumerate() {
+                if !point.position.is_finite()
+                    || point.position <= 0.0
+                    || point.position >= params.length
+                {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("decision_points[{i}].position")),
+                        "must be inside the belt (0 < position < length)",
+                    ));
+                }
+                if !point.range.is_finite() || point.range <= 0.0 {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("decision_points[{i}].range")),
+                        "must be positive",
+                    ));
+                }
+                for (position, action) in point.actions.iter().enumerate() {
+                    if let crate::action::Action::Script { source } = action {
+                        validate_script_source(
+                            source,
+                            &format!(
+                                "objects.{}.decision_points[{i}].actions[{position}].source",
+                                object.name
+                            ),
+                            &mut issues,
+                        );
+                    }
+                }
+            }
             if let Some(inputs) = params.join_inputs
                 && inputs < 2
             {

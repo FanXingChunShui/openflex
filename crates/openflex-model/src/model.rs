@@ -1732,6 +1732,29 @@ impl MergeMode {
     }
 }
 
+/// task-181: a position-based decision point on a conveyor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionPoint {
+    /// Distance from the belt entry.
+    pub position: f64,
+    /// Sensing half-width (default 1.0 distance units).
+    #[serde(default = "one_f64")]
+    pub range: f64,
+    /// Optional expression evaluated with the current item (`item.*`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<Expr>,
+    /// Actions run against the item when the condition is true.
+    #[serde(default)]
+    pub actions: Vec<Action>,
+    /// Run at most once per item while it remains in the sensing range; reset
+    /// when the item leaves the range.
+    #[serde(default)]
+    pub once_per_item: bool,
+    #[serde(default)]
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConveyorParams {
@@ -1769,6 +1792,9 @@ pub struct ConveyorParams {
     /// task-178: per-input weights for `merge_mode: weighted`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_weight: Option<Vec<f64>>,
+    /// task-181: position-based decision points.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decision_points: Vec<DecisionPoint>,
     /// Optional curved section appended after the straight length; its arc
     /// length adds travel distance at the same speed.
     #[serde(default)]
@@ -1818,6 +1844,7 @@ impl Default for ConveyorParams {
             join_inputs: None,
             merge_mode: MergeMode::RoundRobin,
             merge_weight: None,
+            decision_points: Vec::new(),
             curve: None,
             segments: Vec::new(),
             shifts: Vec::new(),

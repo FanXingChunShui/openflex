@@ -17,6 +17,17 @@
 
 ### 模型与引擎
 
+- **conveyor 决策点**：`ConveyorParams.decision_points: [{ position, range, condition, actions, once_per_item, name }]`。
+  件经过感应区时对**该件**求值 `condition`（复用既有表达式语言，`item.*` 指向它），为真按序执行 `actions`；
+  `once_per_item` 离开感应区后重置。**复用光电门那套「边界穿越是皮带事件」机制，没有新时间模型**。
+  实测决策点在 `position 5.0 − range 0.5 = 4.500` 精确触发。条件求值失败是明确 `SimError`
+  （含决策点名、件 id、模型时间），不静默当 false。明确不做：决策点的类型库（与 ConveyorSystemTool = 有意差异一致）、
+  与 merge controller 的联动（用自身计数判断）。
+- **脚本诊断的 `available:` 提示改用脚本变量表**：task-177 的提示原样用了**表达式语言**的 `BUILTIN_VARIABLES`，
+  于是 rhai 脚本里报「变量找不到」时，提示会列出 `item.type` 这类**脚本根本解析不了**的路径。
+  现在改用新增的 `SCRIPT_VARIABLES`（`time` / `item_type` / `item_id` / `label(name)` / `set_label(...)` …），
+  并加回归测试断言提示里**不出现** `item.type`。
+
 - **conveyor 光电门四状态**：`PhotoEye` 新增 `range`（感应半宽，缺省 0.5，**注释已说明这是本项目自选粒度而非 FlexSim 公开值**）
   与 `triggers { on_blocked, on_cleared }`（空时不序列化，旧 JSON 与行为逐位不变）。
   引擎为每个光电门维护 `Cleared / Blocking / Blocked / Clearing` 四状态，
