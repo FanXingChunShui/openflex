@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### 桌面 GUI
+
+- **`explicit` 路线编辑器**：任务序列编辑区新增 `append` / `explicit` 模式切换；
+  explicit 下每个 travel 腿显示目标选择器（`home` / `object` / `position` / 无），
+  `object` 给名字输入、`position` 给 x/y 两个 DragValue，可单独删除某腿。
+  此前 `target` 字段只靠编译兜底被保留、在界面里完全不可编辑。GUI 测试 **133 项**。
+
+
 ## v1.35.0 — 2026-11-21
 
 这一轮有三条主线：**让模型能自己声明「量」与「路线」**（只读 SQL、Tracked Variable 四种类型、`explicit` 固定路线、`utilize`/`break` 任务腿），**让「这一件走了哪条路径」可回答**（trace 带 flow item id + 真实 `enter`/`exit`、`openflex trace` 的单件与跨件视图），以及**终端里能看的图表**（`openflex chart`）。

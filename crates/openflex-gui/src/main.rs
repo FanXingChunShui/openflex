@@ -1122,6 +1122,25 @@ fn sparkline(ui: &mut egui::Ui, series: &[(f64, f64)], width: f32, height: f32) 
     true
 }
 
+/// Short label for a travel target, shared by the picker and its tests.
+fn describe_travel_target(target: Option<&openflex_model::TravelTarget>) -> String {
+    match target {
+        None => "(no target)".to_string(),
+        Some(openflex_model::TravelTarget::Named(name)) => match name {
+            openflex_model::TravelTargetName::Home => "home".to_string(),
+            openflex_model::TravelTargetName::Pickup => "pickup".to_string(),
+            openflex_model::TravelTargetName::Requester => "requester".to_string(),
+        },
+        Some(openflex_model::TravelTarget::Object(pick)) if pick.object.is_empty() => {
+            "object".to_string()
+        }
+        Some(openflex_model::TravelTarget::Object(pick)) => format!("→ {}", pick.object),
+        Some(openflex_model::TravelTarget::Position(spot)) => {
+            format!("({:.1}, {:.1})", spot.position[0], spot.position[1])
+        }
+    }
+}
+
 /// FlexSim's "Sampler", in miniature: pick an object by name from a dropdown of
 /// the objects that would make sense there, instead of typing the name blind.
 ///
@@ -1715,6 +1734,147 @@ impl EditForm {
                 if let Some(index) = remove {
                     p.task_sequence.remove(index);
                     changed = true;
+                }
+                // Explicit routes are driven by the sequence, so the mode has to
+                // be visible next to the steps it governs.
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("mode")
+                            .size(9.0_f32)
+                            .color(palette::TEXT_DIM),
+                    );
+                    for (mode, name) in [
+                        (openflex_model::TaskSequenceMode::Append, "append"),
+                        (openflex_model::TaskSequenceMode::Explicit, "explicit"),
+                    ] {
+                        let selected = p.task_sequence_mode == mode;
+                        if ui
+                            .add(
+                                egui::Button::new(egui::RichText::new(name).size(9.0_f32).color(
+                                    if selected {
+                                        palette::ACCENT_HI
+                                    } else {
+                                        palette::TEXT_DIM
+                                    },
+                                ))
+                                .fill(palette::CARD)
+                                .rounding(egui::Rounding::same(4.0_f32)),
+                            )
+                            .clicked()
+                            && !selected
+                        {
+                            p.task_sequence_mode = mode;
+                            changed = true;
+                        }
+                    }
+                });
+                if p.task_sequence_mode == openflex_model::TaskSequenceMode::Explicit {
+                    ui.label(
+                        egui::RichText::new(
+                            "explicit: every travel leg needs a target (home / object / position)",
+                        )
+                        .size(9.0_f32)
+                        .color(palette::AMBER),
+                    );
+                }
+                // Per-step travel target editor. Only `explicit` travel legs use
+                // it, but it is harmless (and hidden) in append mode.
+                if p.task_sequence_mode == openflex_model::TaskSequenceMode::Explicit {
+                    let mut remove: Option<usize> = None;
+                    for (index, step) in p.task_sequence.iter_mut().enumerate() {
+                        let TaskStep::Detailed { kind, target, .. } = step else {
+                            continue;
+                        };
+                        if *kind != TaskStepKind::Travel {
+                            continue;
+                        }
+                        ui.horizontal(|ui| {
+                            ui.add_space(10.0);
+                            ui.label(
+                                egui::RichText::new(format!("leg {index}"))
+                                    .size(9.0_f32)
+                                    .monospace()
+                                    .color(palette::TEXT_DIM),
+                            );
+                            let mut label = describe_travel_target(target.as_ref());
+                            egui::ComboBox::from_id_salt(("travel-target", index))
+                                .selected_text(egui::RichText::new(label.clone()).small())
+                                .width(120.0)
+                                .show_ui(ui, |ui| {
+                                    for (name, text) in [
+                                        ("home", "home"),
+                                        ("object", "object"),
+                                        ("position", "position"),
+                                        ("none", "(no target)"),
+                                    ] {
+                                        let picked = label == text;
+                                        if ui.selectable_label(picked, text).clicked() && !picked {
+                                            *target = match name {
+                                                "home" => {
+                                                    Some(openflex_model::TravelTarget::Named(
+                                                        openflex_model::TravelTargetName::Home,
+                                                    ))
+                                                }
+                                                "object" => {
+                                                    Some(openflex_model::TravelTarget::Object(
+                                                        openflex_model::TravelObjectTarget {
+                                                            object: String::new(),
+                                                        },
+                                                    ))
+                                                }
+                                                "position" => {
+                                                    Some(openflex_model::TravelTarget::Position(
+                                                        openflex_model::TravelPositionTarget {
+                                                            position: [0.0, 0.0],
+                                                        },
+                                                    ))
+                                                }
+                                                _ => None,
+                                            };
+                                            label = text.to_string();
+                                            changed = true;
+                                        }
+                                    }
+                                });
+                            match target {
+                                Some(openflex_model::TravelTarget::Object(pick)) => {
+                                    changed |= ui
+                                        .add(
+                                            egui::TextEdit::singleline(&mut pick.object)
+                                                .hint_text("object name")
+                                                .desired_width(110.0)
+                                                .font(egui::TextStyle::Small),
+                                        )
+                                        .changed();
+                                }
+                                Some(openflex_model::TravelTarget::Position(spot)) => {
+                                    let [x, y] = &mut spot.position;
+                                    for (value, prefix) in [(x, "x "), (y, "y ")] {
+                                        changed |= ui
+                                            .add(
+                                                egui::DragValue::new(value)
+                                                    .speed(1.0)
+                                                    .max_decimals(2)
+                                                    .prefix(prefix),
+                                            )
+                                            .changed();
+                                    }
+                                }
+                                _ => {}
+                            }
+                            if ui
+                                .small_button("x")
+                                .on_hover_text("remove this step")
+                                .clicked()
+                            {
+                                remove = Some(index);
+                            }
+                        });
+                    }
+                    if let Some(index) = remove {
+                        p.task_sequence.remove(index);
+                        changed = true;
+                    }
                 }
                 ui.horizontal(|ui| {
                     for (kind, name) in [
@@ -14969,6 +15129,55 @@ mod tests {
                 path.display()
             );
             assert!(path.parent().is_some());
+        }
+    }
+
+    #[test]
+    fn travel_targets_are_labelled_and_round_trip() {
+        use openflex_model::{
+            TravelObjectTarget, TravelPositionTarget, TravelTarget, TravelTargetName,
+        };
+        assert_eq!(describe_travel_target(None), "(no target)");
+        assert_eq!(
+            describe_travel_target(Some(&TravelTarget::Named(TravelTargetName::Home))),
+            "home"
+        );
+        assert_eq!(
+            describe_travel_target(Some(&TravelTarget::Named(TravelTargetName::Requester))),
+            "requester"
+        );
+        // An object target shows the name once it is filled in.
+        let mut pick = TravelObjectTarget {
+            object: String::new(),
+        };
+        assert_eq!(
+            describe_travel_target(Some(&TravelTarget::Object(pick.clone()))),
+            "object"
+        );
+        pick.object = "Dock2".into();
+        assert_eq!(
+            describe_travel_target(Some(&TravelTarget::Object(pick))),
+            "→ Dock2"
+        );
+        assert_eq!(
+            describe_travel_target(Some(&TravelTarget::Position(TravelPositionTarget {
+                position: [12.0, 4.5],
+            }))),
+            "(12.0, 4.5)"
+        );
+        // Every target survives a JSON round trip: the editor writes these.
+        for target in [
+            TravelTarget::Named(TravelTargetName::Home),
+            TravelTarget::Object(TravelObjectTarget {
+                object: "Dock2".into(),
+            }),
+            TravelTarget::Position(TravelPositionTarget {
+                position: [1.5, -2.0],
+            }),
+        ] {
+            let json = serde_json::to_string(&target).expect("json");
+            let back: TravelTarget = serde_json::from_str(&json).expect("round trip");
+            assert_eq!(back, target);
         }
     }
 
