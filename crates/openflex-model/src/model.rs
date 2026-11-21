@@ -2091,6 +2091,9 @@ pub enum TaskStep {
         duration: Option<Distribution>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         condition: Option<Expr>,
+        /// task-173: destination for explicit-route `travel` legs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<TravelTarget>,
     },
     /// task-169: an extra-only `utilize`/`break` leg; duration is required by
     /// validation (kept optional here so the validator can report it instead
@@ -2111,6 +2114,14 @@ impl TaskStep {
             TaskStep::Simple(kind) => *kind,
             TaskStep::Detailed { kind, .. } => *kind,
             TaskStep::Extra { .. } => TaskStepKind::Travel,
+        }
+    }
+
+    /// task-173: explicit-route destination for a detailed travel leg.
+    pub fn target(&self) -> Option<&TravelTarget> {
+        match self {
+            TaskStep::Detailed { target, .. } => target.as_ref(),
+            TaskStep::Simple(_) | TaskStep::Extra { .. } => None,
         }
     }
 
@@ -2156,6 +2167,55 @@ pub enum TaskStepKind {
     Unload,
 }
 
+/// task-173: where an explicit-route `travel` leg goes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TravelTarget {
+    /// `"home"`, `"pickup"` or `"requester"`.
+    Named(TravelTargetName),
+    /// `{"object": "Name"}`.
+    Object(TravelObjectTarget),
+    /// `{"position": [x, y]}`.
+    Position(TravelPositionTarget),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TravelTargetName {
+    Home,
+    Pickup,
+    Requester,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TravelObjectTarget {
+    pub object: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TravelPositionTarget {
+    pub position: [f64; 2],
+}
+
+/// task-173: how a dispatcher's `task_sequence` is interpreted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskSequenceMode {
+    /// Existing behaviour: consume baseline legs, append extras.
+    #[default]
+    Append,
+    /// Travel-only fixed route driven entirely by the sequence.
+    Explicit,
+}
+
+impl TaskSequenceMode {
+    pub fn is_append(&self) -> bool {
+        matches!(self, TaskSequenceMode::Append)
+    }
+}
+
 /// task-169: extra-only task legs that are not part of the standard three kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2178,6 +2238,9 @@ pub struct DispatcherParams {
     /// travel → load → unload → travel behaviour.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub task_sequence: Vec<TaskStep>,
+    /// task-173: `explicit` drives a travel-only fixed route; absent = append.
+    #[serde(default, skip_serializing_if = "TaskSequenceMode::is_append")]
+    pub task_sequence_mode: TaskSequenceMode,
 
     /// task-65: delay before a preempted request is re-queued (0 = at once).
     #[serde(default)]

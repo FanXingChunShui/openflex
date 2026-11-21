@@ -1339,6 +1339,85 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
         }
         crate::model::ObjectParams::FluidSink(_) => {}
         crate::model::ObjectParams::Dispatcher(params) => {
+            if params.task_sequence_mode == crate::model::TaskSequenceMode::Explicit {
+                if params.task_sequence.is_empty() {
+                    issues.push(ValidationIssue::new(
+                        location("task_sequence"),
+                        "explicit mode requires a non-empty travel route",
+                    ));
+                }
+                if !params.task_sequence.iter().any(|step| {
+                    step.kind() == crate::model::TaskStepKind::Travel && step.extra_kind().is_none()
+                }) {
+                    issues.push(ValidationIssue::new(
+                        location("task_sequence"),
+                        "explicit mode requires at least one travel leg",
+                    ));
+                }
+                for (position, step) in params.task_sequence.iter().enumerate() {
+                    let at = format!("task_sequence[{position}]");
+                    if step.extra_kind().is_some()
+                        || step.kind() != crate::model::TaskStepKind::Travel
+                    {
+                        issues.push(ValidationIssue::new(
+                            location(&at),
+                            "explicit mode currently supports only travel legs",
+                        ));
+                        continue;
+                    }
+                    let Some(target) = step.target() else {
+                        issues.push(ValidationIssue::new(
+                            location(&format!("{at}.target")),
+                            "explicit travel legs require a target",
+                        ));
+                        continue;
+                    };
+                    match target {
+                        crate::model::TravelTarget::Named(
+                            crate::model::TravelTargetName::Home,
+                        ) => {}
+                        crate::model::TravelTarget::Named(
+                            name @ (crate::model::TravelTargetName::Pickup
+                            | crate::model::TravelTargetName::Requester),
+                        ) => issues.push(ValidationIssue::new(
+                            location(&format!("{at}.target")),
+                            format!(
+                                "explicit travel target '{}' is not implemented yet; use home/object/position",
+                                match name {
+                                    crate::model::TravelTargetName::Pickup => "pickup",
+                                    crate::model::TravelTargetName::Requester => "requester",
+                                    crate::model::TravelTargetName::Home => "home",
+                                }
+                            ),
+                        )),
+                        crate::model::TravelTarget::Object(object) => {
+                            if !model.objects.iter().any(|entry| entry.name == object.object) {
+                                issues.push(ValidationIssue::new(
+                                    location(&format!("{at}.target.object")),
+                                    format!("unknown object \"{}\"", object.object),
+                                ));
+                            }
+                        }
+                        crate::model::TravelTarget::Position(position) => {
+                            if position.position.iter().any(|value| !value.is_finite()) {
+                                issues.push(ValidationIssue::new(
+                                    location(&format!("{at}.target.position")),
+                                    "coordinates must be finite",
+                                ));
+                            }
+                        }
+                    }
+                }
+            } else if params
+                .task_sequence
+                .iter()
+                .any(|step| step.target().is_some())
+            {
+                issues.push(ValidationIssue::new(
+                    location("task_sequence"),
+                    "target is only valid in explicit task_sequence_mode",
+                ));
+            }
             for (position, step) in params.task_sequence.iter().enumerate() {
                 let field = format!("task_sequence[{position}].duration");
                 if let Some(_extra) = step.extra_kind() {

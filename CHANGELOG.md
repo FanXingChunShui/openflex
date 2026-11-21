@@ -30,6 +30,15 @@
 
 ### 模型与引擎
 
+- **`explicit` 固定路线（第一刀）**：`task_sequence_mode: "explicit"` + 一串 `travel` 目标
+  （`"home"` / `{ "object": 名字 }` / `{ "position": [x, y] }`），执行器按表逐段行驶，
+  段间复用路网距离与 `traffic_control` 准入（阻塞期间 blocked、**不计 travel**）。
+  `append`（缺省）不序列化该字段、行为**逐位不变**；`finish_task` 的收尾逻辑未改，
+  路线要回 home 就显式写 `target: "home"`。
+  依赖任务上下文的 `pickup` / `requester` **可以解析但 validate 明确报未实现**，不静默当 home。
+  实测几何精确：`home`(0,0) 瞬时 → `{object:"P"}`(10,0) 耗时 10 → `{position:[15,2]}` 耗时
+  **5.385 = √(5²+2²)**；零距离路线在 dispatch 报 `SimError::Config`，避免同刻无限重派。
+
 - **trace 事件带上 flow item id**：`TraceEvent.data["item"]` 现写 `FlowItem::id`（与 `items_created` 同源），
   并**真正新增 `enter` / `exit` 两个边界事件**（进入/离开对象各一次，成对且有序）。
   `arrive` / `flow` / `process_done` / `setup_done` / `transport_pickup|depart|arrive|home` 均带该键；

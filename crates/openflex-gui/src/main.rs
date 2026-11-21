@@ -1683,11 +1683,13 @@ impl EditForm {
                                             TaskStep::Detailed {
                                                 duration,
                                                 condition,
+                                                target,
                                                 ..
                                             } => TaskStep::Detailed {
                                                 kind,
                                                 duration: duration.clone(),
                                                 condition: condition.clone(),
+                                                target: target.clone(),
                                             },
                                             TaskStep::Simple(_) => TaskStep::Simple(kind),
                                             // task-169: extra-only legs are not
@@ -15007,16 +15009,19 @@ mod tests {
             kind: TaskStepKind::Travel,
             duration: Some(Distribution::Constant { value: 2.0 }),
             condition: None,
+            target: None,
         };
         let switched = match step {
             TaskStep::Detailed {
                 duration,
                 condition,
+                target,
                 ..
             } => TaskStep::Detailed {
                 kind: TaskStepKind::Load,
                 duration,
                 condition,
+                target,
             },
             TaskStep::Simple(_) => TaskStep::Simple(TaskStepKind::Load),
             // The combo box shows extra-only legs read-only, so this arm is not

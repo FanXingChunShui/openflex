@@ -484,6 +484,11 @@ fn definitions() -> Value {
         "dispatcher_params".into(),
         params_schema(json!({
             "max_tasks": { "type": "integer", "minimum": 0, "default": 0 },
+            "task_sequence_mode": {
+                "type": "string",
+                "enum": ["append", "explicit"],
+                "default": "append"
+            },
             "task_sequence": {
                 "type": "array",
                 "items": {
@@ -494,7 +499,31 @@ fn definitions() -> Value {
                             "properties": {
                                 "kind": { "enum": ["travel", "load", "unload", "utilize", "break"] },
                                 "duration": { "$ref": "#/$defs/distribution" },
-                                "condition": { "type": "string" }
+                                "condition": { "type": "string" },
+                                "target": {
+                                    "oneOf": [
+                                        { "enum": ["home", "pickup", "requester"] },
+                                        {
+                                            "type": "object",
+                                            "properties": { "object": { "type": "string" } },
+                                            "required": ["object"],
+                                            "additionalProperties": false
+                                        },
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "position": {
+                                                    "type": "array",
+                                                    "items": { "type": "number" },
+                                                    "minItems": 2,
+                                                    "maxItems": 2
+                                                }
+                                            },
+                                            "required": ["position"],
+                                            "additionalProperties": false
+                                        }
+                                    ]
+                                }
                             },
                             "required": ["kind"],
                             "additionalProperties": false
@@ -1409,5 +1438,15 @@ mod tests {
                 "missing lifecycle hook {field}"
             );
         }
+    }
+
+    /// task-173: dispatcher schema exposes the explicit mode and travel targets.
+    #[test]
+    fn schema_covers_explicit_task_sequence_routes() {
+        let schema = json_schema();
+        let params = &schema["$defs"]["dispatcher_params"]["properties"];
+        assert_eq!(params["task_sequence_mode"]["enum"][1], "explicit");
+        let item = &params["task_sequence"]["items"]["oneOf"][1]["properties"];
+        assert!(item["target"].is_object());
     }
 }

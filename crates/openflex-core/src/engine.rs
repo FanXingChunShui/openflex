@@ -132,11 +132,12 @@ use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use openflex_model::{
-    Action, ArrivalStyle, CombinerMode, ConditionalPort, ConnectionKind, Distribution,
-    DowntimeWindow, EvalContext, Expr, ExtraTaskLegKind, FlowBlockKind, GlobalVariableKind, Grid,
-    Model, NetworkEdge, Object, ObjectKind, ObjectParams, PickListLookup, PortStrategy,
-    ProcessFlow, PullParams, QueueOrder, RackPickPolicy, RackType, SeparateMode, SimTrigger,
-    TableCell, TaskStepKind, TrackedKind, TrafficMode, TransferMode, Value,
+    Action, ArrivalStyle, CombinerMode, ConditionalPort, ConnectionKind, DispatcherParams,
+    Distribution, DowntimeWindow, EvalContext, Expr, ExtraTaskLegKind, FlowBlockKind,
+    GlobalVariableKind, Grid, Model, NetworkEdge, Object, ObjectKind, ObjectParams, PickListLookup,
+    PortStrategy, ProcessFlow, PullParams, QueueOrder, RackPickPolicy, RackType, SeparateMode,
+    SimTrigger, TableCell, TaskSequenceMode, TaskStepKind, TrackedKind, TrafficMode, TransferMode,
+    TravelTarget, TravelTargetName, Value,
 };
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
@@ -320,6 +321,10 @@ pub(crate) enum EventKind {
     TrackedSample,
     /// task-166: a task executer starts the loaded delivery leg.
     TransportDepart(usize, usize),
+    /// task-173: one explicit-route travel leg reached its target.
+    ExplicitLegDone(usize),
+    /// task-173: retry an explicit-route leg blocked by traffic control.
+    ExplicitTrafficRetry(usize),
     /// Warm-up boundary: reset the statistics accumulators.
     ResetStats,
 }
@@ -2451,6 +2456,10 @@ struct Simulation<'m> {
     flow_item_hints: HashMap<usize, u64>,
     /// task-171: item served by each executer task, for transport_* events.
     transport_item_hints: HashMap<usize, u64>,
+    /// task-173: remaining travel targets (position, z) for explicit routes.
+    explicit_routes: HashMap<usize, VecDeque<([f64; 2], f64)>>,
+    /// task-173: target being approached by an active explicit route leg.
+    explicit_target: HashMap<usize, ([f64; 2], f64)>,
     /// task-56: cached shortest distances for transport legs, keyed by
     /// `(task executer, from object, to object)`. Object positions are fixed
     /// for the whole run, so a hit is always correct; restoring a checkpoint
@@ -2649,6 +2658,8 @@ impl<'m> Simulation<'m> {
             track_staytime,
             flow_item_hints: HashMap::new(),
             transport_item_hints: HashMap::new(),
+            explicit_routes: HashMap::new(),
+            explicit_target: HashMap::new(),
             pause_at: None,
             shaft_owner: HashMap::new(),
             trigger_depth: 0,
@@ -3520,6 +3531,10 @@ impl<'m> Simulation<'m> {
             EventKind::TransportDepart(transporter, requester) => {
                 self.handle_transport_depart(transporter, requester)
             }
+            EventKind::ExplicitLegDone(transporter) => self.handle_explicit_leg_done(transporter),
+            EventKind::ExplicitTrafficRetry(transporter) => {
+                self.handle_explicit_traffic_retry(transporter)
+            }
             EventKind::ChargeDone(executor) => self.handle_charge_done(executor),
             EventKind::TransportResume(executor, requester, stage) => {
                 self.handle_transport_resume(executor, requester, stage)
@@ -3566,6 +3581,7 @@ impl<'m> Simulation<'m> {
                 EventKind::FlowCreate(_)
                     | EventKind::FlowAdvance(_)
                     | EventKind::FlowDelayDone(_, _)
+                    | EventKind::ExplicitLegDone(_)
             )
         {
             return;
@@ -7082,14 +7098,30 @@ impl<'m> Simulation<'m> {
                 self.transport_estimate_distance(transporter, requester);
             self.objects[transporter].acc.input += 1;
             self.claim_shaft(transporter);
-            // A5: the operator is on its way; the destination counts it as an
-            // in-transit item until it arrives.
-            self.objects[requester].in_transit += 1;
-            self.set_state(transporter, State::Busy);
-            self.set_executor_activity(transporter, ExecutorActivity::TravelEmpty);
-            // B4: the task has two legs — travel to the pickup point (the
-            // transporter's home) and then to the requester.
-            self.schedule_transport_pickup(transporter, requester)?;
+            let explicit = self
+                .dispatcher_params(dispatcher)
+                .is_some_and(|params| params.task_sequence_mode == TaskSequenceMode::Explicit);
+            if explicit {
+                // task-173: no operator transfer happens in this slice; the
+                // route is the whole task. Do not count an in-transit operator.
+                let route = self.explicit_route_legs(dispatcher, transporter)?;
+                if route.is_empty() {
+                    self.finish_task(transporter)?;
+                    continue;
+                }
+                self.explicit_routes.insert(transporter, route);
+                self.set_state(transporter, State::Busy);
+                self.advance_explicit_route(transporter)?;
+            } else {
+                // A5: the operator is on its way; the destination counts it as
+                // an in-transit item until it arrives.
+                self.objects[requester].in_transit += 1;
+                self.set_state(transporter, State::Busy);
+                self.set_executor_activity(transporter, ExecutorActivity::TravelEmpty);
+                // B4: the task has two legs — travel to the pickup point (the
+                // transporter's home) and then to the requester.
+                self.schedule_transport_pickup(transporter, requester)?;
+            }
         }
         // Forget requests whose requester already got what it needed.
         let stale: Vec<usize> = self.objects[dispatcher]
@@ -8615,6 +8647,201 @@ impl<'m> Simulation<'m> {
         let steps = self.task_sequence_steps(transporter);
         self.objects[transporter].pending_steps = steps;
         self.schedule_pending_step(transporter)
+    }
+
+    fn dispatcher_params(&self, dispatcher: usize) -> Option<DispatcherParams> {
+        match &self.model.objects[dispatcher].params {
+            ObjectParams::Dispatcher(params) => Some(params.clone()),
+            _ => None,
+        }
+    }
+
+    /// task-173: resolve the explicit travel route to positions at dispatch.
+    fn explicit_route_legs(
+        &mut self,
+        dispatcher: usize,
+        transporter: usize,
+    ) -> Result<VecDeque<([f64; 2], f64)>, SimError> {
+        let Some(params) = self.dispatcher_params(dispatcher) else {
+            return Ok(VecDeque::new());
+        };
+        let mut legs = VecDeque::new();
+        for (position, step) in params.task_sequence.iter().enumerate() {
+            if step.extra_kind().is_some() || step.kind() != TaskStepKind::Travel {
+                return Err(SimError::Config(format!(
+                    "task_sequence[{position}] is not a travel leg; explicit route mode supports only travel legs in this build"
+                )));
+            }
+            if let Some(condition) = step.condition() {
+                let context = ExprContext::new(self, None);
+                let matched = condition
+                    .eval(&context)
+                    .map(|value| value.as_bool())
+                    .unwrap_or(false);
+                if !matched {
+                    continue;
+                }
+            }
+            let target = step.target().ok_or_else(|| {
+                SimError::Config(format!(
+                    "task_sequence[{position}] explicit travel leg has no target"
+                ))
+            })?;
+            let (destination, z) = match target {
+                TravelTarget::Named(TravelTargetName::Home) => match self.objects[transporter].home
+                {
+                    Some(home) => (self.objects[home].position, self.objects[home].z),
+                    None => (
+                        self.objects[transporter].position,
+                        self.objects[transporter].z,
+                    ),
+                },
+                TravelTarget::Named(TravelTargetName::Pickup) => {
+                    return Err(SimError::Config(
+                        "explicit travel target 'pickup' is not implemented yet; use home/object/position"
+                            .into(),
+                    ));
+                }
+                TravelTarget::Named(TravelTargetName::Requester) => {
+                    return Err(SimError::Config(
+                        "explicit travel target 'requester' is not implemented yet; use home/object/position"
+                            .into(),
+                    ));
+                }
+                TravelTarget::Object(object) => {
+                    let Some(index) = self.by_name.get(&object.object).copied() else {
+                        return Err(SimError::Model(openflex_model::ModelError::Invalid(vec![
+                            openflex_model::ValidationIssue::new(
+                                format!(
+                                    "objects.{}.task_sequence[{position}].target.object",
+                                    self.objects[dispatcher].name
+                                ),
+                                format!("unknown object \"{}\"", object.object),
+                            ),
+                        ])));
+                    };
+                    (self.objects[index].position, self.objects[index].z)
+                }
+                TravelTarget::Position(position) => (position.position, self.objects[dispatcher].z),
+            };
+            legs.push_back((destination, z));
+        }
+        // A zero-length route would finish immediately and re-dispatch at the
+        // same instant forever. Require at least one real movement.
+        let mut from = self.objects[transporter].position;
+        let mut total = 0.0;
+        for (destination, _) in &legs {
+            total += route_distance(self.model, from, *destination);
+            from = *destination;
+        }
+        if !legs.is_empty() && total <= EPS {
+            return Err(SimError::Config(
+                "explicit travel route has zero total distance; add a non-zero target".into(),
+            ));
+        }
+        Ok(legs)
+    }
+
+    /// task-173: one trace event per route travel leg (no requester/item).
+    fn record_route_leg(&mut self, label: &str, transporter: usize, position: [f64; 2]) {
+        if self.trace.is_none() {
+            return;
+        }
+        let time = self.now;
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        let name = self.objects[transporter].name.clone();
+        if let Some(log) = self.trace.as_mut() {
+            log.push(
+                TraceEvent::new(time, seq, label, name)
+                    .with("x", position[0])
+                    .with("y", position[1]),
+            );
+        }
+    }
+
+    /// task-173: start/between explicit route travel legs.
+    fn advance_explicit_route(&mut self, transporter: usize) -> Result<(), SimError> {
+        loop {
+            let Some((destination, z)) = self
+                .explicit_routes
+                .get_mut(&transporter)
+                .and_then(VecDeque::pop_front)
+            else {
+                self.explicit_routes.remove(&transporter);
+                self.explicit_target.remove(&transporter);
+                return self.finish_task(transporter);
+            };
+            self.explicit_target.insert(transporter, (destination, z));
+            let from = self.objects[transporter].position;
+            let controls = self.traffic_controls_for_leg(from, destination);
+            if !self.traffic_try_acquire(transporter, &controls) {
+                self.clear_executor_activity(transporter);
+                self.set_state(transporter, State::Blocked);
+                self.schedule(
+                    self.now + TRAFFIC_RETRY_DELAY,
+                    EventKind::ExplicitTrafficRetry(transporter),
+                );
+                return Ok(());
+            }
+            let speed_scale = self.traffic_speed_factor(from, destination).max(EPS);
+            let speed = self.transport_speed(transporter).max(EPS) * speed_scale;
+            let travel = route_distance(self.model, from, destination) / speed;
+            self.set_state(transporter, State::Busy);
+            self.set_executor_activity(transporter, ExecutorActivity::TravelEmpty);
+            self.record_route_leg("transport_route_depart", transporter, destination);
+            if travel > EPS {
+                self.schedule(self.now + travel, EventKind::ExplicitLegDone(transporter));
+                return Ok(());
+            }
+            self.objects[transporter].position = destination;
+            self.objects[transporter].z = z;
+            self.record_route_leg("transport_route_arrive", transporter, destination);
+            self.explicit_target.remove(&transporter);
+            self.traffic_release(transporter);
+        }
+    }
+
+    fn handle_explicit_traffic_retry(&mut self, transporter: usize) -> Result<(), SimError> {
+        let Some((destination, z)) = self.explicit_target.get(&transporter).copied() else {
+            return self.advance_explicit_route(transporter);
+        };
+        let from = self.objects[transporter].position;
+        let controls = self.traffic_controls_for_leg(from, destination);
+        if !self.traffic_try_acquire(transporter, &controls) {
+            self.schedule(
+                self.now + TRAFFIC_RETRY_DELAY,
+                EventKind::ExplicitTrafficRetry(transporter),
+            );
+            return Ok(());
+        }
+        let speed_scale = self.traffic_speed_factor(from, destination).max(EPS);
+        let speed = self.transport_speed(transporter).max(EPS) * speed_scale;
+        let travel = route_distance(self.model, from, destination) / speed;
+        self.set_state(transporter, State::Busy);
+        self.set_executor_activity(transporter, ExecutorActivity::TravelEmpty);
+        self.record_route_leg("transport_route_depart", transporter, destination);
+        if travel > EPS {
+            self.schedule(self.now + travel, EventKind::ExplicitLegDone(transporter));
+        } else {
+            self.objects[transporter].position = destination;
+            self.objects[transporter].z = z;
+            self.record_route_leg("transport_route_arrive", transporter, destination);
+            self.explicit_target.remove(&transporter);
+            self.traffic_release(transporter);
+            self.advance_explicit_route(transporter)?;
+        }
+        Ok(())
+    }
+
+    fn handle_explicit_leg_done(&mut self, transporter: usize) -> Result<(), SimError> {
+        self.traffic_release(transporter);
+        if let Some((position, z)) = self.explicit_target.remove(&transporter) {
+            self.objects[transporter].position = position;
+            self.objects[transporter].z = z;
+            self.record_route_leg("transport_route_arrive", transporter, position);
+        }
+        self.advance_explicit_route(transporter)
     }
 
     /// task-68: durations of the task-sequence legs beyond the standard ones
@@ -10166,6 +10393,10 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
             "transport_depart",
             Some(("requester", *requester as f64)),
         ),
+        EventKind::ExplicitLegDone(transporter) => (Some(*transporter), "explicit_leg_done", None),
+        EventKind::ExplicitTrafficRetry(transporter) => {
+            (Some(*transporter), "explicit_traffic_retry", None)
+        }
         EventKind::ResetStats => (None, "reset_stats", None),
     }
 }
@@ -10180,7 +10411,11 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
 /// as the straight line between the two positions unless the node overrides it
 /// with an explicit `edges` entry. A leg additionally walks straight from the
 /// endpoint object to its nearest node and back out again.
-fn node_network_distance(model: &Model, from: &ObjectRt, to: &ObjectRt) -> Option<f64> {
+fn network_distance_positions(
+    model: &Model,
+    from_position: [f64; 2],
+    to_position: [f64; 2],
+) -> Option<f64> {
     let nodes: Vec<(&str, [f64; 2])> = model
         .objects
         .iter()
@@ -10241,21 +10476,29 @@ fn node_network_distance(model: &Model, from: &ObjectRt, to: &ObjectRt) -> Optio
             .map(|node| node.0)
             .unwrap_or("")
     };
-    let from_node = nearest(from.position);
-    let to_node = nearest(to.position);
+    let from_node = nearest(from_position);
+    let to_node = nearest(to_position);
     if from_node.is_empty() || to_node.is_empty() {
         return None;
     }
     if from_node == to_node {
-        return Some(distance(from.position, to.position));
+        return Some(distance(from_position, to_position));
     }
     let path = shortest_network_distance(&edges, from_node, to_node)?;
     // Use the actual start/end node positions (not model order): the path may
     // run in either direction.
     let node_position = |name: &str| nodes.iter().find(|node| node.0 == name).map(|node| node.1);
-    let lead = node_position(from_node).map_or(0.0, |start| distance(from.position, start));
-    let trail = node_position(to_node).map_or(0.0, |end| distance(end, to.position));
+    let lead = node_position(from_node).map_or(0.0, |start| distance(from_position, start));
+    let trail = node_position(to_node).map_or(0.0, |end| distance(end, to_position));
     Some(path + lead + trail)
+}
+
+fn node_network_distance(model: &Model, from: &ObjectRt, to: &ObjectRt) -> Option<f64> {
+    network_distance_positions(model, from.position, to.position)
+}
+
+fn route_distance(model: &Model, from: [f64; 2], to: [f64; 2]) -> f64 {
+    network_distance_positions(model, from, to).unwrap_or_else(|| distance(from, to))
 }
 
 fn shortest_network_distance(edges: &[NetworkEdge], from: &str, to: &str) -> Option<f64> {
@@ -14385,5 +14628,235 @@ mod tests {
         assert!(!samples.is_empty());
         assert!(samples.iter().all(|event| !event.data.contains_key("item")));
         assert!(trace_item_events(&trace).is_empty());
+    }
+
+    fn explicit_route_model(sequence: &str, mode: &str) -> String {
+        format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "explicit-route",
+          "run": {{ "stop_time": 20.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "P", "kind": "processor", "pos": [10.0, 0.0], "params": {{
+                "process_time": {{ "distribution": "constant", "value": 1.0 }},
+                "process_operator": "D" }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }},
+            {{ "name": "D", "kind": "dispatcher", "pos": [0.0, 0.0], "params": {{
+                "task_sequence_mode": "{mode}",
+                "task_sequence": [{sequence}] }} }},
+            {{ "name": "T", "kind": "transporter", "pos": [0.0, 0.0], "params": {{
+                "speed": 1.0, "home": "D" }} }}
+          ],
+          "connections": [
+            {{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }},
+            {{ "from": "D", "to": "T" }}
+          ]
+        }}"#
+        )
+    }
+
+    /// task-173: explicit travel legs follow home / object / position targets in
+    /// order (the zero-length home leg is skipped without an event).
+    #[test]
+    fn explicit_route_follows_home_object_and_position_targets() {
+        let model = Model::from_json(&explicit_route_model(
+            r#"{"kind": "travel", "target": "home"},
+               {"kind": "travel", "target": {"object": "P"}},
+               {"kind": "travel", "target": {"position": [15.0, 2.0]}}"#,
+            "explicit",
+        ))
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 20.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let legs: Vec<(f64, f64, f64)> = trace
+            .object("T")
+            .filter(|event| event.event == "transport_route_arrive")
+            .map(|event| (event.time, event.data["x"], event.data["y"]))
+            .collect();
+        assert_eq!(legs.len(), 3, "{legs:?}");
+        assert!((legs[0].0 - 0.0).abs() < 1e-9, "{legs:?}");
+        assert!((legs[0].1 - 0.0).abs() < 1e-9, "{legs:?}");
+        assert!((legs[1].0 - 10.0).abs() < 1e-9, "{legs:?}");
+        assert!((legs[1].1 - 10.0).abs() < 1e-9, "{legs:?}");
+        assert!(
+            (legs[2].0 - (10.0 + 5.385_164_807_134_505)).abs() < 1e-9,
+            "{legs:?}"
+        );
+        assert!((legs[2].1 - 15.0).abs() < 1e-9, "{legs:?}");
+        assert!((legs[2].2 - 2.0).abs() < 1e-9, "{legs:?}");
+    }
+
+    /// task-173: pickup/requester are parsed by the model but explicitly
+    /// rejected as not implemented rather than silently treated as home.
+    #[test]
+    fn explicit_route_rejects_unimplemented_pickup_and_requester() {
+        for target in ["pickup", "requester"] {
+            let json = explicit_route_model(
+                &format!(r#"{{"kind":"travel","target":"{target}"}}"#),
+                "explicit",
+            );
+            let error = Model::from_json(&json).expect_err("unimplemented target");
+            let text = error.to_string();
+            assert!(text.contains("not implemented"), "{text}");
+            assert!(text.contains(target), "{text}");
+        }
+    }
+
+    /// task-173: explicit validation requires travel-only, non-empty routes with
+    /// targets, and rejects unknown object names.
+    #[test]
+    fn explicit_route_validation_rejects_incomplete_routes() {
+        let empty = Model::from_json(&explicit_route_model("", "explicit"));
+        let text = empty.expect_err("empty route").to_string();
+        assert!(text.contains("non-empty travel route"), "{text}");
+
+        let no_target =
+            Model::from_json(&explicit_route_model(r#"{"kind": "travel"}"#, "explicit"));
+        let text = no_target.expect_err("missing target").to_string();
+        assert!(text.contains("require a target"), "{text}");
+
+        let unknown = Model::from_json(&explicit_route_model(
+            r#"{"kind": "travel", "target": {"object": "Nope"}}"#,
+            "explicit",
+        ));
+        let text = unknown.expect_err("unknown object").to_string();
+        assert!(text.contains("unknown object"), "{text}");
+
+        let non_travel = Model::from_json(&explicit_route_model(
+            r#"{"kind": "utilize", "duration": {"distribution": "constant", "value": 1.0}}"#,
+            "explicit",
+        ));
+        let text = non_travel.expect_err("non-travel").to_string();
+        assert!(text.contains("only travel legs"), "{text}");
+    }
+
+    /// task-173: append mode keeps the old JSON (mode absent) and old behaviour.
+    #[test]
+    fn append_mode_keeps_legacy_task_sequence_json_and_behaviour() {
+        let model = Model::from_json(&explicit_route_model(
+            r#""travel","travel","load","unload""#,
+            "append",
+        ))
+        .expect("model");
+        let value = serde_json::to_value(&model).expect("json");
+        assert!(
+            value["objects"][3]["params"]
+                .get("task_sequence_mode")
+                .is_none(),
+            "append mode must not serialize a mode field"
+        );
+        let config = SimConfig {
+            stop_time: 20.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (first, _) = crate::simulate_traced(&model, &config, 0).expect("first");
+        let (second, _) = crate::simulate_traced(&model, &config, 0).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
+    }
+
+    /// task-173: explicit routes are deterministic for one seed.
+    #[test]
+    fn explicit_route_is_deterministic() {
+        let model = Model::from_json(&explicit_route_model(
+            r#"{"kind": "travel", "target": "home"},
+               {"kind": "travel", "target": {"position": [12.0, 3.0]}}"#,
+            "explicit",
+        ))
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 20.0,
+            warmup: 0.0,
+            seed: 7,
+        };
+        let (first, first_trace) = crate::simulate_traced(&model, &config, 0).expect("first");
+        let (second, second_trace) = crate::simulate_traced(&model, &config, 0).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
+        let path = |trace: &TraceLog| -> Vec<(f64, f64, f64)> {
+            trace
+                .object("T")
+                .filter(|event| event.event == "transport_route_arrive")
+                .map(|event| (event.time, event.data["x"], event.data["y"]))
+                .collect()
+        };
+        assert_eq!(path(&first_trace), path(&second_trace));
+    }
+
+    /// task-173: an explicit route leg waiting for a `traffic_control` slot
+    /// spends that interval in blocked, not in travel_empty.
+    #[test]
+    fn explicit_route_traffic_wait_is_blocked() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "explicit-traffic",
+          "run": { "stop_time": 10.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S1", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1000.0 },
+                "max_arrivals": 1, "first_arrival": 0.0 } },
+            { "name": "S2", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1000.0 },
+                "max_arrivals": 1, "first_arrival": 0.0 } },
+            { "name": "P1", "kind": "processor", "pos": [10.0, 0.0], "params": {
+                "process_time": { "distribution": "constant", "value": 1.0 },
+                "process_operator": "D" } },
+            { "name": "P2", "kind": "processor", "pos": [10.0, 0.0], "params": {
+                "process_time": { "distribution": "constant", "value": 1.0 },
+                "process_operator": "D" } },
+            { "name": "K1", "kind": "sink", "params": {} },
+            { "name": "K2", "kind": "sink", "params": {} },
+            { "name": "D", "kind": "dispatcher", "pos": [0.0, 0.0], "params": {
+                "task_sequence_mode": "explicit",
+                "task_sequence": [
+                    { "kind": "travel", "target": { "position": [10.0, 0.0] } }
+                ] } },
+            { "name": "T1", "kind": "transporter", "pos": [0.0, 0.0],
+               "params": { "speed": 1.0, "home": "D" } },
+            { "name": "T2", "kind": "transporter", "pos": [0.0, 0.0],
+               "params": { "speed": 1.0, "home": "D" } },
+            { "name": "N1", "kind": "network_node", "pos": [0.0, 0.0],
+               "params": { "edges": [
+                   { "from": "N1", "to": "N2", "distance": 10.0 } ] } },
+            { "name": "N2", "kind": "network_node", "pos": [10.0, 0.0], "params": {} },
+            { "name": "TC", "kind": "traffic_control", "pos": [5.0, 5.0], "params": {
+                "capacity": 1, "mode": "mutual_exclusion", "speed_factor": 1.0 } }
+          ],
+          "connections": [
+            { "from": "S1", "to": "P1" }, { "from": "P1", "to": "K1" },
+            { "from": "S2", "to": "P2" }, { "from": "P2", "to": "K2" },
+            { "from": "D", "to": "T1" }, { "from": "D", "to": "T2" },
+            { "from": "TC", "to": "N1" }, { "from": "TC", "to": "N2" }
+          ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 10.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (result, _) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let blocked = result.objects["T2"].state_times.blocked;
+        let travel = result.objects["T2"].state_times.travel_empty;
+        assert!(
+            blocked > 5.0,
+            "T2 must wait for the control area: {blocked}"
+        );
+        assert!(
+            travel < 1e-9,
+            "blocked route time must not be counted as travel: {travel}"
+        );
     }
 }
