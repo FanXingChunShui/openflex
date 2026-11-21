@@ -2305,6 +2305,9 @@ struct OpenFlexApp {
     model_name: String,
     /// Free-text model description (shown by the CLI/Studio, editable here).
     model_description: String,
+    /// JSON buffers for the model-level triggers (on_start/on_reset/on_stop),
+    /// committed on focus loss like the object trigger editor.
+    model_trigger_text: [String; 3],
     /// Name buffer for a new global variable / pick list.
     gv_name: String,
     pl_name: String,
@@ -2451,6 +2454,7 @@ impl OpenFlexApp {
             heatmap: 0,
             model_name: String::new(),
             model_description: String::new(),
+            model_trigger_text: [String::new(), String::new(), String::new()],
             gv_name: String::new(),
             pl_name: String::new(),
             gv_value_edit: std::collections::HashMap::new(),
@@ -2562,6 +2566,42 @@ impl OpenFlexApp {
 
     /// Records the current model in the undo stack under a human label, so the
     /// history list can say what each step was.
+    /// Applies the three model-trigger JSON buffers through the single edit
+    /// funnel, so a malformed action never reaches the model.
+    fn apply_model_triggers(&mut self) {
+        let parse = |text: &str| -> Result<Vec<openflex_model::Action>, String> {
+            if text.trim().is_empty() {
+                return Ok(Vec::new());
+            }
+            serde_json::from_str(text).map_err(|error| format!("invalid trigger JSON: {error}"))
+        };
+        let mut lists = Vec::with_capacity(3);
+        for (index, slot) in self.model_trigger_text.iter().enumerate() {
+            match parse(slot) {
+                Ok(list) => lists.push(list),
+                Err(error) => {
+                    let which = ["on start", "on reset", "on stop"][index];
+                    self.error = Some(format!("{which}: {error}"));
+                    return;
+                }
+            }
+        }
+        let applied = self.commit_model_edit("edit model triggers", |model| {
+            model.model_triggers.on_start = lists[0].clone();
+            model.model_triggers.on_reset = lists[1].clone();
+            model.model_triggers.on_stop = lists[2].clone();
+            Ok(())
+        });
+        if applied {
+            self.status = format!(
+                "Model triggers: {} / {} / {} action(s)",
+                lists[0].len(),
+                lists[1].len(),
+                lists[2].len()
+            );
+        }
+    }
+
     /// Adds an empty global variable under the name in the input box.
     fn add_global_variable(&mut self) {
         let name = self.gv_name.trim().to_string();
@@ -3234,6 +3274,8 @@ impl OpenFlexApp {
         self.sim_state = None;
         self.smooth.clear();
         self.replay_index = None;
+        // The model-trigger buffers belong to the previous document too.
+        self.model_trigger_text = [String::new(), String::new(), String::new()];
         // Table buffers belong to the previous document too.
         self.table_edit.clear();
         self.table_column_edit.clear();
@@ -8267,6 +8309,45 @@ impl eframe::App for OpenFlexApp {
                         }
                     });
                 ui.separator();
+                egui::CollapsingHeader::new("Model triggers")
+                    .id_salt("model-triggers")
+                    .show(ui, |ui| {
+                        let Some(model) = self.model else {
+                            return;
+                        };
+                        // Seed the buffers from the model the first time this
+                        // document is shown, then leave the user's text alone.
+                        let triggers = &model.model_triggers;
+                        for (slot, (label, actions, hint)) in self
+                            .model_trigger_text
+                            .iter_mut()
+                            .zip([
+                                ("on start", &triggers.on_start, "before the first event"),
+                                ("on reset", &triggers.on_reset, "at the warm-up boundary"),
+                                ("on stop", &triggers.on_stop, "when stop_time is reached"),
+                            ])
+                        {
+                            if slot.is_empty() && !actions.is_empty() {
+                                *slot = serde_json::to_string_pretty(actions)
+                                    .unwrap_or_else(|_| "[]".into());
+                            }
+                            ui.label(
+                                egui::RichText::new(format!("{label} — {hint}"))
+                                    .size(9.0_f32)
+                                    .color(palette::TEXT_DIM),
+                            );
+                            ui.add(
+                                egui::TextEdit::multiline(slot)
+                                    .desired_rows(2)
+                                    .desired_width(f32::INFINITY)
+                                    .font(egui::TextStyle::Monospace),
+                            );
+                        }
+                        if primary_button(ui, true, "Apply model triggers") {
+                            self.apply_model_triggers();
+                        }
+                    });
+                ui.separator();
                 egui::CollapsingHeader::new(format!(
                     "Global variables ({})",
                     self.model
@@ -12837,6 +12918,36 @@ mod tests {
         // A model without objects offer nothing rather than panicking.
         let empty = SamplerNames::from_model(None);
         assert!(empty.any.is_empty() && empty.operators.is_empty());
+    }
+
+    #[test]
+    fn model_triggers_round_trip_through_the_editor() {
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        // A malformed buffer is rejected before the model is touched.
+        app.model_trigger_text = ["not json".to_string(), String::new(), String::new()];
+        app.apply_model_triggers();
+        assert!(app.error.is_some(), "bad JSON must be reported");
+        assert!(
+            app.model.expect("model").model_triggers.on_start.is_empty(),
+            "the model is unchanged"
+        );
+        app.error = None;
+        // A valid action lands on the right hook.
+        app.model_trigger_text = [
+            r#"[]"#.to_string(),
+            r#"[{"action": "set_label", "name": "warm", "value": "1"}]"#.to_string(),
+            r#"[]"#.to_string(),
+        ];
+        app.apply_model_triggers();
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(app.model.expect("model").model_triggers.on_reset.len(), 1);
+        assert!(
+            app.status.contains("0 / 1 / 0"),
+            "the status reports the three counts: {}",
+            app.status
+        );
     }
 
     #[test]
