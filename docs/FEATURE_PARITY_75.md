@@ -148,12 +148,12 @@
 
 | FlexSim 7.5 功能 | OpenFlex 现状 | 状态 | 证据或缺口说明 |
 |---|---|---|---|
-| Task Sequence Concepts（travel-load-break-travel-unload 五段式） | 运输任务两段/三段（取货→送达→回 home） | 🟡 | 无 break 段；`docs/COMPATIBILITY.md` 已承认"两段任务" |
-| Task Types（TASKTYPE_TRAVEL/LOAD/UNLOAD/DELAY/UTILIZE/BREAK/TRAVELTOLOC/…) | 隐含在 transporter 行为里 | 🟡 | 无用户可见的任务类型枚举与逐任务参数（end speed、forcetravel 等） |
-| Custom Built Task Sequences（createemptytasksequence/inserttask/dispatchtasksequence） | rhai 脚本可发消息、改状态 | ⛔ | **无任务序列构造 API**：模型无法自建任务序列 |
+| Task Sequence Concepts（travel-load-break-travel-unload 五段式） | `explicit` 整链：`travel/load/unload/utilize/break` 任意顺序 | 🟡 | append 模式仍是两段/三段；`explicit` 下五段式可任意编排，含 `utilize`(Busy) / `break`(idle)。仍缺：动态目标跟随、checkpoint 保存链状态、链内抢占 |
+| Task Types（TASKTYPE_TRAVEL/LOAD/UNLOAD/DELAY/UTILIZE/BREAK/TRAVELTOLOC/…) | `TaskStepKind` + `ExtraTaskLegKind` + `TravelTarget` | 🟡 | 已有 travel/load/unload/utilize/break 与目标（home/pickup/requester/object/position）；仍缺 DELAY、TRAVELTOLOC 的 end speed / forcetravel 等逐任务参数 |
+| Custom Built Task Sequences（createemptytasksequence/inserttask/…） | 声明式 `explicit` 路线表 | 🟡 | **声明式**已能表达固定/多段流程；仍无**过程式**构造 API（运行时按条件 inserttask） |
 | Task Sequence Preempting（抢占值、中断后重做/删除） | Dispatcher 有 `preempt_retry_delay`/`preempt_max_retries` | 🟡 | 有抢占重试；无"被中断任务重头再做 vs 删除"的语义选择 |
-| Coordinated Task Sequences（两执行器协同，如双人抬） | 无 | ⛔ | 无协同任务 |
-| Querying Task Sequences（查询/改任务序列字段） | 无 | ⛔ | 无任务序列对象可供查询 |
+| Coordinated Task Sequences（两执行器协同，如双人抬） | 无 | ⛔ | 无协同任务（明确不在本轮范围，未做近似实现） |
+| Querying Task Sequences（查询/改任务序列字段） | trace 可观察各腿事件 | ⛔ | 无运行期任务序列对象可供读写 |
 | Global Task Sequences（GTS，图形化共享任务序列） | 无 | ⛔ | 无 GTS 工具 |
 | Task Sequences Quick Reference（task type × involved × var1..4 表） | 无 | ⛔ | 同"Task Types" |
 
@@ -209,7 +209,7 @@
 | Reports and Statistics：Summary Report（Excell 导出） | `report`（Markdown/CSV/JSON）+ `--xlsx` | 🟡 | 有汇总报告与 xlsx；**无"用户自选属性列 → Excel"的可配置报告**，列由引擎固定 |
 | Reports and Statistics：State Report（状态占比报表） | 报告含状态占比 | ✅ | |
 | Reports and Statistics：Model Documentation（自动生成模型文档） | 无 | ⛔ | 无文档生成 |
-| Dashboard Concepts（仪表盘容器，运行中实时刷新） | Studio Dashboard（运行中刷新） | 🟡 | 有仪表盘；无 FlexSim 的"图表对象 + 数据源绑定"模型 |
+| Dashboard Concepts（仪表盘容器，运行中实时刷新） | Studio 仪表盘 + `openflex chart`（终端） | 🟡 | 有动态仪表盘与终端图表；仍无 FlexSim 的"图表对象 + 数据源绑定"可编辑模型 |
 | Dashboard Statistics Page（把对象统计画成图） | Studio 时间序列/柱状图 | 🟡 | 有吞吐柱状与多对象时序；无按"统计项选择器"自由组合 |
 | Dashboard Tracked Variables（把 tracked variable 画成图） | `tracked_series` / `tracked_summaries` + GUI 迷你折线 | 🟡 | 数据与类型体系（level/state/staytime/kinetic）已具备；GUI 有 84×14 迷你折线，无独立图表对象 |
 | Dashboard Utilization Analysis（利用率分析专用图） | 报告 utilization + 执行器状态细分列 | 🟡 | 数据已细到 `travel_empty/loaded/loading/unloading/utilize`；仍无「按状态堆叠」的专用分析图 |
