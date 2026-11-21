@@ -3701,6 +3701,200 @@ where
     deserializer.deserialize_map(TableMapVisitor)
 }
 
+/// The JSON kind of a global variable value (FlexSim `ModelingTools/GlobalVariables`).
+///
+/// FlexSim numbers global variables and lets a modeller assign a numeric or a
+/// string value. OpenFlex stores the value as untyped JSON plus this explicit
+/// kind so validation can reject a value that does not match the declared kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GlobalVariableKind {
+    /// The value must be a JSON number (finite at validation time).
+    Number,
+    /// The value must be a JSON string.
+    String,
+}
+
+impl GlobalVariableKind {
+    /// The JSON name (`"number"` / `"string"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GlobalVariableKind::Number => "number",
+            GlobalVariableKind::String => "string",
+        }
+    }
+}
+
+/// One global variable: an explicit kind plus the raw JSON value.
+///
+/// JSON form: `{ "kind": "number", "value": 12.5 }` or
+/// `{ "kind": "string", "value": "vip" }`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GlobalVariable {
+    /// Declared type of [`value`](Self::value).
+    pub kind: GlobalVariableKind,
+    /// The value itself; must match `kind` (checked by validation).
+    pub value: serde_json::Value,
+}
+
+impl GlobalVariable {
+    /// A numeric global variable.
+    pub fn number(value: f64) -> Self {
+        Self {
+            kind: GlobalVariableKind::Number,
+            value: serde_json::json!(value),
+        }
+    }
+
+    /// A string global variable.
+    pub fn string(value: impl Into<String>) -> Self {
+        Self {
+            kind: GlobalVariableKind::String,
+            value: serde_json::Value::String(value.into()),
+        }
+    }
+
+    /// The value as a number, when the kind is `number` and the JSON is numeric.
+    pub fn as_number(&self) -> Option<f64> {
+        match self.kind {
+            GlobalVariableKind::Number => self.value.as_f64(),
+            GlobalVariableKind::String => None,
+        }
+    }
+
+    /// The value as text, when the kind is `string`.
+    pub fn as_str(&self) -> Option<&str> {
+        match self.kind {
+            GlobalVariableKind::String => self.value.as_str(),
+            GlobalVariableKind::Number => None,
+        }
+    }
+}
+
+/// One entry of a [`PickList`]: a display name and the value it stands for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PickListEntry {
+    /// Display name shown in the GUI picker; must be non-empty and unique
+    /// inside its list.
+    pub name: String,
+    /// The value the entry resolves to (FlexSim stores it as text, numbers are
+    /// parsed when the list is used as a numeric source).
+    pub value: String,
+}
+
+/// A named pick list (FlexSim `PickLists/`).
+///
+/// A pick list maps display names to values so a model can present a friendly
+/// choice while the simulation works with the underlying value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct PickList {
+    /// The entries, in display order; a pick list needs at least one.
+    #[serde(default)]
+    pub entries: Vec<PickListEntry>,
+}
+
+impl PickList {
+    /// Build a list from `(name, value)` pairs.
+    pub fn new<I, N, V>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (N, V)>,
+        N: Into<String>,
+        V: Into<String>,
+    {
+        Self {
+            entries: entries
+                .into_iter()
+                .map(|(name, value)| PickListEntry {
+                    name: name.into(),
+                    value: value.into(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Look up the value of an entry by its display name.
+    pub fn value_of(&self, name: &str) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.value.as_str())
+    }
+
+    /// Number of entries.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// True when the list has no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// Deserialise a map of named model items while rejecting duplicate names.
+///
+/// `serde_json` keeps the last duplicate key silently; for global variables and
+/// pick lists a duplicated name is a modelling error, so the map is built by
+/// hand (this mirrors [`deserialize_global_tables`]).
+fn deserialize_named_map<'de, D, V>(
+    deserializer: D,
+    what: &'static str,
+) -> Result<BTreeMap<String, V>, D::Error>
+where
+    D: Deserializer<'de>,
+    V: Deserialize<'de>,
+{
+    struct NamedMapVisitor<V> {
+        what: &'static str,
+        marker: std::marker::PhantomData<V>,
+    }
+
+    impl<'de, V: Deserialize<'de>> Visitor<'de> for NamedMapVisitor<V> {
+        type Value = BTreeMap<String, V>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(formatter, "a map of {} names to definitions", self.what)
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+            let mut items = BTreeMap::new();
+            while let Some((name, value)) = access.next_entry::<String, V>()? {
+                if items.insert(name.clone(), value).is_some() {
+                    return Err(de::Error::custom(format!(
+                        "duplicate {} '{name}'",
+                        self.what
+                    )));
+                }
+            }
+            Ok(items)
+        }
+    }
+
+    deserializer.deserialize_map(NamedMapVisitor {
+        what,
+        marker: std::marker::PhantomData,
+    })
+}
+
+fn deserialize_global_variables<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, GlobalVariable>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_named_map(deserializer, "global variable")
+}
+
+fn deserialize_picklists<'de, D>(deserializer: D) -> Result<BTreeMap<String, PickList>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_named_map(deserializer, "pick list")
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Model {
@@ -3737,6 +3931,22 @@ pub struct Model {
         deserialize_with = "deserialize_global_tables"
     )]
     pub global_tables: BTreeMap<String, GlobalTable>,
+    /// Named global variables (FlexSim `ModelingTools/GlobalVariables`); empty
+    /// by default and omitted from the JSON when empty.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "deserialize_global_variables"
+    )]
+    pub global_variables: BTreeMap<String, GlobalVariable>,
+    /// Named pick lists (FlexSim `PickLists/`); empty by default and omitted
+    /// from the JSON when empty.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "deserialize_picklists"
+    )]
+    pub picklists: BTreeMap<String, PickList>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
 }
@@ -3809,6 +4019,26 @@ impl Model {
     /// A named global table, if the model defines it.
     pub fn table(&self, name: &str) -> Option<&GlobalTable> {
         self.global_tables.get(name)
+    }
+
+    /// A named global variable, if the model defines it.
+    pub fn global_variable(&self, name: &str) -> Option<&GlobalVariable> {
+        self.global_variables.get(name)
+    }
+
+    /// Mutable access to a named global variable (in-memory edits).
+    pub fn global_variable_mut(&mut self, name: &str) -> Option<&mut GlobalVariable> {
+        self.global_variables.get_mut(name)
+    }
+
+    /// A named pick list, if the model defines it.
+    pub fn picklist(&self, name: &str) -> Option<&PickList> {
+        self.picklists.get(name)
+    }
+
+    /// Mutable access to a named pick list (in-memory edits).
+    pub fn picklist_mut(&mut self, name: &str) -> Option<&mut PickList> {
+        self.picklists.get_mut(name)
     }
 
     /// Mutable access to a named global table (for in-memory edits after

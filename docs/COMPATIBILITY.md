@@ -1,6 +1,8 @@
 # FlexSim 兼容性矩阵
 
-本表说明 OpenFlex 对 FlexSim 25.x 建模语义的覆盖程度。状态含义：
+本表说明 OpenFlex 对 FlexSim 建模语义的覆盖程度。权威核对基准是
+`FlexSimChinese7.5`（2023-05-10 中文发行版）的 326 个帮助页，逐项结果见
+[FEATURE_PARITY_75.md](FEATURE_PARITY_75.md)。状态含义：
 
 - ✅ **一致**：参数与行为按公开文档实现，并有测试或数值案例。
 - 🟡 **部分**：核心行为一致，复杂选项/边缘行为简化（下方注明）。
@@ -46,7 +48,7 @@
 | FluidToItem | `fluid_to_item` | ✅ |
 | VisualTool | `visual_tool` | ✅ |
 | NetworkNode | `network_node` | ✅ 节点可摆放、节点间用 A 连接成边、最短路绕行 |
-| TrafficControl | `traffic_control` | 🟡 对象与参数（capacity/mode/speed_factor）已建模，**准入互斥尚未在引擎中强制** |
+| TrafficControl | `traffic_control` | 🟡 对象与参数已建模；准入互斥由引擎任务 task-148 接线中 |
 
 > `network_node` 已是一等对象：节点之间用普通 A 连接连成路网，边长默认取两节点直线距离，
 > 可用 `params.edges` 覆盖（FlexSim 的 distance table）；运输腿取「起点→最近节点 → 最短路 →
@@ -77,11 +79,11 @@
 | Robot / Crane / ASRS | `robot` / `crane` / `asrs_vehicle` | 🟡 | 执行器变体：robot grid 8 邻接绕障、crane max(垂直,水平)、ASRS/AGV network 最短路；共用 TransporterParams |
 | Escalator | `escalator` | 🟡 | 复用 conveyor 皮带语义（人员输送）；无独立密度/碰撞 |
 | MultiProcessor | `multiprocessor` | ✅ | 多槽并行加工，每槽 setup/process，操作员按忙碌期申请 |
-| Fluid（流体） | `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_pipe` / `fluid_sink` / `ticker` / `fluid_processor` / `fluid_blender` / `fluid_mixer` / `fluid_splitter` / `item_to_fluid` / `fluid_to_item` | 🟢 | 固定步长、液位/溢出、pipe 延迟/背压/压力场、valve 滞回；**Darcy 参数已接线**（pressure-mode pipe `Q=√(Δp/R)` + ρ(T)），缺参数回退线性标定；processor 速率/容量/损耗、splitter 百分比（按比例缩放）、blender 速率/配比/损耗、mixer 批步、两个桥接方向的离散↔流体换算均已接线；仍无多相/可压缩 |
+| Fluid（流体） | `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_pipe` / `fluid_sink` / `ticker` / `fluid_processor` / `fluid_blender` / `fluid_mixer` / `fluid_splitter` / `item_to_fluid` / `fluid_to_item` | ✅ | 固定步长、液位/溢出、pipe 延迟/背压/压力场、valve 滞回；**Darcy 参数已接线**（pressure-mode pipe `Q=√(Δp/R)` + ρ(T)），缺参数回退线性标定；processor 速率/容量/损耗、splitter 百分比（按比例缩放）、blender 速率/配比/损耗、mixer 批步、两个桥接方向的离散↔流体换算均已接线；仍无多相/可压缩 |
 | People / A* 行走 | `person` | 🟡 | `grid` 8 邻接 A* + 密度折减；无真正避让/重规划 |
 | AGV / 交通控制 | `agv` | 🟡 | transporter alias + 电池（容量/耗电/充电）；无交通控制/途中耗尽 |
 | Elevator / 电梯 | `elevator` | 🟡 | 垂直运输、停靠、召唤/方向优先；无门控/超载/井道冲突 |
-| Emptier | — | 🟡 | 可用 Sink 代替 |
+| Emptier | `basic_fr.emptier` | ✅ | 作为固定资源的周期性清空行为存在（`EmptierParams`），不是独立对象 |
 
 ## 逻辑与路由
 
@@ -136,11 +138,14 @@
 
 ## 已知语义差异（有意为之）
 
-1. **不使用任意脚本**：FlexSim 的 FlexScript 可读写任意对象与全局状态；OpenFlex 用受限表达式与动作，
-   以保证模型可校验、可确定性重放。
-2. **没有 3D 渲染**：`pos` 是二维坐标，仅用于计算运输距离与生成布局图。
-3. **运输模型简化**：TaskExecuter 只实现“Processor 请求操作员”这一条任务序列（travel → load → 加工 →
-   unload → 回 home），不实现抢占、优先级与多段任务序列；`capacity` 表示可并发任务数而非载货量。
+1. **不用 FlexScript/C++**：FlexSim 的 FlexScript 是完整的 C 风格脚本；OpenFlex 提供受限表达式与动作，
+   以及 rhai 沙箱里的 `action: script`，以保证模型可校验、可确定性重放。
+2. **无原生 3D 渲染管线**：`pos` 是二维坐标，用于运输距离与布局图；桌面 GUI 提供投影式透视/俯视视图，
+   没有 FlexSim 的实体模型、光照与动画系统。
+3. **运输模型部分实现**：TaskExecuter 支持“Processor 请求操作员”这条序列（travel → load → 加工 →
+   unload → 回 home）；抢占与优先级**已部分接线**（`dispatcher.preempt_retry_delay` /
+   `preempt_max_retries`、`processor.operator_priority` / `operator_preempt`），
+   仍**不支持自定义多段任务序列**；`capacity` 表示可并发任务数而非载货量。
 4. **统计口径**：`utilization` 定义为忙碌时间/统计时长；与 FlexSim 的“利用率”定义一致，但对象自身
    没有“状态”的对象（如 Sink）不计算利用率。
 5. **随机数**：使用 ChaCha12（`StdRng`）而非 FlexSim 的随机数生成器，因此同一模型的数值不会与

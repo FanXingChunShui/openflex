@@ -195,6 +195,48 @@ fn definitions() -> Value {
         }),
     );
     defs.insert(
+        "global_variable".into(),
+        json!({
+            "type": "object",
+            "description": "A global variable (FlexSim ModelingTools/GlobalVariables): an explicit kind plus the raw value.",
+            "properties": {
+                "kind": { "enum": ["number", "string"] },
+                "value": {}
+            },
+            "required": ["kind", "value"],
+            "additionalProperties": false
+        }),
+    );
+    defs.insert(
+        "pick_list_entry".into(),
+        json!({
+            "type": "object",
+            "description": "One pick list entry: a display name and the value it resolves to.",
+            "properties": {
+                "name": { "type": "string" },
+                "value": { "type": "string" }
+            },
+            "required": ["name", "value"],
+            "additionalProperties": false
+        }),
+    );
+    defs.insert(
+        "picklist".into(),
+        json!({
+            "type": "object",
+            "description": "A named pick list (FlexSim PickLists/); needs at least one entry.",
+            "properties": {
+                "entries": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "$ref": "#/$defs/pick_list_entry" }
+                }
+            },
+            "required": ["entries"],
+            "additionalProperties": false
+        }),
+    );
+    defs.insert(
         "global_table".into(),
         json!({
             "type": "object",
@@ -678,6 +720,16 @@ fn model_schema() -> Value {
                 "type": "object",
                 "description": "Named read-only tables; each row must have one cell per column.",
                 "additionalProperties": { "$ref": "#/$defs/global_table" }
+            },
+            "global_variables": {
+                "type": "object",
+                "description": "Named global variables (FlexSim ModelingTools/GlobalVariables).",
+                "additionalProperties": { "$ref": "#/$defs/global_variable" }
+            },
+            "picklists": {
+                "type": "object",
+                "description": "Named pick lists (FlexSim PickLists/).",
+                "additionalProperties": { "$ref": "#/$defs/picklist" }
             },
             "metadata": { "type": "object" }
         },
@@ -1205,6 +1257,26 @@ mod tests {
         );
         assert!(schema["$defs"]["global_table"].get("properties").is_some());
         assert!(schema["$defs"]["table_cell"].get("oneOf").is_some());
+        assert_eq!(
+            schema["$defs"]["model"]["properties"]["global_variables"]["additionalProperties"]["$ref"],
+            json!("#/$defs/global_variable")
+        );
+        assert_eq!(
+            schema["$defs"]["global_variable"]["required"],
+            json!(["kind", "value"])
+        );
+        assert_eq!(
+            schema["$defs"]["model"]["properties"]["picklists"]["additionalProperties"]["$ref"],
+            json!("#/$defs/picklist")
+        );
+        assert_eq!(
+            schema["$defs"]["picklist"]["properties"]["entries"]["items"]["$ref"],
+            json!("#/$defs/pick_list_entry")
+        );
+        assert_eq!(
+            schema["$defs"]["pick_list_entry"]["required"],
+            json!(["name", "value"])
+        );
         assert_eq!(
             schema["$defs"]["connection"]["properties"]["kind"]["enum"],
             json!(["a", "s"])

@@ -2188,6 +2188,15 @@ struct OpenFlexApp {
     model_name: String,
     /// Free-text model description (shown by the CLI/Studio, editable here).
     model_description: String,
+    /// Name buffer for a new global variable / pick list.
+    gv_name: String,
+    pl_name: String,
+    /// Value buffer for a global variable (committed on focus loss).
+    gv_value_edit: std::collections::HashMap<String, String>,
+    /// Entry buffers for a pick list: (list, row) -> (name, value).
+    pl_entry_edit: std::collections::HashMap<(String, usize), (String, String)>,
+    /// "new entry" inputs, one pair per pick list.
+    pl_new_entry: std::collections::HashMap<String, (String, String)>,
     model_stop: f64,
     model_warmup: f64,
     model_seed: String,
@@ -2325,6 +2334,11 @@ impl OpenFlexApp {
             heatmap: 0,
             model_name: String::new(),
             model_description: String::new(),
+            gv_name: String::new(),
+            pl_name: String::new(),
+            gv_value_edit: std::collections::HashMap::new(),
+            pl_entry_edit: std::collections::HashMap::new(),
+            pl_new_entry: std::collections::HashMap::new(),
             model_stop: 300.0,
             model_warmup: 0.0,
             model_seed: "1".into(),
@@ -2431,6 +2445,224 @@ impl OpenFlexApp {
 
     /// Records the current model in the undo stack under a human label, so the
     /// history list can say what each step was.
+    /// Adds an empty global variable under the name in the input box.
+    fn add_global_variable(&mut self) {
+        let name = self.gv_name.trim().to_string();
+        if name.is_empty() {
+            self.error = Some("name the variable first".into());
+            return;
+        }
+        let created = self.commit_model_edit("add global variable", |model| {
+            if model.global_variables.contains_key(&name) {
+                return Err(format!("a global variable '{name}' already exists"));
+            }
+            model
+                .global_variables
+                .insert(name.clone(), openflex_model::GlobalVariable::number(0.0));
+            Ok(())
+        });
+        if created {
+            self.gv_name.clear();
+            self.gv_value_edit.remove(&name);
+            self.status = format!("Added global variable '{name}'");
+        }
+    }
+
+    /// Deletes a global variable.
+    fn remove_global_variable(&mut self, name: &str) {
+        let removed = self.commit_model_edit("delete global variable", |model| {
+            model
+                .global_variables
+                .remove(name)
+                .map(|_| ())
+                .ok_or_else(|| format!("no global variable '{name}'"))
+        });
+        if removed {
+            self.gv_value_edit.remove(name);
+            self.status = format!("Deleted global variable '{name}'");
+        }
+    }
+
+    /// Replaces the value of a global variable, keeping its declared kind.
+    fn set_global_variable(&mut self, name: &str, value: serde_json::Value) {
+        let applied = self.commit_model_edit("edit global variable", |model| {
+            let variable = model
+                .global_variables
+                .get_mut(name)
+                .ok_or_else(|| format!("no global variable '{name}'"))?;
+            variable.value = value;
+            Ok(())
+        });
+        if applied {
+            self.status = format!("{name} updated");
+        }
+    }
+
+    /// Adds an empty pick list under the name in the input box.
+    fn add_pick_list(&mut self) {
+        let name = self.pl_name.trim().to_string();
+        if name.is_empty() {
+            self.error = Some("name the pick list first".into());
+            return;
+        }
+        let created = self.commit_model_edit("add pick list", |model| {
+            if model.picklists.contains_key(&name) {
+                return Err(format!("a pick list '{name}' already exists"));
+            }
+            model.picklists.insert(
+                name.clone(),
+                openflex_model::PickList::new([("item1", "1")]),
+            );
+            Ok(())
+        });
+        if created {
+            self.pl_name.clear();
+            self.pl_entry_edit.retain(|(list, _), _| list != &name);
+            self.status = format!("Added pick list '{name}'");
+        }
+    }
+
+    /// Deletes a pick list.
+    fn remove_pick_list(&mut self, name: &str) {
+        let removed = self.commit_model_edit("delete pick list", |model| {
+            model
+                .picklists
+                .remove(name)
+                .map(|_| ())
+                .ok_or_else(|| format!("no pick list '{name}'"))
+        });
+        if removed {
+            self.pl_entry_edit.retain(|(list, _), _| list != name);
+            self.pl_new_entry.remove(name);
+            self.status = format!("Deleted pick list '{name}'");
+        }
+    }
+
+    /// Appends one entry to a pick list.
+    fn add_pick_list_entry(&mut self, list: &str, entry_name: &str, value: &str) {
+        if entry_name.is_empty() {
+            self.error = Some("an entry needs a name".into());
+            return;
+        }
+        let list_owned = list.to_string();
+        let entry_owned = entry_name.to_string();
+        let value_owned = value.to_string();
+        let added = self.commit_model_edit("add pick list entry", |model| {
+            let pick = model
+                .picklists
+                .get_mut(&list_owned)
+                .ok_or_else(|| format!("no pick list '{list_owned}'"))?;
+            if pick.entries.iter().any(|entry| entry.name == entry_owned) {
+                return Err(format!("'{entry_owned}' already exists in {list_owned}"));
+            }
+            pick.entries.push(openflex_model::PickListEntry {
+                name: entry_owned.clone(),
+                value: value_owned.clone(),
+            });
+            Ok(())
+        });
+        if added {
+            self.pl_entry_edit
+                .retain(|(list, _), _| list != &list_owned);
+            self.pl_new_entry
+                .insert(list_owned.clone(), (String::new(), String::new()));
+            self.status = format!("{list_owned}: added '{entry_owned}'");
+        }
+    }
+
+    /// Rewrites one entry of a pick list.
+    fn set_pick_list_entry(&mut self, list: &str, row: usize, entry_name: &str, value: &str) {
+        if entry_name.is_empty() {
+            self.error = Some("an entry needs a name".into());
+            return;
+        }
+        let list_owned = list.to_string();
+        let entry_owned = entry_name.to_string();
+        let value_owned = value.to_string();
+        let applied = self.commit_model_edit("edit pick list entry", |model| {
+            let pick = model
+                .picklists
+                .get_mut(&list_owned)
+                .ok_or_else(|| format!("no pick list '{list_owned}'"))?;
+            if pick
+                .entries
+                .iter()
+                .enumerate()
+                .any(|(index, entry)| index != row && entry.name == entry_owned)
+            {
+                return Err(format!("'{entry_owned}' already exists in {list_owned}"));
+            }
+            let entry = pick
+                .entries
+                .get_mut(row)
+                .ok_or_else(|| format!("{list_owned} has no entry {row}"))?;
+            entry.name = entry_owned.clone();
+            entry.value = value_owned;
+            Ok(())
+        });
+        if applied {
+            self.pl_entry_edit
+                .retain(|(list, _), _| list != &list_owned);
+            self.status = format!("{list_owned}: entry {row} updated");
+        }
+    }
+
+    /// Drops one entry from a pick list.
+    fn remove_pick_list_entry(&mut self, list: &str, row: usize) {
+        let list_owned = list.to_string();
+        let removed = self.commit_model_edit("delete pick list entry", |model| {
+            let pick = model
+                .picklists
+                .get_mut(&list_owned)
+                .ok_or_else(|| format!("no pick list '{list_owned}'"))?;
+            if pick.entries.len() <= 1 {
+                return Err("a pick list keeps at least one entry".into());
+            }
+            if row >= pick.entries.len() {
+                return Err(format!("{list_owned} has no entry {row}"));
+            }
+            pick.entries.remove(row);
+            Ok(())
+        });
+        if removed {
+            self.pl_entry_edit
+                .retain(|(list, _), _| list != &list_owned);
+            self.status = format!("{list_owned}: entry {row} removed");
+        }
+    }
+
+    /// Applies a structural model edit: validate first, then snapshot, adopt
+    /// and drop the stale analysis results. Returns whether the edit landed.
+    ///
+    /// Every editor that changes the model should go through this so the
+    /// "validate-then-snapshot" and "clear results" rules have one home.
+    fn commit_model_edit<F>(&mut self, label: &str, edit: F) -> bool
+    where
+        F: FnOnce(&mut openflex_model::Model) -> Result<(), String>,
+    {
+        let Some(model) = self.model else {
+            return false;
+        };
+        let mut copy = model.clone();
+        if let Err(error) = edit(&mut copy) {
+            self.error = Some(error);
+            return false;
+        }
+        match copy.validate() {
+            Ok(()) => {
+                self.snapshot_labelled(label);
+                self.model = Some(Box::leak(Box::new(copy)));
+                self.clear_analysis_results();
+                self.error = None;
+                true
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                false
+            }
+        }
+    }
+
     fn snapshot_labelled(&mut self, label: &str) {
         let Some(model) = self.model else {
             return;
@@ -7919,6 +8151,239 @@ impl eframe::App for OpenFlexApp {
                     });
                 ui.separator();
                 egui::CollapsingHeader::new(format!(
+                    "Global variables ({})",
+                    self.model
+                        .map(|model| model.global_variables.len())
+                        .unwrap_or(0)
+                ))
+                .id_salt("global-variables")
+                .show(ui, |ui| {
+                    let Some(model) = self.model else {
+                        return;
+                    };
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.gv_name)
+                                .hint_text("name")
+                                .desired_width(110.0),
+                        );
+                        if ui.small_button("+ variable").clicked() {
+                            self.add_global_variable();
+                        }
+                    });
+                    if model.global_variables.is_empty() {
+                        empty_state(
+                            ui,
+                            "No global variables",
+                            "Named values that triggers and expressions can read.",
+                        );
+                        return;
+                    }
+                    // Actions are collected and applied after the loop: the
+                    // closure holds an immutable model view.
+                    let mut remove: Option<String> = None;
+                    let mut commit: Option<(String, serde_json::Value)> = None;
+                    for (name, variable) in &model.global_variables {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(name)
+                                    .small()
+                                    .monospace()
+                                    .color(palette::ACCENT_HI),
+                            );
+                            ui.label(
+                                egui::RichText::new(variable.kind.as_str())
+                                    .size(9.0_f32)
+                                    .color(palette::TEXT_DIM),
+                            );
+                            let buffer = self
+                                .gv_value_edit
+                                .entry(name.clone())
+                                .or_insert_with(|| match variable.kind {
+                                    openflex_model::GlobalVariableKind::Number => {
+                                        variable.as_number().map(|value| value.to_string()).unwrap_or_default()
+                                    }
+                                    openflex_model::GlobalVariableKind::String => {
+                                        variable.as_str().unwrap_or("").to_string()
+                                    }
+                                });
+                            let response = ui.add(
+                                egui::TextEdit::singleline(buffer)
+                                    .desired_width(120.0)
+                                    .font(egui::TextStyle::Monospace),
+                            );
+                            if response.lost_focus() {
+                                match variable.kind {
+                                    openflex_model::GlobalVariableKind::Number => {
+                                        match buffer.trim().parse::<f64>() {
+                                            Ok(value) if value.is_finite() => {
+                                                commit = Some((
+                                                    name.clone(),
+                                                    serde_json::json!(value),
+                                                ));
+                                            }
+                                            _ => {
+                                                self.error = Some(format!(
+                                                    "{name}: expected a number, got '{}'",
+                                                    buffer.trim()
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    openflex_model::GlobalVariableKind::String => {
+                                        commit = Some((
+                                            name.clone(),
+                                            serde_json::Value::String(buffer.trim().to_string()),
+                                        ));
+                                    }
+                                }
+                            }
+                            if ui
+                                .small_button("x")
+                                .on_hover_text(format!("delete the variable '{name}'"))
+                                .clicked()
+                            {
+                                remove = Some(name.clone());
+                            }
+                        });
+                    }
+                    if let Some((name, value)) = commit {
+                        self.set_global_variable(&name, value);
+                    }
+                    if let Some(name) = remove {
+                        self.remove_global_variable(&name);
+                    }
+                });
+                ui.separator();
+                egui::CollapsingHeader::new(format!(
+                    "Pick lists ({})",
+                    self.model.map(|model| model.picklists.len()).unwrap_or(0)
+                ))
+                .id_salt("pick-lists")
+                .show(ui, |ui| {
+                    let Some(model) = self.model else {
+                        return;
+                    };
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.pl_name)
+                                .hint_text("name")
+                                .desired_width(110.0),
+                        );
+                        if ui.small_button("+ pick list").clicked() {
+                            self.add_pick_list();
+                        }
+                    });
+                    if model.picklists.is_empty() {
+                        empty_state(
+                            ui,
+                            "No pick lists",
+                            "A named list of choices that a field can pick from.",
+                        );
+                        return;
+                    }
+                    let mut remove_list: Option<String> = None;
+                    let mut remove_entry: Option<(String, usize)> = None;
+                    let mut commit_entry: Option<(String, usize, String, String)> = None;
+                    let mut add_entry: Option<(String, String, String)> = None;
+                    for (name, list) in &model.picklists {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(name)
+                                    .small()
+                                    .monospace()
+                                    .color(palette::ACCENT_HI),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("{} entry(ies)", list.entries.len()))
+                                    .size(9.0_f32)
+                                    .monospace()
+                                    .color(palette::TEXT_DIM),
+                            );
+                            if ui
+                                .small_button("x")
+                                .on_hover_text(format!("delete the list '{name}'"))
+                                .clicked()
+                            {
+                                remove_list = Some(name.clone());
+                            }
+                        });
+                        for (row, entry) in list.entries.iter().enumerate() {
+                            let key = (name.clone(), row);
+                            let buffers = self
+                                .pl_entry_edit
+                                .entry(key.clone())
+                                .or_insert_with(|| (entry.name.clone(), entry.value.clone()));
+                            ui.horizontal(|ui| {
+                                ui.add_space(10.0);
+                                let name_response = ui.add(
+                                    egui::TextEdit::singleline(&mut buffers.0)
+                                        .desired_width(80.0)
+                                        .font(egui::TextStyle::Small),
+                                );
+                                ui.label(
+                                    egui::RichText::new("=")
+                                        .size(9.0_f32)
+                                        .color(palette::TEXT_DIM),
+                                );
+                                let value_response = ui.add(
+                                    egui::TextEdit::singleline(&mut buffers.1)
+                                        .desired_width(90.0)
+                                        .font(egui::TextStyle::Small),
+                                );
+                                if name_response.lost_focus() || value_response.lost_focus() {
+                                    commit_entry =
+                                        Some((name.clone(), row, buffers.0.clone(), buffers.1.clone()));
+                                }
+                                if ui.small_button("-").on_hover_text("remove this entry").clicked()
+                                {
+                                    remove_entry = Some((name.clone(), row));
+                                }
+                            });
+                        }
+                        let fresh = self
+                            .pl_new_entry
+                            .entry(name.clone())
+                            .or_insert_with(|| (String::new(), String::new()));
+                        ui.horizontal(|ui| {
+                            ui.add_space(10.0);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut fresh.0)
+                                    .hint_text("name")
+                                    .desired_width(80.0)
+                                    .font(egui::TextStyle::Small),
+                            );
+                            ui.add(
+                                egui::TextEdit::singleline(&mut fresh.1)
+                                    .hint_text("value")
+                                    .desired_width(90.0)
+                                    .font(egui::TextStyle::Small),
+                            );
+                            if ui.small_button("+ entry").clicked() {
+                                add_entry = Some((
+                                    name.clone(),
+                                    fresh.0.trim().to_string(),
+                                    fresh.1.trim().to_string(),
+                                ));
+                            }
+                        });
+                        ui.add_space(2.0);
+                    }
+                    if let Some((list, row, entry_name, value)) = commit_entry {
+                        self.set_pick_list_entry(&list, row, &entry_name, &value);
+                    }
+                    if let Some((list, row)) = remove_entry {
+                        self.remove_pick_list_entry(&list, row);
+                    }
+                    if let Some((list, entry_name, value)) = add_entry {
+                        self.add_pick_list_entry(&list, &entry_name, &value);
+                    }
+                    if let Some(list) = remove_list {
+                        self.remove_pick_list(&list);
+                    }
+                });
+                ui.separator();
+                egui::CollapsingHeader::new(format!(
                     "Global tables ({})",
                     self.model.map(|model| model.global_tables.len()).unwrap_or(0)
                 ))
@@ -12228,6 +12693,98 @@ mod tests {
     }
 
     #[test]
+    fn global_variables_can_be_added_edited_and_removed() {
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        // A blank name is refused before the model is touched.
+        app.add_global_variable();
+        assert!(app.error.is_some(), "an empty name must be rejected");
+        app.error = None;
+        app.gv_name = "BatchSize".into();
+        app.add_global_variable();
+        let model = app.model.expect("model");
+        assert_eq!(
+            model.global_variables["BatchSize"].as_number(),
+            Some(0.0),
+            "a new variable starts at zero"
+        );
+        assert!(app.gv_name.is_empty(), "the name box clears after adding");
+        // Editing the value keeps the declared kind.
+        app.set_global_variable("BatchSize", serde_json::json!(12.0));
+        assert_eq!(
+            app.model.expect("model").global_variables["BatchSize"].as_number(),
+            Some(12.0)
+        );
+        // A duplicate name is refused.
+        app.gv_name = "BatchSize".into();
+        app.add_global_variable();
+        assert!(app.error.is_some());
+        app.error = None;
+        app.remove_global_variable("BatchSize");
+        assert!(
+            app.model.expect("model").global_variables.is_empty(),
+            "the variable is gone"
+        );
+    }
+
+    #[test]
+    fn pick_lists_keep_at_least_one_entry() {
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        app.pl_name = "Shift".into();
+        app.add_pick_list();
+        let model = app.model.expect("model");
+        assert_eq!(model.picklists["Shift"].len(), 1, "one starter entry");
+        app.add_pick_list_entry("Shift", "Night", "2");
+        assert_eq!(app.model.expect("model").picklists["Shift"].len(), 2);
+        // A duplicate entry name is refused.
+        app.add_pick_list_entry("Shift", "Night", "3");
+        assert!(app.error.is_some());
+        app.error = None;
+        // Editing an entry keeps the row count.
+        app.set_pick_list_entry("Shift", 0, "Day", "1");
+        let model = app.model.expect("model");
+        assert_eq!(model.picklists["Shift"].entries[0].name, "Day");
+        assert_eq!(model.picklists["Shift"].entries[0].value, "1");
+        // The last entry cannot be removed.
+        app.remove_pick_list_entry("Shift", 1);
+        assert_eq!(app.model.expect("model").picklists["Shift"].len(), 1);
+        app.remove_pick_list_entry("Shift", 0);
+        assert!(app.error.is_some(), "the final entry must be protected");
+        assert_eq!(app.model.expect("model").picklists["Shift"].len(), 1);
+        app.error = None;
+        app.remove_pick_list("Shift");
+        assert!(app.model.expect("model").picklists.is_empty());
+    }
+
+    #[test]
+    fn a_model_edit_goes_through_one_funnel() {
+        // `commit_model_edit` validates before snapshotting, so a rejected edit
+        // leaves no undo entry and reports the reason.
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        let before = app.undo.len();
+        let rejected = app.commit_model_edit("bad edit", |model| {
+            model.name = "  ".to_string();
+            Ok(())
+        });
+        assert!(!rejected, "an invalid edit must not be adopted");
+        assert_eq!(app.undo.len(), before, "no undo entry for a rejected edit");
+        assert!(app.error.is_some(), "the validation reason is surfaced");
+        app.error = None;
+        let accepted = app.commit_model_edit("good edit", |model| {
+            model.description = "edited".to_string();
+            Ok(())
+        });
+        assert!(accepted);
+        assert_eq!(app.model.expect("model").description, "edited");
+        assert_eq!(app.undo.len(), before + 1, "exactly one undo entry");
+    }
+
+    #[test]
     fn the_flexsim_parity_kinds_are_addable_and_editable() {
         // Every kind the FlexSim 7.5 library has and OpenFlex now matches must
         // be in the picker and decode into the right params variant.
@@ -13045,9 +13602,10 @@ mod tests {
         // undo, redo, apply-best, model-settings, add, delete, duplicate, rename,
         // add-connection, remove-connection, set-strategy, add-global-table,
         // delete-global-table, add-table-column, drop-table-row, rename-column,
-        // add-table-row.
+        // add-table-row, and `commit_model_edit` (the single funnel every newer
+        // editor uses: global variables and pick lists).
         assert_eq!(
-            calls, 17,
+            calls, 18,
             "structural call sites changed — check that the new one clears results"
         );
         let body = production

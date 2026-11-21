@@ -134,6 +134,8 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
     }
 
     issues.extend(validate_global_tables(model));
+    issues.extend(validate_global_variables(model));
+    issues.extend(validate_picklists(model));
 
     let mut output_ports: std::collections::BTreeMap<String, std::collections::BTreeSet<u32>> =
         std::collections::BTreeMap::new();
@@ -1957,6 +1959,98 @@ fn validate_fluid(model: &Model) -> Vec<ValidationIssue> {
     issues
 }
 
+/// Validate global variables: legal names and a value matching the declared
+/// kind (FlexSim `ModelingTools/GlobalVariables`).
+fn validate_global_variables(model: &Model) -> Vec<ValidationIssue> {
+    let mut issues = Vec::new();
+    for (name, variable) in &model.global_variables {
+        let location = format!("global_variables.{name}");
+        if !is_identifier(name) {
+            issues.push(ValidationIssue::new(
+                &location,
+                "global variable names must start with a letter or underscore and contain only letters, digits and underscores",
+            ));
+        }
+        match variable.kind {
+            crate::model::GlobalVariableKind::Number => match variable.value.as_f64() {
+                Some(value) if value.is_finite() => {}
+                Some(_) => issues.push(ValidationIssue::new(
+                    format!("{location}.value"),
+                    "a number global variable must be finite",
+                )),
+                None => issues.push(ValidationIssue::new(
+                    format!("{location}.value"),
+                    format!(
+                        "kind is 'number' but the value is {}; use a JSON number",
+                        json_kind(&variable.value)
+                    ),
+                )),
+            },
+            crate::model::GlobalVariableKind::String => {
+                if variable.value.as_str().is_none() {
+                    issues.push(ValidationIssue::new(
+                        format!("{location}.value"),
+                        format!(
+                            "kind is 'string' but the value is {}; use a JSON string",
+                            json_kind(&variable.value)
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    issues
+}
+
+/// Human readable JSON type of a value, used in validation messages.
+fn json_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
+    }
+}
+
+/// Validate pick lists (FlexSim `PickLists/`): legal names, at least one entry,
+/// non-empty unique entry names.
+fn validate_picklists(model: &Model) -> Vec<ValidationIssue> {
+    let mut issues = Vec::new();
+    for (name, picklist) in &model.picklists {
+        let location = format!("picklists.{name}");
+        if !is_identifier(name) {
+            issues.push(ValidationIssue::new(
+                &location,
+                "pick list names must start with a letter or underscore and contain only letters, digits and underscores",
+            ));
+        }
+        if picklist.entries.is_empty() {
+            issues.push(ValidationIssue::new(
+                &location,
+                "a pick list needs at least one entry",
+            ));
+        }
+        let mut seen = std::collections::BTreeMap::new();
+        for (position, entry) in picklist.entries.iter().enumerate() {
+            if entry.name.trim().is_empty() {
+                issues.push(ValidationIssue::new(
+                    format!("{location}.entries[{position}].name"),
+                    "entry names cannot be empty",
+                ));
+            }
+            if seen.insert(entry.name.as_str(), ()).is_some() {
+                issues.push(ValidationIssue::new(
+                    format!("{location}.entries[{position}].name"),
+                    format!("duplicate entry name '{}'", entry.name),
+                ));
+            }
+        }
+    }
+    issues
+}
+
 fn is_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
@@ -2003,6 +2097,8 @@ mod tests {
             fluid_step: None,
             grid: None,
             global_tables: Default::default(),
+            global_variables: Default::default(),
+            picklists: Default::default(),
             metadata: Default::default(),
         }
     }
