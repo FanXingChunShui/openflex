@@ -39,6 +39,14 @@
   单次 `run` 不触发 experiment/scenario 钩子。实测 `experiment` 输出顺序
   `exp_start → scn_start → scn_end → scn_start → scn_end → exp_end`。脚本预编译列表补齐 6 个钩子。
 
+- **任务执行器状态细分**：`StateTimes` 新增 `travel_empty` / `travel_loaded` / `loading` / `unloading` / `utilize`
+  （对非执行器恒 0 且不序列化，`ObjectAggregate` 用 `Option` + skip），报告在**模型含执行器时**才追加这 5 列。
+  任务链上的切换点：取货腿=空驶、装载、送达腿=载货、卸载、原地等待/服务=utilize、回程=空驶；
+  被 `traffic_control` 挡住的时间归 `blocked`，**不进任何 travel 计时**。
+  CLI 实测单次运输：`travel_empty 27 / travel_loaded 20 / loading 2 / unloading 3 / utilize 8`（合计 60 = 仿真时长）。
+  顺带修了 `node_network_distance` 端点距离 bug：lead/trail 原来按模型顺序取首/末节点，
+  反向路径会多算两段，改为按实际起止节点计算（既有 92.43 网络测试仍通过）。
+
 ### 报告与 CLI
 
 - **性能指标进入所有渲染出口**：`experiment` 文本表按指标名追加列（CJK 宽度按东亚字符宽度对齐）、

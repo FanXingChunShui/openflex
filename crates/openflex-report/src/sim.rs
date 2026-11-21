@@ -179,8 +179,12 @@ pub fn to_table_with_sections(
         i18n::t("base_seed"),
         report.base_seed
     );
+    let executer = report
+        .objects
+        .values()
+        .any(|stats| stats.travel_empty.is_some());
     let _ = writeln!(out);
-    let _ = writeln!(
+    let _ = write!(
         out,
         "{:<22} {:>8} {:>8} {:>8} {:>8} {:>9} {:>7} {:>8} {:>8} {:>8}",
         i18n::t("object"),
@@ -194,12 +198,32 @@ pub fn to_table_with_sections(
         "door_opening",
         "door_closing"
     );
-    let _ = writeln!(out, "{}", "-".repeat(WIDTH));
+    if executer {
+        let _ = write!(
+            out,
+            " {:>12} {:>12} {:>8} {:>10} {:>8}",
+            "travel_empty", "travel_loaded", "loading", "unloading", "utilize"
+        );
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "{}",
+        "-".repeat(if executer { WIDTH + 56 } else { WIDTH })
+    );
     for (name, stats) in &report.objects {
         let (opening, open, closing) = door_times(report, name);
-        let _ = writeln!(out, "{}", row(name, stats, opening, open, closing));
+        let _ = writeln!(
+            out,
+            "{}",
+            row(name, stats, opening, open, closing, executer)
+        );
     }
-    let _ = writeln!(out, "{}", "-".repeat(WIDTH));
+    let _ = writeln!(
+        out,
+        "{}",
+        "-".repeat(if executer { WIDTH + 56 } else { WIDTH })
+    );
     let in_system = in_system(report);
     let _ = writeln!(
         out,
@@ -228,6 +252,7 @@ fn row(
     door_opening: f64,
     door_open: f64,
     door_closing: f64,
+    executer: bool,
 ) -> String {
     let mut row = String::new();
     let _ = write!(row, "{name:<22}");
@@ -240,6 +265,14 @@ fn row(
     let _ = write!(row, " {:>8.2}", door_opening);
     let _ = write!(row, " {:>8.2}", door_open);
     let _ = write!(row, " {:>8.2}", door_closing);
+    if executer {
+        let mean = |value: &Option<Aggregate>| value.as_ref().map_or(0.0, |agg| agg.mean);
+        let _ = write!(row, " {:>12.2}", mean(&stats.travel_empty));
+        let _ = write!(row, " {:>12.2}", mean(&stats.travel_loaded));
+        let _ = write!(row, " {:>8.2}", mean(&stats.loading));
+        let _ = write!(row, " {:>10.2}", mean(&stats.unloading));
+        let _ = write!(row, " {:>8.2}", mean(&stats.utilize));
+    }
     row
 }
 
@@ -249,6 +282,14 @@ fn total_row(label: &str, aggregate: &Aggregate) -> String {
         let _ = write!(row, "  (95% CI {})", fmt_ci(aggregate.ci95));
     }
     row
+}
+
+/// task-166: whether the report contains task-executer detail columns.
+fn has_executer(report: &SimReport) -> bool {
+    report
+        .objects
+        .values()
+        .any(|stats| stats.travel_empty.is_some())
 }
 
 /// CSV with one row per object; multi-replication values are means.
@@ -265,12 +306,17 @@ pub fn to_csv_with_flow(report: &SimReport, include_flow: bool) -> String {
 pub fn to_csv_with_sections(report: &SimReport, include_flow: bool, include_fluid: bool) -> String {
     let mut out = String::new();
     let unit = report.time_unit.label();
-    let _ = writeln!(
+    let executer = has_executer(report);
+    let _ = write!(
         out,
         "object,kind,input,output,avg_wip,max_wip,avg_stay_{unit},utilization,throughput,idle,busy,blocked,down"
     );
+    if executer {
+        let _ = write!(out, ",travel_empty,travel_loaded,loading,unloading,utilize");
+    }
+    let _ = writeln!(out);
     for (name, stats) in &report.objects {
-        let _ = writeln!(
+        let _ = write!(
             out,
             "{name},{:?},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{:.6},{:.4},{:.4},{:.4},{:.4}",
             stats.kind,
@@ -286,6 +332,19 @@ pub fn to_csv_with_sections(report: &SimReport, include_flow: bool, include_flui
             stats.blocked_fraction.mean,
             stats.down_fraction.mean
         );
+        if executer {
+            let mean = |value: &Option<Aggregate>| value.as_ref().map_or(0.0, |agg| agg.mean);
+            let _ = write!(
+                out,
+                ",{:.3},{:.3},{:.3},{:.3},{:.3}",
+                mean(&stats.travel_empty),
+                mean(&stats.travel_loaded),
+                mean(&stats.loading),
+                mean(&stats.unloading),
+                mean(&stats.utilize)
+            );
+        }
+        let _ = writeln!(out);
     }
     if include_flow {
         out.push_str(&flow_csv(report));
@@ -394,7 +453,8 @@ pub fn to_markdown_with_sections(
         report.base_seed
     );
     let _ = writeln!(out, "## {}\n", i18n::t("objects"));
-    let _ = writeln!(
+    let executer = has_executer(report);
+    let _ = write!(
         out,
         "| {} | {} | {} | {} | {} | {} | {} ({unit}) | {} | {} | {} | {} | door_open | door_opening | door_closing |",
         i18n::t("object"),
@@ -409,13 +469,24 @@ pub fn to_markdown_with_sections(
         i18n::t("util_ci"),
         i18n::t("throughput")
     );
-    let _ = writeln!(
+    if executer {
+        let _ = write!(
+            out,
+            " travel_empty | travel_loaded | loading | unloading | utilize |"
+        );
+    }
+    let _ = writeln!(out);
+    let _ = write!(
         out,
         "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
     );
+    if executer {
+        let _ = write!(out, "---:|---:|---:|---:|---:|");
+    }
+    let _ = writeln!(out);
     for (name, stats) in &report.objects {
         let (opening, open, closing) = door_times(report, name);
-        let _ = writeln!(
+        let _ = write!(
             out,
             "| {name} | {:?} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.2} | {:.2} | {:.2} |",
             stats.kind,
@@ -432,6 +503,19 @@ pub fn to_markdown_with_sections(
             opening,
             closing
         );
+        if executer {
+            let mean = |value: &Option<Aggregate>| value.as_ref().map_or(0.0, |agg| agg.mean);
+            let _ = write!(
+                out,
+                " {:.2} | {:.2} | {:.2} | {:.2} | {:.2} |",
+                mean(&stats.travel_empty),
+                mean(&stats.travel_loaded),
+                mean(&stats.loading),
+                mean(&stats.unloading),
+                mean(&stats.utilize)
+            );
+        }
+        let _ = writeln!(out);
     }
     let in_system = in_system(report);
     let _ = writeln!(out, "\n## {}\n", i18n::t("totals"));

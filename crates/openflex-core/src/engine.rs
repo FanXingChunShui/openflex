@@ -318,6 +318,8 @@ pub(crate) enum EventKind {
     TrafficWait(usize, usize, u8),
     /// task-158: sample the model's tracked-variable expressions.
     TrackedSample,
+    /// task-166: a task executer starts the loaded delivery leg.
+    TransportDepart(usize, usize),
     /// Warm-up boundary: reset the statistics accumulators.
     ResetStats,
 }
@@ -534,6 +536,24 @@ struct StateDetail {
     waiting_transport: f64,
     door_opening: f64,
     door_closing: f64,
+    travel_empty: f64,
+    travel_loaded: f64,
+    loading: f64,
+    unloading: f64,
+    utilize: f64,
+}
+
+/// task-166: sub-state of a task executer, subdividing the busy state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ExecutorActivity {
+    #[default]
+    None,
+    TravelEmpty,
+    TravelLoaded,
+    Loading,
+    Unloading,
+    Utilize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -838,6 +858,11 @@ pub(crate) struct ObjectRt {
     /// task-154: the control areas that leg needs (one queue entry each).
     #[serde(default)]
     traffic_wait_controls: Vec<usize>,
+    /// task-166: current executer sub-state and its start time.
+    #[serde(default)]
+    executor_activity: ExecutorActivity,
+    #[serde(default)]
+    executor_since: f64,
     capacity: u32,
     tasks: usize,
     /// Requester currently served by this transporter (A10 preemption).
@@ -936,6 +961,8 @@ impl ObjectRt {
             traffic_hold: Vec::new(),
             traffic_wait_stage: None,
             traffic_wait_controls: Vec::new(),
+            executor_activity: ExecutorActivity::None,
+            executor_since: now,
             capacity: 1,
             tasks: 0,
             serving_requester: None,
@@ -1122,6 +1149,29 @@ impl ObjectRt {
         }
     }
 
+    /// task-166: charge the open executer sub-state and switch it.
+    fn set_executor_activity(&mut self, now: f64, activity: ExecutorActivity) {
+        self.charge_executor_activity(now);
+        self.executor_activity = activity;
+        self.executor_since = now;
+    }
+
+    fn charge_executor_activity(&mut self, now: f64) {
+        let dt = (now - self.executor_since).max(0.0);
+        if dt <= 0.0 {
+            return;
+        }
+        match self.executor_activity {
+            ExecutorActivity::None => {}
+            ExecutorActivity::TravelEmpty => self.acc.detail.travel_empty += dt,
+            ExecutorActivity::TravelLoaded => self.acc.detail.travel_loaded += dt,
+            ExecutorActivity::Loading => self.acc.detail.loading += dt,
+            ExecutorActivity::Unloading => self.acc.detail.unloading += dt,
+            ExecutorActivity::Utilize => self.acc.detail.utilize += dt,
+        }
+        self.executor_since = now;
+    }
+
     /// Change the processor phase, settling the detail timer at the boundary.
     fn set_phase(&mut self, now: f64, phase: Phase) {
         if self.phase == phase {
@@ -1228,6 +1278,7 @@ impl ObjectRt {
         self.note_content(now);
         self.accumulate_state(now);
         self.charge_phase(now);
+        self.charge_executor_activity(now);
         for lane in &mut self.lanes {
             if lane.busy_since > 0.0 || lane.item.is_some() {
                 if lane.item.is_some() && lane.busy_since > 0.0 {
@@ -1271,12 +1322,28 @@ impl ObjectRt {
             State::Down => states.down += dt,
             State::OffShift => states.off_shift += dt,
         }
+        if self.state == State::Busy {
+            let activity_dt = (now - self.executor_since).max(0.0);
+            match self.executor_activity {
+                ExecutorActivity::None => {}
+                ExecutorActivity::TravelEmpty => detail.travel_empty += activity_dt,
+                ExecutorActivity::TravelLoaded => detail.travel_loaded += activity_dt,
+                ExecutorActivity::Loading => detail.loading += activity_dt,
+                ExecutorActivity::Unloading => detail.unloading += activity_dt,
+                ExecutorActivity::Utilize => detail.utilize += activity_dt,
+            }
+        }
         states.setup = detail.setup;
         states.processing = detail.processing;
         states.waiting_for_operator = detail.waiting_operator;
         states.waiting_for_transport = detail.waiting_transport;
         states.door_opening = detail.door_opening;
         states.door_closing = detail.door_closing;
+        states.travel_empty = detail.travel_empty;
+        states.travel_loaded = detail.travel_loaded;
+        states.loading = detail.loading;
+        states.unloading = detail.unloading;
+        states.utilize = detail.utilize;
         let content_dt = (now - self.last_content_change).max(0.0);
         let content_integral = self.acc.content_integral + self.held() as f64 * content_dt;
         ObjectStats {
@@ -1312,6 +1379,11 @@ impl ObjectRt {
         state_times.waiting_for_transport = self.acc.detail.waiting_transport;
         state_times.door_opening = self.acc.detail.door_opening;
         state_times.door_closing = self.acc.detail.door_closing;
+        state_times.travel_empty = self.acc.detail.travel_empty;
+        state_times.travel_loaded = self.acc.detail.travel_loaded;
+        state_times.loading = self.acc.detail.loading;
+        state_times.unloading = self.acc.detail.unloading;
+        state_times.utilize = self.acc.detail.utilize;
         ObjectStats {
             kind: self.kind,
             input_count: self.acc.input,
@@ -3299,6 +3371,9 @@ impl<'m> Simulation<'m> {
             EventKind::FlowDelayDone(block, token) => self.handle_flow_delay_done(block, token),
             EventKind::FluidStep => self.handle_fluid_step(),
             EventKind::TrackedSample => self.handle_tracked_sample(),
+            EventKind::TransportDepart(transporter, requester) => {
+                self.handle_transport_depart(transporter, requester)
+            }
             EventKind::ChargeDone(executor) => self.handle_charge_done(executor),
             EventKind::TransportResume(executor, requester, stage) => {
                 self.handle_transport_resume(executor, requester, stage)
@@ -3390,6 +3465,17 @@ impl<'m> Simulation<'m> {
         let now = self.now;
         self.objects[index].set_phase(now, phase);
         self.reschedule_failure(index);
+    }
+
+    /// task-166: switch the executer sub-state (no-op for other object kinds).
+    fn set_executor_activity(&mut self, index: usize, activity: ExecutorActivity) {
+        let now = self.now;
+        self.objects[index].set_executor_activity(now, activity);
+    }
+
+    /// task-166: stop the sub-state clock when a blocked/idle interval starts.
+    fn clear_executor_activity(&mut self, index: usize) {
+        self.set_executor_activity(index, ExecutorActivity::None);
     }
 
     /// Remove one item from an object's content and fire `OnContentChange`.
@@ -6756,6 +6842,7 @@ impl<'m> Simulation<'m> {
             // in-transit item until it arrives.
             self.objects[requester].in_transit += 1;
             self.set_state(transporter, State::Busy);
+            self.set_executor_activity(transporter, ExecutorActivity::TravelEmpty);
             // B4: the task has two legs — travel to the pickup point (the
             // transporter's home) and then to the requester.
             self.schedule_transport_pickup(transporter, requester)?;
@@ -6807,6 +6894,7 @@ impl<'m> Simulation<'m> {
             };
             self.objects[requester].in_transit += 1;
             self.set_state(executor, State::Busy);
+            self.set_executor_activity(executor, ExecutorActivity::TravelEmpty);
             self.schedule_transport_pickup(executor, requester)?;
         }
         let stale: Vec<usize> = self.objects[dispatcher]
@@ -7374,12 +7462,20 @@ impl<'m> Simulation<'m> {
         transporter: usize,
         requester: usize,
     ) -> Result<(), SimError> {
+        if self.objects[transporter].state == State::Blocked {
+            self.set_state(transporter, State::Busy);
+        }
         self.traffic_release(transporter);
+        self.set_executor_activity(transporter, ExecutorActivity::TravelEmpty);
         if let Some(home) = self.objects[transporter].home {
             let from = self.objects[transporter].position;
             let to = self.objects[home].position;
             let controls = self.traffic_controls_for_leg(from, to);
             if !self.traffic_try_acquire(transporter, &controls) {
+                // Blocked by the control area: that interval is `blocked`, not
+                // travel (task-166).
+                self.clear_executor_activity(transporter);
+                self.set_state(transporter, State::Blocked);
                 self.traffic_wait_for_slot(transporter, requester, 0, &controls);
                 return Ok(());
             }
@@ -7764,27 +7860,53 @@ impl<'m> Simulation<'m> {
             self.objects[transporter].position = self.objects[home].position;
             self.objects[transporter].z = self.objects[home].z;
         }
+        if self.objects[transporter].state == State::Blocked {
+            self.set_state(transporter, State::Busy);
+        }
         self.traffic_release(transporter);
+        self.set_executor_activity(transporter, ExecutorActivity::Loading);
         let from_position = self.objects[transporter].position;
         let to_position = self.objects[requester].position;
         let controls = self.traffic_controls_for_leg(from_position, to_position);
         if !self.traffic_try_acquire(transporter, &controls) {
+            self.clear_executor_activity(transporter);
+            self.set_state(transporter, State::Blocked);
             self.traffic_wait_for_slot(transporter, requester, 1, &controls);
             return Ok(());
         }
-        let speed_scale = self
-            .traffic_speed_factor(from_position, to_position)
-            .max(EPS);
         let dwell = self.transport_dwell(transporter);
         let load = self.transport_load_time(transporter);
-        let travel = self.transport_leg_travel(transporter, requester) / speed_scale;
         let pickup_distance =
             self.transport_pickup_travel(transporter) * self.transport_speed(transporter);
         if self.agv_mid_task_charge(transporter, requester, pickup_distance, 0)? {
             return Ok(());
         }
+        // Loading ends (and the loaded delivery leg begins) after the dwell and
+        // the load time; `TransportDepart` switches the sub-state there.
         self.schedule(
-            self.now + dwell + load + travel,
+            self.now + dwell + load,
+            EventKind::TransportDepart(transporter, requester),
+        );
+        Ok(())
+    }
+
+    /// task-166: the loaded delivery leg begins; this is where
+    /// `travel_loaded` starts (loading ended at the previous event).
+    fn handle_transport_depart(
+        &mut self,
+        transporter: usize,
+        requester: usize,
+    ) -> Result<(), SimError> {
+        self.set_state(transporter, State::Busy);
+        self.set_executor_activity(transporter, ExecutorActivity::TravelLoaded);
+        let from_position = self.objects[transporter].position;
+        let to_position = self.objects[requester].position;
+        let speed_scale = self
+            .traffic_speed_factor(from_position, to_position)
+            .max(EPS);
+        let travel = self.transport_leg_travel(transporter, requester) / speed_scale;
+        self.schedule(
+            self.now + travel,
             EventKind::TransportArrive(transporter, requester),
         );
         Ok(())
@@ -7823,6 +7945,10 @@ impl<'m> Simulation<'m> {
             return Ok(false);
         }
         self.objects[transporter].battery = Some(0.0);
+        // task-166: charging mid-task is classified as on-site task time
+        // (`utilize`); the existing charging fraction remains the authoritative
+        // battery statistic.
+        self.set_executor_activity(transporter, ExecutorActivity::Utilize);
         self.record_object_trace("agv_charge", transporter);
         let distribution = match &self.model.objects[transporter].params {
             ObjectParams::Agv(params) => params.charge_time.clone(),
@@ -7914,6 +8040,7 @@ impl<'m> Simulation<'m> {
         }
         self.objects[transporter].position = self.objects[requester].position;
         self.objects[transporter].z = self.objects[requester].z;
+        self.set_executor_activity(transporter, ExecutorActivity::Unloading);
         let leg_distance =
             self.transport_leg_travel(transporter, requester) * self.transport_speed(transporter);
         if self.agv_mid_task_charge(transporter, requester, leg_distance, 1)? {
@@ -8132,6 +8259,7 @@ impl<'m> Simulation<'m> {
         transporter: usize,
         requester: usize,
     ) -> Result<(), SimError> {
+        self.set_executor_activity(transporter, ExecutorActivity::Utilize);
         // A5: the operator reached the requester, so it stops occupying a slot.
         if self.objects[requester].in_transit > 0 {
             self.objects[requester].in_transit -= 1;
@@ -8175,6 +8303,10 @@ impl<'m> Simulation<'m> {
                 return self.schedule_person_step(transporter);
             }
         }
+        if self.objects[transporter].state == State::Blocked {
+            self.set_state(transporter, State::Busy);
+        }
+        self.set_executor_activity(transporter, ExecutorActivity::TravelEmpty);
         self.traffic_release(transporter);
         let speed = self.transport_speed(transporter);
         let mut home_travel = self.objects[transporter]
@@ -8186,6 +8318,8 @@ impl<'m> Simulation<'m> {
             if home_travel.is_some_and(|travel| travel > EPS) {
                 let controls = self.traffic_controls_for_leg(from_position, to_position);
                 if !self.traffic_try_acquire(transporter, &controls) {
+                    self.clear_executor_activity(transporter);
+                    self.set_state(transporter, State::Blocked);
                     self.traffic_wait_for_slot(transporter, requester, 2, &controls);
                     return Ok(());
                 }
@@ -8222,6 +8356,7 @@ impl<'m> Simulation<'m> {
     }
 
     fn handle_transport_home(&mut self, transporter: usize) -> Result<(), SimError> {
+        self.clear_executor_activity(transporter);
         self.traffic_release(transporter);
         if let Some(home) = self.objects[transporter].home {
             self.objects[transporter].position = self.objects[home].position;
@@ -8307,6 +8442,8 @@ impl<'m> Simulation<'m> {
         let at = self.now + duration;
         if at < self.config.stop_time - EPS {
             self.set_state(transporter, State::Busy);
+            // task-166: extra task-sequence legs are on-site task time.
+            self.set_executor_activity(transporter, ExecutorActivity::Utilize);
             self.schedule(at, EventKind::TaskStepDone(transporter));
             Ok(())
         } else {
@@ -8325,6 +8462,7 @@ impl<'m> Simulation<'m> {
 
     /// Mark one transporter task as complete and look for queued work.
     fn finish_task(&mut self, transporter: usize) -> Result<(), SimError> {
+        self.clear_executor_activity(transporter);
         self.release_shaft(transporter);
         self.objects[transporter].tasks = self.objects[transporter].tasks.saturating_sub(1);
         self.objects[transporter].serving_requester = None;
@@ -9756,6 +9894,11 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
             Some(("requester", *requester as f64 + *stage as f64 * 0.0)),
         ),
         EventKind::TrackedSample => (None, "tracked_sample", None),
+        EventKind::TransportDepart(transporter, requester) => (
+            Some(*transporter),
+            "transport_depart",
+            Some(("requester", *requester as f64)),
+        ),
         EventKind::ResetStats => (None, "reset_stats", None),
     }
 }
@@ -9840,17 +9983,11 @@ fn node_network_distance(model: &Model, from: &ObjectRt, to: &ObjectRt) -> Optio
         return Some(distance(from.position, to.position));
     }
     let path = shortest_network_distance(&edges, from_node, to_node)?;
-    let node_positions: Vec<[f64; 2]> = nodes
-        .iter()
-        .filter(|node| node.0 == from_node || node.0 == to_node)
-        .map(|node| node.1)
-        .collect();
-    let lead = node_positions
-        .first()
-        .map_or(0.0, |start| distance(from.position, *start));
-    let trail = node_positions
-        .last()
-        .map_or(0.0, |end| distance(*end, to.position));
+    // Use the actual start/end node positions (not model order): the path may
+    // run in either direction.
+    let node_position = |name: &str| nodes.iter().find(|node| node.0 == name).map(|node| node.1);
+    let lead = node_position(from_node).map_or(0.0, |start| distance(from.position, start));
+    let trail = node_position(to_node).map_or(0.0, |end| distance(end, to.position));
     Some(path + lead + trail)
 }
 
@@ -13268,5 +13405,140 @@ mod tests {
         let triggers = value.get("model_triggers").expect("model_triggers present");
         assert!(triggers.get("start_of_experiment").is_some());
         assert!(triggers.get("end_of_replication").is_some());
+    }
+
+    fn executer_report() -> crate::SimReport {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "executer-detail",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1000.0 },
+                "max_arrivals": 1, "first_arrival": 0.0 } },
+            { "name": "P", "kind": "processor", "pos": [30.0, 0.0], "params": {
+                "process_time": { "distribution": "constant", "value": 5.0 },
+                "process_operator": "D" } },
+            { "name": "K", "kind": "sink", "params": {} },
+            { "name": "D", "kind": "dispatcher", "pos": [10.0, 0.0], "params": {} },
+            { "name": "T", "kind": "transporter", "pos": [0.0, 0.0], "params": {
+                "speed": 1.0, "load_time": { "distribution": "constant", "value": 2.0 },
+                "unload_time": { "distribution": "constant", "value": 3.0 },
+                "home": "D" } }
+          ],
+          "connections": [
+            { "from": "S", "to": "P" }, { "from": "P", "to": "K" },
+            { "from": "D", "to": "T" }
+          ]
+        }"#,
+        )
+        .expect("model");
+        crate::run_model(&model).expect("run")
+    }
+
+    /// task-166: the four task phases add up to the whole busy interval; the
+    /// geometry gives 10 empty (pickup) + 20 loaded (delivery) + 20 empty
+    /// (return), 2 loading and 3 unloading.
+    #[test]
+    fn executer_activity_phases_match_a_single_task() {
+        let report = executer_report();
+        let stats = &report.replications[0].objects["T"].state_times;
+        assert!((stats.travel_empty - 30.0).abs() < 1e-6, "{stats:?}");
+        assert!((stats.travel_loaded - 20.0).abs() < 1e-6, "{stats:?}");
+        assert!((stats.loading - 2.0).abs() < 1e-6, "{stats:?}");
+        assert!((stats.unloading - 3.0).abs() < 1e-6, "{stats:?}");
+        // On-site waiting/service: processing 5 + the release unload 3.
+        assert!((stats.utilize - 8.0).abs() < 1e-6, "{stats:?}");
+    }
+
+    /// task-166: the new details are subdivisions of the existing states and
+    /// never double-count.
+    #[test]
+    fn executer_activity_details_stay_inside_the_parent_states() {
+        let report = executer_report();
+        let stats = &report.replications[0].objects["T"].state_times;
+        let details = stats.travel_empty
+            + stats.travel_loaded
+            + stats.loading
+            + stats.unloading
+            + stats.utilize;
+        let parents = stats.idle + stats.busy + stats.blocked + stats.down + stats.off_shift;
+        assert!(details <= parents + 1e-6, "{stats:?}");
+        assert!((details - stats.busy).abs() < 1e-6, "{stats:?}");
+    }
+
+    /// task-166: time spent waiting for a traffic-control slot is `blocked`,
+    /// not any of the travel details.
+    #[test]
+    fn traffic_control_wait_is_blocked_and_not_travel() {
+        let report =
+            crate::run_model(&traffic_model("mutual_exclusion", 1, 1.0)).expect("traffic run");
+        let stats = &report.replications[0].objects["T2"].state_times;
+        assert!(stats.blocked > 5.0, "the second executer must be blocked");
+        // Pickup 0 + return home 10 = 10 empty driving; the 10 s wait is not travel.
+        assert!((stats.travel_empty - 10.0).abs() < 1e-6, "{stats:?}");
+        assert!((stats.travel_loaded - 10.0).abs() < 1e-6, "{stats:?}");
+        assert!(
+            stats.travel_empty + stats.travel_loaded < 20.0 + stats.blocked - 1.0,
+            "waiting must not add travel time: {stats:?}"
+        );
+    }
+
+    /// task-166: a model without task executers serializes exactly like before:
+    /// the new detail keys are absent from the JSON.
+    #[test]
+    fn models_without_executers_keep_the_report_json_unchanged() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "no-executer",
+          "run": { "stop_time": 5.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1.0 },
+                "max_arrivals": 2 } },
+            { "name": "P", "kind": "processor", "params": {
+                "process_time": { "distribution": "constant", "value": 1.0 } } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [
+            { "from": "S", "to": "P" }, { "from": "P", "to": "K" }
+          ]
+        }"#,
+        )
+        .expect("model");
+        let report = crate::run_model(&model).expect("run");
+        let text = serde_json::to_string(&report).expect("json");
+        for key in [
+            "travel_empty",
+            "travel_loaded",
+            "loading",
+            "unloading",
+            "utilize",
+        ] {
+            assert!(
+                !text.contains(key),
+                "non-executer report leaks {key}: {text}"
+            );
+        }
+        // A state-detail object of a non-executer has no new keys either.
+        let state = &report.replications[0].objects["P"].state_times;
+        assert_eq!(state.travel_empty, 0.0);
+        let state_json = serde_json::to_value(state).expect("state json");
+        assert!(state_json.get("utilize").is_none());
+    }
+
+    /// task-166: an executer report exposes the detail in the aggregated report
+    /// JSON so dashboards can read it.
+    #[test]
+    fn executer_report_exposes_the_detail_aggregates() {
+        let report = executer_report();
+        let object = &report.objects["T"];
+        let empty = object
+            .travel_empty
+            .as_ref()
+            .expect("executer detail in the report");
+        assert!((empty.mean - 30.0).abs() < 1e-6);
+        let loaded = object.travel_loaded.as_ref().expect("travel_loaded");
+        assert!((loaded.mean - 20.0).abs() < 1e-6);
     }
 }

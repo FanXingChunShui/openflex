@@ -76,6 +76,25 @@ pub struct StateTimes {
     /// task-103: time an elevator spent closing its doors.
     #[serde(default)]
     pub door_closing: f64,
+    /// task-166: task-executer detail — driving without a load.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub travel_empty: f64,
+    /// task-166: task-executer detail — driving with a load/operator.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub travel_loaded: f64,
+    /// task-166: task-executer detail — loading at the pickup point.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub loading: f64,
+    /// task-166: task-executer detail — unloading at the destination.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub unloading: f64,
+    /// task-166: task-executer detail — on-site task time (waiting/serving).
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub utilize: f64,
+}
+
+fn is_zero_f64(value: &f64) -> bool {
+    *value == 0.0
 }
 
 impl StateTimes {
@@ -98,6 +117,11 @@ impl StateTimes {
             "waiting_for_transport" => self.waiting_for_transport,
             "door_opening" => self.door_opening,
             "door_closing" => self.door_closing,
+            "travel_empty" => self.travel_empty,
+            "travel_loaded" => self.travel_loaded,
+            "loading" => self.loading,
+            "unloading" => self.unloading,
+            "utilize" => self.utilize,
             _ => 0.0,
         }
     }
@@ -361,6 +385,17 @@ pub struct ObjectAggregate {
     pub busy_fraction: Aggregate,
     pub blocked_fraction: Aggregate,
     pub down_fraction: Aggregate,
+    /// task-166: task-executer detail means (only for executer kinds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub travel_empty: Option<Aggregate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub travel_loaded: Option<Aggregate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loading: Option<Aggregate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unloading: Option<Aggregate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub utilize: Option<Aggregate>,
 }
 
 /// Little's law check for one object: `L = λW`.
@@ -700,6 +735,20 @@ fn aggregate_fluid(replications: &[ReplicationResult]) -> Option<FluidReport> {
     })
 }
 
+/// task-166: kinds that report the executer detail columns.
+fn is_task_executer(kind: ObjectKind) -> bool {
+    matches!(
+        kind,
+        ObjectKind::Transporter
+            | ObjectKind::Person
+            | ObjectKind::Agv
+            | ObjectKind::Elevator
+            | ObjectKind::Robot
+            | ObjectKind::Crane
+            | ObjectKind::AsrsVehicle
+    )
+}
+
 fn aggregate_objects(replications: &[ReplicationResult]) -> BTreeMap<String, ObjectAggregate> {
     // Group the per-replication statistics once instead of scanning every
     // replication for every object name (O(objects x reps) -> O(objects+reps)).
@@ -722,9 +771,19 @@ fn aggregate_objects(replications: &[ReplicationResult]) -> BTreeMap<String, Obj
         let mut busy = Vec::new();
         let mut blocked = Vec::new();
         let mut down = Vec::new();
+        let mut travel_empty = Vec::new();
+        let mut travel_loaded = Vec::new();
+        let mut loading = Vec::new();
+        let mut unloading = Vec::new();
+        let mut utilize = Vec::new();
         let mut kind = ObjectKind::BasicFr;
         for stats in samples {
             kind = stats.kind;
+            travel_empty.push(stats.state_times.travel_empty);
+            travel_loaded.push(stats.state_times.travel_loaded);
+            loading.push(stats.state_times.loading);
+            unloading.push(stats.state_times.unloading);
+            utilize.push(stats.state_times.utilize);
             input.push(stats.input_count as f64);
             output.push(stats.output_count as f64);
             content.push(stats.avg_content);
@@ -752,6 +811,13 @@ fn aggregate_objects(replications: &[ReplicationResult]) -> BTreeMap<String, Obj
                 busy_fraction: Aggregate::from_samples(&busy),
                 blocked_fraction: Aggregate::from_samples(&blocked),
                 down_fraction: Aggregate::from_samples(&down),
+                travel_empty: is_task_executer(kind)
+                    .then(|| Aggregate::from_samples(&travel_empty)),
+                travel_loaded: is_task_executer(kind)
+                    .then(|| Aggregate::from_samples(&travel_loaded)),
+                loading: is_task_executer(kind).then(|| Aggregate::from_samples(&loading)),
+                unloading: is_task_executer(kind).then(|| Aggregate::from_samples(&unloading)),
+                utilize: is_task_executer(kind).then(|| Aggregate::from_samples(&utilize)),
             },
         );
     }
@@ -793,6 +859,11 @@ mod tests {
             waiting_for_transport: 0.5,
             door_opening: 0.0,
             door_closing: 0.0,
+            travel_empty: 0.0,
+            travel_loaded: 0.0,
+            loading: 0.0,
+            unloading: 0.0,
+            utilize: 0.0,
         };
         let sum = states.fraction("idle")
             + states.fraction("busy")
@@ -829,6 +900,11 @@ mod tests {
             waiting_for_transport: 2.0,
             door_opening: 0.0,
             door_closing: 0.0,
+            travel_empty: 0.0,
+            travel_loaded: 0.0,
+            loading: 0.0,
+            unloading: 0.0,
+            utilize: 0.0,
         };
         assert!(states.setup + states.processing <= states.busy);
         assert!(states.waiting_for_operator + states.waiting_for_transport <= states.blocked);
@@ -887,6 +963,11 @@ mod tests {
             busy_fraction: sample(0.0),
             blocked_fraction: sample(0.0),
             down_fraction: sample(0.0),
+            travel_empty: None,
+            travel_loaded: None,
+            loading: None,
+            unloading: None,
+            utilize: None,
         }
     }
 

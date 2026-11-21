@@ -35,6 +35,11 @@ fn base_report(name: &str, replications: u32) -> SimReport {
             busy_fraction: Aggregate::from_samples(&[0.5, 0.5]),
             blocked_fraction: Aggregate::from_samples(&[0.3, 0.3]),
             down_fraction: Aggregate::from_samples(&[0.0, 0.0]),
+            travel_empty: None,
+            travel_loaded: None,
+            loading: None,
+            unloading: None,
+            utilize: None,
         },
     );
     SimReport {
