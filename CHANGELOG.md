@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### 模型与引擎
+
+- **只读 SQL 子集 `query()`**：`query("SELECT <cols|*> FROM <table> [WHERE <expr>] [ORDER BY <col> [ASC|DESC]] [LIMIT n]")`
+  查询模型的全局表；`WHERE` 复用既有表达式语言（`$全局变量`、`picklist(...)` 都能用），
+  返回文本（列 `|`、行 `\n`，无匹配返回空串而非错误）。解析器独立在 `crates/openflex-model/src/sql.rs`，
+  `expr.rs` 只做接线；`validate` 与 `run` 走**同一条解析路径**，因此未知表／未知列／语法错误在校验期
+  就以**逐字相同**的文案报出（实测三种坏查询 `exit=2`）。
+  引擎侧经 `EvalContext::global_table` / `supports_global_tables` 接线后 `run` 可用；
+  未接线的上下文会报 `query() needs an evaluation context that can read model global tables`，
+  而不是误导性的「未知表」。实测 `SELECT name FROM Shipments ORDER BY prio LIMIT 2` 得 `b\nc`。
+
+
 ## v1.34.0 — 2026-11-21
 
 继续消化 `docs/FEATURE_PARITY_75.md` 的缺口清单：**自定义性能指标**与**跟踪变量**两类「模型自己声明的量」进入报告与解析链路，**实验生命周期 6 个钩子**、**执行器状态细分**让报告回答得了「这辆车空驶多少」这类问题，并修掉一处**状态限定故障时钟**的真实缺陷。GUI 同步补上指标编辑器、跟踪时序汇总与迷你折线、模型触发器面板。

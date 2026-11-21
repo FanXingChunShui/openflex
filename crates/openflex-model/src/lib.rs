@@ -11,6 +11,7 @@ pub mod expr;
 pub mod migrate;
 pub mod model;
 pub mod schema;
+pub mod sql;
 pub mod validate;
 
 pub use action::{Action, SimTrigger, Triggers};
@@ -23,4 +24,5 @@ pub use expr::{
 pub use migrate::migrate_json;
 pub use model::*;
 pub use schema::json_schema;
+pub use sql::{SqlError, SqlQuery, execute as execute_query, parse as parse_query};
 pub use validate::{validate, validate_collect};

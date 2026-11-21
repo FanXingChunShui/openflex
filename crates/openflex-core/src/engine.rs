@@ -10109,6 +10109,16 @@ impl EvalContext for ExprContext<'_, '_> {
         }
     }
 
+    fn global_table(&self, name: &str) -> Option<&openflex_model::GlobalTable> {
+        self.sim.model.table(name)
+    }
+
+    /// Advertised so `query()` can tell "no table here" from "this context has
+    /// no tables at all" instead of reporting a bogus `unknown table`.
+    fn supports_global_tables(&self) -> bool {
+        true
+    }
+
     fn lookup(&self, path: &str) -> Option<Value> {
         match path {
             "time" | "sim.time" | "now" => return Some(Value::Number(self.sim.now)),

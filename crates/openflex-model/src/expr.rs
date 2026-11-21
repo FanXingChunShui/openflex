@@ -16,7 +16,9 @@
 //!   has that exact name — as the bare identifier `Name`; the value keeps the
 //!   kind declared in the model (`number` → number, `string` → string);
 //! * a pick list entry through `picklist("<list>", "<entry>")`, which yields
-//!   the entry's value as a string.
+//!   the entry's value as a string;
+//! * a global table through `query("<SELECT …>")`, a read-only SQL subset
+//!   (see [`crate::sql`]) that returns the selected rows as text.
 //!
 //! Both are **strict**: an undefined global variable, an unknown pick list or
 //! an unknown entry is a [`ExprError`], never a silent zero. Model-layer tools
@@ -148,6 +150,25 @@ pub trait EvalContext {
     fn picklist_entry(&self, _list: &str, _entry: &str) -> PickListLookup {
         PickListLookup::UnknownList
     }
+
+    /// A model global table, for the read-only SQL subset (`query("<sql>")`).
+    ///
+    /// The default implementation knows no tables; contexts that do must also
+    /// return `true` from [`supports_global_tables`](Self::supports_global_tables)
+    /// so a missing capability is reported as such instead of looking like a
+    /// typo in the table name.
+    fn global_table(&self, _name: &str) -> Option<&crate::model::GlobalTable> {
+        None
+    }
+
+    /// Whether [`global_table`](Self::global_table) can resolve model tables.
+    ///
+    /// Defaults to `false`: an evaluator that has no model reports
+    /// "query() needs a context that can read global tables" rather than
+    /// pretending the table does not exist.
+    fn supports_global_tables(&self) -> bool {
+        false
+    }
 }
 
 /// Result of [`EvalContext::picklist_entry`].
@@ -211,6 +232,14 @@ impl EvalContext for ModelEvalContext<'_> {
             None => PickListLookup::UnknownEntry,
         }
     }
+
+    fn global_table(&self, name: &str) -> Option<&crate::model::GlobalTable> {
+        self.model.table(name)
+    }
+
+    fn supports_global_tables(&self) -> bool {
+        true
+    }
 }
 
 /// Variables the engine resolves without a model-defined object.
@@ -270,6 +299,10 @@ pub const BUILTIN_FUNCTIONS: &[(&str, &str)] = &[
     ("lower(text)", "string"),
     ("concat(a, b, …)", "string"),
     ("picklist(<list>, <entry>)", "string"),
+    (
+        "query(\"SELECT … FROM <table> [WHERE …] [ORDER BY … [ASC|DESC]] [LIMIT n]\")",
+        "string (rows joined by \\n, cells by |; \"\" when no row matches)",
+    ),
 ];
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -607,6 +640,26 @@ fn eval_call(name: &str, args: &[Expr], ctx: &dyn EvalContext) -> Result<Value, 
             let row = if row < 0.0 { 0 } else { row as usize };
             let path = format!("table.{table}.{row}.{column}");
             ctx.lookup(&path).ok_or(ExprError::UnknownVariable(path))
+        }
+        // Read-only SQL subset over the model's global tables; the parser and
+        // the row engine live in `sql.rs`, this is only the wire-up.
+        "query" => {
+            if args.len() != 1 {
+                return Err(ExprError::Arity {
+                    name: "query".into(),
+                    expected: 1,
+                    found: args.len(),
+                });
+            }
+            let sql = args[0].eval(ctx)?.as_str();
+            if !ctx.supports_global_tables() {
+                return Err(ExprError::TypeError(
+                    "query() needs an evaluation context that can read model global tables".into(),
+                ));
+            }
+            crate::sql::execute(ctx, &sql)
+                .map(Value::Str)
+                .map_err(|error| ExprError::TypeError(error.to_string()))
         }
         "picklist" => {
             if args.len() != 2 {

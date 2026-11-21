@@ -1499,6 +1499,18 @@ fn check_expression_symbols(
                     Some(_) => {}
                 }
             }
+            // `query("<sql>")`: resolve the table (and the columns the
+            // statement names) at validate time with the very same parser the
+            // engine uses, so the error text is identical. Only a string
+            // literal can be checked; a computed statement is left to the run.
+            if name == "query"
+                && let [Expr::Str(sql)] = args.as_slice()
+            {
+                let context = crate::expr::ModelEvalContext::new(model);
+                if let Err(error) = crate::sql::check(&context, sql) {
+                    issues.push(ValidationIssue::new(location, error.to_string()));
+                }
+            }
             for argument in args {
                 check_expression_symbols(model, argument, location, issues);
             }

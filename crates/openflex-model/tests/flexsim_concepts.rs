@@ -1142,3 +1142,241 @@ fn schema_describes_every_model_field() {
         assert!(properties.contains(expected), "schema lacks {expected}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Read-only SQL subset: query("<sql>") over global tables (task-167)
+// ---------------------------------------------------------------------------
+
+/// A model with one `Shipments` table and a numeric global variable.
+fn sql_model() -> Model {
+    Model::from_json(&model(
+        r#""global_variables": { "Batch": { "kind": "number", "value": 4 } },
+        "global_tables": {
+            "Shipments": {
+                "columns": ["name", "prio", "zone"],
+                "rows": [
+                    ["box", 2, "north"],
+                    ["tray", 9, "south"],
+                    ["crate", 5, "north"]
+                ]
+            },
+            "Empty": { "columns": ["name"], "rows": [] }
+        }"#,
+    ))
+    .expect("sql model")
+}
+
+fn query(sql: &str) -> String {
+    // The SQL text is itself an expression string literal, so quotes inside it
+    // have to be escaped once more.
+    let escaped = sql.replace('"', "\\\"");
+    eval_in(&sql_model(), &format!("query(\"{escaped}\")"))
+        .unwrap_or_else(|error| panic!("{sql}: {error}"))
+        .as_str()
+}
+
+fn query_error(sql: &str) -> String {
+    let escaped = sql.replace('"', "\\\"");
+    eval_in(&sql_model(), &format!("query(\"{escaped}\")"))
+        .expect_err("query should fail")
+        .to_string()
+}
+
+#[test]
+fn sql_select_star_returns_every_column() {
+    assert_eq!(
+        query("SELECT * FROM Shipments"),
+        "box|2|north\ntray|9|south\ncrate|5|north"
+    );
+}
+
+#[test]
+fn sql_select_columns_and_limit() {
+    assert_eq!(
+        query("SELECT name, prio FROM Shipments"),
+        "box|2\ntray|9\ncrate|5"
+    );
+    assert_eq!(query("SELECT name FROM Shipments LIMIT 2"), "box\ntray");
+    assert_eq!(query("SELECT name FROM Shipments LIMIT 0"), "");
+}
+
+#[test]
+fn sql_where_filters_rows() {
+    assert_eq!(
+        query("SELECT name FROM Shipments WHERE zone == \"north\""),
+        "box\ncrate"
+    );
+    assert_eq!(
+        query("SELECT name FROM Shipments WHERE prio > 4"),
+        "tray\ncrate"
+    );
+}
+
+#[test]
+fn sql_order_by_ascending_and_descending() {
+    assert_eq!(
+        query("SELECT name FROM Shipments ORDER BY prio"),
+        "box\ncrate\ntray"
+    );
+    assert_eq!(
+        query("SELECT name FROM Shipments ORDER BY prio DESC"),
+        "tray\ncrate\nbox"
+    );
+}
+
+#[test]
+fn sql_global_variable_is_usable_in_where() {
+    // `$Batch` is 4, so only rows above it match.
+    assert_eq!(
+        query("SELECT name FROM Shipments WHERE prio > $Batch ORDER BY prio"),
+        "crate\ntray"
+    );
+}
+
+#[test]
+fn sql_empty_table_and_no_match_return_empty_text() {
+    assert_eq!(query("SELECT * FROM Empty"), "");
+    assert_eq!(query("SELECT * FROM Empty WHERE name == \"x\""), "");
+    assert_eq!(query("SELECT name FROM Shipments WHERE prio > 99"), "");
+}
+
+#[test]
+fn sql_unknown_table_is_an_explicit_error() {
+    let error = query_error("SELECT * FROM Ghost");
+    assert_eq!(error, "unknown table 'Ghost'");
+}
+
+#[test]
+fn sql_unknown_column_is_an_explicit_error() {
+    assert_eq!(
+        query_error("SELECT prio2 FROM Shipments"),
+        "unknown column 'prio2' in table 'Shipments'"
+    );
+    assert_eq!(
+        query_error("SELECT name FROM Shipments ORDER BY nope"),
+        "unknown column 'nope' in table 'Shipments'"
+    );
+    assert_eq!(
+        query_error("SELECT name FROM Shipments WHERE nope > 1"),
+        "unknown column 'nope' in table 'Shipments'"
+    );
+}
+
+#[test]
+fn sql_syntax_errors_name_the_fragment() {
+    let error = query_error("SELECT * Shipments");
+    assert!(error.contains("expected FROM"), "{error}");
+    assert!(error.contains("SELECT * Shipments"), "{error}");
+
+    let error = query_error("SELECT name, FROM Shipments");
+    assert!(error.contains("invalid column name"), "{error}");
+
+    let error = query_error("SELECT * FROM Shipments LIMIT two");
+    assert!(
+        error.contains("LIMIT needs a non-negative integer"),
+        "{error}"
+    );
+    assert!(error.contains("two"), "{error}");
+}
+
+#[test]
+fn validate_rejects_a_query_over_an_unknown_table() {
+    let parsed = Model::parse_json(&model(
+        r#""global_tables": { "Shipments": { "columns": ["name"], "rows": [["box"]] } },
+        "performance_measures": [
+            { "name": "Rows", "expression": "len(query(\"SELECT * FROM Ghost\"))" }
+        ]"#,
+    ))
+    .expect("parses");
+    let issues = openflex_model::validate_collect(&parsed);
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert_eq!(issues[0].location, "performance_measures[0].expression");
+    assert_eq!(issues[0].message, "unknown table 'Ghost'");
+
+    // The same query over the real table validates.
+    let ok = Model::parse_json(&model(
+        r#""global_tables": { "Shipments": { "columns": ["name"], "rows": [["box"]] } },
+        "performance_measures": [
+            { "name": "Rows", "expression": "len(query(\"SELECT * FROM Shipments\"))" }
+        ]"#,
+    ))
+    .expect("parses");
+    assert!(
+        openflex_model::validate_collect(&ok).is_empty(),
+        "{:?}",
+        openflex_model::validate_collect(&ok)
+    );
+}
+
+#[test]
+fn validate_rejects_an_unknown_column_in_a_query() {
+    let parsed = Model::parse_json(&model(
+        r#""global_tables": { "Shipments": { "columns": ["name"], "rows": [["box"]] } },
+        "performance_measures": [
+            { "name": "Rows", "expression": "query(\"SELECT nope FROM Shipments\")" }
+        ]"#,
+    ))
+    .expect("parses");
+    let issues = openflex_model::validate_collect(&parsed);
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert_eq!(
+        issues[0].message,
+        "unknown column 'nope' in table 'Shipments'"
+    );
+}
+
+#[test]
+fn models_without_global_tables_are_unchanged() {
+    let plain = Model::from_json(&model("")).expect("plain model");
+    assert!(plain.global_tables.is_empty());
+    let text = plain.to_json().expect("serialise");
+    assert!(!text.contains("global_tables"), "{text}");
+    assert_eq!(text, plain.to_json().expect("stable"), "output is stable");
+    // Two loads of the same document produce the identical report JSON.
+    let again = Model::from_json(&model("")).expect("reload");
+    assert_eq!(text, again.to_json().expect("serialise"));
+}
+
+#[test]
+fn sql_keywords_are_case_insensitive_and_clause_aware() {
+    // Lowercase keywords, and a WHERE value that itself contains the word
+    // "order" / "limit" must not be mistaken for a clause.
+    assert_eq!(
+        query("select name from Shipments where zone == \"north order limit\" || prio > 8"),
+        "tray"
+    );
+    assert_eq!(
+        query("SeLeCt name FrOm Shipments WhErE prio > 2 OrDeR By prio DeSc LiMiT 1"),
+        "tray"
+    );
+}
+
+#[test]
+fn sql_order_by_and_limit_combine_with_where() {
+    assert_eq!(
+        query("SELECT name FROM Shipments WHERE prio > 2 ORDER BY prio LIMIT 1"),
+        "crate"
+    );
+}
+
+#[test]
+fn query_without_a_table_capable_context_says_so() {
+    // A context that has no model data must not pretend the table is missing;
+    // it reports the missing capability instead (the engine wires this hook).
+    struct NoTables;
+    impl openflex_model::EvalContext for NoTables {
+        fn lookup(&self, _path: &str) -> Option<openflex_model::Value> {
+            None
+        }
+    }
+    let error = openflex_model::Expr::parse("query(\"SELECT * FROM T\")")
+        .expect("parses")
+        .eval(&NoTables)
+        .expect_err("no tables");
+    assert!(
+        error
+            .to_string()
+            .contains("needs an evaluation context that can read model global tables"),
+        "{error}"
+    );
+}
