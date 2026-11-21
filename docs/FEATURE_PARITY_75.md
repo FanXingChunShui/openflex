@@ -356,6 +356,48 @@
 **3DMedia（100%，全属有意差异）、MiscellaneousConcepts（69%，节点树/运动学/自建 GUI）、
 TaskSequences（62%，任务序列构造）**。
 
+### 1a. `explicit` 整链模式：设计草案（未实现，下一轮照此做）
+
+第 1 项「自定义任务序列构造 API」本轮只落地了 **`utilize` / `break` 两种额外腿**（append 机制内）。
+真正的 `explicit` 整链模式**未实现**，原因与设计如下——记录在此，避免下一轮重新踩坑。
+
+**为什么本轮不做**：现有 append 是在标准任务**整条链结束后**执行 extras；标准
+pickup/depart/arrive/loaded/released/home 是硬编码顺序。`explicit` 要在链**开始前**接管每一腿，
+并与 processor 的 `OperatorLoaded`/`OperatorReleased` 同步（否则 transporter 提前回程，
+processor release 时找不到它）——等于新写一套链状态机。此外 `{"kind":"travel"}` 没有目标点字段，
+无法区分「去取货点／去送达点／回 home／额外点」，只能靠约定猜，属于我们不接受的近似。
+
+**建议的模型形状**：
+```jsonc
+"task_sequence_mode": "explicit",        // "append"(缺省，不序列化) | "explicit"
+"task_sequence": [
+  { "kind": "travel", "target": "pickup" },
+  { "kind": "load" },
+  { "kind": "travel", "target": "requester" },
+  { "kind": "unload" },
+  { "kind": "utilize", "duration": { "distribution": "constant", "value": 5 } },
+  { "kind": "break",   "duration": { "distribution": "constant", "value": 2 } },
+  { "kind": "travel", "target": "home" }
+]
+```
+`TravelTarget` = `"pickup" | "requester" | "home" | { "object": "名字" } | { "position": [x, y] }`。
+校验：explicit 非空、至少 1 个 travel、每个 travel 必须带 target、`load` 必须在 pickup/home 之后、
+`unload` 前必须有 `load`、`utilize`/`break` 必须正 duration；append 模式下 `target` 禁止出现。
+
+**调度器状态**（按 transporter 存）：`legs / next / requester / loaded / operator_loaded_fired /
+waiting_for_release / release_seen / leg_started_at`。关键同步规则：
+1. `unload` 完成瞬间 fire 一次 `OperatorLoaded(transporter, requester)`；
+2. 之后执行器必须等 processor 的 `OperatorReleased` 才能继续「离开/回程」性质的腿；
+   若下一腿是 `utilize`/`break` 可先执行（不移动执行器），否则停在原地（Busy + Utilize）；
+3. `OperatorReleased` 是唯一同步事件（processor 不等 transporter）；handler 里只在当前无腿在跑时推进链；
+4. traffic 每段 travel 复用 `traffic_try_acquire/wait`（阻塞期间 blocked、不计 travel）；
+   AGV 中途充电复用现有逻辑、activity 记 Utilize；抢占在 explicit 链期间建议禁用（MVP）。
+5. 确定性：legs 在 dispatch 时预采样时长/条件，不依赖中途 RNG 顺序。
+
+**测试计划**：自定义 target 几何正确 / `OperatorLoaded` 恰一次且 release 前不离开 /
+腿顺序与表一致 / traffic 阻塞不计 travel / break=idle、utilize=utilize /
+非法 target 被 validate 拒 / 同 seed 两跑逐位相同 / append 旧数值不变。
+
 ## 18. 剩余缺口 Top 10（v1.33.0 后重排）
 
 原 Top-10 的第 **1（加工时点钩子）、2（PickLists 接线）、4（自定义性能指标）、
