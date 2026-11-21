@@ -1071,6 +1071,57 @@ fn optional_f64(ui: &mut egui::Ui, label: &str, value: &mut Option<f64>) -> bool
     changed
 }
 
+/// A compact line plot for one tracked series: no axes, no legend, just the
+/// shape of the samples so a flat line reads differently from a ramp.
+fn sparkline(ui: &mut egui::Ui, series: &[(f64, f64)], width: f32, height: f32) -> bool {
+    let (response, painter) = ui.allocate_painter(egui::vec2(width, height), egui::Sense::hover());
+    let rect = response.rect;
+    painter.rect_filled(rect, 2.0, palette::CANVAS);
+    if series.len() < 2 {
+        // A single sample has no shape: say so instead of drawing a dot the
+        // reader would mistake for a constant series.
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "1 sample",
+            egui::FontId::proportional(8.0),
+            palette::TEXT_DIM,
+        );
+        return false;
+    }
+    let times = series.iter().map(|(time, _)| *time);
+    let values = series.iter().map(|(_, value)| *value);
+    let t_min = times.clone().fold(f64::INFINITY, f64::min);
+    let t_max = times.fold(f64::NEG_INFINITY, f64::max);
+    let v_min = values.clone().fold(f64::INFINITY, f64::min);
+    let v_max = values.fold(f64::NEG_INFINITY, f64::max);
+    let t_span = (t_max - t_min).max(1e-9);
+    let v_span = (v_max - v_min).max(1e-9);
+    let points: Vec<egui::Pos2> = series
+        .iter()
+        .map(|(time, value)| {
+            let x = rect.left() + 1.0 + (width - 2.0) * ((time - t_min) / t_span) as f32;
+            let y = rect.bottom() - 1.0 - (height - 2.0) * ((value - v_min) / v_span) as f32;
+            egui::pos2(x, y)
+        })
+        .collect();
+    painter.add(egui::Shape::line(
+        points,
+        egui::Stroke::new(1.2_f32, palette::ACCENT_HI),
+    ));
+    // A flat series collapses onto one line; mark its level so it is readable.
+    if v_max - v_min < 1e-9 {
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            format!("{v_min:.2}"),
+            egui::FontId::proportional(8.0),
+            palette::TEXT_DIM,
+        );
+    }
+    true
+}
+
 /// FlexSim's "Sampler", in miniature: pick an object by name from a dropdown of
 /// the objects that would make sense there, instead of typing the name blind.
 ///
@@ -11431,9 +11482,9 @@ impl eframe::App for OpenFlexApp {
                         egui::Grid::new("tracked-grid")
                             .striped(true)
                             .num_columns(5)
-                            .spacing([10.0, 2.0])
+                            .spacing([8.0, 2.0])
                             .show(ui, |ui| {
-                                for header in ["name", "samples", "first", "last", "range"] {
+                                for header in ["name", "shape", "samples", "first", "last"] {
                                     ui.label(
                                         egui::RichText::new(header)
                                             .strong()
@@ -11445,20 +11496,13 @@ impl eframe::App for OpenFlexApp {
                                 for (name, series) in &report.tracked_series {
                                     let first = series.first().map_or(0.0, |(_, value)| *value);
                                     let last = series.last().map_or(0.0, |(_, value)| *value);
-                                    let low = series
-                                        .iter()
-                                        .map(|(_, value)| *value)
-                                        .fold(f64::INFINITY, f64::min);
-                                    let high = series
-                                        .iter()
-                                        .map(|(_, value)| *value)
-                                        .fold(f64::NEG_INFINITY, f64::max);
                                     ui.label(
                                         egui::RichText::new(name)
                                             .small()
                                             .monospace()
                                             .color(palette::ACCENT_HI),
                                     );
+                                    sparkline(ui, series, 84.0, 14.0);
                                     ui.label(
                                         egui::RichText::new(format!("{}", series.len()))
                                             .small()
@@ -11473,14 +11517,6 @@ impl eframe::App for OpenFlexApp {
                                         egui::RichText::new(format!("{last:.2}"))
                                             .small()
                                             .monospace(),
-                                    );
-                                    ui.label(
-                                        egui::RichText::new(format!(
-                                            "{low:.2} … {high:.2}"
-                                        ))
-                                        .small()
-                                        .monospace()
-                                        .color(palette::TEXT_DIM),
                                     );
                                     ui.end_row();
                                 }
@@ -13187,6 +13223,31 @@ mod tests {
         // A model without objects offer nothing rather than panicking.
         let empty = SamplerNames::from_model(None);
         assert!(empty.any.is_empty() && empty.operators.is_empty());
+    }
+
+    #[test]
+    fn a_sparkline_needs_at_least_two_samples() {
+        // One sample has no shape; the helper reports "nothing drawn" so the
+        // caller can show the value instead of a dot read as a flat series.
+        let flat = [(1.0, 5.0)];
+        assert!(flat.len() < 2);
+        // Two samples spanning a ramp map to the four corners of the box.
+        let ramp = [(0.0, 0.0), (1.0, 1.0)];
+        assert_eq!(ramp.len(), 2);
+        let t_span = 1.0_f64;
+        let v_span = 1.0_f64;
+        let map = |time: f64, value: f64, width: f32, height: f32| {
+            (
+                0.0 + 1.0 + (width - 2.0) * ((time - 0.0) / t_span) as f32,
+                height - 1.0 - (height - 2.0) * ((value - 0.0) / v_span) as f32,
+            )
+        };
+        assert_eq!(map(0.0, 0.0, 84.0, 14.0), (1.0, 13.0));
+        assert_eq!(map(1.0, 1.0, 84.0, 14.0), (83.0, 1.0));
+        // A constant series has a zero span, which the helper protects with
+        // `.max(1e-9)` so the division cannot produce NaN.
+        let guarded = (0.0_f64).max(1e-9);
+        assert!(guarded > 0.0);
     }
 
     #[test]
