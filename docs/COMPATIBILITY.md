@@ -109,7 +109,7 @@
 | OnContentChange / OnStateChange / OnReset / OnStop / OnResume | `params.triggers.*` | ✅ | OnStop/OnResume 经 `simulate_until`/`resume_from_checkpoint` 触发 |
 | OnSetupFinish / OnProcessFinish | `params.triggers.setup_finish` / `process_finish` | ✅ | 在 setup 结束、加工时钟结束两个边界触发，早于 `on_exit`；`setup_time = 0` 时无独立 setup 阶段故不触发 |
 | OnCreate | `params.triggers.on_create` | ✅ | Source 创建项时触发 |
-| OnDraw | `params.triggers.on_draw` | 🟡 | 可写、可校验（`schema.rs:180` 接受，`action.rs:194` 注明 schema/validation only）；**图形端尚未接线**，即触发器不会在重绘时真正执行——FlexSim 的"OnDraw 里不得用随机函数"约束因此暂不适用 |
+| OnDraw | `params.triggers.on_draw` | 🟡 | 可写、可校验（Schema 接受 `on_draw`，`SimTrigger::OnDraw` 注明 schema/validation only）；**图形端尚未接线**，即触发器不会在重绘时真正执行——FlexSim 的"OnDraw 里不得用随机函数"约束因此暂不适用 |
 | Send To Port：First Available | `strategy: first_available` | ✅ | 默认 |
 | Send To Port：Round Robin | `round_robin` | ✅ | |
 | Send To Port：Random | `random` | ✅ | |

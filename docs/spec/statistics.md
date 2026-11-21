@@ -91,8 +91,9 @@ FlexSim 侧的报告能力（E37 中、E33 高）：
 openflex v1 报告（`--format json|table|csv`）：
 
 ```
-runtime:     model, time_unit, stop_time, warmup, base_seed, replications[],
-             （每个复现：index, seed, final_time, objects{...}）
+runtime:     model, description, time_unit, stop_time, warmup, base_seed,
+             replications[]（每个复现：index, seed, final_time, objects{...},
+             tracked_series）, little_check
 objects[]:   kind, input_count, output_count, avg_content, max_content,
              avg_stay_time, state_times{idle,busy,blocked,down,off_shift,
              setup,processing,waiting_for_operator,waiting_for_transport,
@@ -107,7 +108,13 @@ tracked_series:       {name: [(t, value), ...]}（模型声明了才出现）
 > 为准**（2026-11 核对）。早期草稿曾用 `content_current` / `utilization_busy` / `p95` 这类名字，
 > 实现里并不存在——分位数与有效利用率目前**没有**独立字段。
 
-**Little 定律自检**：`content_avg ≈ throughput_rate × staytime_avg`（相对误差 > 5% 时输出 warning）。这是最有价值的自动一致性检查，能立刻暴露"事件结算漏掉最后一段时长"之类的实现错误（`[openflex 定义]`）。
+**Little 定律自检**：报告带 `little_check` 字段（`SimReport.little_check`），
+按 `L ≈ λW` 用 `avg_content` 与 `throughput × avg_stay_time` 对每个对象交叉验证：
+相对误差 **> 10%**（`LittleCheck::TOLERANCE`）的对象被列入 `mismatches`，
+Source 这类"件停在未计入 content 的出缓冲"的对象会被跳过。这是最有价值的自动一致性检查，
+能立刻暴露"事件结算漏掉最后一段时长"之类的实现错误（`[openflex 定义]`）。
+> 注意：对象级字段是 `avg_content` / `throughput` / `avg_stay_time`，**没有** `throughput_rate`、
+> `wip_avg` 这两个名字（早期草稿用词）。
 
 ## 4. 实验器（Experimenter）语义
 
@@ -165,17 +172,27 @@ n 个复现的样本均值  x̄ = (1/n) Σ x_i
   用 `k−1` 自由度的 t 分位求 95% 区间。适用于复现级样本噪声较大、
   或一次长运行已被切成多段的情形（`--batch-means-objects` 同时对每对象的
   input/output/avg_wip/utilization 出批均值）；
-- **两场景比较**：若两场景区间不重叠 ⇒ 判定显著不同（v1 的保守近似）；正式版建议用双样本 t 检验（Welch：`t = (x̄₁−x̄₂)/sqrt(s₁²/n₁+s₂²/n₂)`）。
+- **两场景比较**：`openflex compare` 目前只做**差值**（`delta` / `delta_percent`，逐指标逐对象），
+  **不做显著性检验**；`report` 的对比视图会在两复现次数不同时给出琥珀提示
+  （`different replication counts`），避免把噪声当改进。
+  显著性判据（区间重叠 / Welch t 检验 `t = (x̄₁−x̄₂)/sqrt(s₁²/n₁+s₂²/n₂)`）**属设计建议，尚未实现**。
 
-## 5. Dashboard 与图表（v1 只输出数据，不渲染 UI）
+## 5. Dashboard 与图表（v1.33.0 现状：有基础图，无通用图表 DSL）
 
 官方图表分组（E33/E34 高）：基础图（柱/线/饼等通用图）、图表模板（Content / Output / Staytime / State / Zone / Milestone / Label / Tracked Variable / Travel Distance / Process Flow Activity Statistics）。
 
-openflex v1 策略：
-- **不实现** Dashboard UI；
-- 提供与图表模板**同构**的数据出口：`results.json` 已包含 Content/State/Staytime/Output 所需的全部时序或汇总数据；
-- 提供 `openflex report --format csv --series content:Proc1` 之类的导出，供外部绘图（gnuplot/Excel/Python）。
-- 若后续要做终端图表，建议 TUI 折线/柱状即可，不追求 3D。
+openflex 现状（v1.33.0，均可在桌面 GUI 中找到）：
+- **时间序列面板**（`panel_heading "Time series"`）：按固定间隔采样，指标可切
+  WIP / throughput / utilization，多对象叠加，可导出 CSV；
+- **优化结果的 Pareto 前沿**（`pareto_front`）与双目标散点；
+- **指标热力图**（`heatmap` 字段：off / utilization / throughput / WIP 四档）；
+- **模型定义的 `performance_measures` 与 `tracked_series` 单独成块**（前者含 `mean / ±95% / n`，
+  `n<2` 时区间显示 `—`；后者是第一个复现的采样序列）；
+- **Web Studio 的 Dashboard** 提供浏览器内的图表组合；
+- **没有** FlexSim 那种"图表对象 + 数据源绑定"的通用图表 DSL，也没有
+  Item Trace（逐件路径追踪）、Utilization Analysis（利用率按状态分解）、Financial Objects 等专用图；
+- 数据出口与图表模板**同构**：`results.json` 含全部汇总与 `tracked_series`，
+  `openflex run --timeseries` 导出时序、`--trace` 导出事件流，可交给外部绘图。
 
 ## 6. 统计实现检查表
 
@@ -188,4 +205,6 @@ openflex v1 策略：
 7. 每复现独立累计，跨复现不可复用累加器（否则复现 2 的值会带上复现 1 的残留）。
 8. Scenario 必须包含 stop_time 与 warmup（E35 高），否则实验比较不成立。
 9. 复现编号必须进入随机流派生，否则 N 个复现会得到完全相同的样本（E35 高）。
-10. Little 定律自检（§3）建议默认开启。
+10. Little 定律自检（§3）**已默认开启**（`LittleCheck`，容差 10%），无需模型声明。
+11. `t` 分位：`df ≤ 29` 查表、`df ≥ 30` 用 1.96，**不做插值**（§4.3）；别把"插值"写进新文档。
+12. `tracked_series` 只保留**第一个复现**的样本（跨复现不在报告里合并），需要逐复现序列时读 `replications[i]`。
