@@ -409,7 +409,7 @@ waiting_for_release / release_seen / leg_started_at`。关键同步规则：
 | Conveyor（直/弯）、Join Conveyor | `conveyor`（`curve`/`segments`/`join_inputs`） | ✅ | 直段与曲段都有，join 用 `join_inputs` |
 | Merge Controller（对象） | `conveyor.merge_mode` + `merge_weight`（**参数而非对象**） | 🟡 | 三种释放策略已实现（round_robin/weighted/by_item_type）；但没有独立的 controller 对象，也没有「一个 controller 管多组合流」 |
 | Photo Eye（对象四状态） | `conveyor.photo_eyes`（位置 + `range` + `triggers`） | 🟡 | 四状态与 `on_blocked`/`on_cleared` 两个跃迁触发器已实现，且**边界穿越是皮带事件**（实测 10∓0.5 = 9.50/10.50 精确触发）；旧的「经过即触发」保留。仍缺 Block Time / Clear Time / Offset Angle / Require Gap，也没有独立的光电门对象与类型库 |
-| Decision Point | 无 | ⛔ | 无独立决策点对象 |
+| Decision Point | `conveyor.decision_points`（位置 + 条件 + 动作） | 🟡 | 在感应区内对**该件**求值条件表达式、为真按序执行动作，`once_per_item` 离开感应区后重置；边界穿越复用光电门那套皮带事件（实测 `pos 5.0 − range 0.5 = 4.500` 精确触发）。仍是**参数而非对象**，也没有决策点类型库 |
 | Transfer（Entry/Exit，三种） | 无 | ⛔ | 连接时自动产生的传送点类型未建模 |
 | Motor（开/关控制、同步 dog gap） | 可用 `shifts`/`timetable` 间接表达停线 | 🟡 | 没有 Motor 对象，也没有 power-and-free 的 dog gap 同步 |
 | Gapping（间隙成型） | `item_spacing` + `batch_size` | 🟡 | 静态最小间距有；缺按类型/按决策点的动态间隙与 gap 控制策略 |
