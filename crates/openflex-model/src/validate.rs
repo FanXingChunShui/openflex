@@ -1349,7 +1349,8 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
 }
 
 /// Performance-measure names are identifiers and unique; expressions must be
-/// parseable so a run cannot fail with a late syntax error.
+/// parseable **and** their model symbols must resolve, so a run cannot fail with
+/// a late syntax or "unknown global variable" error (task-157).
 fn validate_performance_measures(model: &Model) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
     let mut names = std::collections::BTreeSet::new();
@@ -1371,14 +1372,90 @@ fn validate_performance_measures(model: &Model) -> Vec<ValidationIssue> {
                 format!("{at}.expression"),
                 "expression cannot be empty",
             ));
-        } else if let Err(error) = crate::expr::Expr::parse(&measure.expression) {
-            issues.push(ValidationIssue::new(
-                format!("{at}.expression"),
-                format!("expression does not compile: {error}"),
-            ));
+        } else {
+            match crate::expr::Expr::parse(&measure.expression) {
+                Err(error) => issues.push(ValidationIssue::new(
+                    format!("{at}.expression"),
+                    format!("expression does not compile: {error}"),
+                )),
+                // Only *symbol* problems are checked here. Divide-by-zero, type
+                // errors and unknown engine statistics are run-time concerns and
+                // must not turn `openflex validate` red (task-157).
+                Ok(expression) => {
+                    let location = format!("{at}.expression");
+                    check_expression_symbols(model, &expression, &location, &mut issues);
+                }
+            }
         }
     }
     issues
+}
+
+/// Check that every model symbol an expression names exists.
+///
+/// This walks the expression tree rather than evaluating it, so a symbol inside
+/// a short-circuited branch (`false && $Missing`) is still reported. Only the
+/// two model-owned spellings are checked:
+///
+/// * `$Name` — must be declared under `global_variables` (a bare `Name` may be
+///   an engine statistic such as `completed`, so it is left alone);
+/// * `picklist("<list>", "<entry>")` with literal arguments — the list and the
+///   entry must exist.
+///
+/// Messages come from [`ExprError`](crate::expr::ExprError)'s `Display`, so the
+/// wording stays identical to the run-time error the engine would raise.
+fn check_expression_symbols(
+    model: &Model,
+    expression: &crate::expr::Expr,
+    location: &str,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    use crate::expr::{Expr, ExprError};
+
+    match expression {
+        Expr::Path(path) => {
+            if let Some(name) = path.strip_prefix('$')
+                && model.global_variable(name).is_none()
+            {
+                issues.push(ValidationIssue::new(
+                    location,
+                    ExprError::UnknownGlobalVariable(name.to_string()).to_string(),
+                ));
+            }
+        }
+        Expr::Call(name, args) => {
+            if name == "picklist"
+                && let [Expr::Str(list), Expr::Str(entry)] = args.as_slice()
+            {
+                match model.picklist(list) {
+                    None => issues.push(ValidationIssue::new(
+                        location,
+                        ExprError::UnknownPickList(list.clone()).to_string(),
+                    )),
+                    Some(picklist) if picklist.value_of(entry).is_none() => {
+                        issues.push(ValidationIssue::new(
+                            location,
+                            ExprError::UnknownPickListEntry {
+                                list: list.clone(),
+                                entry: entry.clone(),
+                            }
+                            .to_string(),
+                        ));
+                    }
+                    Some(_) => {}
+                }
+            }
+            for argument in args {
+                check_expression_symbols(model, argument, location, issues);
+            }
+        }
+        Expr::Unary(_, inner) => check_expression_symbols(model, inner, location, issues),
+        Expr::Binary(_, left, right) => {
+            check_expression_symbols(model, left, location, issues);
+            check_expression_symbols(model, right, location, issues);
+        }
+        Expr::Number(_) | Expr::Bool(_) | Expr::Str(_) => {}
+    }
 }
 
 /// Model-level trigger actions (scripts must compile before the run starts).
@@ -2161,6 +2238,8 @@ mod tests {
             picklists: Default::default(),
             model_triggers: Default::default(),
             performance_measures: Vec::new(),
+            tracked_variables: Vec::new(),
+            tracked_interval: None,
             metadata: Default::default(),
         }
     }

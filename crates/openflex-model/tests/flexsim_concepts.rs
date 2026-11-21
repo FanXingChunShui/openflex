@@ -722,3 +722,110 @@ fn builtin_lists_document_the_new_capabilities() {
     // `$` cannot stand alone.
     assert!(openflex_model::Expr::parse("$ + 1").is_err());
 }
+
+// ---------------------------------------------------------------------------
+// Performance measures: symbols must resolve at validate time (task-157)
+// ---------------------------------------------------------------------------
+
+/// A minimal model carrying one performance measure.
+fn measure_model(measures: &str) -> Model {
+    Model::parse_json(&model(&format!(
+        r#""global_variables": {{ "Batch": {{ "kind": "number", "value": 10 }} }},
+        "picklists": {{ "Shift": {{ "entries": [ {{ "name": "Day", "value": "1" }} ] }} }},
+        "performance_measures": [{measures}]"#
+    )))
+    .expect("parses")
+}
+
+fn measure_issues(measures: &str) -> Vec<openflex_model::ValidationIssue> {
+    openflex_model::validate_collect(&measure_model(measures))
+}
+
+#[test]
+fn undefined_global_variable_in_a_measure_is_rejected_by_validate() {
+    let issues = measure_issues(r#"{ "name": "DoubleBatch", "expression": "$Missing * 2" }"#);
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert_eq!(issues[0].location, "performance_measures[0].expression");
+    assert!(
+        issues[0]
+            .message
+            .contains("unknown global variable 'Missing' (declare it under global_variables)"),
+        "{}",
+        issues[0].message
+    );
+}
+
+#[test]
+fn undefined_picklist_and_undefined_entry_are_rejected_by_validate() {
+    let issues = measure_issues(
+        r#"{ "name": "A", "expression": "picklist(\"Ghost\", \"Day\")" },
+           { "name": "B", "expression": "picklist(\"Shift\", \"Night\")" }"#,
+    );
+    assert_eq!(issues.len(), 2, "{issues:?}");
+    assert_eq!(issues[0].location, "performance_measures[0].expression");
+    assert_eq!(issues[1].location, "performance_measures[1].expression");
+    assert!(
+        issues[0]
+            .message
+            .contains("unknown pick list 'Ghost' (declare it under picklists)"),
+        "{}",
+        issues[0].message
+    );
+    assert!(
+        issues[1]
+            .message
+            .contains("pick list 'Shift' has no entry 'Night'"),
+        "{}",
+        issues[1].message
+    );
+}
+
+#[test]
+fn symbols_are_checked_even_inside_a_short_circuited_branch() {
+    // Evaluation would never touch the right-hand side, but the symbol still
+    // has to exist: otherwise a later `true` would blow up the run.
+    let issues = measure_issues(r#"{ "name": "Guarded", "expression": "false && $Missing > 0" }"#);
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert!(
+        issues[0].message.contains("'Missing'"),
+        "{}",
+        issues[0].message
+    );
+}
+
+#[test]
+fn measures_using_declared_symbols_validate_and_runtime_errors_do_not() {
+    // Declared global variable + declared pick list entry: valid.
+    let valid = measure_issues(
+        r#"{ "name": "Doubled", "expression": "$Batch * 2" },
+           { "name": "Shift", "expression": "len(picklist(\"Shift\", \"Day\"))" }"#,
+    );
+    assert!(valid.is_empty(), "{valid:?}");
+
+    // Run-time problems are not validation problems: divide by zero, a string
+    // used as a number, and an engine statistic the validator does not know.
+    let runtime_only = measure_issues(
+        r#"{ "name": "Zero", "expression": "1 / 0" },
+           { "name": "Typed", "expression": "$Batch + \"text\"" },
+           { "name": "Stat", "expression": "completed / created" }"#,
+    );
+    assert!(runtime_only.is_empty(), "{runtime_only:?}");
+}
+
+#[test]
+fn symbol_check_is_reported_for_every_measure_independently() {
+    let issues = measure_issues(
+        r#"{ "name": "Ok", "expression": "$Batch + 1" },
+           { "name": "Bad", "expression": "$Nope + $Batch" },
+           { "name": "AlsoBad", "expression": "picklist(\"Shift\", \"Nope\") + 1" }"#,
+    );
+    assert_eq!(issues.len(), 2, "{issues:?}");
+    let locations: Vec<&str> = issues.iter().map(|issue| issue.location.as_str()).collect();
+    assert_eq!(
+        locations,
+        vec![
+            "performance_measures[1].expression",
+            "performance_measures[2].expression"
+        ]
+    );
+}
