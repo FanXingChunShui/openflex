@@ -46,7 +46,7 @@
 | Ports（输入/输出/中心三类端口） | `connections[]`（A 连接）+ `pull`/`operator`/`transport_ref` 具名字段 | 🟡 | 无"中心端口"这一等概念：FlexSim 用 S 连接建立对象间引用，OpenFlex 用具名字符串引用（`model.rs`）；语义等价但不可自由新增任意引用通道 |
 | Pick Lists（点选即得代码的列表控件） | `model.picklists` + 表达式 `picklist("list","entry")` + GUI 面板 | ✅ | 模型字段 `Model.picklists`、校验 `validate_picklists`、Schema `$defs/model.properties.picklists`、表达式求值 `EvalContext::picklist_entry`、GUI 增删改 `OpenFlexApp::add_pick_list` 等；没有 FlexSim 那种"点选即插入模板代码"的编辑器机制（模板代码见下一行） |
 | Return Values（代码字段的返回值语义） | 表达式/脚本有返回值；`script_condition` 用 `result` 标签 | ✅ | `expr.rs`、`action.rs` |
-| Template Code（弹窗与代码双向绑定的 `/**tag:*/` 机制） | 无对应物 | ⛔ | 纯 GUI 编辑器机制；OpenFlex 用 JSON 直接表达参数，不需要模板注入 |
+| Template Code（弹窗与代码双向绑定的 `/**tag:*/` 机制） | 无对应物 | ⛔（有意差异） | 纯 FlexSim GUI 编辑器机制；OpenFlex 用 JSON 直接表达参数，不需要模板注入。**不计划实现** |
 | Model Units（时间/长度/流体单位，创建后不可改） | `time_unit`（秒/分/小时/天） | 🟡 | 只有时间单位；**长度单位与流体单位没有独立字段**（`model.rs` Model 无 `length_unit`/`fluid_unit`），运输距离与流体量按无量纲数处理 |
 | Model Tree View（树视图浏览全部数据） | Studio 模型树（重命名/复制/删除） | 🟡 | 有树形操作，但底层不是 FlexSim 的通用节点树，无法任意插入数字/字符串/对象/指针节点 |
 | Order of Events（单个对象的固定事件序列） | 引擎内对象状态机 + 触发器时序 | ✅ | `engine.rs`；与 `docs/spec/logic.md` 的时序表一致 |
@@ -414,7 +414,7 @@ waiting_for_release / release_seen / leg_started_at`。关键同步规则：
 | 6 | **执行器状态细分**（`travel_empty` / `travel_loaded` / `loading` / `unloading` / `utilize`） | 固定资源状态已细到 setup/processing/waiting_for_*/门开合，但任务执行器只有粗粒度，回答不了"车辆空驶占比" | **中**（状态枚举 + 报告列） |
 | 7 | **FlexSim 的实验生命周期钩子**（Start/End of Experiment / Scenario / Replication，6 个） | `model_triggers` 只有 `on_start`/`on_reset`/`on_stop`；实验前后汇总、每场景初始化无从挂载 | **小**（6 个钩子点，落在引擎运行边界） |
 | 8 | **Tracked Variable 的类型体系**（Level / State / Staytime / Kinetic） | 现在只有"数值表达式按间隔采样"一种；做不了随件停留时间的分布、状态累积、液位/电量这类速率型追踪 | **中**（类型枚举 + 各自采样器） |
-| 9 | **Conveyor 完整行为**（slug 构建、合流控制、光电门阵列、Mass Flow） | 现有 conveyor 有速度/间距/容量/curve/photo_eyes/stations，但 slug/merge controller/transfers 全缺 | **大** |
+| 9 | **Conveyor 剩余部分**（光电门阵列高级语义、Mass Flow） | slug 与合流控制器已落地（`slug` / `slug_min_gap` / `merge_mode` / `merge_weight`）；仍缺光电门高级语义与质量流输送 | **大** |
 | 10 | **PickLists 的模板代码机制**（`/**tag:*/` 双向绑定 + 点选插入代码） | 现在 picklist 是可读的命名列表（表达式取值），但不是 FlexSim 那种"点选即生成代码"的编辑体验 | **中**（偏编辑器工程，收益取决于是否做 GUI 代码编辑） |
 
 **次级但低成本**（不进 Top 10，可顺手做）：`FlushContent`（整批走完前拒绝新件）、

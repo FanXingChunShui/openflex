@@ -79,7 +79,7 @@
 | Sink | `sink` | ✅ | 吞吐与停留时间统计 |
 | Combiner | `combiner` | ✅ | pack / join / batch（setup+process）；容器先到、等待组件数 |
 | Separator | `separator` | ✅ | `separate_mode: unpack`（qty+1 件）/ `split`（qty 件）；0 = 容器内全部组件 |
-| Conveyor | `conveyor` | ✅ | 速度/长度/间距/容量、`curve` 弧长、`segments` 逐段积分、精确回退、严格最小间距（推挤压缩）；`photo_eyes`/`stations`/`join_inputs` |
+| Conveyor | `conveyor` | 🟡 | 速度/长度/间距/容量、`curve` 弧长、`segments` 逐段积分、精确回退、严格最小间距（推挤压缩）；`photo_eyes`/`stations`/`join_inputs`；**slug 组**（`slug` + `slug_min_gap`：组内间隙恒定、组首被挡整组停）与**合流控制器**（`merge_mode` = `round_robin`/`weighted`/`by_item_type` + `merge_weight`，入口被占不吃配额）；仍缺光电门阵列高级语义与 Mass Flow 质量流 |
 | Merge | `merge` | ✅ | 多输入合流；可选等待全部输入 |
 | Split | `split` | ✅ | 轮询或按 item type 分流 |
 | Transporter / TaskExecuter | `transporter` | 🟡 | 速度、装载/卸载时间、`network` 最短路、`home` 取货、两段任务；`capacity`=并发任务数（不搬运 flow item）；自定义任务序列为**腿级**扩展（见 Dispatcher 行） |
