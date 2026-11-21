@@ -4,6 +4,10 @@
 
 ### 桌面 GUI
 
+- **决策点编辑器**：conveyor 表单新增 `decision points (n)` 列表，逐行编辑 `pos` / `±range` /
+  `once per item` 勾选框与**条件表达式**（空 = 恒真，不写进 JSON）；动作列表仍在 JSON 编辑区。
+  条件回显用 `Expr::Display` 的**规范形式**（二元表达式带括号），并已确认该渲染**幂等**——
+  `((x))` 归一为 `(x)`，反复编辑不会叠加括号。GUI 测试 **137 项**。
 - **光电门几何编辑器**：conveyor 表单此前**完全没有**光电门编辑入口，只能改 JSON。现在有
   `photo eyes (n)` 列表，逐行编辑 `pos` / `range`（勾选框控制「是否设置」，未设置时**不写进 JSON**）/ `name`，
   可 `+ photo eye` 添加、`x` 删除；`join inputs` 也改为可选的数字框。触发动作列表仍留在 JSON 编辑区。

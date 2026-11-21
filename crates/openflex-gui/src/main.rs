@@ -1587,6 +1587,91 @@ impl EditForm {
                     });
                     changed = true;
                 }
+                // Decision points: geometry and the condition expression are
+                // edited here; the action list stays in the JSON editor.
+                ui.label(
+                    egui::RichText::new(format!("decision points ({})", p.decision_points.len()))
+                        .size(9.0_f32)
+                        .color(palette::TEXT_DIM),
+                );
+                let mut remove_point: Option<usize> = None;
+                for (index, point) in p.decision_points.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!("{index}"))
+                                .size(9.0_f32)
+                                .monospace()
+                                .color(palette::TEXT_DIM),
+                        );
+                        changed |= ui
+                            .add(
+                                egui::DragValue::new(&mut point.position)
+                                    .speed(0.5)
+                                    .prefix("pos "),
+                            )
+                            .changed();
+                        changed |= ui
+                            .add(
+                                egui::DragValue::new(&mut point.range)
+                                    .speed(0.1)
+                                    .range(0.01..=1000.0)
+                                    .prefix("±"),
+                            )
+                            .changed();
+                        changed |= ui
+                            .checkbox(&mut point.once_per_item, "once")
+                            .on_hover_text("run at most once per item in the range")
+                            .changed();
+                        if ui
+                            .small_button("x")
+                            .on_hover_text("remove this point")
+                            .clicked()
+                        {
+                            remove_point = Some(index);
+                        }
+                    });
+                    let mut text = point
+                        .condition
+                        .as_ref()
+                        .map(|condition| condition.to_string())
+                        .unwrap_or_default();
+                    ui.horizontal(|ui| {
+                        ui.add_space(10.0);
+                        if ui
+                            .add(
+                                egui::TextEdit::singleline(&mut text)
+                                    .hint_text("condition, e.g. item.type == 0")
+                                    .desired_width(f32::INFINITY)
+                                    .font(egui::TextStyle::Monospace),
+                            )
+                            .changed()
+                        {
+                            // An empty field means "always true", which is what a
+                            // missing condition already encodes.
+                            point.condition = if text.trim().is_empty() {
+                                None
+                            } else {
+                                openflex_model::Expr::parse(text.trim()).ok()
+                            };
+                            changed = true;
+                        }
+                    });
+                }
+                if let Some(index) = remove_point {
+                    p.decision_points.remove(index);
+                    changed = true;
+                }
+                if ui.small_button("+ decision point").clicked() {
+                    p.decision_points.push(openflex_model::DecisionPoint {
+                        position: 0.0,
+                        range: 0.5,
+                        condition: None,
+                        actions: Vec::new(),
+                        once_per_item: false,
+                        name: String::new(),
+                    });
+                    changed = true;
+                }
             }
             ObjectParams::Resource(p) => {
                 changed |= ui
@@ -13623,6 +13708,52 @@ mod tests {
         // A model without objects offer nothing rather than panicking.
         let empty = SamplerNames::from_model(None);
         assert!(empty.any.is_empty() && empty.operators.is_empty());
+    }
+
+    #[test]
+    fn a_decision_point_condition_is_optional_and_kept() {
+        // The editor maps an empty field to `None` (always true) and a real
+        // expression to `Some`, and both survive a JSON round trip.
+        use openflex_model::{DecisionPoint, Expr};
+        let always = DecisionPoint {
+            position: 5.0,
+            range: 0.5,
+            condition: None,
+            actions: Vec::new(),
+            once_per_item: false,
+            name: String::new(),
+        };
+        let json = serde_json::to_string(&always).expect("json");
+        assert!(
+            !json.contains("condition"),
+            "an absent condition is omitted: {json}"
+        );
+        let back: DecisionPoint = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back, always);
+
+        let guarded = DecisionPoint {
+            condition: Some(Expr::parse("item.type == 0").expect("expr")),
+            ..always.clone()
+        };
+        let json = serde_json::to_string(&guarded).expect("json");
+        assert!(json.contains("item.type == 0"), "{json}");
+        let back: DecisionPoint = serde_json::from_str(&json).expect("round trip");
+        // `Expr::Display` renders the canonical form (binary expressions are
+        // parenthesised) and is idempotent, so re-rendering never accumulates
+        // brackets and the editor can keep showing what it parsed.
+        let rendered = back
+            .condition
+            .as_ref()
+            .map(|condition| condition.to_string())
+            .expect("condition");
+        assert_eq!(rendered, "(item.type == 0)");
+        let again = Expr::parse(&rendered).expect("reparse").to_string();
+        assert_eq!(again, rendered, "rendering is stable");
+        let deeper = Expr::parse("((item.type == 0))").expect("nested");
+        assert_eq!(deeper.to_string(), rendered, "redundant brackets collapse");
+        // A malformed condition must not be silently dropped by the editor: the
+        // parse returns None, and the field keeps its previous text-free state.
+        assert!(Expr::parse("item.type ==").is_err());
     }
 
     #[test]
