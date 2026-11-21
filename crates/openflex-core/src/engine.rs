@@ -135,7 +135,7 @@ use openflex_model::{
     Action, ArrivalStyle, CombinerMode, ConditionalPort, ConnectionKind, Distribution,
     DowntimeWindow, EvalContext, FlowBlockKind, Grid, Model, NetworkEdge, Object, ObjectKind,
     ObjectParams, PortStrategy, ProcessFlow, PullParams, QueueOrder, RackPickPolicy, RackType,
-    SeparateMode, SimTrigger, TableCell, TaskStepKind, TransferMode, Value,
+    SeparateMode, SimTrigger, TableCell, TaskStepKind, TrafficMode, TransferMode, Value,
 };
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
@@ -163,6 +163,10 @@ const MAX_EVENTS: u64 = 50_000_000;
 
 /// Numerical tolerance for time comparisons.
 const EPS: f64 = 1e-9;
+
+/// task-148: delay before retrying a transport leg blocked by a full
+/// `traffic_control` area. The retry is a normal calendar event (no busy wait).
+const TRAFFIC_RETRY_DELAY: f64 = 0.1;
 
 /// Label used to carry the number of components inside a container item.
 pub const COMPONENTS_LABEL: &str = "components";
@@ -306,6 +310,10 @@ pub(crate) enum EventKind {
     ChargeDone(usize),
     /// An AGV resumes a task stage (0 pickup, 1 arrive, 2 home) after charging.
     TransportResume(usize, usize, u8),
+    /// task-148: retry a transport leg that was blocked by a full
+    /// `traffic_control` area (stage 0 = pickup leg, 1 = delivery leg,
+    /// 2 = return leg).
+    TrafficWait(usize, usize, u8),
     /// Warm-up boundary: reset the statistics accumulators.
     ResetStats,
 }
@@ -458,6 +466,18 @@ pub(crate) struct FluidRuntime {
     pub total_inflow: f64,
     pub total_throughput: f64,
     pub total_overflow: f64,
+}
+
+/// task-148: one `traffic_control` mutual-exclusion area.
+#[derive(Debug, Clone)]
+struct TrafficControlRt {
+    capacity: u32,
+    /// `mutual_exclusion` enforces the capacity; `un_timed` only applies the
+    /// speed factor.
+    mutual_exclusion: bool,
+    speed_factor: f64,
+    /// Network-node names connected to the control object (A connections).
+    members: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -804,6 +824,10 @@ pub(crate) struct ObjectRt {
     /// Distance accumulated by the current task (battery drain).
     #[serde(default)]
     task_distance: f64,
+    /// task-148: traffic-control areas this executer is admitted to during the
+    /// current leg. Serialized so a checkpoint restores admissions exactly.
+    #[serde(default)]
+    traffic_hold: Vec<usize>,
     capacity: u32,
     tasks: usize,
     /// Requester currently served by this transporter (A10 preemption).
@@ -899,6 +923,7 @@ impl ObjectRt {
             agv_wait_rounds: 0,
             person_reserved: Vec::new(),
             task_distance: 0.0,
+            traffic_hold: Vec::new(),
             capacity: 1,
             tasks: 0,
             serving_requester: None,
@@ -2188,6 +2213,9 @@ struct Simulation<'m> {
     charger_in_use: HashMap<usize, u32>,
     /// task-106: AGVs waiting for a charger slot (FIFO per charger).
     charger_queue: HashMap<usize, VecDeque<usize>>,
+    /// task-148: static traffic-control areas and their current occupancy.
+    traffic_controls: Vec<TrafficControlRt>,
+    traffic_occupancy: Vec<u32>,
     /// task-56: cached shortest distances for transport legs, keyed by
     /// `(task executer, from object, to object)`. Object positions are fixed
     /// for the whole run, so a hit is always correct; restoring a checkpoint
@@ -2330,6 +2358,7 @@ impl<'m> Simulation<'m> {
             build_process_flows(model, &by_name);
 
         let fluid = build_fluid_runtime(model);
+        let traffic_controls = build_traffic_controls(model);
 
         let seed = config.seed;
         let mut sim = Self {
@@ -2356,6 +2385,8 @@ impl<'m> Simulation<'m> {
             distance_cache: RefCell::new(HashMap::new()),
             charger_in_use: HashMap::new(),
             charger_queue: HashMap::new(),
+            traffic_occupancy: vec![0; traffic_controls.len()],
+            traffic_controls,
             pause_at: None,
             shaft_owner: HashMap::new(),
             trigger_depth: 0,
@@ -2954,6 +2985,16 @@ impl<'m> Simulation<'m> {
             .map(Reverse)
             .collect::<BinaryHeap<_>>();
         self.objects = checkpoint.objects.clone();
+        // task-148: repeat the admission counters from the restored holdings so
+        // a resumed run never leaks (or forgets) traffic-control slots.
+        self.traffic_occupancy = vec![0; self.traffic_controls.len()];
+        for object in &self.objects {
+            for &control in &object.traffic_hold {
+                if let Some(slot) = self.traffic_occupancy.get_mut(control) {
+                    *slot += 1;
+                }
+            }
+        }
         self.rng = checkpoint.rng.clone();
         self.arrival_rng = checkpoint.arrival_rng.clone();
         self.items_created = checkpoint.items_created;
@@ -3013,6 +3054,11 @@ impl<'m> Simulation<'m> {
             EventKind::TransportResume(executor, requester, stage) => {
                 self.handle_transport_resume(executor, requester, stage)
             }
+            EventKind::TrafficWait(transporter, requester, stage) => match stage {
+                1 => self.handle_transport_pickup(transporter, requester),
+                2 => self.handle_operator_released(transporter, requester),
+                _ => self.schedule_transport_pickup(transporter, requester),
+            },
             EventKind::TransportPickup(transporter, requester) => {
                 self.handle_transport_pickup(transporter, requester)
             }
@@ -6373,7 +6419,6 @@ impl<'m> Simulation<'m> {
                 }
                 break;
             };
-            let pickup_travel = self.transport_pickup_travel(transporter);
             self.objects[dispatcher].requests.remove(position);
             self.objects[transporter].tasks += 1;
             self.objects[transporter].serving_requester = Some(requester);
@@ -6387,10 +6432,7 @@ impl<'m> Simulation<'m> {
             self.set_state(transporter, State::Busy);
             // B4: the task has two legs — travel to the pickup point (the
             // transporter's home) and then to the requester.
-            self.schedule(
-                self.now + pickup_travel,
-                EventKind::TransportPickup(transporter, requester),
-            );
+            self.schedule_transport_pickup(transporter, requester)?;
         }
         // Forget requests whose requester already got what it needed.
         let stale: Vec<usize> = self.objects[dispatcher]
@@ -6425,7 +6467,6 @@ impl<'m> Simulation<'m> {
             };
             let requester = self.objects[dispatcher].requests[position];
             self.objects[dispatcher].requests.remove(position);
-            let pickup_travel = self.transport_pickup_travel(executor);
             self.objects[executor].tasks += 1;
             self.objects[executor].serving_requester = Some(requester);
             self.objects[executor].acc.input += 1;
@@ -6440,10 +6481,7 @@ impl<'m> Simulation<'m> {
             };
             self.objects[requester].in_transit += 1;
             self.set_state(executor, State::Busy);
-            self.schedule(
-                self.now + pickup_travel,
-                EventKind::TransportPickup(executor, requester),
-            );
+            self.schedule_transport_pickup(executor, requester)?;
         }
         let stale: Vec<usize> = self.objects[dispatcher]
             .requests
@@ -7003,6 +7041,123 @@ impl<'m> Simulation<'m> {
             .unwrap_or(0.0)
     }
 
+    /// task-148: schedule the first leg (current position -> pickup home),
+    /// waiting when the controlled area is full. Stage 0 of the retry event.
+    fn schedule_transport_pickup(
+        &mut self,
+        transporter: usize,
+        requester: usize,
+    ) -> Result<(), SimError> {
+        self.traffic_release(transporter);
+        if let Some(home) = self.objects[transporter].home {
+            let from = self.objects[transporter].position;
+            let to = self.objects[home].position;
+            let controls = self.traffic_controls_for_leg(from, to);
+            if !self.traffic_try_acquire(transporter, &controls) {
+                self.record_object_trace("traffic_wait", transporter);
+                self.schedule(
+                    self.now + TRAFFIC_RETRY_DELAY,
+                    EventKind::TrafficWait(transporter, requester, 0),
+                );
+                return Ok(());
+            }
+            let speed_scale = self.traffic_speed_factor(from, to).max(EPS);
+            let travel = self.transport_pickup_travel(transporter) / speed_scale;
+            self.schedule(
+                self.now + travel,
+                EventKind::TransportPickup(transporter, requester),
+            );
+        } else {
+            self.schedule(self.now, EventKind::TransportPickup(transporter, requester));
+        }
+        Ok(())
+    }
+
+    /// task-148: the nearest `network_node` name to a layout position.
+    fn nearest_network_node(&self, position: [f64; 2]) -> Option<&str> {
+        self.model
+            .objects
+            .iter()
+            .filter(|object| object.kind == ObjectKind::NetworkNode)
+            .min_by(|left, right| {
+                distance(left.pos, position)
+                    .partial_cmp(&distance(right.pos, position))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|object| object.name.as_str())
+    }
+
+    /// task-148: mutual-exclusion areas crossed by a leg. A leg belongs to an
+    /// area when both endpoint objects are nearest to member nodes; the model
+    /// semantics are "between two member nodes" of the same area.
+    fn traffic_controls_for_leg(&self, from: [f64; 2], to: [f64; 2]) -> Vec<usize> {
+        if self.traffic_controls.is_empty() {
+            return Vec::new();
+        }
+        let Some(from_node) = self.nearest_network_node(from) else {
+            return Vec::new();
+        };
+        let Some(to_node) = self.nearest_network_node(to) else {
+            return Vec::new();
+        };
+        self.traffic_controls
+            .iter()
+            .enumerate()
+            .filter(|(_, control)| {
+                control.mutual_exclusion
+                    && control.members.contains(from_node)
+                    && control.members.contains(to_node)
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// task-148: speed multiplier for a leg crossing controlled areas (both
+    /// modes apply it; `un_timed` only applies this factor).
+    fn traffic_speed_factor(&self, from: [f64; 2], to: [f64; 2]) -> f64 {
+        let (Some(from_node), Some(to_node)) = (
+            self.nearest_network_node(from),
+            self.nearest_network_node(to),
+        ) else {
+            return 1.0;
+        };
+        self.traffic_controls
+            .iter()
+            .filter(|control| {
+                control.members.contains(from_node) && control.members.contains(to_node)
+            })
+            .map(|control| control.speed_factor)
+            .product::<f64>()
+            .max(EPS)
+    }
+
+    /// task-148: acquire one slot in every listed area, all-or-nothing.
+    fn traffic_try_acquire(&mut self, transporter: usize, controls: &[usize]) -> bool {
+        if controls.is_empty() {
+            return true;
+        }
+        if controls.iter().any(|&control| {
+            self.traffic_occupancy[control] >= self.traffic_controls[control].capacity
+        }) {
+            return false;
+        }
+        for &control in controls {
+            self.traffic_occupancy[control] += 1;
+        }
+        self.objects[transporter].traffic_hold = controls.to_vec();
+        true
+    }
+
+    /// task-148: release every area held by an executer (idempotent).
+    fn traffic_release(&mut self, transporter: usize) {
+        let holds = std::mem::take(&mut self.objects[transporter].traffic_hold);
+        for control in holds {
+            if let Some(slot) = self.traffic_occupancy.get_mut(control) {
+                *slot = slot.saturating_sub(1);
+            }
+        }
+    }
+
     fn transport_pickup_travel(&self, transporter: usize) -> f64 {
         let speed = self.transport_speed(transporter);
         let Some(home) = self.objects[transporter].home else {
@@ -7223,9 +7378,24 @@ impl<'m> Simulation<'m> {
             self.objects[transporter].position = self.objects[home].position;
             self.objects[transporter].z = self.objects[home].z;
         }
+        self.traffic_release(transporter);
+        let from_position = self.objects[transporter].position;
+        let to_position = self.objects[requester].position;
+        let controls = self.traffic_controls_for_leg(from_position, to_position);
+        if !self.traffic_try_acquire(transporter, &controls) {
+            self.record_object_trace("traffic_wait", transporter);
+            self.schedule(
+                self.now + TRAFFIC_RETRY_DELAY,
+                EventKind::TrafficWait(transporter, requester, 1),
+            );
+            return Ok(());
+        }
+        let speed_scale = self
+            .traffic_speed_factor(from_position, to_position)
+            .max(EPS);
         let dwell = self.transport_dwell(transporter);
         let load = self.transport_load_time(transporter);
-        let travel = self.transport_leg_travel(transporter, requester);
+        let travel = self.transport_leg_travel(transporter, requester) / speed_scale;
         let pickup_distance =
             self.transport_pickup_travel(transporter) * self.transport_speed(transporter);
         if self.agv_mid_task_charge(transporter, requester, pickup_distance, 0)? {
@@ -7305,6 +7475,8 @@ impl<'m> Simulation<'m> {
         transporter: usize,
         requester: usize,
     ) -> Result<(), SimError> {
+        // task-148: the controlled delivery leg ends when the executer arrives.
+        self.traffic_release(transporter);
         if self.objects[transporter].kind == ObjectKind::Agv {
             // task-151: a node occupied by another AGV is a wait, but a ring of
             // AGVs can all wait on each other forever. After a few retries the
@@ -7621,11 +7793,29 @@ impl<'m> Simulation<'m> {
                 return self.schedule_person_step(transporter);
             }
         }
+        self.traffic_release(transporter);
         let speed = self.transport_speed(transporter);
-        let home_travel = self.objects[transporter]
+        let mut home_travel = self.objects[transporter]
             .home
             .map(|home| self.transport_object_distance(transporter, requester, home) / speed);
         if let Some(home) = self.objects[transporter].home {
+            let from_position = self.objects[requester].position;
+            let to_position = self.objects[home].position;
+            if home_travel.is_some_and(|travel| travel > EPS) {
+                let controls = self.traffic_controls_for_leg(from_position, to_position);
+                if !self.traffic_try_acquire(transporter, &controls) {
+                    self.record_object_trace("traffic_wait", transporter);
+                    self.schedule(
+                        self.now + TRAFFIC_RETRY_DELAY,
+                        EventKind::TrafficWait(transporter, requester, 2),
+                    );
+                    return Ok(());
+                }
+                let speed_scale = self
+                    .traffic_speed_factor(from_position, to_position)
+                    .max(EPS);
+                home_travel = home_travel.map(|travel| travel / speed_scale);
+            }
             let distance = self.transport_object_distance(transporter, requester, home);
             if self.agv_mid_task_charge(transporter, requester, distance, 2)? {
                 return Ok(());
@@ -7654,6 +7844,7 @@ impl<'m> Simulation<'m> {
     }
 
     fn handle_transport_home(&mut self, transporter: usize) -> Result<(), SimError> {
+        self.traffic_release(transporter);
         if let Some(home) = self.objects[transporter].home {
             self.objects[transporter].position = self.objects[home].position;
             self.objects[transporter].z = self.objects[home].z;
@@ -9131,6 +9322,11 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
             "agv_resume",
             Some(("requester", *requester as f64 + *stage as f64 * 0.0)),
         ),
+        EventKind::TrafficWait(transporter, requester, stage) => (
+            Some(*transporter),
+            "traffic_wait",
+            Some(("requester", *requester as f64 + *stage as f64 * 0.0)),
+        ),
         EventKind::ResetStats => (None, "reset_stats", None),
     }
 }
@@ -9742,6 +9938,48 @@ fn distribute_fluid(
         sent += amount;
     }
     sent
+}
+
+/// task-148: resolve the traffic-control areas once. A control's members are
+/// the `network_node` objects connected to it by A connections (direction is
+/// irrelevant, S links are resource plumbing and never members).
+fn build_traffic_controls(model: &Model) -> Vec<TrafficControlRt> {
+    let mut controls = Vec::new();
+    for (index, object) in model.objects.iter().enumerate() {
+        let ObjectParams::TrafficControl(params) = &object.params else {
+            continue;
+        };
+        let mut members = std::collections::HashSet::new();
+        for connection in &model.connections {
+            if connection.kind.unwrap_or_default() == ConnectionKind::S {
+                continue;
+            }
+            let (Some(from), Some(to)) = (
+                model
+                    .objects
+                    .iter()
+                    .position(|candidate| candidate.name == connection.from),
+                model
+                    .objects
+                    .iter()
+                    .position(|candidate| candidate.name == connection.to),
+            ) else {
+                continue;
+            };
+            if from == index && model.objects[to].kind == ObjectKind::NetworkNode {
+                members.insert(connection.to.clone());
+            } else if to == index && model.objects[from].kind == ObjectKind::NetworkNode {
+                members.insert(connection.from.clone());
+            }
+        }
+        controls.push(TrafficControlRt {
+            capacity: params.capacity.max(1),
+            mutual_exclusion: params.mode == TrafficMode::MutualExclusion,
+            speed_factor: params.speed_factor.max(EPS),
+            members,
+        });
+    }
+    controls
 }
 
 /// Collect every sandboxed script source in the model with a diagnostic
@@ -11525,5 +11763,172 @@ mod tests {
         let stats = sim.objects[transporter].stats_at(sim.now, 10.0);
         assert_eq!(stats.position, Some([10.0, 2.5]));
         assert_eq!(stats.z, 0.0);
+    }
+    /// task-148 fixture: two transporters share one `traffic_control` area with
+    /// a single slot between the home node N1 and the station node N2.
+    fn traffic_model(mode: &str, capacity: u32, speed_factor: f64) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "traffic",
+          "run": {{ "stop_time": 100.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S1", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "S2", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "P1", "kind": "processor", "pos": [10.0, 0.0], "params": {{
+                "process_time": {{ "distribution": "constant", "value": 1.0 }},
+                "process_operator": "D" }} }},
+            {{ "name": "P2", "kind": "processor", "pos": [10.0, 0.0], "params": {{
+                "process_time": {{ "distribution": "constant", "value": 1.0 }},
+                "process_operator": "D" }} }},
+            {{ "name": "K1", "kind": "sink", "params": {{}} }},
+            {{ "name": "K2", "kind": "sink", "params": {{}} }},
+            {{ "name": "D", "kind": "dispatcher", "pos": [0.0, 0.0], "params": {{}} }},
+            {{ "name": "T1", "kind": "transporter", "pos": [0.0, 0.0],
+               "params": {{ "speed": 1.0, "home": "D" }} }},
+            {{ "name": "T2", "kind": "transporter", "pos": [0.0, 0.0],
+               "params": {{ "speed": 1.0, "home": "D" }} }},
+            {{ "name": "N1", "kind": "network_node", "pos": [0.0, 0.0],
+               "params": {{ "edges": [
+                   {{ "from": "N1", "to": "N2", "distance": 10.0 }} ] }} }},
+            {{ "name": "N2", "kind": "network_node", "pos": [10.0, 0.0], "params": {{}} }},
+            {{ "name": "TC", "kind": "traffic_control", "pos": [5.0, 5.0], "params": {{
+                "capacity": {capacity}, "mode": "{mode}", "speed_factor": {speed_factor} }} }}
+          ],
+          "connections": [
+            {{ "from": "S1", "to": "P1" }}, {{ "from": "P1", "to": "K1" }},
+            {{ "from": "S2", "to": "P2" }}, {{ "from": "P2", "to": "K2" }},
+            {{ "from": "D", "to": "T1" }}, {{ "from": "D", "to": "T2" }},
+            {{ "from": "TC", "to": "N1" }}, {{ "from": "TC", "to": "N2" }}
+          ]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    fn loaded_times(trace: &TraceLog) -> Vec<f64> {
+        trace
+            .object("T1")
+            .chain(trace.object("T2"))
+            .filter(|event| event.event == "operator_loaded")
+            .map(|event| event.time)
+            .collect()
+    }
+
+    /// task-148: with capacity 1 the second transporter waits at N1 until the
+    /// first one arrives at N2, then both tasks complete.
+    #[test]
+    fn traffic_control_mutual_exclusion_waits_and_releases() {
+        let model = traffic_model("mutual_exclusion", 1, 1.0);
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (result, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let mut times = loaded_times(&trace);
+        times.sort_by(|left, right| left.partial_cmp(right).expect("time"));
+        assert_eq!(times.len(), 2, "both transporters must deliver");
+        assert!((times[0] - 10.0).abs() < 1e-9, "first enters immediately");
+        assert!(
+            times[1] >= 20.0 - 1e-9,
+            "second waits for the first arrival, got {times:?}"
+        );
+        assert_eq!(result.items_completed, 2, "both items must finish");
+        let wait = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "traffic_wait")
+            .count();
+        assert!(wait > 0, "the blocked leg must schedule retries");
+    }
+
+    /// task-148: with capacity 2 both transporters are admitted at once.
+    #[test]
+    fn traffic_control_capacity_two_admits_both() {
+        let model = traffic_model("mutual_exclusion", 2, 1.0);
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (result, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let times = loaded_times(&trace);
+        assert_eq!(times.len(), 2);
+        assert!(
+            times.iter().all(|time| (time - 10.0).abs() < 1e-9),
+            "capacity 2 must admit both immediately: {times:?}"
+        );
+        assert_eq!(result.items_completed, 2);
+        assert!(
+            trace
+                .events
+                .iter()
+                .all(|event| event.event != "traffic_wait"),
+            "capacity 2 leaves no waiter"
+        );
+    }
+
+    /// task-148: `un_timed` skips the slot limit and only applies the speed
+    /// factor, so both vehicles depart together but arrive later.
+    #[test]
+    fn traffic_control_un_timed_applies_speed_only() {
+        let model = traffic_model("un_timed", 1, 0.5);
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (result, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let times = loaded_times(&trace);
+        assert_eq!(times.len(), 2, "both transporters deliver");
+        assert!(
+            times.iter().all(|time| (time - 20.0).abs() < 1e-9),
+            "speed factor 0.5 must double the leg: {times:?}"
+        );
+        assert_eq!(result.items_completed, 2);
+        assert!(
+            trace
+                .events
+                .iter()
+                .all(|event| event.event != "traffic_wait"),
+            "un_timed must not wait"
+        );
+    }
+
+    /// task-148: admissions are part of the checkpoint; a resumed run rebuilds
+    /// the occupancy counters from the restored holds and matches the direct run.
+    #[test]
+    fn traffic_control_admissions_survive_checkpoint_restore() {
+        let model = traffic_model("mutual_exclusion", 1, 1.0);
+        let first = SimConfig {
+            stop_time: 5.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, checkpoint) = crate::simulate_with_checkpoint(&model, &first, 0, None)
+            .expect("save the waiting state");
+        let mut sim = Simulation::new(&model, first.clone(), false).expect("sim");
+        sim.restore(&checkpoint).expect("restore");
+        assert_eq!(
+            sim.traffic_occupancy.iter().sum::<u32>(),
+            sim.objects
+                .iter()
+                .map(|object| object.traffic_hold.len() as u32)
+                .sum::<u32>(),
+            "occupancy must match the restored holds"
+        );
+        let second = SimConfig {
+            stop_time: 100.0,
+            ..first
+        };
+        let (resumed, _) =
+            crate::simulate_with_checkpoint(&model, &second, 0, Some(&checkpoint)).expect("resume");
+        let (direct, _) =
+            crate::simulate_with_checkpoint(&model, &second, 0, None).expect("direct");
+        assert_eq!(resumed, direct, "checkpointed admissions must not leak");
     }
 }

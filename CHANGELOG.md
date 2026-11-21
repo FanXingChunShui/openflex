@@ -23,8 +23,21 @@
   最近节点→终点」，模型无节点时回退 `transporter.network` 或直线。新增 `traffic_control`
   对象与 capacity/mode/speed_factor 参数（准入互斥尚未在引擎强制，已在矩阵中标注 🟡）。
   实测：A→N1→N2→N3→B 绕行路径得到 92.43（直线仅 70），显式边长 10 覆盖 100 的直线距离。
+- **`traffic_control` 准入互斥生效**：控制区成员 = 连到该对象的 `network_node` 集合；
+  运输腿（取货/送达/回程）进入「两端最近节点都在同一控制区」的路径时申请名额，
+  `capacity` 满则通过 `TrafficWait` 日历事件重试（非忙等），到达即释放；
+  `mode: un_timed` 不限名额但按 `speed_factor` 缩放该段旅行时间；
+  占用随 `ObjectRt.traffic_hold` 进快照，`restore` 时从持有表重建计数、不泄漏不丢失。
+  端到端实测（两辆车、10 米腿、100 秒）：`capacity=1` 产生 964 次等待重试且两车都完成，
+  `capacity=2` 与 `un_timed` 均 0 次等待。
+  **已知代价**：等待用 0.1 秒固定间隔轮询，车队大时事件量偏高（后续可改为释放时定向唤醒）。
+- **PickLists 与全局变量**：模型新增 `picklists`（命名选项列表，条目 name/value）与
+  `global_variables`（`kind: number|string` + 值），空集合不出现在 JSON；
+  校验覆盖标识符、kind 与值类型一致、条目名非空不重名、列表至少一项；
+  `global_variables`/`picklists` 同时补进 JSON Schema，`openflex schema` 可直接用。
 - 测试：模型层 `flexsim_parity`（10 项）、引擎行为 `flexsim_fluid_objects`（12 项）、
-  引擎路网路由（3 项）、GUI 选择器与表单（2 项）。
+  引擎路网路由（3 项）、引擎交通控制（4 项）、GUI 选择器与表单（2 项）、
+  模型概念与 schema（13 项）。
 
 ## v1.32.0 — 2026-11-21
 
