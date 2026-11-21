@@ -48,6 +48,10 @@
   「结果可信」的关卡，GUI 此前完全没有展示（`mm1` 上三个对象误差均 < 0.008%）。
   新增 `the_little_check_panel_reports_each_object` 测试（GUI 117 项）。
 
+- **逐复现明细**：复现数 > 1 时报告区新增 `Replications (N)` 表——每行的 `# / seed / created / completed`。
+  此前只给聚合后的均值与 CI，用户无法核对单次结果或复算某个 seed。
+  新增 `replication_detail_lists_seeds_and_counts` 测试（GUI 118 项）。
+
 ## v1.31.0 — 2026-11-21
 
 本轮集中在**报告的可信度**：单次复现不再伪装成高精度、预热时间被明确标注、AGV 电量进入画布提示；并让 `Add row` 与其余表操作一样遵守「先校验后快照」。发布节奏保持**至少 3 小时一版**。

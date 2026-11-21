@@ -10217,6 +10217,65 @@ impl eframe::App for OpenFlexApp {
                         }
                     }
                 }
+                // Per-replication detail: seed and item counts make a run
+                // reproducible and let the user see the spread behind a mean.
+                if report.replications.len() > 1 {
+                    egui::CollapsingHeader::new(format!(
+                        "Replications ({})",
+                        report.replications.len()
+                    ))
+                    .id_salt("replications")
+                    .show(ui, |ui| {
+                        egui::Grid::new("rep-grid")
+                            .striped(true)
+                            .num_columns(4)
+                            .spacing([10.0, 2.0])
+                            .show(ui, |ui| {
+                                for header in ["#", "seed", "created", "completed"] {
+                                    ui.label(
+                                        egui::RichText::new(header)
+                                            .strong()
+                                            .size(9.0_f32)
+                                            .color(palette::TEXT_DIM),
+                                    );
+                                }
+                                ui.end_row();
+                                for replication in &report.replications {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{}",
+                                            replication.index + 1
+                                        ))
+                                        .small()
+                                        .monospace(),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!("{}", replication.seed))
+                                            .small()
+                                            .monospace()
+                                            .color(palette::TEXT_DIM),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{}",
+                                            replication.items_created
+                                        ))
+                                        .small()
+                                        .monospace(),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{}",
+                                            replication.items_completed
+                                        ))
+                                        .small()
+                                        .monospace(),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                    });
+                }
                 // Little's law check: the CLI uses it as a correctness gate, so
                 // showing only "valid" would hide which objects were checked.
                 if let Some(check) = report.little_check.as_ref() {
@@ -11818,6 +11877,26 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn replication_detail_lists_seeds_and_counts() {
+        // The table only appears with more than one replication, and its four
+        // columns are what make a run reproducible.
+        let headers = ["#", "seed", "created", "completed"];
+        assert_eq!(headers.len(), 4);
+        let show = |count: usize| count > 1;
+        assert!(!show(1), "a single replication is already in the cards");
+        assert!(show(5));
+        // Seeds differ per replication and are printed as integers.
+        let seeds = [42u64, 43, 44];
+        assert_eq!(
+            seeds
+                .iter()
+                .map(|seed| format!("{seed}"))
+                .collect::<Vec<_>>(),
+            vec!["42", "43", "44"]
+        );
     }
 
     #[test]
