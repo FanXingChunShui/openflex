@@ -1511,6 +1511,82 @@ impl EditForm {
                             .prefix("item spacing "),
                     )
                     .changed();
+                changed |= optional_u32(ui, "join inputs", &mut p.join_inputs);
+                // Photo eyes: one row per eye. Their triggers live in the JSON
+                // editor (they are action lists), but the geometry is edited here.
+                ui.label(
+                    egui::RichText::new(format!("photo eyes ({})", p.photo_eyes.len()))
+                        .size(9.0_f32)
+                        .color(palette::TEXT_DIM),
+                );
+                let mut remove_eye: Option<usize> = None;
+                for (index, eye) in p.photo_eyes.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!("{index}"))
+                                .size(9.0_f32)
+                                .monospace()
+                                .color(palette::TEXT_DIM),
+                        );
+                        changed |= ui
+                            .add(
+                                egui::DragValue::new(&mut eye.position)
+                                    .speed(0.5)
+                                    .prefix("pos "),
+                            )
+                            .changed();
+                        // `range` is an Option; a checkbox keeps "not set" honest
+                        // instead of silently writing the default.
+                        let mut has_range = eye.range.is_some();
+                        if ui.checkbox(&mut has_range, "range").changed() {
+                            eye.range = has_range.then_some(0.5);
+                            changed = true;
+                        }
+                        if let Some(range) = eye.range.as_mut() {
+                            changed |= ui
+                                .add(
+                                    egui::DragValue::new(range)
+                                        .speed(0.1)
+                                        .range(0.01..=1000.0)
+                                        .prefix("±"),
+                                )
+                                .changed();
+                        }
+                        let mut name = eye.name.clone();
+                        if ui
+                            .add(
+                                egui::TextEdit::singleline(&mut name)
+                                    .hint_text("name")
+                                    .desired_width(80.0)
+                                    .font(egui::TextStyle::Small),
+                            )
+                            .changed()
+                        {
+                            eye.name = name.trim().to_string();
+                            changed = true;
+                        }
+                        if ui
+                            .small_button("x")
+                            .on_hover_text("remove this eye")
+                            .clicked()
+                        {
+                            remove_eye = Some(index);
+                        }
+                    });
+                }
+                if let Some(index) = remove_eye {
+                    p.photo_eyes.remove(index);
+                    changed = true;
+                }
+                if ui.small_button("+ photo eye").clicked() {
+                    p.photo_eyes.push(openflex_model::PhotoEye {
+                        position: 0.0,
+                        name: String::new(),
+                        range: None,
+                        triggers: openflex_model::PhotoEyeTriggers::default(),
+                    });
+                    changed = true;
+                }
             }
             ObjectParams::Resource(p) => {
                 changed |= ui
@@ -13547,6 +13623,41 @@ mod tests {
         // A model without objects offer nothing rather than panicking.
         let empty = SamplerNames::from_model(None);
         assert!(empty.any.is_empty() && empty.operators.is_empty());
+    }
+
+    #[test]
+    fn photo_eye_geometry_round_trips_through_json() {
+        // The editor writes position / name / range; the trigger lists stay in
+        // the JSON editor, so they must survive an edit untouched.
+        use openflex_model::{PhotoEye, PhotoEyeTriggers};
+        let eye = PhotoEye {
+            position: 7.5,
+            name: "PE1".into(),
+            range: Some(0.75),
+            triggers: PhotoEyeTriggers::default(),
+        };
+        let json = serde_json::to_string(&eye).expect("json");
+        assert!(json.contains("\"position\":7.5"), "{json}");
+        assert!(json.contains("\"name\":\"PE1\""), "{json}");
+        assert!(json.contains("\"range\":0.75"), "{json}");
+        let back: PhotoEye = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back, eye);
+        // An eye without a range omits the key rather than writing the default.
+        let bare = PhotoEye {
+            position: 1.0,
+            name: String::new(),
+            range: None,
+            triggers: PhotoEyeTriggers::default(),
+        };
+        let json = serde_json::to_string(&bare).expect("json");
+        assert!(
+            !json.contains("range"),
+            "an unset range stays absent: {json}"
+        );
+        assert!(
+            !json.contains("triggers"),
+            "empty triggers stay absent: {json}"
+        );
     }
 
     #[test]

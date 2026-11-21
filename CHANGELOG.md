@@ -4,6 +4,11 @@
 
 ### 桌面 GUI
 
+- **光电门几何编辑器**：conveyor 表单此前**完全没有**光电门编辑入口，只能改 JSON。现在有
+  `photo eyes (n)` 列表，逐行编辑 `pos` / `range`（勾选框控制「是否设置」，未设置时**不写进 JSON**）/ `name`，
+  可 `+ photo eye` 添加、`x` 删除；`join inputs` 也改为可选的数字框。触发动作列表仍留在 JSON 编辑区。
+  GUI 测试 **136 项**（新增 `photo_eye_geometry_round_trips_through_json`）。
+
 - **画布绘制 `explicit` 路线**：dispatcher 声明了显式路线时，画布上从它就画出一条**琥珀色虚线**
   （每段末端一个小圆点），与蓝色实线的流连线在视觉上区分开——一眼能看出「计划路线」与「物料流向」是两件事。
   `home`/`pickup` 解析回 dispatcher 自身位置；`{object}` 与 `{position}` 按实际坐标；
