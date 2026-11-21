@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v1.36.0 — 2026-11-22
+
+本轮把 conveyor 补齐两片（**slug 组**与**合流控制器**），把**脚本错误**变成能定位的诊断（并修掉一处会重复打印的缺陷），GUI 补上 **state/staytime 跟踪汇总**面板。
+期间有一次我自己的误判被测试纠正：想让 GUI 提示「脚本编译失败」，写测试时才发现模型校验已经覆盖，改动已整条撤回，没有留下重复逻辑。
+发布节奏保持**至少 3 小时一版**。
 
 ### 桌面 GUI
 
@@ -63,6 +67,16 @@
   `object` 给名字输入、`position` 给 x/y 两个 DragValue，可单独删除某腿。
   此前 `target` 字段只靠编译兜底被保留、在界面里完全不可编辑。GUI 测试 **133 项**。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**862 passed / 0 failed**。
+- GUI **134 项**、`openflex-core --lib` **145 项**、`openflex-model` **45 项**。
+- `clippy` 0 警告、`fmt` 干净；**62 个示例模型全部 validate 通过**。
+- 独立实测：slug 组内间隙恒定（`[10.0, 8.5, 7.0]` 整组停）；合流 `round_robin` 1.04:1、
+  `weighted [3,1]` **3.08:1**、`by_item_type` 严格优先（49:0，已注明可饿死低优先流）；
+  脚本诊断单次打印（`SimError::Script` 字段改名 `detail` 消除因果链重复）；
+  `check-scripts` 语法错退出 2、合法退出 0。
 
 ## v1.35.0 — 2026-11-21
 
