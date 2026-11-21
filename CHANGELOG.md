@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### 模型与引擎
+
+- **`explicit` 第二刀：load/unload 与 release 同步**：explicit 路线现支持 `travel/load/unload/utilize/break`
+  五类腿，`pickup` / `requester` 目标**真正实现**（不再报未实现）。
+  `unload` 完成瞬间触发**恰一次** `OperatorLoaded`；其后若下一腿不是 `utilize`/`break`，
+  执行器**停在原地（Busy + Utilize）等 `OperatorReleased`**，且不再走标准 `TransportHome` 硬编码回程
+  ——标准链的 handler 一行未改，新分支只在 explicit 链状态存在时生效。
+  实测序列 `pickup → 去 D → load(2) → requester → unload(3) → home`：
+  `operator_loaded` 恰一次（t=15.0）、`operator_released` 与回程 depart **同为 t=22.0**（证明等到释放才走）、
+  执行器细分 `travel_empty 10 / travel_loaded 10 / loading 2 / unloading 3 / utilize 7`，
+  其中 7 秒正是等待释放的时间。抢占在 explicit 链内禁用（MVP，注释已说明）。
+
 ### 桌面 GUI
 
 - **`explicit` 路线编辑器**：任务序列编辑区新增 `append` / `explicit` 模式切换；

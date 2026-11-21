@@ -1343,7 +1343,7 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                 if params.task_sequence.is_empty() {
                     issues.push(ValidationIssue::new(
                         location("task_sequence"),
-                        "explicit mode requires a non-empty travel route",
+                        "explicit mode requires a non-empty task route",
                     ));
                 }
                 if !params.task_sequence.iter().any(|step| {
@@ -1356,53 +1356,58 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                 }
                 for (position, step) in params.task_sequence.iter().enumerate() {
                     let at = format!("task_sequence[{position}]");
-                    if step.extra_kind().is_some()
-                        || step.kind() != crate::model::TaskStepKind::Travel
-                    {
-                        issues.push(ValidationIssue::new(
-                            location(&at),
-                            "explicit mode currently supports only travel legs",
-                        ));
+                    if step.extra_kind().is_some() {
+                        // utilize/break: duration checked by the generic block below.
+                        if step.target().is_some() {
+                            issues.push(ValidationIssue::new(
+                                location(&format!("{at}.target")),
+                                "only travel legs may have a target",
+                            ));
+                        }
                         continue;
                     }
-                    let Some(target) = step.target() else {
-                        issues.push(ValidationIssue::new(
-                            location(&format!("{at}.target")),
-                            "explicit travel legs require a target",
-                        ));
-                        continue;
-                    };
-                    match target {
-                        crate::model::TravelTarget::Named(
-                            crate::model::TravelTargetName::Home,
-                        ) => {}
-                        crate::model::TravelTarget::Named(
-                            name @ (crate::model::TravelTargetName::Pickup
-                            | crate::model::TravelTargetName::Requester),
-                        ) => issues.push(ValidationIssue::new(
-                            location(&format!("{at}.target")),
-                            format!(
-                                "explicit travel target '{}' is not implemented yet; use home/object/position",
-                                match name {
-                                    crate::model::TravelTargetName::Pickup => "pickup",
-                                    crate::model::TravelTargetName::Requester => "requester",
-                                    crate::model::TravelTargetName::Home => "home",
-                                }
-                            ),
-                        )),
-                        crate::model::TravelTarget::Object(object) => {
-                            if !model.objects.iter().any(|entry| entry.name == object.object) {
+                    match step.kind() {
+                        crate::model::TaskStepKind::Travel => {
+                            let Some(target) = step.target() else {
                                 issues.push(ValidationIssue::new(
-                                    location(&format!("{at}.target.object")),
-                                    format!("unknown object \"{}\"", object.object),
+                                    location(&format!("{at}.target")),
+                                    "explicit travel legs require a target",
                                 ));
+                                continue;
+                            };
+                            match target {
+                                crate::model::TravelTarget::Named(
+                                    crate::model::TravelTargetName::Home
+                                    | crate::model::TravelTargetName::Pickup
+                                    | crate::model::TravelTargetName::Requester,
+                                ) => {}
+                                crate::model::TravelTarget::Object(object) => {
+                                    if !model
+                                        .objects
+                                        .iter()
+                                        .any(|entry| entry.name == object.object)
+                                    {
+                                        issues.push(ValidationIssue::new(
+                                            location(&format!("{at}.target.object")),
+                                            format!("unknown object \"{}\"", object.object),
+                                        ));
+                                    }
+                                }
+                                crate::model::TravelTarget::Position(position) => {
+                                    if position.position.iter().any(|value| !value.is_finite()) {
+                                        issues.push(ValidationIssue::new(
+                                            location(&format!("{at}.target.position")),
+                                            "coordinates must be finite",
+                                        ));
+                                    }
+                                }
                             }
                         }
-                        crate::model::TravelTarget::Position(position) => {
-                            if position.position.iter().any(|value| !value.is_finite()) {
+                        crate::model::TaskStepKind::Load | crate::model::TaskStepKind::Unload => {
+                            if step.target().is_some() {
                                 issues.push(ValidationIssue::new(
-                                    location(&format!("{at}.target.position")),
-                                    "coordinates must be finite",
+                                    location(&format!("{at}.target")),
+                                    "only travel legs may have a target",
                                 ));
                             }
                         }
