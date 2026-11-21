@@ -27,6 +27,7 @@ mod batch;
 mod compare;
 mod experiment;
 pub mod i18n;
+mod item_trace;
 mod sim;
 mod xlsx;
 
@@ -37,6 +38,10 @@ pub use compare::{Comparison, MetricComparison, ObjectComparison, ReportRef, com
 pub use experiment::{
     ExperimentReport, ScenarioReport, sanitize, write_experiment_reports,
     write_experiment_reports_with_sections,
+};
+pub use item_trace::{
+    ItemTrace, ItemTraceStep, item_event_count, item_of, item_trace, item_traces, read_trace_file,
+    render_item_list, render_item_trace, render_trace_summary, traced_items,
 };
 pub use sim::{
     REPLICATIONS_CSV, REPORT_CSV, REPORT_JSON, REPORT_MARKDOWN, to_csv, to_csv_with_flow,
@@ -75,6 +80,12 @@ pub enum ReportError {
     Io {
         path: String,
         source: std::io::Error,
+    },
+    #[error("invalid trace {path} line {line}: {source}")]
+    TraceLine {
+        path: String,
+        line: usize,
+        source: serde_json::Error,
     },
     #[error("batch means: {0}")]
     BatchMeans(String),

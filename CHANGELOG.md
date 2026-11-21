@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### 报告与 CLI
+
+- **Item Trace（单件路径追踪）**：新 `openflex trace <file.jsonl>` 子命令——
+  无参数出摘要（事件数、带 item 的事件数、可追踪件数、时间范围），
+  `--items` 列每件 id 与步数，`--item <id>` 打完整路径表（Time / Object / Event）并给摘要
+  （步数、进入过的对象数、跨度），支持 `--format json|csv|markdown` 与 `--output`。
+  提取器 `item_traces()` 只读 `data["item"]`、按 `(time, seq)` 排序，**不做任何 seq/时间推断**；
+  缺 `item` 的关系事件（`operator_loaded` 等）自动跳过。未知 id 退出码 2 并列出可追踪 id。
+  实测同一模型：`item 1` 13 步 / 4 个对象 / 跨度 42，`item 2` 7 步。
+  顺带修掉一个**既有**缺陷：`report`/`trace` 读文件失败时 I/O 原因经 anyhow 因果链打印两遍。
+
 ### 模型与引擎
 
 - **trace 事件带上 flow item id**：`TraceEvent.data["item"]` 现写 `FlowItem::id`（与 `items_created` 同源），

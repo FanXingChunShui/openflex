@@ -4799,3 +4799,231 @@ fn measure_names_do_not_break_csv_columns() {
     }
     assert!(csv.contains("完成量,"), "the CJK name must survive:\n{csv}");
 }
+
+// ---------------------------------------------------------------------------
+// Item trace (task-170)
+// ---------------------------------------------------------------------------
+
+/// Run the fixture model with `--trace` and return the trace file path.
+fn traced_fixture(dir: &TempDir) -> PathBuf {
+    let model = dir.write("trace-demo.ofm", MODEL);
+    let trace = dir.join("trace.jsonl");
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--stop-time",
+        "120",
+        "--trace",
+        &path_str(&trace),
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert!(trace.is_file(), "run --trace did not write the file");
+    trace
+}
+
+#[test]
+fn trace_summary_lists_counts_without_the_step_table() {
+    let dir = TempDir::new("trace-summary");
+    let trace = traced_fixture(&dir);
+
+    let output = openflex(&["trace", &path_str(&trace), "--quiet"]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.contains("Trace summary"), "{text}");
+    assert!(text.contains("item events"), "{text}");
+    assert!(
+        !text.contains("  Object"),
+        "the unfiltered summary must not print every step:\n{text}"
+    );
+
+    // The JSON form carries the same numbers for scripts.
+    let json_output = openflex(&["trace", &path_str(&trace), "--format", "json", "--quiet"]);
+    assert_eq!(code(&json_output), 0);
+    let summary = json(stdout(&json_output).as_str());
+    assert!(summary["events"].as_u64().unwrap_or(0) > 0);
+    assert!(summary["items"].as_u64().unwrap_or(0) > 0);
+    assert_eq!(summary["truncated"], serde_json::Value::Bool(false));
+    assert!(
+        summary["hint"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("--items")
+    );
+}
+
+#[test]
+fn trace_items_lists_every_tagged_id() {
+    let dir = TempDir::new("trace-items");
+    let trace = traced_fixture(&dir);
+
+    let listed = openflex(&[
+        "trace",
+        &path_str(&trace),
+        "--items",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&listed), 0, "stderr: {}", stderr(&listed));
+    let listed = json(stdout(&listed).as_str());
+    let ids: Vec<u64> = listed
+        .as_array()
+        .expect("an array of items")
+        .iter()
+        .filter_map(|entry| entry["item"].as_u64())
+        .collect();
+    assert!(!ids.is_empty(), "no item was traced");
+
+    // The id set must match the `item` keys present in the trace file itself.
+    let raw = fs::read_to_string(&trace).expect("read trace");
+    let mut expected: Vec<u64> = raw
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|event| event["data"]["item"].as_f64())
+        .map(|item| item as u64)
+        .collect();
+    expected.sort_unstable();
+    expected.dedup();
+    assert_eq!(ids, expected, "the listed ids differ from the trace file");
+}
+
+#[test]
+fn trace_item_prints_the_complete_path() {
+    let dir = TempDir::new("trace-item");
+    let trace = traced_fixture(&dir);
+
+    let output = openflex(&[
+        "trace",
+        &path_str(&trace),
+        "--item",
+        "1",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let trace_json = json(stdout(&output).as_str());
+    assert_eq!(trace_json["item"], 1);
+    let steps = trace_json["steps"].as_array().expect("steps");
+    assert!(!steps.is_empty(), "the item has no steps");
+
+    // Step count and ordering must match the trace file for that item.
+    let raw = fs::read_to_string(&trace).expect("read trace");
+    let mut expected: Vec<(f64, u64)> = raw
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| event["data"]["item"].as_f64() == Some(1.0))
+        .map(|event| {
+            (
+                event["time"].as_f64().unwrap_or_default(),
+                event["seq"].as_u64().unwrap_or_default(),
+            )
+        })
+        .collect();
+    expected.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    assert_eq!(
+        steps.len(),
+        expected.len(),
+        "step count differs from the trace"
+    );
+    for (step, (time, seq)) in steps.iter().zip(&expected) {
+        assert_eq!(step["time"].as_f64(), Some(*time));
+        assert_eq!(step["seq"].as_u64(), Some(*seq));
+    }
+
+    // The table form names the objects and the step count in one line.
+    let table = openflex(&["trace", &path_str(&trace), "--item", "1", "--quiet"]);
+    assert_eq!(code(&table), 0);
+    let text = stdout(&table);
+    assert!(text.contains("Item trace: item 1"), "{text}");
+    assert!(text.contains("Steps:"), "{text}");
+    assert!(text.contains("Objects visited:"), "{text}");
+}
+
+#[test]
+fn trace_unknown_item_is_an_explicit_error() {
+    let dir = TempDir::new("trace-unknown");
+    let trace = traced_fixture(&dir);
+
+    let output = openflex(&["trace", &path_str(&trace), "--item", "999999"]);
+    assert_eq!(code(&output), 2, "a missing id is a usage error");
+    let message = stderr(&output);
+    assert!(message.contains("does not appear"), "{message}");
+    assert!(message.contains("999999"), "{message}");
+    assert!(
+        message.contains("traced items"),
+        "the error must list what can be traced: {message}"
+    );
+}
+
+#[test]
+fn trace_missing_file_is_a_clean_error() {
+    let dir = TempDir::new("trace-missing");
+    let missing = dir.join("nope.jsonl");
+
+    let output = openflex(&["trace", &path_str(&missing)]);
+    assert_eq!(code(&output), 1, "an unreadable input is a runtime error");
+    let message = stderr(&output);
+    assert!(
+        message.contains("nope.jsonl"),
+        "the path must be reported: {message}"
+    );
+    assert!(message.contains("could not read"), "{message}");
+    // The I/O cause must be printed once, not repeated through a cause chain.
+    assert_eq!(
+        message.matches("No such file or directory").count(),
+        1,
+        "duplicated I/O cause: {message}"
+    );
+}
+
+#[test]
+fn trace_output_can_be_written_to_a_file() {
+    let dir = TempDir::new("trace-output");
+    let trace = traced_fixture(&dir);
+    let path = dir.join("item.md");
+
+    let output = openflex(&[
+        "trace",
+        &path_str(&trace),
+        "--item",
+        "1",
+        "--format",
+        "markdown",
+        "--output",
+        &path_str(&path),
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert!(stdout(&output).is_empty(), "nothing must go to stdout");
+    let text = fs::read_to_string(&path).expect("item.md");
+    assert!(text.starts_with("# Item trace: item 1"), "{text}");
+    assert!(text.contains("| Time | Object | Event |"), "{text}");
+}
+
+#[test]
+fn trace_without_item_tags_says_so() {
+    let dir = TempDir::new("trace-untagged");
+    // A hand-written trace that only holds relational events (no item key).
+    let trace = dir.write(
+        "untagged.jsonl",
+        "{\"time\":0.0,\"seq\":0,\"event\":\"operator_loaded\",\"object\":\"T\",\"data\":{}}\n",
+    );
+
+    let summary = openflex(&["trace", &path_str(&trace), "--quiet"]);
+    assert_eq!(code(&summary), 0, "stderr: {}", stderr(&summary));
+    assert!(
+        stdout(&summary).contains("0 traced items"),
+        "{}",
+        stdout(&summary)
+    );
+
+    let unknown = openflex(&["trace", &path_str(&trace), "--item", "1"]);
+    assert_eq!(code(&unknown), 2);
+    let message = stderr(&unknown);
+    assert!(
+        message.contains("no event tagged with an item id"),
+        "an untagged trace must say why nothing can be traced: {message}"
+    );
+}

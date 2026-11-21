@@ -224,6 +224,24 @@ enum Command {
         #[arg(long, short = 'o', value_name = "FILE")]
         output: Option<PathBuf>,
     },
+    /// Inspect an event trace written by `run --trace`.
+    Trace {
+        /// Trace file (JSON Lines) written by `run --trace`.
+        #[arg(value_name = "TRACE_JSONL")]
+        file: PathBuf,
+        /// Show the complete path of one item id (see --items for the ids).
+        #[arg(long, value_name = "ID", conflicts_with = "items")]
+        item: Option<u64>,
+        /// List every item id that appears in the trace, with its step count.
+        #[arg(long, conflicts_with = "item")]
+        items: bool,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = Format::Table)]
+        format: Format,
+        /// Write the rendered output here instead of standard output.
+        #[arg(long, short = 'o', value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
     /// Create a new model from a template.
     New {
         /// Directory to create (and fill) with the new model.
@@ -526,7 +544,10 @@ impl From<String> for Failure {
 
 impl From<report::ReportError> for Failure {
     fn from(error: report::ReportError) -> Self {
-        Self::runtime(anyhow::Error::new(error))
+        // `ReportError` already names the path and the underlying I/O error in
+        // its own message; keeping it as a source would print the cause twice
+        // (`...: No such file ...: No such file ...`).
+        Self::runtime(anyhow!("{error}"))
     }
 }
 
@@ -889,6 +910,49 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                 .map_err(|error| Failure::from(error).with_path(&candidate))?;
             let comparison = report::compare_reports(&baseline, &before, &candidate, &after);
             let text = report::render_comparison(&comparison, format.into())?;
+            emit(&text, output.as_deref(), quiet)
+        }
+        Command::Trace {
+            file,
+            item,
+            items,
+            format,
+            output,
+        } => {
+            let log = report::read_trace_file(&file)
+                .map_err(|error| Failure::from(error).with_path(&file))?;
+            let text = if items {
+                report::render_item_list(&log, format.into())?
+            } else if let Some(item) = item {
+                let Some(trace) = report::item_trace(&log, item) else {
+                    let known = report::traced_items(&log);
+                    let available = if known.is_empty() {
+                        // A trace with no item tags is a different situation
+                        // from "the id is not there"; say which one it is.
+                        "the trace has no event tagged with an item id".to_string()
+                    } else {
+                        let sample = known
+                            .iter()
+                            .take(10)
+                            .map(|(id, _)| id.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let more = if known.len() > 10 {
+                            format!(", … ({} traced items in total)", known.len())
+                        } else {
+                            format!(" ({})", known.len())
+                        };
+                        format!("traced items: {sample}{more}")
+                    };
+                    return Err(Failure::usage(anyhow!(
+                        "item {item} does not appear in {} ({available})",
+                        file.display()
+                    )));
+                };
+                report::render_item_trace(&trace, format.into())?
+            } else {
+                report::render_trace_summary(&log, format.into())?
+            };
             emit(&text, output.as_deref(), quiet)
         }
         Command::New {
