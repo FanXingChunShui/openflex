@@ -10217,6 +10217,79 @@ impl eframe::App for OpenFlexApp {
                         }
                     }
                 }
+                // Fluid statistics: the CLI prints per-object levels and flows;
+                // the GUI showed none of it.
+                if let Some(fluid) = report.fluid.as_ref() {
+                    egui::CollapsingHeader::new(format!(
+                        "Fluid ({:.2} volume/{} throughput)",
+                        fluid.total_throughput,
+                        report.time_unit.label()
+                    ))
+                    .id_salt("fluid-report")
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "inflow {:.2} · throughput {:.2} · overflow {:.2}",
+                                fluid.total_inflow, fluid.total_throughput, fluid.total_overflow
+                            ))
+                            .size(9.0_f32)
+                            .monospace()
+                            .color(palette::TEXT_DIM),
+                        );
+                        if !fluid.objects.is_empty() {
+                            egui::Grid::new("fluid-grid")
+                                .striped(true)
+                                .num_columns(6)
+                                .spacing([10.0, 2.0])
+                                .show(ui, |ui| {
+                                    for header in
+                                        ["object", "kind", "level avg", "level max", "thru", "overflow"]
+                                    {
+                                        ui.label(
+                                            egui::RichText::new(header)
+                                                .strong()
+                                                .size(9.0_f32)
+                                                .color(palette::TEXT_DIM),
+                                        );
+                                    }
+                                    ui.end_row();
+                                    for object in &fluid.objects {
+                                        ui.label(
+                                            egui::RichText::new(&object.name)
+                                                .small()
+                                                .monospace(),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(&object.kind)
+                                                .small()
+                                                .color(palette::TEXT_DIM),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(format!("{:.2}", object.level_avg))
+                                                .small()
+                                                .monospace(),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(format!("{:.2}", object.level_max))
+                                                .small()
+                                                .monospace(),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(format!("{:.2}", object.throughput))
+                                                .small()
+                                                .monospace(),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(format!("{:.2}", object.overflow))
+                                                .small()
+                                                .monospace(),
+                                        );
+                                        ui.end_row();
+                                    }
+                                });
+                        }
+                    });
+                }
                 // Process-flow statistics: tokens created/completed and a row
                 // per block. The CLI prints these; the GUI used to hide them.
                 if let Some(flow) = report.process_flow.as_ref() {
@@ -11670,6 +11743,29 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn the_fluid_report_names_levels_and_flows() {
+        // Column headers the new panel draws, and the totals line.
+        let headers = [
+            "object",
+            "kind",
+            "level avg",
+            "level max",
+            "thru",
+            "overflow",
+        ];
+        assert_eq!(headers.len(), 6);
+        let totals = format!(
+            "inflow {:.2} · throughput {:.2} · overflow {:.2}",
+            4.0, 3.63, 0.0
+        );
+        assert_eq!(totals, "inflow 4.00 · throughput 3.63 · overflow 0.00");
+        // A model without fluid objects reports `fluid: None`.
+        let model = builtin_example("mm1").expect("example");
+        let json = serde_json::to_value(&model).expect("json");
+        assert!(json.get("fluid").is_none());
     }
 
     #[test]
