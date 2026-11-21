@@ -4971,8 +4971,11 @@ fn trace_missing_file_is_a_clean_error() {
     );
     assert!(message.contains("could not read"), "{message}");
     // The I/O cause must be printed once, not repeated through a cause chain.
+    // The OS wording differs (`No such file or directory` on Unix,
+    // `The system cannot find the file specified` on Windows), but both carry
+    // the `(os error N)` suffix, so that is what this counts.
     assert_eq!(
-        message.matches("No such file or directory").count(),
+        message.matches("(os error 2)").count(),
         1,
         "duplicated I/O cause: {message}"
     );
