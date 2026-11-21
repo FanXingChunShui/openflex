@@ -19,6 +19,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **报告展示跟踪时序**：模型声明了 `tracked_variables` 时，报告面板新增 `Tracked series (n)` 表格
+  （name / samples / first / last / range），并注明序列只覆盖计量阶段。无跟踪变量时不出现该块。
+  GUI 测试 **129 项**。
 - **性能指标编辑器**：左侧新增 `Performance measures (n)` 面板，逐行编辑 `name / expression / unit`，
   `+ measure` 加行、`-` 删行，`Apply measures` 走 `commit_model_edit`（空名字或空表达式先报错、模型不动，
   空行自动忽略，空 unit 不写进 JSON）。GUI 测试 **128 项**。

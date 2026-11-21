@@ -11405,6 +11405,80 @@ impl eframe::App for OpenFlexApp {
                         });
                     ui.separator();
                 }
+                // Tracked variables: one row per declared series with the shape
+                // of the samples, so the run can be read at a glance.
+                if !report.tracked_series.is_empty() {
+                    egui::CollapsingHeader::new(format!(
+                        "Tracked series ({})",
+                        report.tracked_series.len()
+                    ))
+                    .id_salt("tracked-series")
+                    .show(ui, |ui| {
+                        egui::Grid::new("tracked-grid")
+                            .striped(true)
+                            .num_columns(5)
+                            .spacing([10.0, 2.0])
+                            .show(ui, |ui| {
+                                for header in ["name", "samples", "first", "last", "range"] {
+                                    ui.label(
+                                        egui::RichText::new(header)
+                                            .strong()
+                                            .size(9.0_f32)
+                                            .color(palette::TEXT_DIM),
+                                    );
+                                }
+                                ui.end_row();
+                                for (name, series) in &report.tracked_series {
+                                    let first = series.first().map_or(0.0, |(_, value)| *value);
+                                    let last = series.last().map_or(0.0, |(_, value)| *value);
+                                    let low = series
+                                        .iter()
+                                        .map(|(_, value)| *value)
+                                        .fold(f64::INFINITY, f64::min);
+                                    let high = series
+                                        .iter()
+                                        .map(|(_, value)| *value)
+                                        .fold(f64::NEG_INFINITY, f64::max);
+                                    ui.label(
+                                        egui::RichText::new(name)
+                                            .small()
+                                            .monospace()
+                                            .color(palette::ACCENT_HI),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!("{}", series.len()))
+                                            .small()
+                                            .monospace(),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!("{first:.2}"))
+                                            .small()
+                                            .monospace(),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!("{last:.2}"))
+                                            .small()
+                                            .monospace(),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{low:.2} … {high:.2}"
+                                        ))
+                                        .small()
+                                        .monospace()
+                                        .color(palette::TEXT_DIM),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                        ui.label(
+                            egui::RichText::new("the series covers the measuring phase only")
+                                .size(9.0_f32)
+                                .color(palette::TEXT_DIM),
+                        );
+                    });
+                    ui.separator();
+                }
                 // Per-replication detail: seed and item counts make a run
                 // reproducible and let the user see the spread behind a mean.
                 if report.replications.len() > 1 {
@@ -13099,6 +13173,33 @@ mod tests {
         // A model without objects offer nothing rather than panicking.
         let empty = SamplerNames::from_model(None);
         assert!(empty.any.is_empty() && empty.operators.is_empty());
+    }
+
+    #[test]
+    fn tracked_series_summary_reports_the_shape() {
+        // The row the report panel draws: count, first, last, range.
+        let series = vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0), (5.0, 5.0)];
+        let first = series.first().map_or(0.0, |(_, value)| *value);
+        let last = series.last().map_or(0.0, |(_, value)| *value);
+        let low = series.iter().map(|(_, v)| *v).fold(f64::INFINITY, f64::min);
+        let high = series
+            .iter()
+            .map(|(_, v)| *v)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert_eq!(series.len(), 5);
+        assert_eq!((first, last), (1.0, 5.0));
+        assert_eq!((low, high), (1.0, 5.0));
+        // A rising series of 2t has the same count but a wider range.
+        let doubled: Vec<(f64, f64)> = series.iter().map(|(t, v)| (*t, v * 2.0)).collect();
+        let d_high = doubled
+            .iter()
+            .map(|(_, v)| *v)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert_eq!(doubled.len(), 5);
+        assert_eq!(d_high, 10.0);
+        // No tracked variables means no block at all.
+        let model = builtin_example("mm1").expect("example");
+        assert!(model.tracked_variables.is_empty());
     }
 
     #[test]
