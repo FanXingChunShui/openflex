@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v1.37.0 — 2026-11-22
+
+本轮把 FlexSim **Conveyor 模块**（主帮助之外的 35 页）当作正式规格来补：**光电门四状态**（并让边界穿越成为皮带事件，触发时刻精确到 `10∓0.5`）、**决策点**（按件求值条件后执行动作）、GUI 侧的光电门/决策点编辑器与**显式路线可视化**，并新增一个同时演示 slug / 加权合流 / 光电门 / 决策点的示例模型。
+同时修掉两处「提示会骗人」的问题：脚本 `available:` 曾列出脚本根本解析不了的表达式路径；脚本诊断曾因字段名 `source` 被 thiserror 当作因果链而打印两遍。
+发布节奏保持**至少 3 小时一版**。
 
 ### 桌面 GUI
 
@@ -48,6 +52,15 @@
   （修复前 `cleared` 要到 t=20 的出口事件才发，晚 9.5 个单位——这是我实测发现后专门补的一刀）。
   防自旋：件停在站台上不产生零间隔事件；`range` 覆盖整条带时不加边界候选。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**885 passed / 0 failed**。
+- GUI **137 项**、`openflex-core --lib` **165 项**、`openflex-model` **45 项**。
+- `clippy` 0 警告、`fmt` 干净；示例模型全部 validate 通过。
+- 独立实测：光电门 `blocked = 9.50 / cleared = 10.50`（修复前 cleared 要到 t=20）；
+  决策点在 `pos 5.0 − range 0.5 = 4.500` 触发；`available:` 现列 `time, item_type, item_id, set_label(...)`
+  而**不再**出现 `item.type`。
 
 ## v1.36.0 — 2026-11-22
 
