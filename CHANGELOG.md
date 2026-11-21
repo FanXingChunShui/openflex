@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v1.32.0 — 2026-11-21
+
+本轮把 `SimReport` 里**一直存在却没在桌面版显示**的统计数据全部接出来（流程 token 与块级统计、流体液位与流量、Little 定律校验、逐复现明细、峰值内容），并统一了「利用率」在四处展示中的对象范围。发布节奏保持**至少 3 小时一版**。
 
 ### 桌面 GUI（功能补齐）
 
@@ -55,6 +57,12 @@
 - **报告表新增 `Max` 列**：逐对象的**峰值内容**（`max_content.mean`），紧跟在 `WIP` 之后，并可点击排序（第 4 列）。
   平均值会掩盖短时堆积，峰值才能回答「这条队列有没有被撑爆」。表格因此从 8 列变 9 列，排序键同步右移。
   新增 `the_stats_table_has_a_peak_content_column` 测试（GUI 119 项）。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**627 passed / 0 failed**。
+- GUI 单元测试 **119 项**。
+- GUI `clippy` 0、`fmt` 干净；以 `mm1`、带流程块的模型、`generator→tank→valve→sink` 流体模型启动均无 panic。
 
 ## v1.31.0 — 2026-11-21
 
