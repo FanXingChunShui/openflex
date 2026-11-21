@@ -684,6 +684,45 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                     "must be positive",
                 ));
             }
+            match params.merge_mode {
+                crate::model::MergeMode::RoundRobin | crate::model::MergeMode::ByItemType => {
+                    if params.merge_weight.is_some() {
+                        issues.push(ValidationIssue::new(
+                            location("merge_weight"),
+                            "merge_weight is only valid with merge_mode: weighted",
+                        ));
+                    }
+                }
+                crate::model::MergeMode::Weighted => {
+                    let expected = params.join_inputs.unwrap_or(0) as usize;
+                    match params.merge_weight.as_deref() {
+                        None => issues.push(ValidationIssue::new(
+                            location("merge_weight"),
+                            "weighted merge mode requires merge_weight",
+                        )),
+                        Some(weights) if weights.len() != expected => {
+                            issues.push(ValidationIssue::new(
+                                location("merge_weight"),
+                                format!(
+                                    "expected {expected} weights (one per input), found {}",
+                                    weights.len()
+                                ),
+                            ))
+                        }
+                        Some(weights)
+                            if weights
+                                .iter()
+                                .any(|weight| !weight.is_finite() || *weight <= 0.0) =>
+                        {
+                            issues.push(ValidationIssue::new(
+                                location("merge_weight"),
+                                "every weight must be positive and finite",
+                            ));
+                        }
+                        Some(_) => {}
+                    }
+                }
+            }
             if params.max_content == 0 {
                 issues.push(ValidationIssue::new(
                     location("max_content"),

@@ -1691,6 +1691,25 @@ pub struct ConveyorSegment {
     pub angle: f64,
 }
 
+/// task-178: how a join conveyor chooses among its input belts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeMode {
+    /// Existing fair round-robin.
+    #[default]
+    RoundRobin,
+    /// Weighted round-robin by `merge_weight`.
+    Weighted,
+    /// Lowest upstream `item_type` first, round-robin on ties.
+    ByItemType,
+}
+
+impl MergeMode {
+    pub fn is_round_robin(&self) -> bool {
+        matches!(self, MergeMode::RoundRobin)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConveyorParams {
@@ -1722,6 +1741,12 @@ pub struct ConveyorParams {
     /// `None`/`1` keeps the plain single-belt behaviour.
     #[serde(default)]
     pub join_inputs: Option<u32>,
+    /// task-178: merge-controller mode.
+    #[serde(default, skip_serializing_if = "MergeMode::is_round_robin")]
+    pub merge_mode: MergeMode,
+    /// task-178: per-input weights for `merge_mode: weighted`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_weight: Option<Vec<f64>>,
     /// Optional curved section appended after the straight length; its arc
     /// length adds travel distance at the same speed.
     #[serde(default)]
@@ -1769,6 +1794,8 @@ impl Default for ConveyorParams {
             photo_eyes: Vec::new(),
             stations: Vec::new(),
             join_inputs: None,
+            merge_mode: MergeMode::RoundRobin,
+            merge_weight: None,
             curve: None,
             segments: Vec::new(),
             shifts: Vec::new(),

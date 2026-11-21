@@ -11,6 +11,18 @@
 
 ### 模型与引擎
 
+- **conveyor 合流控制器**：`ConveyorParams` 新增 `merge_mode`
+  （`round_robin` 缺省且**不序列化**，旧 JSON 与数值逐位不变 / `weighted` / `by_item_type`）与
+  `merge_weight`。选择逻辑只改 `join_preferred_port`，与皮带推进解耦：
+  - `weighted` 按「已服务数/权重」最小者取，权重和无需归一；
+  - `by_item_type` 按上游首件 `item_type` 升序，同类型回落 cursor 轮询；
+  - 主带入口被占时**不消费配额**（不更新 cursor/count），入口放行后再按规则竞争。
+  校验三条精准文案：缺权重、长度与输入数不符、非 `weighted` 模式给权重。
+  独立实测（两条上游各 2.0 间隔、按 item_type 分流到两个汇）：
+  `round_robin` 上带比 **1.04 : 1**、`weighted [3,1]` **3.08 : 1**（偏差 2.7%，在 ±5% 内）。
+  **已知语义**：`by_item_type` 是**严格优先**——高优先输入持续饱和时低优先流会被饿死
+  （实测 `49 : 0`），这是严格优先的直接后果而非缺陷，已在此注明。
+
 - **脚本错误诊断 + `check-scripts`**：脚本失败时错误文案含
   **脚本原文（>80 字符中间省略）+ 位置 + 模型时间 + rhai 原始信息**；
   引用未定义变量时追加 `available: …`，清单直接由 `BUILTIN_VARIABLES` 生成（不另列一套）。

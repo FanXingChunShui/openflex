@@ -134,10 +134,10 @@ use std::path::{Path, PathBuf};
 use openflex_model::{
     Action, ArrivalStyle, CombinerMode, ConditionalPort, ConnectionKind, DispatcherParams,
     Distribution, DowntimeWindow, EvalContext, Expr, ExtraTaskLegKind, FlowBlockKind,
-    GlobalVariableKind, Grid, Model, NetworkEdge, Object, ObjectKind, ObjectParams, PickListLookup,
-    PortStrategy, ProcessFlow, PullParams, QueueOrder, RackPickPolicy, RackType, SeparateMode,
-    SimTrigger, TableCell, TaskSequenceMode, TaskStepKind, TrackedKind, TrafficMode, TransferMode,
-    TravelTarget, TravelTargetName, Value,
+    GlobalVariableKind, Grid, MergeMode, Model, NetworkEdge, Object, ObjectKind, ObjectParams,
+    PickListLookup, PortStrategy, ProcessFlow, PullParams, QueueOrder, RackPickPolicy, RackType,
+    SeparateMode, SimTrigger, TableCell, TaskSequenceMode, TaskStepKind, TrackedKind, TrafficMode,
+    TransferMode, TravelTarget, TravelTargetName, Value,
 };
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
@@ -839,6 +839,13 @@ pub(crate) struct ObjectRt {
     belt_handled: Vec<Vec<bool>>,
     /// B3: number of upstream belts merged onto this belt (0/1 = disabled).
     join_inputs: u32,
+    /// task-178: merge-controller mode and its state.
+    #[serde(default)]
+    merge_mode: MergeMode,
+    #[serde(default)]
+    merge_weight: Vec<f64>,
+    #[serde(default)]
+    merge_counts: Vec<f64>,
     /// B3: fair round-robin cursor over the input ports of a join conveyor.
     join_cursor: usize,
     /// Queue batching.
@@ -978,6 +985,9 @@ impl ObjectRt {
             belt_stops: Vec::new(),
             belt_handled: Vec::new(),
             join_inputs: 0,
+            merge_mode: MergeMode::RoundRobin,
+            merge_weight: Vec::new(),
+            merge_counts: Vec::new(),
             join_cursor: 0,
             batch_anchor: None,
             force_release: false,
@@ -1089,6 +1099,9 @@ impl ObjectRt {
                 });
                 runtime.belt_stops = stops;
                 runtime.join_inputs = params.join_inputs.unwrap_or(0);
+                runtime.merge_mode = params.merge_mode;
+                runtime.merge_weight = params.merge_weight.clone().unwrap_or_default();
+                runtime.merge_counts = vec![0.0; runtime.join_inputs as usize];
             }
             ObjectParams::Transporter(params) => runtime.capacity = params.capacity.max(1),
             ObjectParams::Person(_) => runtime.capacity = 1,
@@ -4714,7 +4727,20 @@ impl<'m> Simulation<'m> {
                 self.objects[target].touch();
                 if self.objects[target].join_inputs >= 2 {
                     let inputs = self.objects[target].join_inputs as usize;
-                    self.objects[target].join_cursor = (to_port as usize + 1) % inputs;
+                    match self.objects[target].merge_mode {
+                        MergeMode::Weighted => {
+                            let port = to_port as usize;
+                            if self.objects[target].merge_counts.len() < inputs {
+                                self.objects[target].merge_counts.resize(inputs, 0.0);
+                            }
+                            if let Some(count) = self.objects[target].merge_counts.get_mut(port) {
+                                *count += 1.0;
+                            }
+                        }
+                        MergeMode::RoundRobin | MergeMode::ByItemType => {
+                            self.objects[target].join_cursor = (to_port as usize + 1) % inputs;
+                        }
+                    }
                 }
                 self.set_state(target, State::Busy);
                 self.schedule(now, EventKind::Flow(target));
@@ -4842,11 +4868,29 @@ impl<'m> Simulation<'m> {
         ) && !self.objects[index].content.is_empty()
     }
 
-    /// B3: the input port a join conveyor should serve next.
+    /// task-178: type of the first ready item an upstream object holds.
+    fn held_item_type(&self, index: usize) -> Option<u32> {
+        let object = &self.objects[index];
+        if let Some(item) = object.out_pending.first() {
+            return Some(item.item_type);
+        }
+        if matches!(object.kind, ObjectKind::Conveyor | ObjectKind::Escalator) {
+            return object.belt_items.first().map(|item| item.item_type);
+        }
+        if matches!(object.kind, ObjectKind::Queue | ObjectKind::Rack) {
+            return object.content.first().map(|item| item.item_type);
+        }
+        None
+    }
+
+    /// B3/task-178: the input port a join conveyor should serve next.
     ///
-    /// The cursor rotates over the input ports; ports whose upstream object has
-    /// nothing waiting are skipped. `None` means "no preference" (no upstream
-    /// is ready, so any port may be accepted).
+    /// `round_robin` is the original fair cursor; `weighted` picks the ready
+    /// port with the lowest served/weight ratio; `by_item_type` picks the ready
+    /// port whose next item has the lowest `item_type` (round-robin on ties).
+    /// `None` means "no preference" (no upstream is ready, so any port may be
+    /// accepted). The main-belt entry check happens before this selection, so a
+    /// rejected attempt never consumes a weighted quota.
     fn join_preferred_port(&self, target: usize) -> Option<u32> {
         let inputs = self.objects[target].join_inputs;
         if inputs < 2 {
@@ -4855,6 +4899,7 @@ impl<'m> Simulation<'m> {
         let ports = inputs as usize;
         let start = self.objects[target].join_cursor % ports;
         let connections = &self.inputs[target];
+        let mut ready: Vec<(usize, u32)> = Vec::new();
         for offset in 0..ports {
             let port = (start + offset) % ports;
             let Some(&conn) = connections.get(port) else {
@@ -4862,10 +4907,44 @@ impl<'m> Simulation<'m> {
             };
             let from = self.conns[conn].from;
             if self.has_held_item(from) {
-                return Some(port as u32);
+                ready.push((port, self.held_item_type(from).unwrap_or(u32::MAX)));
             }
         }
-        None
+        match self.objects[target].merge_mode {
+            MergeMode::RoundRobin => ready.first().map(|(port, _)| *port as u32),
+            MergeMode::ByItemType => ready
+                .into_iter()
+                .min_by_key(|(port, item_type)| (*item_type, ready_position(*port, start, ports)))
+                .map(|(port, _)| port as u32),
+            MergeMode::Weighted => {
+                let weights = &self.objects[target].merge_weight;
+                ready
+                    .into_iter()
+                    .min_by(|(left, _), (right, _)| {
+                        let score = |port: usize| {
+                            let weight = weights
+                                .get(port)
+                                .copied()
+                                .filter(|weight| *weight > EPS)
+                                .unwrap_or(1.0);
+                            let served = self.objects[target]
+                                .merge_counts
+                                .get(port)
+                                .copied()
+                                .unwrap_or(0.0);
+                            (served + 1.0) / weight
+                        };
+                        score(*left)
+                            .partial_cmp(&score(*right))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                            .then_with(|| {
+                                ready_position(*left, start, ports)
+                                    .cmp(&ready_position(*right, start, ports))
+                            })
+                    })
+                    .map(|(port, _)| port as u32)
+            }
+        }
     }
 
     /// Whether an object pulls its input instead of being pushed into.
@@ -10893,6 +10972,10 @@ fn node_network_distance(model: &Model, from: &ObjectRt, to: &ObjectRt) -> Optio
     network_distance_positions(model, from.position, to.position)
 }
 
+fn ready_position(port: usize, start: usize, ports: usize) -> usize {
+    (port + ports - start) % ports
+}
+
 fn slug_groups(positions: &[f64], min_gap: f64) -> Vec<(usize, usize)> {
     if positions.is_empty() {
         return Vec::new();
@@ -15802,5 +15885,207 @@ mod tests {
         let text = error.to_string();
         assert!(text.contains("…"), "source should be ellipsised: {text}");
         assert!(text.len() < long.len() + 400, "message should be bounded");
+    }
+
+    fn merge_model_json(merge: &str, stop: f64, type_a: u32, type_b: u32) -> String {
+        format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "merge",
+          "run": {{ "stop_time": {stop}, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "SA", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1.0 }},
+                "first_arrival": 0.0, "item_type": {type_a} }} }},
+            {{ "name": "SB", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1.0 }},
+                "first_arrival": 0.0, "item_type": {type_b} }} }},
+            {{ "name": "QA", "kind": "queue", "params": {{ "max_content": 1000 }} }},
+            {{ "name": "QB", "kind": "queue", "params": {{ "max_content": 1000 }} }},
+            {{ "name": "C", "kind": "conveyor", "params": {{
+                "speed": 1.0, "length": 3.0, "item_spacing": 1.0,
+                "accumulating": true, "max_content": 10,
+                "join_inputs": 2{merge} }} }},
+            {{ "name": "P", "kind": "processor", "params": {{
+                "process_time": {{ "distribution": "constant", "value": 5.0 }} }} }},
+            {{ "name": "KA", "kind": "sink", "params": {{}} }},
+            {{ "name": "KB", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [
+            {{ "from": "SA", "to": "QA" }}, {{ "from": "SB", "to": "QB" }},
+            {{ "from": "QA", "to": "C" }}, {{ "from": "QB", "to": "C" }},
+            {{ "from": "C", "to": "P" }},
+            {{ "from": "P", "to": "KA", "strategy": {{ "type": "by_item_type" }} }},
+            {{ "from": "P", "to": "KB" }}
+          ]
+        }}"#
+        )
+    }
+
+    fn merge_model(merge: &str, stop: f64, type_a: u32, type_b: u32) -> Model {
+        Model::from_json(&merge_model_json(merge, stop, type_a, type_b)).expect("model")
+    }
+
+    /// task-178: round_robin omitted and explicit are byte-identical.
+    #[test]
+    fn merge_round_robin_is_the_old_behaviour() {
+        let absent = merge_model("", 200.0, 0, 1);
+        let explicit = merge_model(r#", "merge_mode": "round_robin""#, 200.0, 0, 1);
+        let a = crate::run_model(&absent).expect("run absent");
+        let b = crate::run_model(&explicit).expect("run explicit");
+        assert_eq!(
+            serde_json::to_string(&a).expect("json"),
+            serde_json::to_string(&b).expect("json")
+        );
+    }
+
+    /// task-178: weighted 3:1 controls the long-run mix within ±5%.
+    #[test]
+    fn merge_weighted_three_to_one() {
+        let model = merge_model(
+            r#", "merge_mode": "weighted", "merge_weight": [3.0, 1.0]"#,
+            1000.0,
+            0,
+            1,
+        );
+        let report = crate::run_model(&model).expect("run");
+        let a = report.objects["KA"].input_count.mean;
+        let b = report.objects["KB"].input_count.mean;
+        assert!(a > 20.0 && b > 5.0, "both inputs should flow: {a}/{b}");
+        let ratio = a / b;
+        assert!(
+            (ratio - 3.0).abs() / 3.0 <= 0.05,
+            "expected 3:1, got {a}:{b} = {ratio}"
+        );
+    }
+
+    /// task-178: by_item_type gives lower item types priority when both are
+    /// ready.
+    #[test]
+    fn merge_by_item_type_prioritises_low_types() {
+        let model = merge_model(r#", "merge_mode": "by_item_type""#, 200.0, 2, 1);
+        let report = crate::run_model(&model).expect("run");
+        let a = report.objects["KA"].input_count.mean;
+        let b = report.objects["KB"].input_count.mean;
+        assert!(b > a * 2.0, "type 1 should dominate type 2: {a}/{b}");
+    }
+
+    /// task-178: validation rejects bad weights and weights outside weighted.
+    #[test]
+    fn merge_weight_validation_rejects_bad_configurations() {
+        let missing = Model::parse_json(&merge_model_json(
+            r#", "merge_mode": "weighted""#,
+            10.0,
+            0,
+            1,
+        ))
+        .expect("parse");
+        assert!(
+            missing
+                .validate()
+                .expect_err("missing")
+                .to_string()
+                .contains("requires merge_weight")
+        );
+        let wrong = Model::parse_json(&merge_model_json(
+            r#", "merge_mode": "weighted", "merge_weight": [1.0]"#,
+            10.0,
+            0,
+            1,
+        ))
+        .expect("parse");
+        assert!(
+            wrong
+                .validate()
+                .expect_err("wrong")
+                .to_string()
+                .contains("expected 2 weights")
+        );
+        let nonpositive = Model::parse_json(&merge_model_json(
+            r#", "merge_mode": "weighted", "merge_weight": [3.0, 0.0]"#,
+            10.0,
+            0,
+            1,
+        ))
+        .expect("parse");
+        assert!(
+            nonpositive
+                .validate()
+                .expect_err("nonpositive")
+                .to_string()
+                .contains("positive")
+        );
+        let misplaced = Model::parse_json(&merge_model_json(
+            r#", "merge_weight": [1.0, 1.0]"#,
+            10.0,
+            0,
+            1,
+        ))
+        .expect("parse");
+        assert!(
+            misplaced
+                .validate()
+                .expect_err("misplaced")
+                .to_string()
+                .contains("only valid with")
+        );
+    }
+
+    #[test]
+    fn merge_same_seed_is_deterministic() {
+        let model = merge_model(
+            r#", "merge_mode": "weighted", "merge_weight": [3.0, 1.0]"#,
+            500.0,
+            0,
+            1,
+        );
+        let a = crate::run_model(&model).expect("first");
+        let b = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&a).expect("json"),
+            serde_json::to_string(&b).expect("json")
+        );
+    }
+
+    /// task-178: a blocked main-belt entry must not consume weighted quota.
+    #[test]
+    fn blocked_merge_entry_does_not_consume_weighted_quota() {
+        let model = merge_model(
+            r#", "merge_mode": "weighted", "merge_weight": [3.0, 1.0]"#,
+            10.0,
+            0,
+            1,
+        );
+        let config = SimConfig {
+            stop_time: 10.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("sim");
+        let qa = sim.by_name["QA"];
+        let c = sim.by_name["C"];
+        let conn = sim.outputs[qa]
+            .iter()
+            .copied()
+            .find(|conn| sim.conns[*conn].to == c)
+            .expect("QA -> C");
+        // The main belt entry is occupied (back item at 0 < spacing).
+        sim.objects[c].belt.as_mut().expect("belt").positions = vec![0.0];
+        sim.objects[c].belt.as_mut().expect("belt").holds = vec![0.0];
+        let before = sim.objects[c].merge_counts.clone();
+        assert!(sim.deliver(qa, conn, item()).is_ok());
+        assert_eq!(
+            sim.objects[c].merge_counts, before,
+            "blocked attempt consumed quota"
+        );
+        // Clear the entry and deliver again: now the quota is consumed.
+        sim.objects[c]
+            .belt
+            .as_mut()
+            .expect("belt")
+            .positions
+            .clear();
+        sim.objects[c].belt.as_mut().expect("belt").holds.clear();
+        sim.deliver(qa, conn, item()).expect("delivery");
+        assert!(sim.objects[c].merge_counts[0] > 0.0);
     }
 }

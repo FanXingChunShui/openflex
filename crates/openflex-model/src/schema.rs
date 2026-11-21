@@ -410,7 +410,16 @@ fn definitions() -> Value {
                     "additionalProperties": false
                 }
             },
-            "join_inputs": { "type": ["integer", "null"], "minimum": 2 }
+            "join_inputs": { "type": ["integer", "null"], "minimum": 2 },
+            "merge_mode": {
+                "type": "string",
+                "enum": ["round_robin", "weighted", "by_item_type"],
+                "default": "round_robin"
+            },
+            "merge_weight": {
+                "type": ["array", "null"],
+                "items": { "type": "number", "exclusiveMinimum": 0 }
+            }
         })),
     );
     defs.insert(
