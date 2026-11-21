@@ -2667,7 +2667,7 @@ impl OpenFlexApp {
         }
     }
 
-    /// Applies the three model-trigger JSON buffers    /// Applies the three model-trigger JSON buffers through the single edit
+    /// Applies the three model-trigger JSON buffers through the single edit
     /// funnel, so a malformed action never reaches the model.
     fn apply_model_triggers(&mut self) {
         let parse = |text: &str| -> Result<Vec<openflex_model::Action>, String> {

@@ -66,7 +66,7 @@ cargo build -p openflex-gui --release
 | 实验 |**每个场景可设 `reps`（1…50）复现次数**，结果表显示 `value / completed / ±CI95`；图形仍是柱状对比 |
 | 实验 | **stop-time 扫描**与**参数扫描**（JSON path，起点/步长/次数）→ 后台逐次运行，柱状图 + 值/completed 表 |
 | 优化 | **grid / random / genetic** 三种搜索，**支持多变量**（`+ variable` 添加 JSON path + `[low, high]`）； grid 为笛卡尔积（>400 点时拒绝）、random 为 `samples` 次采样、genetic 为种群 12/6 代；可选**第二目标**（max avg stay）形成双列结果表 + **Pareto 前沿散点图**（x = max stay，y = completed，非支配点高亮）， 按主目标降序显示 top 12 与最佳点 |
-| 报告 | Completed ± CI、Created、**利用率柱状图**、逐对象 **In/Out/WIP/Stay/Util** 表、**Export report CSV / JSON**、**Set baseline / Save baseline / Load baseline / Compare / Export compare CSV**（基线可存为 `<model>.baseline.json` 以跨会话对比，Δ利用率着色）、**状态饼图**（idle/busy/blocked/down/off-shift 合计）、**时间序列折线**（按 interval 采样；指标可切 WIP / throughput / utilization；对象可切换；**Export CSV** 导出 `time,object,content,throughput,utilization`）、**Replay 滑块 + 折线标记**；模型定义的 **Performance measures** 单独成块（measure / mean / ±95% / n，**mean 列带模型声明的 `unit`**，`n<2` 时区间显示 `—` 而不是 `±0.000`）；**Tracked series (n)** 表格（name / shape / samples / first / last），`shape` 列是 **84×14 迷你折线**——只有 1 个采样时显示 `1 sample`（不画点，避免误读成常量序列），全部值相同时标注该水平值，表格下方注明「序列只覆盖计量阶段」 |
+| 报告 | Completed ± CI、Created、**利用率柱状图**、逐对象 **In/Out/WIP/Stay/Util** 表、**Export report CSV / JSON**、**Set baseline / Save baseline / Load baseline / Compare / Export compare CSV**（基线可存为 `<model>.baseline.json` 以跨会话对比，Δ利用率着色）、**状态饼图**（idle/busy/blocked/down/off-shift 合计）、**时间序列折线**（按 interval 采样；指标可切 WIP / throughput / utilization；对象可切换；**Export CSV** 导出 `time,object,content,throughput,utilization`）、**Replay 滑块 + 折线标记**；模型定义的 **Performance measures** 单独成块（measure / mean / ±95% / n，**mean 列带模型声明的 `unit`**，`n<2` 时区间显示 `—` 而不是 `±0.000`）；**Tracked series (n)** 表格（name / shape / samples / first / last），`shape` 列是 **84×14 迷你折线**——只有 1 个采样时显示 `1 sample`（不画点，避免误读成常量序列），全部值相同时标注该水平值，表格下方注明「序列只覆盖计量阶段」；**序列取自第一个复现**（`SimReport.tracked_series` 的定义如此），不是全复现聚合——要看逐复现差异请看旁边的 `Replications (n)` 表 |
 
 编辑历史：**撤销/重做栈（每个编辑前快照，上限 50）**，工具栏按钮 + 快捷键。
 
@@ -111,7 +111,7 @@ wix build packaging\windows\openflex-gui.wxs -d Version=<ver> ^
 |---|---|---|
 | **先校验后快照** | 任何编辑先 `validate()`，通过后才写撤销栈；被拒绝的编辑不留下空历史项 | `rejected_edits_do_not_leave_history_entries` |
 | **单一编辑入口** | `commit_model_edit(label, edit)` 是所有结构性编辑的唯一入口：在模型副本上执行改动 → `validate()` → 通过后才 `snapshot_labelled()` 入撤销栈、采用副本、并调用 `clear_analysis_results()` 清掉过期结果；校验失败则原样保留旧模型并暴露原因。新增编辑器一律走它 | `a_model_edit_goes_through_one_funnel` |
-| **少于两次复现不报区间** | 只有 `n ≥ 2` 才显示置信区间，否则一律显示 `—`（不显示会误导的 `±0.000`）。这条规则对**四个出口同时生效**：对象表的 CI 列、`Performance measures` 块的 `±95%` 列、CLI 文本/CSV、Markdown 报告；实现统一走 `fmt_ci_opt` / `fmt_ci_precise`，所以不会按格式漂移 | `performance_measures_show_no_interval_for_one_replication`、`fmt_ci_opt(one) == NO_INTERVAL` |
+| **少于两次复现不报区间** | 只有样本数 ≥ 2 才显示置信区间，否则一律显示 `—`（`±0.000` 会被误读成"非常精确"）。覆盖四处：**对象表的 `±CI` 列**（判据 `report.replications.len() < 2`）、**`Performance measures` 块的 `±95%` 列**（判据 `measure.n < 2`）、**CLI 的文本/CSV/Markdown 出口**（统一走 `fmt_ci_opt` / `fmt_ci_precise`，`n < 2` 返回 `NO_INTERVAL`）、**实验表的 `±CI95`**（`aggregate.n >= 2` 才填） | `performance_measures_show_no_interval_for_one_replication`、`fmt_ci_opt(one) == NO_INTERVAL` |
 | **结果随模型失效** | 撤销/重做、新增/删除/复制/重命名、连接增删、端口策略、应用最优、模型设置都会调用 `clear_analysis_results()`（报告、实验、优化、时序、trace） | `every_structural_edit_path_clears_results` |
 | **位置操作不清结果** | 移动/旋转/对齐/分布/网格/自动布局不改变统计，故保留结果 | `structural_edits_invalidate_results_but_moves_do_not` |
 | **丢弃文档要二次确认** | `New` / `Open`（含 Recent、文件浏览器、示例）与关闭窗口，在 `model_dirty` 时第一次只提示，第二次才执行 | `closing_with_unsaved_edits_needs_a_second_press` |
