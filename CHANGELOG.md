@@ -9,6 +9,10 @@
   `(N replication(s))`。此前拿单次运行当基线、与 5 次复现比较时，Δ 会把噪声当成改进。
   新增 `comparisons_flag_mismatched_replication_counts` 测试（GUI 109 项）。
 
+- **关窗也拦运行中的任务**：关闭守卫现在同时覆盖「有未保存改动」与「后台任务仍在跑」两种情况，
+  后者提示 `A run is still in progress — close again to abandon it`。此前 Run/实验/优化跑到一半直接关窗，
+  那段运算白费且没有任何提示。新增 `closing_also_warns_about_a_run_in_flight` 测试（GUI 110 项）。
+
 ## v1.31.0 — 2026-11-21
 
 本轮集中在**报告的可信度**：单次复现不再伪装成高精度、预热时间被明确标注、AGV 电量进入画布提示；并让 `Add row` 与其余表操作一样遵守「先校验后快照」。发布节奏保持**至少 3 小时一版**。

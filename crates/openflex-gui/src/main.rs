@@ -6616,15 +6616,23 @@ idle,busy,blocked,down\n",
 impl eframe::App for OpenFlexApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.last_frame = ctx.input(|input| input.stable_dt) as f64;
-        // Closing the window with unsaved edits would lose them silently: keep
+        // Closing the window would lose unsaved edits *or* a run in flight: keep
         // the window open and ask for a second close instead.
-        if ctx.input(|input| input.viewport().close_requested())
-            && self.model_dirty
-            && !self.close_confirmed
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.close_confirmed = true;
-            self.status = "Unsaved changes — close again to discard them, or Save first".into();
+        if ctx.input(|input| input.viewport().close_requested()) && !self.close_confirmed {
+            let busy = self.report_running
+                || self.exp_running
+                || self.series_running
+                || self.opt_running
+                || self.trace_running;
+            if self.model_dirty || busy {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.close_confirmed = true;
+                self.status = if self.model_dirty {
+                    "Unsaved changes — close again to discard them, or Save first".into()
+                } else {
+                    "A run is still in progress — close again to abandon it".to_string()
+                };
+            }
         }
         // Keep the OS title bar in sync: model name, unsaved marker, run state.
         let title = Self::window_title_text(
@@ -11555,6 +11563,29 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn closing_also_warns_about_a_run_in_flight() {
+        // The close guard triggers for unsaved edits *or* a busy background job,
+        // and the message names which one.
+        let message = |dirty: bool, busy: bool| {
+            if dirty {
+                Some("Unsaved changes — close again to discard them, or Save first")
+            } else if busy {
+                Some("A run is still in progress — close again to abandon it")
+            } else {
+                None
+            }
+        };
+        assert!(message(true, true).expect("warn").contains("Unsaved"));
+        assert!(message(false, true).expect("warn").contains("in progress"));
+        assert!(message(true, false).is_some());
+        assert_eq!(
+            message(false, false),
+            None,
+            "a clean idle window just closes"
+        );
     }
 
     #[test]
