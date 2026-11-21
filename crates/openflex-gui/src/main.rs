@@ -10146,11 +10146,23 @@ impl eframe::App for OpenFlexApp {
                 painter.rect_filled(rect, 0.0, palette::CANVAS);
                 // Utilisation bars: rounded columns with a gridline at 50/100 %,
                 // the value printed above each bar when there is room.
+                // Only kinds with a real capacity figure: a 0% bar for a source
+                // is noise that squeezes the real bars sideways.
                 let entries: Vec<(String, f64)> = report
                     .objects
                     .iter()
+                    .filter(|(_, stats)| Self::counts_for_utilization(stats.kind))
                     .map(|(name, stats)| (name.clone(), stats.utilization.mean.clamp(0.0, 1.0)))
                     .collect();
+                if entries.is_empty() {
+                    painter.text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "no objects with a utilisation figure",
+                        egui::FontId::proportional(10.0),
+                        palette::TEXT_DIM,
+                    );
+                }
                 if !entries.is_empty() {
                     for fraction in [0.5_f32, 1.0] {
                         let y = rect.bottom() - 4.0 - (rect.height() - 8.0) * fraction;
@@ -11586,6 +11598,28 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn utilisation_bars_skip_kinds_without_capacity() {
+        // The bar chart lists only filtered kinds; a source/sink-only model shows
+        // the placeholder text instead of two 0% bars.
+        let kinds = [
+            ObjectKind::Source,
+            ObjectKind::Sink,
+            ObjectKind::Queue,
+            ObjectKind::Processor,
+        ];
+        let kept: Vec<ObjectKind> = kinds
+            .into_iter()
+            .filter(|kind| OpenFlexApp::counts_for_utilization(*kind))
+            .collect();
+        assert_eq!(kept, vec![ObjectKind::Processor]);
+        let none: Vec<ObjectKind> = [ObjectKind::Source, ObjectKind::Sink]
+            .into_iter()
+            .filter(|kind| OpenFlexApp::counts_for_utilization(*kind))
+            .collect();
+        assert!(none.is_empty(), "the chart would be empty here");
     }
 
     #[test]

@@ -23,6 +23,10 @@
   把 `mm1` 的 busy 占比从 **79.8%** 拉到 **20%**。现在两张卡片共用 `counts_for_utilization()`。
   新增 `state_mix_uses_the_same_object_filter` 测试（GUI 112 项）。
 
+- **利用率柱状图同样过滤**：不再为源/汇/队列画 0% 的柱子（那会让真正的设备柱被挤窄）；
+  若模型没有任何有容量含义的对象，图内显示 `no objects with a utilisation figure`。
+  新增 `utilisation_bars_skip_kinds_without_capacity` 测试（GUI 113 项）。
+
 ## v1.31.0 — 2026-11-21
 
 本轮集中在**报告的可信度**：单次复现不再伪装成高精度、预热时间被明确标注、AGV 电量进入画布提示；并让 `Add row` 与其余表操作一样遵守「先校验后快照」。发布节奏保持**至少 3 小时一版**。
