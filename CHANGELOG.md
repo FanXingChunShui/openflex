@@ -4,6 +4,18 @@
 
 ### 模型与引擎
 
+- **脚本错误诊断 + `check-scripts`**：脚本失败时错误文案含
+  **脚本原文（>80 字符中间省略）+ 位置 + 模型时间 + rhai 原始信息**；
+  引用未定义变量时追加 `available: …`，清单直接由 `BUILTIN_VARIABLES` 生成（不另列一套）。
+  新命令 `openflex check-scripts <model.json>` **不跑仿真**，只编译所有 `Action::Script`，
+  逐条报 `FAIL <location>: <error>` + 原文，末尾给「N checked / P passed / F failed」，退出码 0/2。
+  实测：语法错脚本 `FAIL objects.S.triggers.on_create[0]: script compile error: Unexpected ';'`；
+  运行时未定义变量则 `check-scripts` 判通过、`run` 给出完整诊断。
+  **顺带修掉一处会重复打印的缺陷**：`SimError::Script` 的字段原名 `source`，
+  thiserror 会自动把它当作 error 的 cause，而 `Display` 已内联同一段文字，于是 anyhow 的因果链
+  把整段诊断打印两遍。字段改名 `detail`（类型层修复，对所有消费者生效），并加回归测试
+  `script_diagnostic_is_not_duplicated_by_the_cause_chain` 锁住。
+
 - **conveyor slug 累积**：`ConveyorParams` 新增 `slug: bool`（缺省 false，**不序列化**、旧模型与数值逐位不变）
   与 `slug_min_gap`（缺省 = `item_spacing`）。`slug: true` 时皮带相邻两件间隙小于该值即视为一组，
   整组以**组首**位移整体推进（组内间隙恒定、不压缩不拉开），组首到出口或被限位时**整组同时停**，

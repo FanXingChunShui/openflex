@@ -10468,23 +10468,20 @@ impl<'m> Simulation<'m> {
         item: &mut FlowItem,
         object_index: Option<usize>,
     ) -> Result<(), SimError> {
-        let script = self
-            .scripts
-            .get(source)
-            .cloned()
-            .ok_or_else(|| SimError::Script {
-                location: location.to_string(),
-                source: ScriptError::Compile(
-                    "script source was not precompiled with the model".into(),
-                ),
-            })?;
+        let script = self.scripts.get(source).cloned().ok_or_else(|| {
+            enrich_script_error(
+                ScriptError::Compile("script source was not precompiled with the model".into()),
+                source,
+                location,
+                self.now,
+            )
+        })?;
         let mut context = ScriptContext::new(self.now, item.item_type, item.id);
         context.labels = item.labels.clone();
         context.objects = self.script_objects();
-        let outcome = script.run(&mut context).map_err(|error| SimError::Script {
-            location: location.to_string(),
-            source: error,
-        })?;
+        let outcome = script
+            .run(&mut context)
+            .map_err(|error| enrich_script_error(error, source, location, self.now))?;
         item.labels = outcome.labels;
         if let Some(item_type) = outcome.item_type {
             item.item_type = item_type;
@@ -10554,9 +10551,13 @@ impl<'m> Simulation<'m> {
         location: &str,
         item: Option<&FlowItem>,
     ) -> Result<bool, SimError> {
-        let script = self.scripts.get(source).ok_or_else(|| SimError::Script {
-            location: location.to_string(),
-            source: ScriptError::Compile("script source was not precompiled with the model".into()),
+        let script = self.scripts.get(source).ok_or_else(|| {
+            enrich_script_error(
+                ScriptError::Compile("script source was not precompiled with the model".into()),
+                source,
+                location,
+                self.now,
+            )
         })?;
         let mut context = ScriptContext::new(
             self.now,
@@ -10567,10 +10568,9 @@ impl<'m> Simulation<'m> {
             context.labels = item.labels.clone();
         }
         context.objects = self.script_objects();
-        let outcome = script.run(&mut context).map_err(|error| SimError::Script {
-            location: location.to_string(),
-            source: error,
-        })?;
+        let outcome = script
+            .run(&mut context)
+            .map_err(|error| enrich_script_error(error, source, location, self.now))?;
         Ok(outcome
             .condition
             .unwrap_or_else(|| outcome.labels.get("result").copied().unwrap_or(0.0) > 0.0))
@@ -11615,6 +11615,77 @@ fn collect_model_scripts(model: &Model) -> Vec<(String, String)> {
     sources
 }
 
+/// task-177: one script checked by `openflex check-scripts`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ScriptCheck {
+    pub location: String,
+    pub source: String,
+    /// `None` means the source compiled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// task-177: compile every model script without running the simulation.
+pub fn check_scripts(model: &Model) -> Vec<ScriptCheck> {
+    let engine = ScriptEngine::new();
+    collect_model_scripts(model)
+        .into_iter()
+        .map(|(source, location)| ScriptCheck {
+            location,
+            source: source.clone(),
+            error: engine.compile(&source).err().map(|error| error.to_string()),
+        })
+        .collect()
+}
+
+fn truncated_script(source: &str) -> String {
+    let cleaned = source.replace(['\n', '\r'], " ");
+    let chars: Vec<char> = cleaned.chars().collect();
+    if chars.len() <= 80 {
+        cleaned
+    } else {
+        format!(
+            "{}…{}",
+            chars[..39].iter().collect::<String>(),
+            chars[chars.len() - 40..].iter().collect::<String>()
+        )
+    }
+}
+
+/// task-177: enrich a script error without changing the `SimError::Script`
+/// variant (the old `script error at …` prefix stays first).
+fn enrich_script_error(error: ScriptError, source: &str, location: &str, time: f64) -> SimError {
+    let undefined = error
+        .to_string()
+        .to_ascii_lowercase()
+        .contains("variable not found");
+    let mut context = format!(
+        "\n  script: {}\n  at {location} (t={time:.6})",
+        truncated_script(source)
+    );
+    if undefined {
+        context.push_str("\n  available: ");
+        context.push_str(
+            &openflex_model::BUILTIN_VARIABLES
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
+    let source = match error {
+        ScriptError::Compile(message) => ScriptError::Compile(format!("{message}{context}")),
+        ScriptError::Runtime(message) => ScriptError::Runtime(format!("{message}{context}")),
+        ScriptError::TooManyOperations { limit } => ScriptError::Runtime(format!(
+            "script exceeded the operation limit of {limit}{context}"
+        )),
+    };
+    SimError::Script {
+        location: location.to_string(),
+        detail: source,
+    }
+}
+
 /// Precompile every script source of the model once (D2).
 fn compile_model_scripts(model: &Model) -> Result<HashMap<String, CompiledScript>, SimError> {
     let engine = ScriptEngine::new();
@@ -11623,10 +11694,9 @@ fn compile_model_scripts(model: &Model) -> Result<HashMap<String, CompiledScript
         if scripts.contains_key(&source) {
             continue;
         }
-        let compiled = engine.compile(&source).map_err(|error| SimError::Script {
-            location,
-            source: error,
-        })?;
+        let compiled = engine
+            .compile(&source)
+            .map_err(|error| enrich_script_error(error, &source, &location, 0.0))?;
         scripts.insert(source, compiled);
     }
     Ok(scripts)
@@ -15600,5 +15670,137 @@ mod tests {
         assert!(report.completed.mean > 0.0);
         assert!(report.objects["C"].throughput.mean > 0.0);
         assert!(report.objects["C"].avg_stay_time.mean >= 0.0);
+    }
+
+    fn script_check_model(source: &str, model_trigger: bool) -> Model {
+        let trigger = if model_trigger {
+            format!(
+                r#""model_triggers": {{ "on_start": [{{ "action": "script", "source": {source:?} }}] }},"#
+            )
+        } else {
+            format!(
+                r#""objects": [ {{ "name": "S", "kind": "source", "params": {{ "triggers": {{ "on_create": [{{ "action": "script", "source": {source:?} }}] }} }} }}, {{ "name": "K", "kind": "sink", "params": {{}} }} ], "connections": [{{ "from": "S", "to": "K" }}],"#
+            )
+        };
+        let json = if model_trigger {
+            format!(
+                r#"{{ "format": "openflex-model", "version": 1, "name": "script-check", {trigger} "objects": [ {{ "name": "S", "kind": "source", "params": {{}} }}, {{ "name": "K", "kind": "sink", "params": {{}} }} ], "connections": [{{ "from": "S", "to": "K" }}] }}"#
+            )
+        } else {
+            format!(
+                r#"{{ "format": "openflex-model", "version": 1, "name": "script-check", {trigger} "run": {{ "stop_time": 1.0 }} }}"#
+            )
+        };
+        Model::parse_json(&json).expect("model")
+    }
+
+    /// task-177: check-scripts detects compile failures without running.
+    #[test]
+    fn check_scripts_reports_compile_failures() {
+        let model = script_check_model("let x = ;", false);
+        let checks = check_scripts(&model);
+        assert_eq!(checks.len(), 1);
+        assert!(
+            checks[0].location.contains("objects.S.triggers.on_create"),
+            "{:?}",
+            checks[0]
+        );
+        assert_eq!(checks[0].source, "let x = ;");
+        assert!(
+            checks[0]
+                .error
+                .as_ref()
+                .is_some_and(|error| error.contains("compile")),
+            "{:?}",
+            checks[0]
+        );
+    }
+
+    /// task-177: a runtime-only error passes check-scripts but is enriched
+    /// with source, location, model time and the available-variable list.
+    #[test]
+    fn script_runtime_error_has_source_time_and_available_variables() {
+        let model = script_check_model("log(does_not_exist);", true);
+        let checks = check_scripts(&model);
+        assert_eq!(checks.len(), 1);
+        assert!(checks[0].error.is_none(), "{:?}", checks[0]);
+        let error = crate::run_model(&model).expect_err("runtime script error");
+        let text = error.to_string();
+        assert!(text.starts_with("script error at "), "{text}");
+        assert!(text.contains("log(does_not_exist);"), "{text}");
+        assert!(text.contains("t=0.000000"), "{text}");
+        assert!(text.contains("available:"), "{text}");
+        assert!(text.contains("time"), "{text}");
+        assert!(text.contains("Variable not found"), "{text}");
+    }
+
+    /// The diagnostic is printed once: `SimError::Script`'s field is not called
+    /// `source`, so a cause-chain printer (anyhow's `{:?}`) does not repeat text
+    /// that the `Display` already inlines.
+    #[test]
+    fn script_diagnostic_is_not_duplicated_by_the_cause_chain() {
+        let model = script_check_model("log(does_not_exist);", true);
+        let error = crate::run_model(&model).expect_err("runtime script error");
+        let display = error.to_string();
+        assert_eq!(
+            display.matches("Variable not found").count(),
+            1,
+            "the message repeats itself: {display}"
+        );
+        assert_eq!(
+            display.matches("available:").count(),
+            1,
+            "the hint repeats itself: {display}"
+        );
+        // A cause-chain printer must show the same single occurrence.
+        let anyhow_style = format!("{:?}", anyhow_like(&error));
+        assert_eq!(
+            anyhow_style.matches("Variable not found").count(),
+            1,
+            "a cause chain duplicates the diagnostic: {anyhow_style}"
+        );
+    }
+
+    /// Minimal stand-in for how an error-reporting front end walks a chain.
+    fn anyhow_like(error: &SimError) -> String {
+        let mut text = error.to_string();
+        let mut cursor: Option<&dyn std::error::Error> = std::error::Error::source(error);
+        while let Some(cause) = cursor {
+            text.push_str(&format!("\n\nCaused by:\n    {cause}"));
+            cursor = cause.source();
+        }
+        text
+    }
+
+    /// task-177: valid scripts report passed counts and no errors.
+    #[test]
+    fn check_scripts_counts_valid_scripts() {
+        let model = script_check_model("log(\"ok\");", false);
+        let checks = check_scripts(&model);
+        assert_eq!(checks.len(), 1);
+        assert!(checks[0].error.is_none(), "{:?}", checks[0]);
+    }
+
+    /// task-177: compile errors already surfaced by run_model keep the old
+    /// prefix and gain source/location context.
+    #[test]
+    fn compile_error_keeps_existing_prefix_and_context() {
+        let model = script_check_model("let broken = ;", false);
+        let error = compile_model_scripts(&model).expect_err("compile error");
+        let text = error.to_string();
+        assert!(text.starts_with("script error at "), "{text}");
+        assert!(text.contains("script:"), "{text}");
+        assert!(text.contains("let broken = ;"), "{text}");
+    }
+
+    /// task-177: long source snippets are truncated in the message.
+    #[test]
+    fn script_error_source_is_truncated() {
+        let long = format!("let value = 1;{}log(does_not_exist);", " ".repeat(200));
+        let model = script_check_model(&long, true);
+        let error = crate::run_model(&model).expect_err("runtime error");
+        let text = error.to_string();
+        assert!(text.contains("…"), "source should be ellipsised: {text}");
+        assert!(text.len() < long.len() + 400, "message should be bounded");
     }
 }

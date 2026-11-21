@@ -93,6 +93,11 @@ enum Command {
         /// Path to the model file (.ofm or .json).
         model: PathBuf,
     },
+    /// Compile every script in a model without running it.
+    CheckScripts {
+        /// Path to the model file (.ofm or .json).
+        model: PathBuf,
+    },
     /// Run a model and print its statistics.
     Run {
         /// Path to the model file.
@@ -734,6 +739,42 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                     model.objects.len(),
                     model.connections.len()
                 );
+            }
+            Ok(())
+        }
+        Command::CheckScripts { model } => {
+            let text = fs::read_to_string(&model).map_err(|error| {
+                Failure::runtime(anyhow!("could not read model {}: {error}", model.display()))
+                    .with_path(&model)
+            })?;
+            // Deliberately do not run Model::validate: a syntax error must be
+            // reported per script instead of aborting the whole check.
+            let model = Model::parse_json(&text).map_err(|error| {
+                Failure::model(
+                    &model,
+                    anyhow!("invalid model {}: {error}", model.display()),
+                )
+            })?;
+            let checks = openflex_core::check_scripts(&model);
+            let failed = checks.iter().filter(|check| check.error.is_some()).count();
+            for check in &checks {
+                if let Some(error) = &check.error {
+                    println!(
+                        "FAIL {}: {}\n  source: {}",
+                        check.location, error, check.source
+                    );
+                }
+            }
+            println!(
+                "{} scripts checked, {} passed, {} failed",
+                checks.len(),
+                checks.len() - failed,
+                failed
+            );
+            if failed > 0 {
+                return Err(Failure::usage(anyhow!(
+                    "{failed} script(s) failed to compile"
+                )));
             }
             Ok(())
         }
