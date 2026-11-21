@@ -580,6 +580,19 @@ fn definitions() -> Value {
         }),
     );
     defs.insert(
+        "tracked_variable".into(),
+        json!({
+            "type": "object",
+            "description": "A model-declared time-series variable (FlexSim Tracked Variables).",
+            "properties": {
+                "name": { "type": "string" },
+                "expression": { "type": "string" }
+            },
+            "required": ["name", "expression"],
+            "additionalProperties": false
+        }),
+    );
+    defs.insert(
         "model_triggers".into(),
         json!({
             "type": "object",
@@ -763,6 +776,11 @@ fn model_schema() -> Value {
                 "type": "array",
                 "items": { "$ref": "#/$defs/performance_measure" }
             },
+            "tracked_variables": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/tracked_variable" }
+            },
+            "tracked_interval": { "type": ["number", "null"], "exclusiveMinimum": 0 },
             "metadata": { "type": "object" }
         },
         "required": ["name"],

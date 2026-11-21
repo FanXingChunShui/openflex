@@ -4,6 +4,10 @@
 
 ### 模型与引擎（FlexSim 7.5 剩余缺口）
 
+- **schema 与 `Model` 字段自动对齐**：新增 `tracked_variables` / `tracked_interval` 的 schema 定义；
+  并加了一条**自动解析 `Model` 源码**的双向断言——`Model` 的每个字段都必须在 `$defs.model.properties` 里，
+  反向也不允许 schema 出现不存在的字段。以后谁加字段忘写 schema，`cargo test -p openflex-model` 当场红。
+  已实测该断言能抓到临时改名的 `tracked_interval`。内联校验器顺带补了 `minimum`/`exclusiveMinimum`/`maximum`。
 - **Tracked Variables（跟踪变量）**：模型新增 `tracked_variables: [{ name, expression }]` 与
   `tracked_interval`，运行期按固定间隔把表达式采样成时间序列，写进 `SimReport.tracked_series`
   （`name → [(time, value)]`，空时不序列化）；采样点为 `warmup + k·interval … stop_time`，

@@ -8,6 +8,7 @@
 use openflex_model::{
     GlobalVariable, GlobalVariableKind, Model, PickList, PickListEntry, TableCell,
 };
+use serde_json::json;
 
 /// Minimal valid model with an optional body of extra top-level fields.
 fn model(extra: &str) -> String {
@@ -386,6 +387,26 @@ fn check(
                     _ => {}
                 },
             }
+        }
+    }
+
+    if let Some(number) = instance.as_f64() {
+        if let Some(minimum) = resolved.get("minimum").and_then(|value| value.as_f64())
+            && number < minimum
+        {
+            errors.push(format!("{path}: {number} is below minimum {minimum}"));
+        }
+        if let Some(minimum) = resolved
+            .get("exclusiveMinimum")
+            .and_then(|value| value.as_f64())
+            && number <= minimum
+        {
+            errors.push(format!("{path}: {number} must be above {minimum}"));
+        }
+        if let Some(maximum) = resolved.get("maximum").and_then(|value| value.as_f64())
+            && number > maximum
+        {
+            errors.push(format!("{path}: {number} is above maximum {maximum}"));
         }
     }
 
@@ -973,5 +994,147 @@ fn measures_and_tracked_variables_report_the_same_bad_symbol_separately() {
             "{}",
             issue.message
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Schema coverage: tracked variables + "every model field is described"
+// (task-162)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn schema_defines_tracked_variables_and_interval() {
+    let schema = schema();
+    let properties = &schema["$defs"]["model"]["properties"];
+
+    assert_eq!(
+        properties["tracked_variables"]["type"], "array",
+        "{properties:#?}"
+    );
+    assert_eq!(
+        properties["tracked_variables"]["items"]["$ref"],
+        "#/$defs/tracked_variable"
+    );
+    assert_eq!(
+        properties["tracked_interval"]["type"],
+        json!(["number", "null"])
+    );
+    assert_eq!(properties["tracked_interval"]["exclusiveMinimum"], 0);
+
+    let def = &schema["$defs"]["tracked_variable"];
+    assert_eq!(def["required"], json!(["name", "expression"]));
+    assert_eq!(def["properties"]["name"]["type"], "string");
+    assert_eq!(def["properties"]["expression"]["type"], "string");
+    assert_eq!(def["additionalProperties"], false);
+}
+
+#[test]
+fn schema_accepts_a_document_with_tracked_variables() {
+    let schema = schema();
+    let document: serde_json::Value = serde_json::from_str(&model(
+        r#""tracked_variables": [
+            { "name": "Clock", "expression": "time" },
+            { "name": "Scaled", "expression": "$Batch / 10" },
+            { "name": "Shifted", "expression": "picklist(\"Shift\", \"Day\") == \"1\"" }
+        ],
+        "tracked_interval": 0.5,
+        "global_variables": { "Batch": { "kind": "number", "value": 10 } },
+        "picklists": { "Shift": { "entries": [ { "name": "Day", "value": "1" } ] } }"#,
+    ))
+    .expect("document");
+
+    let errors = check(&schema, &document, &schema, "model");
+    assert!(errors.is_empty(), "{errors:#?}");
+
+    // `tracked_interval` is exclusive: 0 (and negatives) are rejected by the
+    // schema, matching the validate() rule.
+    let mut bad = document.clone();
+    bad["tracked_interval"] = json!(0);
+    let errors = check(&schema, &bad, &schema, "model");
+    assert!(
+        errors.iter().any(|error| error.contains("must be above 0")),
+        "{errors:#?}"
+    );
+}
+
+/// Top-level field names of `Model`, read from its source.
+///
+/// Reflection over serde fields is not available, so the struct body is parsed
+/// from `model.rs` (the file is included at compile time). This makes the
+/// assertion catch a field that was added to `Model` but not described in the
+/// JSON schema: both live in this crate and must change together.
+fn model_fields() -> Vec<String> {
+    let source = include_str!("../src/model.rs");
+    let start = source
+        .find("pub struct Model {")
+        .expect("Model struct moved: update the schema-coverage test");
+    let body = &source[start..];
+    let end = body
+        .find("\n}\n")
+        .expect("Model struct body is not closed at column 0");
+    let mut fields = Vec::new();
+    for line in body[..end].lines().skip(1) {
+        let line = line.trim_start();
+        let Some(rest) = line.strip_prefix("pub ") else {
+            continue;
+        };
+        // `pub name: Type,` / `pub name: Type` — ignore doc comments, attributes
+        // and `pub(crate)` helpers (there are none in `Model` today).
+        let Some((name, _)) = rest.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            fields.push(name.to_string());
+        }
+    }
+    fields
+}
+
+#[test]
+fn schema_describes_every_model_field() {
+    let schema = schema();
+    let properties = schema["$defs"]["model"]["properties"]
+        .as_object()
+        .expect("model properties")
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let fields = model_fields();
+    assert!(
+        fields.len() >= 20,
+        "the Model parser found only {} fields: {fields:?}",
+        fields.len()
+    );
+
+    let missing: Vec<&String> = fields
+        .iter()
+        .filter(|field| !properties.contains(*field))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "Model fields missing from the JSON schema (add them to schema.rs): {missing:?}"
+    );
+
+    let model_fields: std::collections::BTreeSet<&String> = fields.iter().collect();
+    let stale: Vec<&String> = properties
+        .iter()
+        .filter(|property| !model_fields.contains(*property))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "schema describes fields that Model does not have (remove them or fix the parser): {stale:?}"
+    );
+
+    // The four optional blocks added over the last few tasks are all covered;
+    // this guards the parser itself against silently finding nothing.
+    for expected in [
+        "global_variables",
+        "picklists",
+        "performance_measures",
+        "tracked_variables",
+        "tracked_interval",
+    ] {
+        assert!(properties.contains(expected), "schema lacks {expected}");
     }
 }
