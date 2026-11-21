@@ -39,6 +39,11 @@
   引擎路网路由（3 项）、引擎交通控制（4 项）、GUI 选择器与表单（2 项）、
   模型概念与 schema（13 项）。
 
+- **对象取样器（Sampler）**：`setup operator` / `process operator` / `home` / `charger` / `shaft`
+  从自由文本改为「下拉候选 + 可手输」的组合——操作员候选只列 Dispatcher 与 Resource，
+  `home`/`charger`/`shaft` 列全部对象名（按字母序）；输错名字时旁边出现琥珀色 `unknown` 提示而不是静默接受。
+  这补上 `docs/FEATURE_PARITY_75.md` 里「Sampler ⛔」这一行。GUI 测试 **125 项**。
+
 ## v1.32.0 — 2026-11-21
 
 本轮把 `SimReport` 里**一直存在却没在桌面版显示**的统计数据全部接出来（流程 token 与块级统计、流体液位与流量、Little 定律校验、逐复现明细、峰值内容），并统一了「利用率」在四处展示中的对象范围。发布节奏保持**至少 3 小时一版**。

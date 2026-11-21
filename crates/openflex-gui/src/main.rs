@@ -1071,6 +1071,77 @@ fn optional_f64(ui: &mut egui::Ui, label: &str, value: &mut Option<f64>) -> bool
     changed
 }
 
+/// FlexSim's "Sampler", in miniature: pick an object by name from a dropdown of
+/// the objects that would make sense there, instead of typing the name blind.
+///
+/// The text field stays available so a name can still be typed (and a typo is
+/// caught by validation, not silently accepted).
+fn object_picker(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut Option<String>,
+    candidates: &[String],
+) -> bool {
+    let mut changed = false;
+    let mut text = value.clone().unwrap_or_default();
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).small().color(palette::TEXT_DIM));
+        let current = if text.trim().is_empty() {
+            "(none)".to_string()
+        } else {
+            text.trim().to_string()
+        };
+        egui::ComboBox::from_id_salt(format!("sampler-{label}"))
+            .selected_text(egui::RichText::new(current.clone()).small().monospace())
+            .width(140.0)
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(text.trim().is_empty(), "(none)")
+                    .clicked()
+                {
+                    text.clear();
+                    *value = None;
+                    changed = true;
+                }
+                for name in candidates {
+                    if ui.selectable_label(current == *name, name).clicked() {
+                        text = name.clone();
+                        *value = Some(name.clone());
+                        changed = true;
+                    }
+                }
+            });
+        if ui
+            .add(
+                egui::TextEdit::singleline(&mut text)
+                    .hint_text("or type")
+                    .desired_width(110.0)
+                    .font(egui::TextStyle::Small),
+            )
+            .changed()
+        {
+            *value = if text.trim().is_empty() {
+                None
+            } else {
+                Some(text.trim().to_string())
+            };
+            changed = true;
+        }
+        if let Some(name) = value.as_deref() {
+            let known = candidates.iter().any(|candidate| candidate == name);
+            if !known {
+                ui.label(
+                    egui::RichText::new("unknown")
+                        .size(9.0_f32)
+                        .color(palette::AMBER),
+                )
+                .on_hover_text("no object of that name exists in this model");
+            }
+        }
+    });
+    changed
+}
+
 fn optional_string(ui: &mut egui::Ui, label: &str, value: &mut Option<String>) -> bool {
     let mut text = value.clone().unwrap_or_default();
     let mut changed = false;
@@ -1121,6 +1192,42 @@ fn enum_picker<T: Copy + PartialEq + std::fmt::Debug>(
     picked
 }
 
+/// Names the property forms can offer in an object sampler dropdown.
+#[derive(Debug, Clone, Default)]
+struct SamplerNames {
+    /// Every object in the model (for `home`, `charger`, `shaft`).
+    any: Vec<String>,
+    /// Dispatchers and resource pools (for the operator fields).
+    operators: Vec<String>,
+}
+
+impl SamplerNames {
+    fn from_model(model: Option<&openflex_model::Model>) -> Self {
+        let Some(model) = model else {
+            return Self::default();
+        };
+        let mut any: Vec<String> = model
+            .objects
+            .iter()
+            .map(|object| object.name.clone())
+            .collect();
+        any.sort();
+        let mut operators: Vec<String> = model
+            .objects
+            .iter()
+            .filter(|object| {
+                matches!(
+                    object.kind,
+                    openflex_model::ObjectKind::Dispatcher | openflex_model::ObjectKind::Resource
+                )
+            })
+            .map(|object| object.name.clone())
+            .collect();
+        operators.sort();
+        Self { any, operators }
+    }
+}
+
 struct EditForm {
     kind: ObjectKind,
     pos: [f64; 2],
@@ -1150,7 +1257,7 @@ impl EditForm {
         }
     }
 
-    fn show(&mut self, ui: &mut egui::Ui) -> bool {
+    fn show(&mut self, ui: &mut egui::Ui, names: &SamplerNames) -> bool {
         let mut changed = false;
         match &mut self.params {
             ObjectParams::Source(p) => {
@@ -1257,8 +1364,18 @@ impl EditForm {
                             .prefix("max content "),
                     )
                     .changed();
-                changed |= optional_string(ui, "setup operator", &mut p.setup_operator);
-                changed |= optional_string(ui, "process operator", &mut p.process_operator);
+                changed |= object_picker(
+                    ui,
+                    "setup operator",
+                    &mut p.setup_operator,
+                    &names.operators,
+                );
+                changed |= object_picker(
+                    ui,
+                    "process operator",
+                    &mut p.process_operator,
+                    &names.operators,
+                );
             }
             ObjectParams::Conveyor(p) => {
                 changed |= ui
@@ -1314,7 +1431,7 @@ impl EditForm {
                     .changed();
                 changed |= distribution_editor(ui, "load time", &mut p.load_time);
                 changed |= distribution_editor(ui, "unload time", &mut p.unload_time);
-                changed |= optional_string(ui, "home", &mut p.home);
+                changed |= object_picker(ui, "home", &mut p.home, &names.any);
             }
             ObjectParams::Agv(p) => {
                 changed |= ui
@@ -1399,7 +1516,7 @@ impl EditForm {
                     )
                     .changed();
                 changed |= distribution_editor(ui, "stop time", &mut p.stop_time);
-                changed |= optional_string(ui, "home", &mut p.home);
+                changed |= object_picker(ui, "home", &mut p.home, &names.any);
                 changed |= ui
                     .add(
                         egui::DragValue::new(&mut p.door_open_time)
@@ -1428,7 +1545,7 @@ impl EditForm {
                             .prefix("load/task "),
                     )
                     .changed();
-                changed |= optional_string(ui, "shaft", &mut p.shaft);
+                changed |= object_picker(ui, "shaft", &mut p.shaft, &names.any);
             }
             ObjectParams::Dispatcher(p) => {
                 changed |= ui
@@ -8801,7 +8918,8 @@ impl eframe::App for OpenFlexApp {
                         .id_salt("form")
                         .max_height(ui.available_height() * 0.55)
                         .show(ui, |ui| {
-                            form_changed = form.show(ui);
+                            let names = SamplerNames::from_model(self.model);
+                            form_changed = form.show(ui, &names);
                         });
                     ui.horizontal(|ui| {
                         if primary_button(ui, true, "Apply") {
@@ -12690,6 +12808,35 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn the_object_sampler_offers_the_right_candidates() {
+        // Operators come from dispatchers and resource pools; `home`/`charger`
+        // accept any object name.
+        let model = builtin_example("mm1").expect("example");
+        let names = SamplerNames::from_model(Some(&model));
+        assert_eq!(
+            names.any.len(),
+            model.objects.len(),
+            "every object is a candidate for home"
+        );
+        // The candidates are exactly the model's names, not a subset.
+        for object in &model.objects {
+            assert!(
+                names.any.contains(&object.name),
+                "{} is missing from the sampler",
+                object.name
+            );
+        }
+        let mut sorted = names.any.clone();
+        sorted.sort();
+        assert_eq!(names.any, sorted, "the dropdown reads alphabetically");
+        // mm1 has neither a dispatcher nor a resource, so no operator candidate.
+        assert!(names.operators.is_empty());
+        // A model without objects offer nothing rather than panicking.
+        let empty = SamplerNames::from_model(None);
+        assert!(empty.any.is_empty() && empty.operators.is_empty());
     }
 
     #[test]
