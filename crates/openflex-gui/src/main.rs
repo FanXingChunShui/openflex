@@ -1122,6 +1122,47 @@ fn sparkline(ui: &mut egui::Ui, series: &[(f64, f64)], width: f32, height: f32) 
     true
 }
 
+/// World-space waypoints of a dispatcher's declared `explicit` route, starting
+/// at the dispatcher itself. `pickup` / `requester` depend on the run, so a
+/// route that uses them stops there rather than inventing a position.
+fn explicit_route_points(model: &Model, dispatcher: &openflex_model::Object) -> Vec<[f64; 2]> {
+    let openflex_model::ObjectParams::Dispatcher(params) = &dispatcher.params else {
+        return Vec::new();
+    };
+    if params.task_sequence_mode != openflex_model::TaskSequenceMode::Explicit {
+        return Vec::new();
+    }
+    let mut points = vec![dispatcher.pos];
+    for step in &params.task_sequence {
+        let openflex_model::model::TaskStep::Detailed {
+            kind: openflex_model::model::TaskStepKind::Travel,
+            target: Some(target),
+            ..
+        } = step
+        else {
+            continue;
+        };
+        match target {
+            openflex_model::TravelTarget::Named(
+                openflex_model::TravelTargetName::Home | openflex_model::TravelTargetName::Pickup,
+            ) => points.push(dispatcher.pos),
+            openflex_model::TravelTarget::Named(openflex_model::TravelTargetName::Requester) => {
+                // Needs the run's requester: stop here instead of guessing.
+                break;
+            }
+            openflex_model::TravelTarget::Object(pick) => {
+                match model.object(&pick.object) {
+                    Some(object) => points.push(object.pos),
+                    // An unresolved name is a validation problem, not a drawing one.
+                    None => break,
+                }
+            }
+            openflex_model::TravelTarget::Position(spot) => points.push(spot.position),
+        }
+    }
+    points
+}
+
 /// Short label for a travel target, shared by the picker and its tests.
 fn describe_travel_target(target: Option<&openflex_model::TravelTarget>) -> String {
     match target {
@@ -12876,6 +12917,39 @@ impl eframe::App for OpenFlexApp {
                     ));
                 }
             }
+            // Declared `explicit` routes: dashed amber polylines so they read as
+            // planned travel rather than as flow connections.
+            for object in &model.objects {
+                let points = explicit_route_points(model, object);
+                if points.len() < 2 {
+                    continue;
+                }
+                let colour = egui::Color32::from_rgba_unmultiplied(214, 170, 96, 220);
+                for pair in points.windows(2) {
+                    let a = self.project(pair[0], 0.0, center, scale);
+                    let b = self.project(pair[1], 0.0, center, scale);
+                    // Approximate a dash pattern by walking the segment.
+                    let length = (b - a).length();
+                    if length < 1.0 {
+                        continue;
+                    }
+                    let steps = (length / 9.0).ceil() as usize;
+                    let dir = (b - a) / length;
+                    for step in 0..steps {
+                        if step % 2 == 1 {
+                            continue;
+                        }
+                        let start = a + dir * (step as f32 * 9.0);
+                        let end = a + dir * ((step as f32 * 9.0 + 5.5).min(length));
+                        painter.line_segment([start, end], egui::Stroke::new(1.6_f32, colour));
+                    }
+                    painter.circle_filled(
+                        b,
+                        2.6,
+                        egui::Color32::from_rgba_unmultiplied(232, 196, 128, 230),
+                    );
+                }
+            }
             // Marquee selection: drag on empty space to select a rectangle of
             // objects (Shift adds to the current selection).
             let drag_started = response.drag_started();
@@ -13473,6 +13547,48 @@ mod tests {
         // A model without objects offer nothing rather than panicking.
         let empty = SamplerNames::from_model(None);
         assert!(empty.any.is_empty() && empty.operators.is_empty());
+    }
+
+    #[test]
+    fn explicit_routes_become_canvas_waypoints() {
+        // The canvas draws the declared route, so the helper must resolve every
+        // static target and stop where a target depends on the run.
+        let json = r#"{
+          "format": "openflex-model", "version": 1, "name": "route",
+          "run": { "stop_time": 10.0, "replications": 1 },
+          "objects": [
+            { "name": "Dock2", "kind": "basic_fr", "pos": [20.0, 0.0], "params": {} },
+            { "name": "D", "kind": "dispatcher", "pos": [0.0, 0.0], "params": {
+                "task_sequence_mode": "explicit",
+                "task_sequence": [
+                  { "kind": "travel", "target": "home" },
+                  { "kind": "travel", "target": { "object": "Dock2" } },
+                  { "kind": "travel", "target": { "position": [30.0, 5.0] } } ] } },
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1.0 } } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#;
+        let model = Model::from_json(json).expect("model");
+        let dispatcher = model.object("D").expect("dispatcher");
+        let points = explicit_route_points(&model, dispatcher);
+        assert_eq!(
+            points,
+            vec![[0.0, 0.0], [0.0, 0.0], [20.0, 0.0], [30.0, 5.0]],
+            "home loops back, object and position resolve"
+        );
+        // A non-dispatcher, or an append-mode dispatcher, draws nothing.
+        let sink = model.object("K").expect("sink");
+        assert!(explicit_route_points(&model, sink).is_empty());
+        let append = builtin_example("mm1").expect("example");
+        for object in &append.objects {
+            assert!(
+                explicit_route_points(&append, object).is_empty(),
+                "{} should have no route",
+                object.name
+            );
+        }
     }
 
     #[test]

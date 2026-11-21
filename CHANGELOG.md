@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### 桌面 GUI
+
+- **画布绘制 `explicit` 路线**：dispatcher 声明了显式路线时，画布上从它就画出一条**琥珀色虚线**
+  （每段末端一个小圆点），与蓝色实线的流连线在视觉上区分开——一眼能看出「计划路线」与「物料流向」是两件事。
+  `home`/`pickup` 解析回 dispatcher 自身位置；`{object}` 与 `{position}` 按实际坐标；
+  **`requester` 依赖运行时**，画到那里就停，不臆造位置；`append` 模式的模型不画任何线。
+  GUI 测试 **135 项**（新增 `explicit_routes_become_canvas_waypoints`）。
+
 ### 模型与引擎
 
 - **conveyor 光电门四状态**：`PhotoEye` 新增 `range`（感应半宽，缺省 0.5，**注释已说明这是本项目自选粒度而非 FlexSim 公开值**）
