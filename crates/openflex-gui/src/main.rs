@@ -11371,6 +11371,17 @@ impl eframe::App for OpenFlexApp {
                             }
                             ui.end_row();
                             for (name, measure) in &report.performance_measures {
+                                // The unit lives in the model, not the report: the
+                                // GUI has both, so show it here.
+                                let unit = self
+                                    .model
+                                    .and_then(|model| {
+                                        model
+                                            .performance_measures
+                                            .iter()
+                                            .find(|declared| &declared.name == name)
+                                    })
+                                    .and_then(|declared| declared.unit.as_deref());
                                 ui.label(
                                     egui::RichText::new(name)
                                         .small()
@@ -11378,9 +11389,12 @@ impl eframe::App for OpenFlexApp {
                                         .color(palette::ACCENT_HI),
                                 );
                                 ui.label(
-                                    egui::RichText::new(format!("{:.3}", measure.mean))
-                                        .small()
-                                        .monospace(),
+                                    egui::RichText::new(match unit {
+                                        Some(unit) => format!("{:.3} {unit}", measure.mean),
+                                        None => format!("{:.3}", measure.mean),
+                                    })
+                                    .small()
+                                    .monospace(),
                                 );
                                 // One replication has no interval to show: a
                                 // ±0.000 would read as "very precise".
@@ -13173,6 +13187,37 @@ mod tests {
         // A model without objects offer nothing rather than panicking.
         let empty = SamplerNames::from_model(None);
         assert!(empty.any.is_empty() && empty.operators.is_empty());
+    }
+
+    #[test]
+    fn the_kpi_panel_shows_the_unit_from_the_model() {
+        // The report carries the aggregate only; the unit comes from the model.
+        let unit_of = |model: &Model, name: &str| -> Option<String> {
+            model
+                .performance_measures
+                .iter()
+                .find(|declared| declared.name == name)
+                .and_then(|declared| declared.unit.clone())
+        };
+        let json = r#"{"format":"openflex-model","version":1,"name":"u",
+          "run":{"stop_time":10.0},
+          "performance_measures":[
+            {"name":"WIP","expression":"completed","unit":"items"},
+            {"name":"Bare","expression":"time"}],
+          "objects":[{"name":"S","kind":"source","params":{"interarrival":{"distribution":"constant","value":1.0}}},
+                     {"name":"K","kind":"sink","params":{}}],
+          "connections":[{"from":"S","to":"K"}]}"#;
+        let model = Model::from_json(json).expect("model");
+        assert_eq!(unit_of(&model, "WIP").as_deref(), Some("items"));
+        assert_eq!(unit_of(&model, "Bare"), None, "no unit declared");
+        assert_eq!(unit_of(&model, "Missing"), None, "unknown measure");
+        // The suffix only appears when a unit exists.
+        let label = |value: f64, unit: Option<String>| match unit {
+            Some(unit) => format!("{value:.3} {unit}"),
+            None => format!("{value:.3}"),
+        };
+        assert_eq!(label(12.5, Some("items".into())), "12.500 items");
+        assert_eq!(label(12.5, None), "12.500");
     }
 
     #[test]

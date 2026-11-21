@@ -34,6 +34,9 @@
 
 ### 桌面 GUI（功能补齐）
 
+- **指标单位**：报告只带聚合值，不够显示 `unit`；GUI 同时持有模型与报告，因此
+  `Performance measures` 表格的 mean 列会带上模型声明的单位（`12.500 items`），未声明则不追加。
+  GUI 测试 **130 项**。
 - **报告展示跟踪时序**：模型声明了 `tracked_variables` 时，报告面板新增 `Tracked series (n)` 表格
   （name / samples / first / last / range），并注明序列只覆盖计量阶段。无跟踪变量时不出现该块。
   GUI 测试 **129 项**。
