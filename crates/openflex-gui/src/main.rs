@@ -1450,7 +1450,7 @@ impl EditForm {
                     .changed();
                 changed |= distribution_editor(ui, "charge time", &mut p.charge_time);
                 changed |= optional_f64(ui, "battery/distance", &mut p.consumption_per_distance);
-                changed |= optional_string(ui, "charger", &mut p.charger);
+                changed |= object_picker(ui, "charger", &mut p.charger, &names.any);
             }
             ObjectParams::Rack(p) => {
                 changed |= ui
@@ -13178,7 +13178,7 @@ mod tests {
     #[test]
     fn tracked_series_summary_reports_the_shape() {
         // The row the report panel draws: count, first, last, range.
-        let series = vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0), (5.0, 5.0)];
+        let series = [(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0), (5.0, 5.0)];
         let first = series.first().map_or(0.0, |(_, value)| *value);
         let last = series.last().map_or(0.0, |(_, value)| *value);
         let low = series.iter().map(|(_, v)| *v).fold(f64::INFINITY, f64::min);

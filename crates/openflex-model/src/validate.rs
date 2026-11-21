@@ -237,6 +237,7 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
     issues.extend(validate_fluid(model));
     issues.extend(validate_model_triggers(model));
     issues.extend(validate_performance_measures(model));
+    issues.extend(validate_tracked_variables(model));
 
     issues
 }
@@ -1387,6 +1388,59 @@ fn validate_performance_measures(model: &Model) -> Vec<ValidationIssue> {
                 }
             }
         }
+    }
+    issues
+}
+
+/// Tracked variables (FlexSim Tracked Variables): identifier names that are
+/// unique, a compileable expression whose model symbols resolve, and a positive
+/// sampling interval (task-160).
+///
+/// This duplicates nothing: the checks live here so that every caller of
+/// [`validate_collect`] sees them, not only `Model::validate`.
+fn validate_tracked_variables(model: &Model) -> Vec<ValidationIssue> {
+    let mut issues = Vec::new();
+    let mut names = std::collections::BTreeSet::new();
+    for (position, variable) in model.tracked_variables.iter().enumerate() {
+        let at = format!("tracked_variables[{position}]");
+        if !is_identifier(&variable.name) {
+            issues.push(ValidationIssue::new(
+                format!("{at}.name"),
+                "must be a valid identifier (letters, digits and _; not starting with a digit)",
+            ));
+        } else if !names.insert(variable.name.as_str()) {
+            issues.push(ValidationIssue::new(
+                format!("{at}.name"),
+                "duplicate tracked variable name",
+            ));
+        }
+        if variable.expression.trim().is_empty() {
+            issues.push(ValidationIssue::new(
+                format!("{at}.expression"),
+                "expression cannot be empty",
+            ));
+        } else {
+            match crate::expr::Expr::parse(&variable.expression) {
+                Err(error) => issues.push(ValidationIssue::new(
+                    format!("{at}.expression"),
+                    format!("expression does not compile: {error}"),
+                )),
+                // Same split as performance measures: symbols are checked here,
+                // run-time arithmetic errors are left to the run (task-157).
+                Ok(expression) => {
+                    let location = format!("{at}.expression");
+                    check_expression_symbols(model, &expression, &location, &mut issues);
+                }
+            }
+        }
+    }
+    if let Some(interval) = model.tracked_interval
+        && (!interval.is_finite() || interval <= 0.0)
+    {
+        issues.push(ValidationIssue::new(
+            "tracked_interval",
+            "must be a positive number of time units",
+        ));
     }
     issues
 }

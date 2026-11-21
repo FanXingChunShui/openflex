@@ -177,6 +177,11 @@ fn english(key: &str) -> &'static str {
         "batch_means" => "Batch means",
         "batch_variance" => "Batch variance",
         "batch_means_objects" => "Batch means by object",
+        "performance_measures" => "Performance measures",
+        "measure" => "Measure",
+        "samples" => "Samples",
+        "interval" => "95% CI",
+        "no_interval" => "—",
         _ => "",
     }
 }
@@ -287,6 +292,11 @@ fn chinese(key: &str) -> &'static str {
         "batch_means" => "批均值",
         "batch_variance" => "批间方差",
         "batch_means_objects" => "每对象批均值",
+        "performance_measures" => "性能指标",
+        "measure" => "指标",
+        "samples" => "样本数",
+        "interval" => "95% 置信区间",
+        "no_interval" => "—",
         _ => "",
     }
 }
@@ -414,6 +424,11 @@ mod tests {
             "batch_means",
             "batch_variance",
             "batch_means_objects",
+            "performance_measures",
+            "measure",
+            "samples",
+            "interval",
+            "no_interval",
         ];
         for key in keys {
             assert!(!english(key).is_empty(), "missing English key {key}");

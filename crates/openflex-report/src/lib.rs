@@ -16,6 +16,7 @@
 //! Every renderer returns text with a trailing newline so the CLI can write it
 //! to a file or to standard output unchanged.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -344,6 +345,82 @@ pub(crate) fn fmt_ci(value: f64) -> String {
     format!("±{value:.1}")
 }
 
+/// Marker shown wherever an interval would be printed but cannot be computed.
+///
+/// The rule the whole project follows: an interval needs at least two samples,
+/// so `n < 2` shows this dash instead of a misleading `±0.000`.
+pub const NO_INTERVAL: &str = "—";
+
+/// Half-width of the 95% interval of `aggregate`, or [`NO_INTERVAL`] when it
+/// has fewer than two samples.
+///
+/// Every surface that prints an interval next to a mean goes through this, so
+/// the "no interval without at least two samples" rule cannot drift per format.
+pub fn fmt_ci_opt(aggregate: &Aggregate) -> String {
+    if aggregate.n >= 2 {
+        fmt_ci(aggregate.ci95)
+    } else {
+        NO_INTERVAL.to_string()
+    }
+}
+
+/// Same rule as [`fmt_ci_opt`], with the three decimals the performance-measure
+/// tables use.
+pub fn fmt_ci_precise(aggregate: &Aggregate) -> String {
+    if aggregate.n >= 2 {
+        format!("±{:.3}", aggregate.ci95)
+    } else {
+        NO_INTERVAL.to_string()
+    }
+}
+
+/// Model-defined performance measures of a report, in stable name order.
+///
+/// Returns an empty slice when the model declares none, which is the signal
+/// every renderer uses to keep its output byte-for-byte unchanged.
+pub fn measures(report: &SimReport) -> &BTreeMap<String, Aggregate> {
+    &report.performance_measures
+}
+
+/// Largest measure count across `reports`, i.e. the number of measure columns
+/// an experiment table needs. Zero means "do not add any column".
+pub fn measure_column_count<'a>(reports: impl IntoIterator<Item = &'a SimReport>) -> usize {
+    reports
+        .into_iter()
+        .map(|report| report.performance_measures.len())
+        .max()
+        .unwrap_or(0)
+}
+
+/// Union of the measure names across `reports`, sorted.
+///
+/// Scenarios of one experiment normally declare the same measures, but a
+/// scenario may override `performance_measures`, so the table shows the union
+/// and leaves a cell empty where a scenario has no value.
+pub fn measure_columns<'a>(reports: impl IntoIterator<Item = &'a SimReport>) -> Vec<String> {
+    let mut columns: Vec<String> = Vec::new();
+    for report in reports {
+        for name in report.performance_measures.keys() {
+            if !columns.iter().any(|known| known == name) {
+                columns.push(name.clone());
+            }
+        }
+    }
+    columns
+}
+
+/// Quote a CSV field that contains a comma, a quote or a newline.
+///
+/// Measure names are user-supplied, so a name like `a,b` or one containing a
+/// quote must not shift the remaining columns.
+pub fn csv_field(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
 /// Human-readable duration used in the "how to reproduce" sections.
 pub(crate) fn reproduce_command(report: &SimReport) -> String {
     let mut command = String::new();
@@ -399,6 +476,7 @@ mod tests {
             process_flow: None,
             fluid: None,
             performance_measures: BTreeMap::new(),
+            tracked_series: BTreeMap::new(),
         }
     }
 

@@ -13,7 +13,8 @@ use openflex_model::{ObjectKind, Override, TimeUnit};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ReportError, fmt_ci, fmt_count, fmt_percent, fmt_rate, fmt_time, i18n, sim, write_file,
+    ReportError, csv_field, fmt_ci, fmt_ci_precise, fmt_count, fmt_percent, fmt_rate, fmt_time,
+    i18n, measure_columns, sim, write_file,
 };
 
 pub const EXPERIMENT_FILE: &str = "experiment.json";
@@ -148,6 +149,47 @@ fn average_utilization(report: &SimReport) -> f64 {
     values.iter().sum::<f64>() / values.len() as f64
 }
 
+/// Escape a measure or scenario name for a Markdown table cell.
+fn markdown_cell(value: &str) -> String {
+    value.replace('|', "\\|").replace('\n', " ")
+}
+
+/// Cell of the experiment table for one measure in one scenario.
+///
+/// Shows the mean to three decimals; the 95% interval is appended only when
+/// the measure has at least two samples, so a single replication never prints
+/// a meaningless `±0.000`.
+fn measure_cell(aggregate: Option<&openflex_core::Aggregate>) -> String {
+    match aggregate {
+        Some(aggregate) if aggregate.n >= 2 => {
+            format!("{:.3}{}", aggregate.mean, fmt_ci_precise(aggregate))
+        }
+        Some(aggregate) => format!("{:.3}", aggregate.mean),
+        None => crate::NO_INTERVAL.to_string(),
+    }
+}
+
+/// Display width of every measure column: wide enough for the header and for
+/// the widest cell, so the table stays aligned without truncating names.
+fn measure_widths(experiment: &ExperimentReport, measures: &[String]) -> Vec<usize> {
+    measures
+        .iter()
+        .map(|name| {
+            let widest = experiment
+                .scenarios
+                .iter()
+                .map(|scenario| {
+                    measure_cell(scenario.report.performance_measures.get(name))
+                        .chars()
+                        .count()
+                })
+                .max()
+                .unwrap_or(0);
+            name.chars().count().max(widest).max(8)
+        })
+        .collect()
+}
+
 fn header(experiment: &ExperimentReport) -> String {
     let mut out = String::new();
     let _ = writeln!(
@@ -182,8 +224,10 @@ pub fn to_table_with_sections(
     include_fluid: bool,
 ) -> String {
     let mut out = header(experiment);
+    let measures = measure_columns(experiment.scenarios.iter().map(|s| &s.report));
+    let measure_widths = measure_widths(&experiment, &measures);
     let _ = writeln!(out);
-    let _ = writeln!(
+    let _ = write!(
         out,
         "{:<18} {:>5} {:>10} {:>8} {:>11} {:>8} {:>11} {:>8} {:>8}",
         i18n::t("scenario"),
@@ -196,10 +240,24 @@ pub fn to_table_with_sections(
         i18n::t("avg_wip"),
         i18n::t("util_short")
     );
-    let _ = writeln!(out, "{}", "-".repeat(87));
+    for (name, width) in measures.iter().zip(&measure_widths) {
+        let _ = write!(out, " {:>width$}", name, width = *width);
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "{}",
+        "-".repeat(
+            87 + measures
+                .iter()
+                .zip(&measure_widths)
+                .map(|(_, w)| w + 1)
+                .sum::<usize>()
+        )
+    );
     for scenario in &experiment.scenarios {
         let summary = summarize(scenario);
-        let _ = writeln!(
+        let _ = write!(
             out,
             "{:<18} {:>5} {:>10} {:>8} {:>11} {:>8} {:>11} {:>8} {:>8}",
             summary.name,
@@ -212,6 +270,11 @@ pub fn to_table_with_sections(
             fmt_time(summary.avg_wip),
             fmt_percent(summary.utilization)
         );
+        for (name, width) in measures.iter().zip(&measure_widths) {
+            let cell = scenario.report.performance_measures.get(name);
+            let _ = write!(out, " {:>width$}", measure_cell(cell), width = *width);
+        }
+        let _ = writeln!(out);
     }
     for scenario in &experiment.scenarios {
         let _ = writeln!(out);
@@ -254,13 +317,27 @@ pub fn to_csv_with_sections(
     include_fluid: bool,
 ) -> String {
     let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "experiment,scenario,replications,created,created_ci95,completed,completed_ci95,throughput,avg_wip,avg_utilization"
+    let measures = measure_columns(experiment.scenarios.iter().map(|s| &s.report));
+    let mut header = String::from(
+        "experiment,scenario,replications,created,created_ci95,completed,completed_ci95,throughput,avg_wip,avg_utilization",
     );
+    for name in &measures {
+        // Measure names are user data: quote them so a comma cannot shift the
+        // columns, and suffix `_ci95` for the interval column.
+        let _ = write!(header, ",{},{}_ci95", csv_field(name), csv_field(name));
+    }
+    if !measures.is_empty() {
+        // Head comment: a spreadsheets/mail-merge reader knows why some
+        // interval cells are empty, and the header still names every column.
+        let _ = writeln!(
+            out,
+            "# performance measures: one column pair per measure (mean and 95% CI); ci95 is empty when n < 2"
+        );
+    }
+    let _ = writeln!(out, "{header}");
     for scenario in &experiment.scenarios {
         let summary = summarize(scenario);
-        let _ = writeln!(
+        let _ = write!(
             out,
             "{},{},{},{:.3},{:.3},{:.3},{:.3},{:.6},{:.4},{:.4}",
             csv_field(&experiment.experiment),
@@ -274,6 +351,20 @@ pub fn to_csv_with_sections(
             summary.avg_wip,
             summary.utilization
         );
+        for name in &measures {
+            match scenario.report.performance_measures.get(name) {
+                Some(aggregate) if aggregate.n >= 2 => {
+                    let _ = write!(out, ",{:.6},{:.6}", aggregate.mean, aggregate.ci95);
+                }
+                Some(aggregate) => {
+                    let _ = write!(out, ",{:.6},", aggregate.mean);
+                }
+                None => {
+                    let _ = write!(out, ",,");
+                }
+            }
+        }
+        let _ = writeln!(out);
     }
     if include_flow || include_fluid {
         for scenario in &experiment.scenarios {
@@ -346,6 +437,54 @@ pub fn to_markdown_with_sections(
             fmt_time(summary.avg_wip),
             fmt_percent(summary.utilization)
         );
+    }
+    let measures = measure_columns(experiment.scenarios.iter().map(|s| &s.report));
+    if !measures.is_empty() {
+        let _ = writeln!(out, "\n## {}\n", i18n::t("performance_measures"));
+        let _ = write!(
+            out,
+            "| {} | {}",
+            i18n::t("scenario"),
+            i18n::t("replications_label")
+        );
+        for name in &measures {
+            let _ = write!(
+                out,
+                " | {} | {} CI",
+                markdown_cell(name),
+                i18n::t("interval")
+            );
+        }
+        let _ = writeln!(out, " |");
+        let _ = write!(out, "|---|---:");
+        for _ in &measures {
+            let _ = write!(out, "|---:|---:");
+        }
+        let _ = writeln!(out, "|");
+        for scenario in &experiment.scenarios {
+            let replications = scenario.report.replications.len().max(1);
+            let _ = write!(
+                out,
+                "| {} | {}",
+                markdown_cell(&scenario.name),
+                replications
+            );
+            for name in &measures {
+                let _ = match scenario.report.performance_measures.get(name) {
+                    Some(aggregate) if aggregate.n >= 2 => write!(
+                        out,
+                        " | {:.3} | {}",
+                        aggregate.mean,
+                        fmt_ci_precise(aggregate)
+                    ),
+                    Some(aggregate) => {
+                        write!(out, " | {:.3} | {}", aggregate.mean, crate::NO_INTERVAL)
+                    }
+                    None => write!(out, " | {} | {}", crate::NO_INTERVAL, crate::NO_INTERVAL),
+                };
+            }
+            let _ = writeln!(out, " |");
+        }
     }
     let _ = writeln!(out, "\n## {}\n", i18n::t("how_to_reproduce"));
     let _ = writeln!(out, "```sh");
@@ -424,15 +563,6 @@ pub fn sanitize(name: &str) -> String {
         "unnamed".to_string()
     } else {
         cleaned
-    }
-}
-
-/// Quote a CSV field that contains a comma, a quote or a newline.
-fn csv_field(value: &str) -> String {
-    if value.contains([',', '"', '\n', '\r']) {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_string()
     }
 }
 

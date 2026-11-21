@@ -131,7 +131,7 @@
 | 班次 / 计划可用性 | `shifts` | ✅ | 见上表“班次” |
 | 停留时间 | 报告 | ✅ | 平均停留时间 |
 | Experimenter（场景 × 复现） | `experiments` + `openflex experiment` | ✅ | 95% 置信区间 |
-| 置信区间 | 报告 | ✅ | 正态近似 `1.96·se` |
+| 置信区间 | 报告 | ✅ | Student-t 区间 `t_{0.975, n−1} · se`（小样本自动变宽；n<2 不报区间）；另有 batch-means 区间 |
 | OptQuest 优化 | `openflex optimize` | 🟡 | grid/random/genetic、多目标加权/自定义权重、Pareto 前沿；无贝叶斯/约束优化 |
 | Dashboard / 图表 | 报告 + Studio 柱状图 | 🟡 | Studio 有吞吐柱状图；无完整 Dashboard/模板 |
 | 3D 视图 / 模型树 / GUI | `openflex studio` / `openflex-gui` | 🟡 | Web Studio：3D 透视（遮挡/标签避让/拖拽/布局）+ 2D 俯视（网格吸附/对齐/分布）+ **多选/框选/批量操作**、PNG/SVG/model-JSON 导出、字段表单、模型树、Process Flow 拖拽画布、撤销、pause/step/resume、Experimenter、Dashboard、Global Table 编辑器；无 GPU/WebGL |

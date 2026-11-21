@@ -79,7 +79,7 @@
 - **对象取样器（Sampler）**：`setup operator` / `process operator` / `home` / `charger` / `shaft`
   从自由文本改为「下拉候选 + 可手输」的组合——操作员候选只列 Dispatcher 与 Resource，
   `home`/`charger`/`shaft` 列全部对象名（按字母序）；输错名字时旁边出现琥珀色 `unknown` 提示而不是静默接受。
-  这补上 `docs/FEATURE_PARITY_75.md` 里「Sampler ⛔」这一行。GUI 测试 **125 项**。
+  这补上 `docs/FEATURE_PARITY_75.md` 里「Sampler ⛔」这一行。
 
 - **加工时点钩子与模型触发器**：`SimTrigger` 新增 `setup_finish` / `process_finish`，在处理器的
   「setup 结束」与「加工时钟结束」两个边界触发（早于 `on_exit`；`setup_time = 0` 无独立 setup 阶段故不触发）；

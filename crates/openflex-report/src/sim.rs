@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use openflex_core::{Aggregate, ObjectAggregate, SimReport};
 
 use crate::{
-    BatchMeansSummary, ReportError, fmt_ci, fmt_count, fmt_percent, fmt_rate, fmt_time, i18n,
-    in_system, reproduce_command, write_file,
+    BatchMeansSummary, ReportError, csv_field, fmt_ci, fmt_ci_precise, fmt_count, fmt_percent,
+    fmt_rate, fmt_time, i18n, in_system, reproduce_command, write_file,
 };
 
 pub const REPORT_JSON: &str = "report.json";
@@ -218,6 +218,7 @@ pub fn to_table_with_sections(
     if include_fluid {
         out.push_str(&fluid_table(report));
     }
+    out.push_str(&measures_table(report));
     out
 }
 
@@ -292,6 +293,7 @@ pub fn to_csv_with_sections(report: &SimReport, include_flow: bool, include_flui
     if include_fluid {
         out.push_str(&fluid_csv(report));
     }
+    out.push_str(&measures_csv(report));
     out
 }
 
@@ -461,6 +463,7 @@ pub fn to_markdown_with_sections(
         fmt_count(in_system.mean),
         fmt_ci(in_system.ci95)
     );
+    out.push_str(&measures_markdown(report));
     let _ = writeln!(out, "\n## {}\n", i18n::t("how_to_reproduce"));
     let _ = writeln!(out, "```sh");
     let _ = writeln!(out, "{}", reproduce_command(report));
@@ -473,6 +476,125 @@ pub fn to_markdown_with_sections(
         out.push_str(&fluid_markdown(report));
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// Performance measures
+// ---------------------------------------------------------------------------
+//
+// A model may declare `performance_measures`: named expressions the engine
+// evaluates once per replication. The report shows their aggregates next to
+// the built-in ones. Every function below returns an empty string when the
+// model declares no measure, which is what keeps the output of such a model
+// byte-for-byte identical to a build without this section.
+
+/// Whether this report carries model-defined performance measures.
+pub(crate) fn has_measures(report: &SimReport) -> bool {
+    !report.performance_measures.is_empty()
+}
+
+/// Terminal section: one line per measure, `mean`, 95% CI and sample count.
+///
+/// Follows the project rule that an interval needs at least two samples; with
+/// `n = 1` the CI column shows [`crate::NO_INTERVAL`] instead of `±0.000`.
+pub(crate) fn measures_table(report: &SimReport) -> String {
+    if !has_measures(report) {
+        return String::new();
+    }
+    let width = report
+        .performance_measures
+        .keys()
+        .map(|name| name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(12)
+        + 2;
+    let mut out = String::new();
+    let _ = writeln!(out, "\n{}", i18n::t("performance_measures"));
+    let _ = writeln!(out, "{}", "-".repeat(width.max(24)));
+    for (name, aggregate) in &report.performance_measures {
+        let _ = writeln!(
+            out,
+            "{:<width$} {} {:>10}  {} {:>8}  {} {}",
+            name,
+            i18n::t("mean"),
+            format!("{:.3}", aggregate.mean),
+            i18n::t("interval"),
+            fmt_ci_precise(aggregate),
+            i18n::t("samples"),
+            aggregate.n,
+            width = width
+        );
+    }
+    out
+}
+
+/// CSV section for the performance measures.
+///
+/// Kept as its own commented block, like the process-flow and fluid sections,
+/// so a parser that reads the object rows sees exactly the columns it expects.
+pub(crate) fn measures_csv(report: &SimReport) -> String {
+    if !has_measures(report) {
+        return String::new();
+    }
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "\n# performance_measures: one row per measure; ci95 is empty when n < 2"
+    );
+    let _ = writeln!(out, "measure,mean,std_dev,ci95,min,max,n");
+    for (name, aggregate) in &report.performance_measures {
+        let ci = if aggregate.n >= 2 {
+            format!("{:.6}", aggregate.ci95)
+        } else {
+            String::new()
+        };
+        let _ = writeln!(
+            out,
+            "{},{:.6},{:.6},{ci},{:.6},{:.6},{}",
+            csv_field(name),
+            aggregate.mean,
+            aggregate.std_dev,
+            aggregate.min,
+            aggregate.max,
+            aggregate.n
+        );
+    }
+    out
+}
+
+/// Markdown section for the performance measures.
+pub(crate) fn measures_markdown(report: &SimReport) -> String {
+    if !has_measures(report) {
+        return String::new();
+    }
+    let mut out = String::new();
+    let _ = writeln!(out, "\n## {}\n", i18n::t("performance_measures"));
+    let _ = writeln!(
+        out,
+        "| {} | {} | {} | {} |",
+        i18n::t("measure"),
+        i18n::t("mean"),
+        i18n::t("interval"),
+        i18n::t("samples")
+    );
+    let _ = writeln!(out, "|---|---:|---:|---:|");
+    for (name, aggregate) in &report.performance_measures {
+        let _ = writeln!(
+            out,
+            "| {} | {:.3} | {} | {} |",
+            markdown_cell(name),
+            aggregate.mean,
+            fmt_ci_precise(aggregate),
+            aggregate.n
+        );
+    }
+    out
+}
+
+/// Escape a measure name for a Markdown table cell.
+fn markdown_cell(value: &str) -> String {
+    value.replace('|', "\\|").replace('\n', " ")
 }
 
 /// Process-flow table section, appended when the report has flow statistics.

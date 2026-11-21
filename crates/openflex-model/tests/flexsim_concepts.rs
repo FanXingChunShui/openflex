@@ -829,3 +829,149 @@ fn symbol_check_is_reported_for_every_measure_independently() {
         ]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tracked variables share the validation entry point (task-160)
+// ---------------------------------------------------------------------------
+
+/// A model carrying tracked variables (and optionally performance measures).
+fn tracked_model(tracked: &str, extra: &str) -> Model {
+    Model::parse_json(&model(&format!(
+        r#""global_variables": {{ "Batch": {{ "kind": "number", "value": 10 }} }},
+        "picklists": {{ "Shift": {{ "entries": [ {{ "name": "Day", "value": "1" }} ] }} }},
+        {extra}"tracked_variables": [{tracked}]"#
+    )))
+    .expect("parses")
+}
+
+#[test]
+fn undefined_global_variable_in_tracked_variable_is_rejected() {
+    let issues = openflex_model::validate_collect(&tracked_model(
+        r#"{ "name": "TwiceClock", "expression": "$Nope" }"#,
+        "",
+    ));
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert_eq!(issues[0].location, "tracked_variables[0].expression");
+    assert!(
+        issues[0]
+            .message
+            .contains("unknown global variable 'Nope' (declare it under global_variables)"),
+        "{}",
+        issues[0].message
+    );
+}
+
+#[test]
+fn unknown_picklist_in_tracked_variable_is_rejected() {
+    let issues = openflex_model::validate_collect(&tracked_model(
+        r#"{ "name": "Shifted", "expression": "len(picklist(\"Ghost\", \"x\"))" }"#,
+        "",
+    ));
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert_eq!(issues[0].location, "tracked_variables[0].expression");
+    assert!(
+        issues[0]
+            .message
+            .contains("unknown pick list 'Ghost' (declare it under picklists)"),
+        "{}",
+        issues[0].message
+    );
+}
+
+#[test]
+fn tracked_variable_names_are_checked_by_validate_collect() {
+    // Reaching `validate_collect` directly (not through `Model::validate`) must
+    // still report the name rules that used to live in model.rs.
+    let issues = openflex_model::validate_collect(&tracked_model(
+        r#"{ "name": "Bad Name", "expression": "1" },
+           { "name": "Dup", "expression": "2" },
+           { "name": "Dup", "expression": "$Batch" }"#,
+        "",
+    ));
+    let locations: Vec<&str> = issues.iter().map(|issue| issue.location.as_str()).collect();
+    assert!(
+        locations.contains(&"tracked_variables[0].name"),
+        "{issues:?}"
+    );
+    assert!(
+        locations.contains(&"tracked_variables[2].name"),
+        "{issues:?}"
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.location == "tracked_variables[2].name"
+                && issue.message.contains("duplicate tracked variable name")),
+        "{issues:?}"
+    );
+}
+
+#[test]
+fn tracked_interval_must_be_positive_through_validate_collect() {
+    let issues = openflex_model::validate_collect(
+        &Model::parse_json(&model(
+            r#""tracked_variables": [ { "name": "Clock", "expression": "time" } ],
+        "tracked_interval": 0"#,
+        ))
+        .expect("parses"),
+    );
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert_eq!(issues[0].location, "tracked_interval");
+    assert!(
+        issues[0].message.contains("must be a positive number"),
+        "{}",
+        issues[0].message
+    );
+}
+
+#[test]
+fn valid_tracked_variables_have_no_issues() {
+    let issues = openflex_model::validate_collect(&tracked_model(
+        r#"{ "name": "Clock", "expression": "time" },
+           { "name": "Scaled", "expression": "$Batch / 10" },
+           { "name": "Shifted", "expression": "picklist(\"Shift\", \"Day\") == \"1\"" }"#,
+        r#""tracked_interval": 0.5, "#,
+    ));
+    assert!(issues.is_empty(), "{issues:?}");
+}
+
+#[test]
+fn model_from_json_rejects_a_bad_tracked_symbol() {
+    // `Model::from_json` is what `openflex validate` calls, so this pins the
+    // user-visible behaviour that used to slip through to `run`.
+    let error = Model::from_json(&model(
+        r#""global_variables": { "Batch": { "kind": "number", "value": 10 } },
+        "tracked_variables": [ { "name": "TwiceClock", "expression": "$Nope" } ]"#,
+    ))
+    .expect_err("tracked symbol must be rejected at load time")
+    .to_string();
+    assert!(error.contains("tracked_variables[0].expression"), "{error}");
+    assert!(
+        error.contains("unknown global variable 'Nope' (declare it under global_variables)"),
+        "{error}"
+    );
+}
+
+#[test]
+fn measures_and_tracked_variables_report_the_same_bad_symbol_separately() {
+    let issues = openflex_model::validate_collect(&tracked_model(
+        r#"{ "name": "Tracked", "expression": "$Missing" }"#,
+        r#""performance_measures": [ { "name": "Measured", "expression": "$Missing * 2" } ], "#,
+    ));
+    assert_eq!(issues.len(), 2, "{issues:?}");
+    let locations: Vec<&str> = issues.iter().map(|issue| issue.location.as_str()).collect();
+    assert_eq!(
+        locations,
+        vec![
+            "performance_measures[0].expression",
+            "tracked_variables[0].expression"
+        ]
+    );
+    for issue in &issues {
+        assert!(
+            issue.message.contains("unknown global variable 'Missing'"),
+            "{}",
+            issue.message
+        );
+    }
+}

@@ -4226,65 +4226,16 @@ impl Model {
 
     /// Validate the whole model; see [`crate::validate`].
     ///
-    /// task-158: tracked-variable checks live here (the shared `validate.rs`
-    /// belongs to another task): identifiers, uniqueness, expression syntax and
-    /// a positive sampling interval.
+    /// Tracked variables (task-158) are validated by the shared entry point in
+    /// `validate.rs` together with every other rule (task-160), so this method
+    /// is a thin wrapper around it.
     pub fn validate(&self) -> Result<(), ModelError> {
-        let mut issues = crate::validate::validate_collect(self);
-        issues.extend(self.tracked_variable_issues());
+        let issues = crate::validate::validate_collect(self);
         if issues.is_empty() {
             Ok(())
         } else {
             Err(ModelError::Invalid(issues))
         }
-    }
-
-    fn tracked_variable_issues(&self) -> Vec<ValidationIssue> {
-        let mut issues = Vec::new();
-        let mut names = std::collections::BTreeSet::new();
-        for (position, variable) in self.tracked_variables.iter().enumerate() {
-            let at = format!("tracked_variables[{position}]");
-            let valid = {
-                let mut chars = variable.name.chars();
-                match chars.next() {
-                    Some(first) if first.is_alphabetic() || first == '_' => {
-                        chars.all(|c| c.is_alphanumeric() || c == '_')
-                    }
-                    _ => false,
-                }
-            };
-            if !valid {
-                issues.push(ValidationIssue::new(
-                    format!("{at}.name"),
-                    "must be a valid identifier (letters, digits and _; not starting with a digit)",
-                ));
-            } else if !names.insert(variable.name.as_str()) {
-                issues.push(ValidationIssue::new(
-                    format!("{at}.name"),
-                    "duplicate tracked variable name",
-                ));
-            }
-            if variable.expression.trim().is_empty() {
-                issues.push(ValidationIssue::new(
-                    format!("{at}.expression"),
-                    "expression cannot be empty",
-                ));
-            } else if let Err(error) = Expr::parse(&variable.expression) {
-                issues.push(ValidationIssue::new(
-                    format!("{at}.expression"),
-                    format!("expression does not compile: {error}"),
-                ));
-            }
-        }
-        if let Some(interval) = self.tracked_interval
-            && (!interval.is_finite() || interval <= 0.0)
-        {
-            issues.push(ValidationIssue::new(
-                "tracked_interval",
-                "must be a positive number of time units",
-            ));
-        }
-        issues
     }
 }
 
