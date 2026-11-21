@@ -19,6 +19,10 @@
   `counts_for_utilization()` 覆盖 source/sink/queue/dispatcher/resource 与加工类，
   新增 `average_utilization_ignores_sources_and_queues` 测试（GUI 111 项）。
 
+- **`STATE MIX` 沿用同一过滤**：`AVG UTIL` 修好后，`STATE MIX` 仍统计全部对象——源与汇恒为 idle，
+  把 `mm1` 的 busy 占比从 **79.8%** 拉到 **20%**。现在两张卡片共用 `counts_for_utilization()`。
+  新增 `state_mix_uses_the_same_object_filter` 测试（GUI 112 项）。
+
 ## v1.31.0 — 2026-11-21
 
 本轮集中在**报告的可信度**：单次复现不再伪装成高精度、预热时间被明确标注、AGV 电量进入画布提示；并让 `Add row` 与其余表操作一样遵守「先校验后快照」。发布节奏保持**至少 3 小时一版**。

@@ -10073,16 +10073,19 @@ impl eframe::App for OpenFlexApp {
                 // Fleet-wide state mix: the per-object bars below answer "which
                 // machine", this answers "how busy is the model overall".
                 {
-                    let totals = report.objects.values().fold(
-                        [0.0_f64; 4],
-                        |mut acc, stats| {
+                    // Same filter as AVG UTIL: a source is idle by definition,
+                    // so including it drags the busy share towards zero.
+                    let totals = report
+                        .objects
+                        .values()
+                        .filter(|stats| Self::counts_for_utilization(stats.kind))
+                        .fold([0.0_f64; 4], |mut acc, stats| {
                             acc[0] += stats.busy_fraction.mean;
                             acc[1] += stats.blocked_fraction.mean;
                             acc[2] += stats.idle_fraction.mean;
                             acc[3] += stats.down_fraction.mean;
                             acc
-                        },
-                    );
+                        });
                     let sum: f64 = totals.iter().sum();
                     let mix = Self::state_mix(totals);
                     if sum > 1e-9 {
@@ -11583,6 +11586,29 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn state_mix_uses_the_same_object_filter() {
+        // Both the AVG UTIL card and STATE MIX must ignore idle-by-definition
+        // objects, otherwise mm1 reports 20% busy instead of 80%.
+        let mut all = [0.0_f64; 4];
+        let mut filtered = [0.0_f64; 4];
+        // source: busy 0, idle 1  · processor: busy 0.8, idle 0.2
+        for (kind, busy, idle) in [
+            (ObjectKind::Source, 0.0_f64, 1.0_f64),
+            (ObjectKind::Processor, 0.8, 0.2),
+        ] {
+            let state = [busy, 0.0, idle, 0.0];
+            for index in 0..4 {
+                all[index] += state[index];
+                if OpenFlexApp::counts_for_utilization(kind) {
+                    filtered[index] += state[index];
+                }
+            }
+        }
+        assert!((all[0] / all.iter().sum::<f64>() - 0.4).abs() < 1e-9);
+        assert!((filtered[0] / filtered.iter().sum::<f64>() - 0.8).abs() < 1e-9);
     }
 
     #[test]
