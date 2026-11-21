@@ -13,6 +13,12 @@
   后者提示 `A run is still in progress — close again to abandon it`。此前 Run/实验/优化跑到一半直接关窗，
   那段运算白费且没有任何提示。新增 `closing_also_warns_about_a_run_in_flight` 测试（GUI 110 项）。
 
+- **`AVG UTIL` 只统计有意义的对象**：此前对全部对象求平均（含 source/sink/queue/dispatcher/resource），
+  在 `mm1` 上显示 **20%** —— 而真正的加工设备利用率是 **79.8%**，低报 4 倍会直接误导产能判断。
+  现在只对「有容量含义」的类型取平均（处理器/传送带/货架/执行器/流体设备等）。
+  `counts_for_utilization()` 覆盖 source/sink/queue/dispatcher/resource 与加工类，
+  新增 `average_utilization_ignores_sources_and_queues` 测试（GUI 111 项）。
+
 ## v1.31.0 — 2026-11-21
 
 本轮集中在**报告的可信度**：单次复现不再伪装成高精度、预热时间被明确标注、AGV 电量进入画布提示；并让 `Add row` 与其余表操作一样遵守「先校验后快照」。发布节奏保持**至少 3 小时一版**。

@@ -2710,6 +2710,19 @@ impl OpenFlexApp {
         self.save_recent();
     }
 
+    /// Whether an object kind has a meaningful utilisation figure. Sources,
+    /// sinks and queues do not: their "busy" time says nothing about capacity.
+    fn counts_for_utilization(kind: ObjectKind) -> bool {
+        !matches!(
+            kind,
+            ObjectKind::Source
+                | ObjectKind::Sink
+                | ObjectKind::Queue
+                | ObjectKind::Dispatcher
+                | ObjectKind::Resource
+        )
+    }
+
     /// Shares of the four states, normalised so they sum to 1 (an all-zero mix
     /// yields zeros rather than NaN).
     fn state_mix(totals: [f64; 4]) -> [f64; 4] {
@@ -10033,15 +10046,22 @@ impl eframe::App for OpenFlexApp {
                         &format!("{wip:.1}"),
                         palette::TEXT,
                     );
-                    let util: f64 = if report.objects.is_empty() {
+                    // Averaging over sources/sinks/queues dilutes the figure:
+                    // those objects have no meaningful utilisation. Only count
+                    // the kinds that actually process or carry items.
+                    let util_objects: Vec<&openflex_core::stats::ObjectAggregate> = report
+                        .objects
+                        .values()
+                        .filter(|stats| Self::counts_for_utilization(stats.kind))
+                        .collect();
+                    let util: f64 = if util_objects.is_empty() {
                         0.0
                     } else {
-                        report
-                            .objects
-                            .values()
+                        util_objects
+                            .iter()
                             .map(|stats| stats.utilization.mean)
                             .sum::<f64>()
-                            / report.objects.len() as f64
+                            / util_objects.len() as f64
                     };
                     metric_card(
                         ui,
@@ -11563,6 +11583,21 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn average_utilization_ignores_sources_and_queues() {
+        // Only kinds with a real capacity figure count. In mm1 that is the
+        // processor: averaging in the source/sink/queue gave 20% instead of 80%.
+        assert!(!OpenFlexApp::counts_for_utilization(ObjectKind::Source));
+        assert!(!OpenFlexApp::counts_for_utilization(ObjectKind::Sink));
+        assert!(!OpenFlexApp::counts_for_utilization(ObjectKind::Queue));
+        assert!(!OpenFlexApp::counts_for_utilization(ObjectKind::Dispatcher));
+        assert!(!OpenFlexApp::counts_for_utilization(ObjectKind::Resource));
+        assert!(OpenFlexApp::counts_for_utilization(ObjectKind::Processor));
+        assert!(OpenFlexApp::counts_for_utilization(ObjectKind::Conveyor));
+        assert!(OpenFlexApp::counts_for_utilization(ObjectKind::Transporter));
+        assert!(OpenFlexApp::counts_for_utilization(ObjectKind::Rack));
     }
 
     #[test]
