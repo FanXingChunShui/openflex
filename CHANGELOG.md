@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v1.31.0 — 2026-11-21
+
+本轮集中在**报告的可信度**：单次复现不再伪装成高精度、预热时间被明确标注、AGV 电量进入画布提示；并让 `Add row` 与其余表操作一样遵守「先校验后快照」。发布节奏保持**至少 3 小时一版**。
 
 ### 桌面 GUI（功能补齐）
 
@@ -20,6 +22,12 @@
 - **AGV 悬停显示电量**：AGV 的悬停摘要新增一行 `battery 73% · charging 25%`（来自 `ObjectStats` 的
   `battery_remaining` 与 `charging_fraction`）；非 AGV 对象不受影响。
   新增 `agv_tooltip_adds_the_battery_line` 测试（GUI 108 项）。
+
+### 验证
+
+- `cargo test --workspace --locked`（含 GUI）：**616 passed / 0 failed**。
+- GUI 单元测试 **108 项**。
+- GUI `clippy` 0、`fmt` 干净；以单复现模型与 `agv-charging.ofm` 启动均无 panic。
 
 ## v1.30.0 — 2026-11-20
 
