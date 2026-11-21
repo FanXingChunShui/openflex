@@ -2308,6 +2308,8 @@ struct OpenFlexApp {
     /// JSON buffers for the model-level triggers (on_start/on_reset/on_stop),
     /// committed on focus loss like the object trigger editor.
     model_trigger_text: [String; 3],
+    /// Row buffers for the performance-measure editor: (name, expression, unit).
+    kpi_edit: Vec<(String, String, String)>,
     /// Name buffer for a new global variable / pick list.
     gv_name: String,
     pl_name: String,
@@ -2455,6 +2457,7 @@ impl OpenFlexApp {
             model_name: String::new(),
             model_description: String::new(),
             model_trigger_text: [String::new(), String::new(), String::new()],
+            kpi_edit: Vec::new(),
             gv_name: String::new(),
             pl_name: String::new(),
             gv_value_edit: std::collections::HashMap::new(),
@@ -2566,7 +2569,54 @@ impl OpenFlexApp {
 
     /// Records the current model in the undo stack under a human label, so the
     /// history list can say what each step was.
-    /// Applies the three model-trigger JSON buffers through the single edit
+    /// Rebuilds `performance_measures` from the row buffers. Blank rows are
+    /// skipped; the rest is validated by the model before it is adopted.
+    fn apply_performance_measures(&mut self) {
+        let rows: Vec<(String, String, String)> = self
+            .kpi_edit
+            .iter()
+            .filter(|(name, expression, _)| {
+                !name.trim().is_empty() || !expression.trim().is_empty()
+            })
+            .map(|(name, expression, unit)| {
+                (
+                    name.trim().to_string(),
+                    expression.trim().to_string(),
+                    unit.trim().to_string(),
+                )
+            })
+            .collect();
+        if rows
+            .iter()
+            .any(|(name, expression, _)| name.is_empty() || expression.is_empty())
+        {
+            self.error = Some("a measure needs both a name and an expression".into());
+            return;
+        }
+        let count = rows.len();
+        let applied = self.commit_model_edit("edit performance measures", |model| {
+            model.performance_measures = rows
+                .iter()
+                .map(
+                    |(name, expression, unit)| openflex_model::PerformanceMeasure {
+                        name: name.clone(),
+                        expression: expression.clone(),
+                        unit: if unit.is_empty() {
+                            None
+                        } else {
+                            Some(unit.clone())
+                        },
+                    },
+                )
+                .collect();
+            Ok(())
+        });
+        if applied {
+            self.status = format!("{count} performance measure(s)");
+        }
+    }
+
+    /// Applies the three model-trigger JSON buffers    /// Applies the three model-trigger JSON buffers through the single edit
     /// funnel, so a malformed action never reaches the model.
     fn apply_model_triggers(&mut self) {
         let parse = |text: &str| -> Result<Vec<openflex_model::Action>, String> {
@@ -8309,6 +8359,84 @@ impl eframe::App for OpenFlexApp {
                         }
                     });
                 ui.separator();
+                egui::CollapsingHeader::new(format!(
+                    "Performance measures ({})",
+                    self.model
+                        .map(|model| model.performance_measures.len())
+                        .unwrap_or(0)
+                ))
+                .id_salt("performance-measures")
+                .show(ui, |ui| {
+                    let Some(model) = self.model else {
+                        return;
+                    };
+                    // Seed the row buffers from the model only when they are
+                    // empty, so typing is never overwritten mid-edit.
+                    if self.kpi_edit.is_empty() && !model.performance_measures.is_empty() {
+                        self.kpi_edit = model
+                            .performance_measures
+                            .iter()
+                            .map(|measure| {
+                                (
+                                    measure.name.clone(),
+                                    measure.expression.clone(),
+                                    measure.unit.clone().unwrap_or_default(),
+                                )
+                            })
+                            .collect();
+                    }
+                    if model.performance_measures.is_empty() {
+                        empty_state(
+                            ui,
+                            "No performance measures",
+                            "A KPI is a named expression evaluated when the run ends.",
+                        );
+                    }
+                    let mut remove: Option<usize> = None;
+                    for (index, (name, expression, unit)) in self.kpi_edit.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(name)
+                                    .hint_text("name")
+                                    .desired_width(80.0)
+                                    .font(egui::TextStyle::Small),
+                            );
+                            ui.add(
+                                egui::TextEdit::singleline(expression)
+                                    .hint_text("expression")
+                                    .desired_width(140.0)
+                                    .font(egui::TextStyle::Monospace),
+                            );
+                            ui.add(
+                                egui::TextEdit::singleline(unit)
+                                    .hint_text("unit")
+                                    .desired_width(50.0)
+                                    .font(egui::TextStyle::Small),
+                            );
+                            if ui.small_button("-").on_hover_text("remove this measure").clicked() {
+                                remove = Some(index);
+                            }
+                        });
+                    }
+                    if let Some(index) = remove {
+                        self.kpi_edit.remove(index);
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.small_button("+ measure").clicked() {
+                            self.kpi_edit
+                                .push((String::new(), String::new(), String::new()));
+                        }
+                        if primary_button(ui, true, "Apply measures") {
+                            self.apply_performance_measures();
+                        }
+                    });
+                    ui.label(
+                        egui::RichText::new("expressions can read time, created, completed and $globals")
+                            .size(9.0_f32)
+                            .color(palette::TEXT_DIM),
+                    );
+                });
+                ui.separator();
                 egui::CollapsingHeader::new("Model triggers")
                     .id_salt("model-triggers")
                     .show(ui, |ui| {
@@ -12971,6 +13099,45 @@ mod tests {
         // A model without objects offer nothing rather than panicking.
         let empty = SamplerNames::from_model(None);
         assert!(empty.any.is_empty() && empty.operators.is_empty());
+    }
+
+    #[test]
+    fn performance_measures_editor_round_trips() {
+        let model = builtin_example("mm1").expect("example");
+        let mut app = OpenFlexApp::new(None);
+        app.model = Some(Box::leak(Box::new(model)));
+        // A half-filled row is refused before the model is touched.
+        app.kpi_edit = vec![("WIP".into(), String::new(), String::new())];
+        app.apply_performance_measures();
+        assert!(app.error.is_some(), "an empty expression must be rejected");
+        assert!(
+            app.model.expect("model").performance_measures.is_empty(),
+            "the model is unchanged"
+        );
+        app.error = None;
+        // A complete row lands, with the unit only when given.
+        app.kpi_edit = vec![
+            ("WIP".into(), "completed".into(), String::new()),
+            (
+                "PerMin".into(),
+                "completed / time".into(),
+                "items/min".into(),
+            ),
+        ];
+        app.apply_performance_measures();
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let measures = &app.model.expect("model").performance_measures;
+        assert_eq!(measures.len(), 2);
+        assert_eq!(measures[0].name, "WIP");
+        assert_eq!(measures[0].unit, None, "a blank unit stays absent");
+        assert_eq!(measures[1].unit.as_deref(), Some("items/min"));
+        // Blank rows are dropped, so an empty editor clears the list.
+        app.kpi_edit = vec![(String::new(), String::new(), String::new())];
+        app.apply_performance_measures();
+        assert!(
+            app.model.expect("model").performance_measures.is_empty(),
+            "blank rows do not create measures"
+        );
     }
 
     #[test]
