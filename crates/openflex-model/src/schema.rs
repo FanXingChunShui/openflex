@@ -384,6 +384,8 @@ fn definitions() -> Value {
             "accumulating": { "type": "boolean", "default": false },
             "item_spacing": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
             "max_content": { "type": "integer", "minimum": 1, "default": 1000 },
+            "slug": { "type": "boolean", "default": false },
+            "slug_min_gap": { "type": ["number", "null"], "exclusiveMinimum": 0 },
             "photo_eyes": {
                 "type": "array",
                 "items": {
@@ -1448,5 +1450,14 @@ mod tests {
         assert_eq!(params["task_sequence_mode"]["enum"][1], "explicit");
         let item = &params["task_sequence"]["items"]["oneOf"][1]["properties"];
         assert!(item["target"].is_object());
+    }
+
+    /// task-176: conveyor slug fields are in the schema.
+    #[test]
+    fn schema_covers_conveyor_slug() {
+        let schema = json_schema();
+        let conveyor = &schema["$defs"]["conveyor_params"]["properties"];
+        assert_eq!(conveyor["slug"]["default"], false);
+        assert!(conveyor.get("slug_min_gap").is_some());
     }
 }

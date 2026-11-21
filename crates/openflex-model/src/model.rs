@@ -81,6 +81,10 @@ impl Default for RunSettings {
     }
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 fn default_stop_time() -> f64 {
     1_000.0
 }
@@ -1700,6 +1704,12 @@ pub struct ConveyorParams {
     pub item_spacing: f64,
     #[serde(default = "default_max_content")]
     pub max_content: u32,
+    /// task-176: build slugs (tight item groups that move as one).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub slug: bool,
+    /// task-176: maximum gap inside a slug; defaults to `item_spacing`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug_min_gap: Option<f64>,
     /// Photo eyes mounted on the belt (B3): when an item reaches `position` the
     /// conveyor runs its `on_photo_eye` trigger for that item.
     #[serde(default)]
@@ -1754,6 +1764,8 @@ impl Default for ConveyorParams {
             accumulating: false,
             item_spacing: 1.0,
             max_content: 1_000,
+            slug: false,
+            slug_min_gap: None,
             photo_eyes: Vec::new(),
             stations: Vec::new(),
             join_inputs: None,

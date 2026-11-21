@@ -786,6 +786,11 @@ pub(crate) struct ObjectRt {
     operator_sources: Vec<OperatorSource>,
     /// Conveyor runtime.
     belt: Option<Belt>,
+    /// task-176: build slugs (tight groups move as one).
+    #[serde(default)]
+    belt_slug: bool,
+    #[serde(default)]
+    belt_slug_min_gap: f64,
     belt_items: Vec<FlowItem>,
     belt_last_update: f64,
     #[serde(with = "infinite_time")]
@@ -953,6 +958,8 @@ impl ObjectRt {
             operator_preempted: false,
             operator_sources: Vec::new(),
             belt: None,
+            belt_slug: false,
+            belt_slug_min_gap: 0.0,
             belt_items: Vec::new(),
             belt_last_update: now,
             belt_tick_at: f64::INFINITY,
@@ -1058,6 +1065,9 @@ impl ObjectRt {
                 if !segment_speeds.is_empty() {
                     belt.set_segments(segment_bounds, segment_speeds);
                 }
+                runtime.belt_slug = params.slug;
+                runtime.belt_slug_min_gap =
+                    params.slug_min_gap.unwrap_or(params.item_spacing).max(0.0);
                 runtime.belt = Some(belt);
                 let mut stops: Vec<BeltStop> = Vec::new();
                 for photo_eye in &params.photo_eyes {
@@ -9455,10 +9465,146 @@ impl<'m> Simulation<'m> {
         if dt <= 0.0 {
             return;
         }
-        if let Some(belt) = self.objects[index].belt.as_mut() {
+        if self.objects[index].belt_slug {
+            self.advance_slug_belt(index, dt);
+        } else if let Some(belt) = self.objects[index].belt.as_mut() {
             belt.advance(dt);
         }
         self.objects[index].belt_last_update = self.now;
+    }
+
+    fn slug_groups(&self, index: usize) -> Vec<(usize, usize)> {
+        let Some(belt) = self.objects[index].belt.as_ref() else {
+            return Vec::new();
+        };
+        let min_gap = self.objects[index].belt_slug_min_gap.max(EPS);
+        slug_groups(&belt.positions, min_gap)
+    }
+
+    fn slug_target(&self, index: usize, start: usize, stops: &[f64]) -> f64 {
+        let Some(belt) = self.objects[index].belt.as_ref() else {
+            return 0.0;
+        };
+        // Between distinct slugs the ordinary item spacing applies, exactly as
+        // on a non-slug belt; if the gap later drops below slug_min_gap the next
+        // tick groups them.
+        let separation = if start == 0 {
+            0.0
+        } else {
+            belt.spacing.max(0.0)
+        };
+        let mut target = if start == 0 {
+            belt.length
+        } else {
+            (belt.positions[start - 1] - separation).max(belt.positions[start])
+        };
+        if let Some(stop) = stops
+            .iter()
+            .copied()
+            .filter(|stop| *stop > belt.positions[start] + EPS && *stop < target)
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        {
+            target = stop;
+        }
+        target
+    }
+
+    fn slug_time_to_next_event(&self, index: usize, stops: &[f64]) -> Option<f64> {
+        let belt = self.objects[index].belt.as_ref()?;
+        if belt.is_empty() {
+            return None;
+        }
+        let groups = self.slug_groups(index);
+        let mut next: Option<f64> = None;
+        let mut consider = |time: f64| {
+            if time > EPS {
+                next = Some(next.map_or(time, |current: f64| current.min(time)));
+            }
+        };
+        for (start, end) in groups {
+            let hold = belt.holds[start..end]
+                .iter()
+                .copied()
+                .filter(|hold| *hold > EPS)
+                .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            if let Some(hold) = hold {
+                consider(hold);
+                continue;
+            }
+            let target = self.slug_target(index, start, stops);
+            if target > belt.positions[start] + EPS {
+                consider(belt.time_to_reach(belt.positions[start], target));
+            }
+        }
+        next
+    }
+
+    fn advance_slug_belt(&mut self, index: usize, dt: f64) {
+        let mut remaining = dt;
+        let mut guard = 0;
+        while remaining > EPS && guard < 10_000 {
+            guard += 1;
+            let groups = self.slug_groups(index);
+            if groups.is_empty() {
+                break;
+            }
+            let stops = self.belt_stop_positions(index);
+            let mut step = remaining;
+            let mut moving = false;
+            {
+                let Some(belt) = self.objects[index].belt.as_ref() else {
+                    break;
+                };
+                for (start, end) in &groups {
+                    let hold = belt.holds[*start..*end]
+                        .iter()
+                        .copied()
+                        .filter(|hold| *hold > EPS)
+                        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    if let Some(hold) = hold {
+                        step = step.min(hold);
+                        continue;
+                    }
+                    let target = self.slug_target(index, *start, &stops);
+                    if target > belt.positions[*start] + EPS {
+                        moving = true;
+                        step = step.min(belt.time_to_reach(belt.positions[*start], target));
+                    }
+                }
+            }
+            if !moving {
+                break;
+            }
+            let step = step.min(remaining);
+            if step <= EPS {
+                break;
+            }
+            for (start, end) in &groups {
+                let target = self.slug_target(index, *start, &stops);
+                let Some(belt) = self.objects[index].belt.as_mut() else {
+                    return;
+                };
+                if belt.holds[*start..*end].iter().any(|hold| *hold > EPS) {
+                    for hold in &mut belt.holds[*start..*end] {
+                        *hold = (*hold - step).max(0.0);
+                    }
+                } else {
+                    let position = belt.positions[*start];
+                    let delta = (belt.advance_position(position, step) - position)
+                        .min((target - position).max(0.0));
+                    for offset in *start..*end {
+                        belt.positions[offset] = (belt.positions[offset] + delta)
+                            .min(if offset == 0 {
+                                belt.length
+                            } else {
+                                f64::INFINITY
+                            })
+                            .max(belt.positions[offset]);
+                    }
+                }
+            }
+            remaining -= step;
+        }
     }
 
     /// Positions of the photo eyes and stations on a belt, sorted ascending.
@@ -9556,11 +9702,15 @@ impl<'m> Simulation<'m> {
     /// Schedule the next movement boundary, if the belt is moving.
     fn schedule_belt_tick(&mut self, index: usize) {
         let stops = self.belt_stop_positions(index);
-        let Some(dt) = self.objects[index]
-            .belt
-            .as_ref()
-            .and_then(|belt| belt.time_to_next_event_with_stops(&stops))
-        else {
+        let next = if self.objects[index].belt_slug {
+            self.slug_time_to_next_event(index, &stops)
+        } else {
+            self.objects[index]
+                .belt
+                .as_ref()
+                .and_then(|belt| belt.time_to_next_event_with_stops(&stops))
+        };
+        let Some(dt) = next else {
             return;
         };
         if dt <= EPS {
@@ -10741,6 +10891,22 @@ fn network_distance_positions(
 
 fn node_network_distance(model: &Model, from: &ObjectRt, to: &ObjectRt) -> Option<f64> {
     network_distance_positions(model, from.position, to.position)
+}
+
+fn slug_groups(positions: &[f64], min_gap: f64) -> Vec<(usize, usize)> {
+    if positions.is_empty() {
+        return Vec::new();
+    }
+    let mut groups = Vec::new();
+    let mut start = 0;
+    for index in 1..positions.len() {
+        if positions[index - 1] - positions[index] >= min_gap - EPS {
+            groups.push((start, index));
+            start = index;
+        }
+    }
+    groups.push((start, positions.len()));
+    groups
 }
 
 fn route_distance(model: &Model, from: [f64; 2], to: [f64; 2]) -> f64 {
@@ -15278,5 +15444,161 @@ mod tests {
                 .map(|event| (event.event.clone(), event.time, event.data.clone()))
                 .collect::<Vec<_>>()
         );
+    }
+
+    fn slug_belt_model(slug: &str, min_gap: &str) -> String {
+        format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "slug",
+          "run": {{ "stop_time": 100.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1.0 }},
+                "max_arrivals": 3, "first_arrival": 0.0 }} }},
+            {{ "name": "C", "kind": "conveyor", "params": {{
+                "speed": 1.0, "length": 10.0, "accumulating": true,
+                "item_spacing": 1.0{slug}{min_gap} }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [{{ "from": "S", "to": "C" }}, {{ "from": "C", "to": "K" }}]
+        }}"#
+        )
+    }
+
+    fn slug_sim(slug: &str, min_gap: &str) -> (Simulation<'static>, usize) {
+        // Leak the model so the Simulation can hold the reference in tests.
+        let model: &'static Model = Box::leak(Box::new(
+            Model::from_json(&slug_belt_model(slug, min_gap)).expect("model"),
+        ));
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let sim = Simulation::new(model, config, false).expect("sim");
+        let index = sim.by_name["C"];
+        (sim, index)
+    }
+
+    /// task-176: items closer than slug_min_gap move as one rigid group; the
+    /// whole group stops when its leader is blocked and resumes together.
+    #[test]
+    fn slug_group_moves_and_blocks_as_one() {
+        let (mut sim, c) = slug_sim(r#", "slug": true"#, r#", "slug_min_gap": 2.0"#);
+        sim.objects[c].belt.as_mut().expect("belt").positions = vec![8.0, 6.5, 5.0];
+        sim.objects[c].belt.as_mut().expect("belt").holds = vec![0.0; 3];
+        sim.objects[c].belt_last_update = 0.0;
+        sim.now = 2.0;
+        sim.sync_belt(c);
+        let positions = sim.objects[c]
+            .belt
+            .as_ref()
+            .expect("belt")
+            .positions
+            .clone();
+        assert!((positions[0] - 10.0).abs() < 1e-9, "{positions:?}");
+        assert!((positions[1] - 8.5).abs() < 1e-9, "{positions:?}");
+        assert!((positions[2] - 7.0).abs() < 1e-9, "{positions:?}");
+        // The leader is at the exit: the whole group stops.
+        sim.now = 4.0;
+        sim.sync_belt(c);
+        assert_eq!(
+            sim.objects[c].belt.as_ref().expect("belt").positions,
+            vec![10.0, 8.5, 7.0]
+        );
+        // Release the leader: the rest of the slug resumes with unchanged gaps.
+        sim.objects[c].belt.as_mut().expect("belt").remove_front();
+        sim.now = 5.0;
+        sim.sync_belt(c);
+        let positions = sim.objects[c]
+            .belt
+            .as_ref()
+            .expect("belt")
+            .positions
+            .clone();
+        assert!((positions[0] - 9.5).abs() < 1e-9, "{positions:?}");
+        assert!((positions[1] - 8.0).abs() < 1e-9, "{positions:?}");
+        assert!(
+            (positions[0] - positions[1] - 1.5).abs() < 1e-9,
+            "{positions:?}"
+        );
+    }
+
+    /// task-176: items farther apart than slug_min_gap stay independent.
+    #[test]
+    fn far_apart_items_are_not_slugged() {
+        let (mut sim, c) = slug_sim(r#", "slug": true"#, r#", "slug_min_gap": 2.0"#);
+        sim.objects[c].belt.as_mut().expect("belt").positions = vec![8.0, 4.0];
+        sim.objects[c].belt.as_mut().expect("belt").holds = vec![0.0; 2];
+        sim.objects[c].belt_last_update = 0.0;
+        sim.now = 2.0;
+        sim.sync_belt(c);
+        let positions = sim.objects[c]
+            .belt
+            .as_ref()
+            .expect("belt")
+            .positions
+            .clone();
+        assert!((positions[0] - 10.0).abs() < 1e-9, "{positions:?}");
+        assert!((positions[1] - 6.0).abs() < 1e-9, "{positions:?}");
+        assert!(
+            (positions[0] - positions[1] - 4.0).abs() < 1e-9,
+            "{positions:?}"
+        );
+    }
+
+    /// task-176: `slug` absent and `slug:false` produce identical old reports.
+    #[test]
+    fn slug_false_keeps_the_old_report() {
+        let absent = Model::from_json(&slug_belt_model("", "")).expect("absent");
+        let explicit_false =
+            Model::from_json(&slug_belt_model(r#", "slug": false"#, "")).expect("false");
+        let value = serde_json::to_value(&absent).expect("model json");
+        assert!(
+            value["objects"][1]["params"].get("slug").is_none(),
+            "default slug must not be serialized"
+        );
+        let a = crate::run_model(&absent).expect("run absent");
+        let b = crate::run_model(&explicit_false).expect("run false");
+        assert_eq!(
+            serde_json::to_string(&a).expect("json"),
+            serde_json::to_string(&b).expect("json")
+        );
+        assert_eq!(
+            serde_json::to_string(&a).expect("json"),
+            serde_json::to_string(&crate::run_model(&absent).expect("repeat")).expect("json")
+        );
+    }
+
+    /// task-176: slug runs are deterministic for one seed.
+    #[test]
+    fn slug_mode_is_deterministic() {
+        let model = Model::from_json(&slug_belt_model(
+            r#", "slug": true"#,
+            r#", "slug_min_gap": 2.0"#,
+        ))
+        .expect("model");
+        let a = crate::run_model(&model).expect("first");
+        let b = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&a).expect("json"),
+            serde_json::to_string(&b).expect("json")
+        );
+        assert_eq!(a.completed.mean, b.completed.mean);
+    }
+
+    /// task-176: slug mode still produces self-consistent stay/throughput stats.
+    #[test]
+    fn slug_mode_keeps_stay_and_throughput_consistent() {
+        let model = Model::from_json(&slug_belt_model(
+            r#", "slug": true"#,
+            r#", "slug_min_gap": 2.0"#,
+        ))
+        .expect("model");
+        let report = crate::run_model(&model).expect("run");
+        assert!(report.replications[0].items_completed > 0);
+        assert!(report.completed.mean > 0.0);
+        assert!(report.objects["C"].throughput.mean > 0.0);
+        assert!(report.objects["C"].avg_stay_time.mean >= 0.0);
     }
 }

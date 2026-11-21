@@ -4,6 +4,17 @@
 
 ### 模型与引擎
 
+- **conveyor slug 累积**：`ConveyorParams` 新增 `slug: bool`（缺省 false，**不序列化**、旧模型与数值逐位不变）
+  与 `slug_min_gap`（缺省 = `item_spacing`）。`slug: true` 时皮带相邻两件间隙小于该值即视为一组，
+  整组以**组首**位移整体推进（组内间隙恒定、不压缩不拉开），组首到出口或被限位时**整组同时停**，
+  出口件移除后整组同时恢复；不同 slug 组之间仍按普通 `item_spacing`。
+  实现是一条独立的 `advance_slug_belt`，`slug` 缺省时仍走原 `Belt::advance`、一行未改。
+  实测（单元，三件 `[8.0, 6.5, 5.0]`）：推进 2s → `[10.0, 8.5, 7.0]` 到位停住；移除组首后推进 1s →
+  `[9.5, 8.0]`，间隙仍 1.5；间隙 4 > 2 的两件与 `slug:false` 的推进逐位一致。
+  **说明**：slug 改变的是**运动耦合**而非容量，所以我用 CLI 端到端对比 `maxWIP`（两者都是 11）
+  看不出差异——这符合设计，其行为由单元测试的位置序列锁定。
+  缺口（未近似实现）：合流控制器、光电门阵列高级语义、Mass Flow、slug 可视化/报告列。
+
 - **`explicit` 第二刀：load/unload 与 release 同步**：explicit 路线现支持 `travel/load/unload/utilize/break`
   五类腿，`pickup` / `requester` 目标**真正实现**（不再报未实现）。
   `unload` 完成瞬间触发**恰一次** `OperatorLoaded`；其后若下一腿不是 `utilize`/`break`，

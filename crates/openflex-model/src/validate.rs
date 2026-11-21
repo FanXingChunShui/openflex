@@ -676,6 +676,14 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                     "must be positive",
                 ));
             }
+            if let Some(gap) = params.slug_min_gap
+                && (!gap.is_finite() || gap <= 0.0)
+            {
+                issues.push(ValidationIssue::new(
+                    location("slug_min_gap"),
+                    "must be positive",
+                ));
+            }
             if params.max_content == 0 {
                 issues.push(ValidationIssue::new(
                     location("max_content"),
