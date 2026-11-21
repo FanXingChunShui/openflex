@@ -9,6 +9,49 @@
 > 规格与证据来源见 [research/evidence.md](research/evidence.md) 与 [spec/](spec/)。
 > 所有结论来自公开帮助文档（`help.autodesk.com/view/FLEXSIMIN/2025/ENU/`）与公开教材，未接触 FlexSim 源代码或二进制。
 
+## FlexSim 7.5 中文版对象库逐项对照
+
+以 `/Users/ckwang/Downloads/FlexSimChinese7.5/FlexSimChinese7.5/help/FlexSimObjectLibrary`
+的 39 个帮助页为权威清单（2023-05-10 发行版）逐项核对。
+
+| FlexSim 7.5 对象 | OpenFlex 对应 | 状态 |
+|---|---|---|
+| Source | `source` | ✅ |
+| Queue | `queue` | ✅ |
+| Processor | `processor` | ✅ |
+| Sink | `sink` | ✅ |
+| Combiner | `combiner` | ✅ |
+| Separator | `separator` | ✅ |
+| MultiProcessor | `multiprocessor` | ✅ |
+| Rack | `rack` | 🟡 无空位查表/并发取货 |
+| BasicFR | `basic_fr` | ✅ |
+| Dispatcher | `dispatcher` | 🟡 无多段中途事件 |
+| TaskExecuter / Transporter | `transporter` | 🟡 无自定义多段任务序列 |
+| Operator | `person` | 🟡 无真正避让 |
+| Elevator | `elevator` | 🟡 无门控/超载 |
+| Robot | `robot` | 🟡 网格 A*，无抓取运动学 |
+| Crane | `crane` | 🟡 无运动学曲线 |
+| ASRSvehicle | `asrs_vehicle` | 🟡 共用 TransporterParams |
+| BasicTE | `basic_te` | ✅ |
+| Ticker | `ticker` | ✅ |
+| FluidTank | `fluid_tank` | ✅ |
+| FluidGenerator | `fluid_generator` | ✅ |
+| FluidTerminator | `fluid_sink` | ✅ |
+| FluidMixer | `fluid_mixer` | ✅ |
+| FluidBlender | `fluid_blender` | ✅ |
+| FluidSplitter | `fluid_splitter` | ✅ |
+| FluidPipe | `fluid_pipe` | ✅ |
+| FluidProcessor | `fluid_processor` | ✅ |
+| ItemToFluid | `item_to_fluid` | ✅ |
+| FluidToItem | `fluid_to_item` | ✅ |
+| VisualTool | `visual_tool` | ✅ |
+| NetworkNode | — | ⛔ 待补：路网节点作为一等对象 |
+| TrafficControl | — | ⛔ 待补：交通控制区互斥 |
+
+> FlexSim 的 `NetworkNode` / `TrafficControl` 目前以 `transporter.network` 边表
+> （`[{from, to, distance}]`）的形式存在，能算最短路，但不是可摆放、可连线的对象，
+> 也没有「交通控制区」的互斥语义。这是对象库对齐后仅剩的两个缺口。
+
 ## 对象库
 
 | FlexSim 对象 | OpenFlex | 状态 | 说明 / 简化点 |
@@ -32,7 +75,7 @@
 | Robot / Crane / ASRS | `robot` / `crane` / `asrs_vehicle` | 🟡 | 执行器变体：robot grid 8 邻接绕障、crane max(垂直,水平)、ASRS/AGV network 最短路；共用 TransporterParams |
 | Escalator | `escalator` | 🟡 | 复用 conveyor 皮带语义（人员输送）；无独立密度/碰撞 |
 | MultiProcessor | `multiprocessor` | ✅ | 多槽并行加工，每槽 setup/process，操作员按忙碌期申请 |
-| Fluid（流体） | `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_pipe` / `fluid_sink` | 🟡 | 固定步长、液位/溢出、pipe 延迟/背压/压力场、valve 滞回；**Darcy 参数已接线**（pressure-mode pipe `Q=√(Δp/R)` + ρ(T)），缺参数回退线性标定；distribute cap/valve 开度待接线；无多相/可压缩 |
+| Fluid（流体） | `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_pipe` / `fluid_sink` / `ticker` / `fluid_processor` / `fluid_blender` / `fluid_mixer` / `fluid_splitter` / `item_to_fluid` / `fluid_to_item` | 🟢 | 固定步长、液位/溢出、pipe 延迟/背压/压力场、valve 滞回；**Darcy 参数已接线**（pressure-mode pipe `Q=√(Δp/R)` + ρ(T)），缺参数回退线性标定；processor 速率/容量/损耗、splitter 百分比（按比例缩放）、blender 速率/配比/损耗、mixer 批步、两个桥接方向的离散↔流体换算均已接线；仍无多相/可压缩 |
 | People / A* 行走 | `person` | 🟡 | `grid` 8 邻接 A* + 密度折减；无真正避让/重规划 |
 | AGV / 交通控制 | `agv` | 🟡 | transporter alias + 电池（容量/耗电/充电）；无交通控制/途中耗尽 |
 | Elevator / 电梯 | `elevator` | 🟡 | 垂直运输、停靠、召唤/方向优先；无门控/超载/井道冲突 |

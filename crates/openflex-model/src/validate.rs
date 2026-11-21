@@ -1147,6 +1147,167 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                 ));
             }
         }
+        crate::model::ObjectParams::Ticker(params) => {
+            if !params.tick_length.is_finite() || params.tick_length <= 0.0 {
+                issues.push(ValidationIssue::new(
+                    location("tick_length"),
+                    "must be positive",
+                ));
+            }
+        }
+        crate::model::ObjectParams::FluidMixer(params) => {
+            if !params.product_id.is_finite() || params.product_id < 0.0 {
+                issues.push(ValidationIssue::new(
+                    location("product_id"),
+                    "must be non-negative",
+                ));
+            }
+            for (index, step) in params.steps.iter().enumerate() {
+                if step
+                    .pull
+                    .iter()
+                    .any(|pull| !pull.is_finite() || *pull < 0.0)
+                {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("steps[{index}].pull")),
+                        "pull volumes must be finite and non-negative",
+                    ));
+                }
+                if !step.delay.is_finite() || step.delay < 0.0 {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("steps[{index}].delay")),
+                        "must be non-negative",
+                    ));
+                }
+            }
+        }
+        crate::model::ObjectParams::FluidBlender(params) => {
+            if !params.output_rate.is_finite() || params.output_rate <= 0.0 {
+                issues.push(ValidationIssue::new(
+                    location("output_rate"),
+                    "must be positive",
+                ));
+            }
+            if params
+                .ratios
+                .iter()
+                .any(|ratio| !ratio.is_finite() || *ratio < 0.0)
+            {
+                issues.push(ValidationIssue::new(
+                    location("ratios"),
+                    "ratios must be finite and non-negative",
+                ));
+            }
+            if params.ratios.iter().sum::<f64>() <= 0.0 && !params.ratios.is_empty() {
+                issues.push(ValidationIssue::new(
+                    location("ratios"),
+                    "at least one ratio must be greater than zero",
+                ));
+            }
+            if !params.loss.is_finite() || !(0.0..1.0).contains(&params.loss) {
+                issues.push(ValidationIssue::new(
+                    location("loss"),
+                    "must be between 0 and 1",
+                ));
+            }
+        }
+        crate::model::ObjectParams::FluidSplitter(params) => {
+            if !params.output_rate.is_finite() || params.output_rate < 0.0 {
+                issues.push(ValidationIssue::new(
+                    location("output_rate"),
+                    "must be non-negative",
+                ));
+            }
+            for (index, output) in params.outputs.iter().enumerate() {
+                if !output.percent.is_finite() || !(0.0..=100.0).contains(&output.percent) {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("outputs[{index}].percent")),
+                        "must be between 0 and 100",
+                    ));
+                }
+            }
+            if params
+                .outputs
+                .iter()
+                .map(|output| output.percent)
+                .sum::<f64>()
+                > 100.0 + 1e-9
+                && !params.outputs.is_empty()
+            {
+                issues.push(ValidationIssue::new(
+                    location("outputs"),
+                    "the split percentages must not add up to more than 100",
+                ));
+            }
+        }
+        crate::model::ObjectParams::FluidProcessor(params) => {
+            if !params.max_output_rate.is_finite() || params.max_output_rate <= 0.0 {
+                issues.push(ValidationIssue::new(
+                    location("max_output_rate"),
+                    "must be positive",
+                ));
+            }
+            if !params.max_capacity.is_finite() || params.max_capacity <= 0.0 {
+                issues.push(ValidationIssue::new(
+                    location("max_capacity"),
+                    "must be positive",
+                ));
+            }
+            if !params.loss.is_finite() || !(0.0..1.0).contains(&params.loss) {
+                issues.push(ValidationIssue::new(
+                    location("loss"),
+                    "must be between 0 and 1",
+                ));
+            }
+        }
+        crate::model::ObjectParams::ItemToFluid(params) => {
+            if !params.fluid_per_unit.is_finite() || params.fluid_per_unit <= 0.0 {
+                issues.push(ValidationIssue::new(
+                    location("fluid_per_unit"),
+                    "must be positive",
+                ));
+            }
+            if !params.units_per_item.is_finite() || params.units_per_item <= 0.0 {
+                issues.push(ValidationIssue::new(
+                    location("units_per_item"),
+                    "must be positive",
+                ));
+            }
+        }
+        crate::model::ObjectParams::FluidToItem(params) => {
+            if !params.fluid_per_item.is_finite() || params.fluid_per_item <= 0.0 {
+                issues.push(ValidationIssue::new(
+                    location("fluid_per_item"),
+                    "must be positive",
+                ));
+            }
+            if !params.units_per_item.is_finite() || params.units_per_item <= 0.0 {
+                issues.push(ValidationIssue::new(
+                    location("units_per_item"),
+                    "must be positive",
+                ));
+            }
+        }
+        crate::model::ObjectParams::VisualTool(params) => {
+            if params
+                .size
+                .iter()
+                .any(|value| !value.is_finite() || *value <= 0.0)
+            {
+                issues.push(ValidationIssue::new(
+                    location("size"),
+                    "every dimension must be positive",
+                ));
+            }
+            if let Some(color) = params.color.as_deref()
+                && !is_hex_color(color)
+            {
+                issues.push(ValidationIssue::new(
+                    location("color"),
+                    "must be a hexadecimal colour such as #336699",
+                ));
+            }
+        }
         crate::model::ObjectParams::FluidSink(_) => {}
         crate::model::ObjectParams::Sink(_)
         | crate::model::ObjectParams::Merge(_)
@@ -1157,6 +1318,15 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
 
     issues.extend(validate_trigger_scripts(object));
     issues
+}
+
+/// `#rrggbb` (or `#rgb`), the only colour form the GUI and SVG export accept.
+fn is_hex_color(value: &str) -> bool {
+    let hex = match value.strip_prefix('#') {
+        Some(hex) => hex,
+        None => return false,
+    };
+    matches!(hex.len(), 3 | 6) && hex.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Objects that may take part in an S (center-port) connection.
@@ -1604,6 +1774,10 @@ fn has_cycle(
 }
 
 /// Whether an object kind belongs to the fluid family.
+///
+/// The two bridges (`item_to_fluid`, `fluid_to_item`) are deliberately *not*
+/// part of this set: they exist to connect the fluid and the discrete side, so
+/// the "fluid and discrete cannot connect" rule must not reject them.
 pub fn is_fluid_kind(kind: ObjectKind) -> bool {
     matches!(
         kind,
@@ -1612,7 +1786,17 @@ pub fn is_fluid_kind(kind: ObjectKind) -> bool {
             | ObjectKind::FluidValve
             | ObjectKind::FluidSink
             | ObjectKind::FluidPipe
+            | ObjectKind::Ticker
+            | ObjectKind::FluidMixer
+            | ObjectKind::FluidBlender
+            | ObjectKind::FluidSplitter
+            | ObjectKind::FluidProcessor
     )
+}
+
+/// Whether an object kind converts between the fluid and the discrete side.
+pub fn is_fluid_bridge(kind: ObjectKind) -> bool {
+    matches!(kind, ObjectKind::ItemToFluid | ObjectKind::FluidToItem)
 }
 
 /// Validate the fluid sub-graph (B5).
@@ -1651,11 +1835,22 @@ fn validate_fluid(model: &Model) -> Vec<ValidationIssue> {
         let from_fluid = fluid_names.contains(connection.from.as_str());
         let to_fluid = fluid_names.contains(connection.to.as_str());
         let location = format!("connections {} -> {}", connection.from, connection.to);
-        if from_fluid != to_fluid {
+        // A bridge object may sit on either side of the boundary.
+        let touches_bridge = model
+            .object(&connection.from)
+            .is_some_and(|object| is_fluid_bridge(object.kind))
+            || model
+                .object(&connection.to)
+                .is_some_and(|object| is_fluid_bridge(object.kind));
+        if from_fluid != to_fluid && !touches_bridge {
             issues.push(ValidationIssue::new(
                 &location,
                 "fluid and discrete objects cannot be connected to each other",
             ));
+            continue;
+        }
+        if from_fluid != to_fluid {
+            // A bridge connection: nothing further to check in the fluid graph.
             continue;
         }
         if !from_fluid {

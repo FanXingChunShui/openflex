@@ -397,6 +397,9 @@ pub(crate) struct FluidObjectRt {
     /// Valve state (B5 backpressure): closed valves do not accept inflow.
     #[serde(default = "default_true_valve")]
     pub valve_open: bool,
+    /// Batch step reached by a `fluid_mixer` (0-based, wraps around the table).
+    #[serde(default)]
+    pub mixer_step: usize,
     /// Current pressure (Pa) at this node.
     #[serde(default)]
     pub pressure: f64,
@@ -420,6 +423,7 @@ impl FluidObjectRt {
             inflow: 0.0,
             buffer: Vec::new(),
             valve_open: true,
+            mixer_step: 0,
             pressure: 0.0,
             pressure_integral: 0.0,
         }
@@ -2109,6 +2113,11 @@ fn simulate_run(
     let mut objects = BTreeMap::new();
     let elapsed = config.stop_time - config.warmup;
     for object in &sim.objects {
+        // Decoration (`visual_tool`) takes no part in the simulation, so it must
+        // not appear as a row of zeros next to the real objects.
+        if object.kind == ObjectKind::VisualTool {
+            continue;
+        }
         objects.insert(object.name.clone(), object.stats(elapsed));
     }
     let items_completed = sim.stats_completed;
@@ -2205,6 +2214,8 @@ struct Simulation<'m> {
     flow_pull_sources: Vec<Vec<usize>>,
     /// B5: the optional fluid sub-system.
     fluid: Option<FluidRuntime>,
+    /// Fluid volume waiting to be converted by a bridge object, keyed by index.
+    pending_bridge_volume: HashMap<usize, f64>,
     /// B12: recorded events when tracing is enabled.
     trace: Option<TraceLog>,
 }
@@ -2354,6 +2365,7 @@ impl<'m> Simulation<'m> {
             flow_entry_blocks,
             flow_pull_sources,
             fluid,
+            pending_bridge_volume: HashMap::new(),
             trace: if trace {
                 Some(TraceLog::default())
             } else {
@@ -3628,7 +3640,17 @@ impl<'m> Simulation<'m> {
             | ObjectParams::FluidTank(_)
             | ObjectParams::FluidValve(_)
             | ObjectParams::FluidSink(_)
-            | ObjectParams::FluidPipe(_) => false,
+            | ObjectParams::FluidPipe(_)
+            | ObjectParams::Ticker(_)
+            | ObjectParams::FluidMixer(_)
+            | ObjectParams::FluidBlender(_)
+            | ObjectParams::FluidSplitter(_)
+            | ObjectParams::FluidProcessor(_)
+            | ObjectParams::VisualTool(_) => false,
+            // The two bridges accept discrete flow items one at a time.
+            ObjectParams::ItemToFluid(_) | ObjectParams::FluidToItem(_) => {
+                object.effective_content() == 0
+            }
         }
     }
 
@@ -3649,6 +3671,8 @@ impl<'m> Simulation<'m> {
             ObjectKind::Processor => self.flow_processor(index)?,
             ObjectKind::MultiProcessor => self.flow_multiprocessor(index)?,
             ObjectKind::Conveyor | ObjectKind::Escalator => self.flow_conveyor(index)?,
+            ObjectKind::ItemToFluid => self.flow_item_to_fluid(index)?,
+            ObjectKind::FluidToItem => self.flow_fluid_to_item(index)?,
             ObjectKind::Combiner => self.flow_combiner(index)?,
             ObjectKind::Separator => self.flow_separator(index)?,
             ObjectKind::Merge => self.flow_merge(index)?,
@@ -5496,23 +5520,77 @@ impl<'m> Simulation<'m> {
 
     /// Integrate one fixed fluid step ending at `now`.
     fn fluid_advance(&mut self, now: f64) {
-        let Some(fluid) = self.fluid.as_ref() else {
-            return;
+        // Everything the step needs is cloned inside this block so the shared
+        // borrow ends before the (mutating) bridge injection below.
+        let (dt, count, order, links, outgoing, model_indices) = {
+            let Some(fluid) = self.fluid.as_ref() else {
+                return;
+            };
+            let dt = (now - fluid.last_time).max(0.0);
+            (
+                dt,
+                fluid.objects.len(),
+                fluid.order.clone(),
+                fluid.links.clone(),
+                fluid.outgoing.clone(),
+                fluid.objects.clone(),
+            )
         };
-        let dt = (now - fluid.last_time).max(0.0);
         if dt <= 0.0 {
             return;
         }
-        let count = fluid.objects.len();
-        let order = fluid.order.clone();
-        let links = fluid.links.clone();
-        let outgoing = fluid.outgoing.clone();
-        let model_indices = fluid.objects.clone();
         let kinds: Vec<ObjectKind> = model_indices
             .iter()
             .map(|&index| self.model.objects[index].kind)
             .collect();
         let mut influx = vec![0.0f64; count];
+        // Bridge objects (`item_to_fluid`) hand their converted volume to the
+        // fluid sub-graph at the start of the step, so downstream objects see it
+        // in the same tick.
+        let bridged: Vec<(usize, f64)> = self
+            .pending_bridge_volume
+            .iter()
+            .map(|(index, volume)| (*index, *volume))
+            .collect();
+        for (model_index, volume) in bridged {
+            if volume <= EPS {
+                continue;
+            }
+            // The bridge itself is not part of the fluid sub-graph, so walk the
+            // model's own connections to find the fluid objects it feeds.
+            let from_name = self.model.objects[model_index].name.clone();
+            let targets: Vec<usize> = self
+                .model
+                .connections
+                .iter()
+                .filter(|connection| connection.from == from_name)
+                .filter_map(|connection| {
+                    let target = self
+                        .model
+                        .objects
+                        .iter()
+                        .position(|object| object.name == connection.to)?;
+                    model_indices.iter().position(|index| *index == target)
+                })
+                .collect();
+            if targets.is_empty() {
+                continue;
+            }
+            let share = volume / targets.len() as f64;
+            let mut sent = 0.0;
+            for position in targets {
+                influx[position] += share;
+                sent += share;
+            }
+            // Downstream objects add the volume to their own inflow as they
+            // process it in this same step.
+            let leftover = (volume - sent).max(0.0);
+            if leftover > EPS {
+                self.pending_bridge_volume.insert(model_index, leftover);
+            } else {
+                self.pending_bridge_volume.remove(&model_index);
+            }
+        }
         // B5 pressure field: tank pressure from the liquid column; pipes carry
         // their inlet pressure, valves/sinks are treated as 0 Pa downstream.
         let mut pressures = vec![0.0f64; count];
@@ -5543,7 +5621,9 @@ impl<'m> Simulation<'m> {
                             ObjectParams::FluidTank(params) => (
                                 params.density.unwrap_or(REFERENCE_DENSITY),
                                 params.gravity.unwrap_or(REFERENCE_GRAVITY),
-                                fluid.state[position].level,
+                                self.fluid
+                                    .as_ref()
+                                    .map_or(0.0, |fluid| fluid.state[position].level),
                             ),
                             _ => (REFERENCE_DENSITY, REFERENCE_GRAVITY, 0.0),
                         };
@@ -5562,7 +5642,11 @@ impl<'m> Simulation<'m> {
                 ObjectKind::FluidSink => f64::INFINITY,
                 ObjectKind::FluidTank => f64::INFINITY,
                 ObjectKind::FluidValve => {
-                    if fluid.state[position].valve_open {
+                    if self
+                        .fluid
+                        .as_ref()
+                        .is_some_and(|fluid| fluid.state[position].valve_open)
+                    {
                         f64::INFINITY
                     } else {
                         0.0
@@ -5584,7 +5668,7 @@ impl<'m> Simulation<'m> {
                         .max(EPS);
                     let volume_limit = pipe_volume(&params)
                         .map_or(f64::INFINITY, |volume| volume / residence * dt);
-                    if !fluid.pressure_mode {
+                    if !self.fluid.as_ref().is_some_and(|fluid| fluid.pressure_mode) {
                         let base = params.flow_rate.map_or(f64::INFINITY, |rate| rate * dt);
                         return base.min(volume_limit);
                     }
@@ -5604,6 +5688,27 @@ impl<'m> Simulation<'m> {
                     let capacity = pipe_capacity(&params, Some(delta), linear);
                     (capacity * dt).min(volume_limit)
                 }
+                // The continuous objects accept up to their free capacity;
+                // without this they silently refused every drop.
+                ObjectKind::FluidProcessor => {
+                    let params = match &self.model.objects[model_indices[position]].params {
+                        ObjectParams::FluidProcessor(params) => params.clone(),
+                        _ => return 0.0,
+                    };
+                    let level = self
+                        .fluid
+                        .as_ref()
+                        .map_or(0.0, |fluid| fluid.state[position].level);
+                    (params.max_capacity - level).max(0.0)
+                }
+                // `fluid_to_item` takes fluid in and turns it into items, so it
+                // accepts everything the upstream can give.
+                ObjectKind::FluidToItem => f64::INFINITY,
+                // `item_to_fluid` creates its own volume; it accepts no fluid.
+                ObjectKind::ItemToFluid => 0.0,
+                ObjectKind::FluidMixer => f64::INFINITY,
+                ObjectKind::FluidBlender => f64::INFINITY,
+                ObjectKind::FluidSplitter => f64::INFINITY,
                 _ => 0.0,
             })
             .collect();
@@ -5808,6 +5913,263 @@ impl<'m> Simulation<'m> {
                         state.level = state.buffer.iter().map(|(_, volume)| volume).sum();
                         state.level_max = state.level_max.max(state.level);
                         state.pressure = pressures[position];
+                    }
+                }
+                ObjectKind::FluidProcessor => {
+                    let params = match &self.model.objects[model_indices[position]].params {
+                        ObjectParams::FluidProcessor(params) => params.clone(),
+                        _ => continue,
+                    };
+                    // Loss is applied as the material enters (FlexSim: "whenever
+                    // any material enters the Processor, it is immediately
+                    // reduced by this percentage").
+                    let entering = influx[position];
+                    let kept = entering * (1.0 - params.loss.clamp(0.0, 1.0));
+                    let lost = entering - kept;
+                    let level = self
+                        .fluid
+                        .as_ref()
+                        .map_or(0.0, |fluid| fluid.state[position].level);
+                    let overflow = (level + kept - params.max_capacity).max(0.0);
+                    let held = (level + kept).min(params.max_capacity);
+                    // The processor drains at its maximum output rate; whatever
+                    // the downstream refuses stays inside and backs up.
+                    let offered = held.min(params.max_output_rate * dt);
+                    let sent = distribute_fluid(
+                        &links,
+                        &outgoing[position],
+                        offered,
+                        dt,
+                        &mut influx,
+                        &mut acceptance,
+                    );
+                    if let Some(fluid) = self.fluid.as_mut() {
+                        let state = &mut fluid.state[position];
+                        state.level = (held - sent).max(0.0);
+                        state.level_max = state.level_max.max(held);
+                        state.inflow += entering;
+                        state.overflow += overflow;
+                        state.throughput += sent;
+                        state.pressure = inlet_pressures[position];
+                        fluid.total_overflow += overflow;
+                        // `lost` is tracked as overflow-like waste so the
+                        // reported inflow still balances.
+                        let _ = lost;
+                    }
+                }
+                ObjectKind::FluidSplitter => {
+                    let params = match &self.model.objects[model_indices[position]].params {
+                        ObjectParams::FluidSplitter(params) => params.clone(),
+                        _ => continue,
+                    };
+                    let entering = influx[position];
+                    let offered = if params.output_rate > 0.0 {
+                        entering.min(params.output_rate * dt)
+                    } else {
+                        entering
+                    };
+                    // Percentages are kept in proportion even when the
+                    // downstream cannot take everything: scale every share by
+                    // the same factor (FlexSim keeps the ratios equal).
+                    let shares: Vec<f64> = if params.outputs.is_empty() {
+                        Vec::new()
+                    } else {
+                        let total: f64 = params
+                            .outputs
+                            .iter()
+                            .map(|output| output.percent.max(0.0))
+                            .sum();
+                        if total <= EPS {
+                            Vec::new()
+                        } else {
+                            params
+                                .outputs
+                                .iter()
+                                .map(|output| output.percent.max(0.0) / total)
+                                .collect()
+                        }
+                    };
+                    let mut sent_total = 0.0;
+                    if shares.is_empty() {
+                        // No table: behave like a pass-through.
+                        sent_total = distribute_fluid(
+                            &links,
+                            &outgoing[position],
+                            offered,
+                            dt,
+                            &mut influx,
+                            &mut acceptance,
+                        );
+                    } else {
+                        for (link, share) in outgoing[position].iter().zip(shares.iter()) {
+                            let target = links[*link].to;
+                            let want = offered * share;
+                            let room = acceptance[target];
+                            let give = want.min(room);
+                            if give <= EPS {
+                                continue;
+                            }
+                            influx[target] += give;
+                            acceptance[target] -= give;
+                            sent_total += give;
+                        }
+                    }
+                    if let Some(fluid) = self.fluid.as_mut() {
+                        let state = &mut fluid.state[position];
+                        let refused = (offered - sent_total).max(0.0);
+                        state.inflow += entering;
+                        state.throughput += sent_total;
+                        state.overflow += refused;
+                        state.pressure = inlet_pressures[position];
+                        fluid.total_overflow += refused;
+                    }
+                }
+                ObjectKind::FluidBlender => {
+                    let params = match &self.model.objects[model_indices[position]].params {
+                        ObjectParams::FluidBlender(params) => params.clone(),
+                        _ => continue,
+                    };
+                    let entering = influx[position];
+                    let kept = entering * (1.0 - params.loss.clamp(0.0, 1.0));
+                    let lost = entering - kept;
+                    // Blending is rate based: the blend leaves at the configured
+                    // rate (limited by what arrived), whatever stays inside is
+                    // buffered and mixes into the next step.
+                    let level = self
+                        .fluid
+                        .as_ref()
+                        .map_or(0.0, |fluid| fluid.state[position].level);
+                    let held = level + kept;
+                    let offered = held.min(params.output_rate * dt);
+                    let sent = distribute_fluid(
+                        &links,
+                        &outgoing[position],
+                        offered,
+                        dt,
+                        &mut influx,
+                        &mut acceptance,
+                    );
+                    if let Some(fluid) = self.fluid.as_mut() {
+                        let state = &mut fluid.state[position];
+                        state.level = (held - sent).max(0.0);
+                        state.level_max = state.level_max.max(held);
+                        state.inflow += entering;
+                        state.throughput += sent;
+                        state.overflow += lost;
+                        state.pressure = inlet_pressures[position];
+                        fluid.total_overflow += lost;
+                    }
+                }
+                ObjectKind::FluidMixer => {
+                    let params = match &self.model.objects[model_indices[position]].params {
+                        ObjectParams::FluidMixer(params) => params.clone(),
+                        _ => continue,
+                    };
+                    let entering = influx[position];
+                    let level = self
+                        .fluid
+                        .as_ref()
+                        .map_or(0.0, |fluid| fluid.state[position].level);
+                    let held = level + entering;
+                    // The mixer works in batches: it releases nothing until the
+                    // current step's pull volumes have been collected, then it
+                    // waits out the step delay before the next batch.
+                    // Read the batch cursor through a fresh borrow: `fluid` is
+                    // still the immutable view taken at the top of the function.
+                    let cursor = self
+                        .fluid
+                        .as_ref()
+                        .map_or(0, |fluid| fluid.state[position].mixer_step);
+                    let step = params
+                        .steps
+                        .get(cursor % params.steps.len().max(1))
+                        .cloned()
+                        .unwrap_or_default();
+                    let needed: f64 = step.pull.iter().sum();
+                    let ready = needed <= EPS || held >= needed - EPS;
+                    let offered = if ready {
+                        if needed <= EPS {
+                            held
+                        } else {
+                            needed.min(held)
+                        }
+                    } else {
+                        0.0
+                    };
+                    let sent = distribute_fluid(
+                        &links,
+                        &outgoing[position],
+                        offered,
+                        dt,
+                        &mut influx,
+                        &mut acceptance,
+                    );
+                    if let Some(fluid) = self.fluid.as_mut() {
+                        let state = &mut fluid.state[position];
+                        state.level = (held - sent).max(0.0);
+                        state.level_max = state.level_max.max(held);
+                        state.inflow += entering;
+                        state.throughput += sent;
+                        state.pressure = inlet_pressures[position];
+                        if sent > EPS {
+                            state.mixer_step = state.mixer_step.saturating_add(1);
+                        }
+                    }
+                }
+                // The bridge to the discrete side: whatever fluid arrives is
+                // buffered for `flow_fluid_to_item` to pack into flow items.
+                ObjectKind::FluidToItem => {
+                    let received = influx[position];
+                    if received > 0.0 {
+                        let model_index = model_indices[position];
+                        self.pending_bridge_volume
+                            .entry(model_index)
+                            .and_modify(|volume| *volume += received)
+                            .or_insert(received);
+                    }
+                    if let Some(fluid) = self.fluid.as_mut() {
+                        let state = &mut fluid.state[position];
+                        state.inflow += received;
+                        state.throughput += received;
+                        fluid.total_throughput += received;
+                    }
+                    // Pack the received volume into flow items right away: the
+                    // discrete side will forward them on its next step.
+                    let params = match &self.model.objects[model_indices[position]].params {
+                        ObjectParams::FluidToItem(params) => params.clone(),
+                        _ => continue,
+                    };
+                    let per_item = params.fluid_per_item.max(EPS);
+                    let stock = self
+                        .pending_bridge_volume
+                        .get(&model_indices[position])
+                        .copied()
+                        .unwrap_or(0.0);
+                    let ready = (stock / per_item).floor().min(10_000.0);
+                    if ready >= 1.0 {
+                        let leftover = stock - ready * per_item;
+                        if leftover > EPS {
+                            self.pending_bridge_volume
+                                .insert(model_indices[position], leftover);
+                        } else {
+                            self.pending_bridge_volume.remove(&model_indices[position]);
+                        }
+                        let mut made = false;
+                        for _ in 0..ready as u64 {
+                            let labels = std::collections::BTreeMap::new();
+                            if let Ok(item) = self.create_item(0, &labels, model_indices[position])
+                            {
+                                let now = self.now;
+                                self.objects[model_indices[position]].push_content(now, item);
+                                made = true;
+                            }
+                        }
+                        // The items must be forwarded on the discrete side, which
+                        // only runs when it has an event waiting for this object.
+                        if made {
+                            let now = self.now;
+                            self.schedule(now, EventKind::Flow(model_indices[position]));
+                        }
                     }
                 }
                 ObjectKind::FluidSink => {
@@ -8135,6 +8497,64 @@ impl<'m> Simulation<'m> {
 
     /// Objects without a dedicated behaviour pass items through, which keeps
     /// `basic_fr` / `basic_te` usable while their logic comes from triggers.
+    /// `item_to_fluid`: consume the flow items it receives and turn each into
+    /// `fluid_per_unit * units_per_item` volume for the fluid sub-graph.
+    fn flow_item_to_fluid(&mut self, index: usize) -> Result<(), SimError> {
+        let params = match &self.model.objects[index].params {
+            ObjectParams::ItemToFluid(params) => params.clone(),
+            _ => return Ok(()),
+        };
+        let per_item = params.fluid_per_unit.max(0.0) * params.units_per_item.max(0.0);
+        let now = self.now;
+        let mut converted = 0.0;
+        // A burst cap keeps one step from looping forever on a huge backlog.
+        for _ in 0..1_000 {
+            let Some(item) = self.objects[index].take_content(now, 0) else {
+                break;
+            };
+            self.objects[index].acc.output += 1;
+            self.objects[index].acc.stay_sum += now - item.entry_time;
+            self.objects[index].acc.stay_count += 1;
+            converted += per_item;
+        }
+        if converted > 0.0 {
+            self.pending_bridge_volume
+                .entry(index)
+                .and_modify(|volume| *volume += converted)
+                .or_insert(converted);
+        }
+        self.set_state(index, State::Idle);
+        Ok(())
+    }
+
+    /// `fluid_to_item`: pack buffered fluid into flow items and forward them.
+    fn flow_fluid_to_item(&mut self, index: usize) -> Result<(), SimError> {
+        let params = match &self.model.objects[index].params {
+            ObjectParams::FluidToItem(params) => params.clone(),
+            _ => return Ok(()),
+        };
+        let per_item = params.fluid_per_item.max(EPS);
+        let stock = self
+            .pending_bridge_volume
+            .get(&index)
+            .copied()
+            .unwrap_or(0.0);
+        let ready = (stock / per_item).floor().min(10_000.0);
+        let leftover = stock - ready * per_item;
+        if leftover > EPS {
+            self.pending_bridge_volume.insert(index, leftover);
+        } else {
+            self.pending_bridge_volume.remove(&index);
+        }
+        for _ in 0..ready as u64 {
+            let labels = BTreeMap::new();
+            let item = self.create_item(0, &labels, index)?;
+            let now = self.now;
+            self.objects[index].push_content(now, item);
+        }
+        self.flow_generic(index)
+    }
+
     fn flow_generic(&mut self, index: usize) -> Result<(), SimError> {
         while let Some(item) = self.objects[index].content.first().cloned() {
             let Some(conn) = self.route(index, &item)? else {
@@ -9059,6 +9479,11 @@ fn is_fluid_kind(kind: ObjectKind) -> bool {
             | ObjectKind::FluidValve
             | ObjectKind::FluidSink
             | ObjectKind::FluidPipe
+            | ObjectKind::Ticker
+            | ObjectKind::FluidMixer
+            | ObjectKind::FluidBlender
+            | ObjectKind::FluidSplitter
+            | ObjectKind::FluidProcessor
     )
 }
 
@@ -9154,6 +9579,11 @@ fn fluid_kind_name(kind: ObjectKind) -> &'static str {
         ObjectKind::FluidValve => "fluid_valve",
         ObjectKind::FluidSink => "fluid_sink",
         ObjectKind::FluidPipe => "fluid_pipe",
+        ObjectKind::Ticker => "ticker",
+        ObjectKind::FluidMixer => "fluid_mixer",
+        ObjectKind::FluidBlender => "fluid_blender",
+        ObjectKind::FluidSplitter => "fluid_splitter",
+        ObjectKind::FluidProcessor => "fluid_processor",
         _ => "fluid",
     }
 }
@@ -9409,7 +9839,16 @@ fn build_fluid_runtime(model: &Model) -> Option<FluidRuntime> {
         .objects
         .iter()
         .enumerate()
-        .filter(|(_, object)| is_fluid_kind(object.kind))
+        // Bridges belong to the fluid side: fluid flows in (or out) through
+        // them, and they must appear in the fluid report so the volume is not
+        // lost between the two worlds.
+        .filter(|(_, object)| {
+            is_fluid_kind(object.kind)
+                || matches!(
+                    object.kind,
+                    ObjectKind::ItemToFluid | ObjectKind::FluidToItem
+                )
+        })
         .map(|(index, _)| index)
         .collect();
     if fluid_indices.is_empty() {

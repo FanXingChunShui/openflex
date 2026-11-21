@@ -132,6 +132,14 @@ pub enum ObjectKind {
     FluidValve,
     FluidSink,
     FluidPipe,
+    Ticker,
+    FluidMixer,
+    FluidBlender,
+    FluidSplitter,
+    FluidProcessor,
+    ItemToFluid,
+    FluidToItem,
+    VisualTool,
 }
 
 impl ObjectKind {
@@ -165,6 +173,14 @@ impl ObjectKind {
             ObjectKind::FluidValve => "fluid_valve",
             ObjectKind::FluidSink => "fluid_sink",
             ObjectKind::FluidPipe => "fluid_pipe",
+            ObjectKind::Ticker => "ticker",
+            ObjectKind::FluidMixer => "fluid_mixer",
+            ObjectKind::FluidBlender => "fluid_blender",
+            ObjectKind::FluidSplitter => "fluid_splitter",
+            ObjectKind::FluidProcessor => "fluid_processor",
+            ObjectKind::ItemToFluid => "item_to_fluid",
+            ObjectKind::FluidToItem => "fluid_to_item",
+            ObjectKind::VisualTool => "visual_tool",
         }
     }
 
@@ -198,6 +214,14 @@ impl ObjectKind {
             "fluid_valve" => ObjectKind::FluidValve,
             "fluid_sink" => ObjectKind::FluidSink,
             "fluid_pipe" => ObjectKind::FluidPipe,
+            "ticker" => ObjectKind::Ticker,
+            "fluid_mixer" => ObjectKind::FluidMixer,
+            "fluid_blender" => ObjectKind::FluidBlender,
+            "fluid_splitter" => ObjectKind::FluidSplitter,
+            "fluid_processor" => ObjectKind::FluidProcessor,
+            "item_to_fluid" => ObjectKind::ItemToFluid,
+            "fluid_to_item" => ObjectKind::FluidToItem,
+            "visual_tool" => ObjectKind::VisualTool,
             _ => return None,
         })
     }
@@ -233,6 +257,14 @@ impl ObjectKind {
             ObjectKind::FluidValve,
             ObjectKind::FluidSink,
             ObjectKind::FluidPipe,
+            ObjectKind::Ticker,
+            ObjectKind::FluidMixer,
+            ObjectKind::FluidBlender,
+            ObjectKind::FluidSplitter,
+            ObjectKind::FluidProcessor,
+            ObjectKind::ItemToFluid,
+            ObjectKind::FluidToItem,
+            ObjectKind::VisualTool,
         ]
     }
 }
@@ -388,6 +420,14 @@ pub enum ObjectParams {
     FluidValve(FluidValveParams),
     FluidSink(FluidSinkParams),
     FluidPipe(FluidPipeParams),
+    Ticker(TickerParams),
+    FluidMixer(FluidMixerParams),
+    FluidBlender(FluidBlenderParams),
+    FluidSplitter(FluidSplitterParams),
+    FluidProcessor(FluidProcessorParams),
+    ItemToFluid(ItemToFluidParams),
+    FluidToItem(FluidToItemParams),
+    VisualTool(VisualToolParams),
 }
 
 fn decode<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, String> {
@@ -425,6 +465,14 @@ impl ObjectParams {
             ObjectParams::FluidValve(_) => ObjectKind::FluidValve,
             ObjectParams::FluidSink(_) => ObjectKind::FluidSink,
             ObjectParams::FluidPipe(_) => ObjectKind::FluidPipe,
+            ObjectParams::Ticker(_) => ObjectKind::Ticker,
+            ObjectParams::FluidMixer(_) => ObjectKind::FluidMixer,
+            ObjectParams::FluidBlender(_) => ObjectKind::FluidBlender,
+            ObjectParams::FluidSplitter(_) => ObjectKind::FluidSplitter,
+            ObjectParams::FluidProcessor(_) => ObjectKind::FluidProcessor,
+            ObjectParams::ItemToFluid(_) => ObjectKind::ItemToFluid,
+            ObjectParams::FluidToItem(_) => ObjectKind::FluidToItem,
+            ObjectParams::VisualTool(_) => ObjectKind::VisualTool,
         }
     }
 
@@ -459,6 +507,14 @@ impl ObjectParams {
             ObjectParams::FluidValve(p) => &p.triggers,
             ObjectParams::FluidSink(p) => &p.triggers,
             ObjectParams::FluidPipe(p) => &p.triggers,
+            ObjectParams::Ticker(p) => &p.triggers,
+            ObjectParams::FluidMixer(p) => &p.triggers,
+            ObjectParams::FluidBlender(p) => &p.triggers,
+            ObjectParams::FluidSplitter(p) => &p.triggers,
+            ObjectParams::FluidProcessor(p) => &p.triggers,
+            ObjectParams::ItemToFluid(p) => &p.triggers,
+            ObjectParams::FluidToItem(p) => &p.triggers,
+            ObjectParams::VisualTool(p) => &p.triggers,
         }
     }
 
@@ -493,6 +549,14 @@ impl ObjectParams {
             ObjectParams::FluidValve(p) => &mut p.triggers,
             ObjectParams::FluidSink(p) => &mut p.triggers,
             ObjectParams::FluidPipe(p) => &mut p.triggers,
+            ObjectParams::Ticker(p) => &mut p.triggers,
+            ObjectParams::FluidMixer(p) => &mut p.triggers,
+            ObjectParams::FluidBlender(p) => &mut p.triggers,
+            ObjectParams::FluidSplitter(p) => &mut p.triggers,
+            ObjectParams::FluidProcessor(p) => &mut p.triggers,
+            ObjectParams::ItemToFluid(p) => &mut p.triggers,
+            ObjectParams::FluidToItem(p) => &mut p.triggers,
+            ObjectParams::VisualTool(p) => &mut p.triggers,
         }
     }
 
@@ -527,6 +591,14 @@ impl ObjectParams {
             | ObjectParams::FluidValve(_)
             | ObjectParams::FluidSink(_)
             | ObjectParams::FluidPipe(_) => None,
+            ObjectParams::Ticker(_) => None,
+            ObjectParams::FluidMixer(_) => None,
+            ObjectParams::FluidBlender(_) => None,
+            ObjectParams::FluidSplitter(_) => None,
+            ObjectParams::FluidProcessor(_) => None,
+            ObjectParams::ItemToFluid(_) => None,
+            ObjectParams::FluidToItem(_) => None,
+            ObjectParams::VisualTool(_) => None,
         }
     }
 
@@ -564,6 +636,14 @@ impl ObjectParams {
             | ObjectParams::FluidValve(_)
             | ObjectParams::FluidSink(_)
             | ObjectParams::FluidPipe(_) => None,
+            ObjectParams::Ticker(_) => None,
+            ObjectParams::FluidMixer(_) => None,
+            ObjectParams::FluidBlender(_) => None,
+            ObjectParams::FluidSplitter(_) => None,
+            ObjectParams::FluidProcessor(_) => None,
+            ObjectParams::ItemToFluid(_) => None,
+            ObjectParams::FluidToItem(_) => None,
+            ObjectParams::VisualTool(_) => None,
         }
     }
 
@@ -617,6 +697,14 @@ impl ObjectParams {
             | ObjectParams::FluidValve(_)
             | ObjectParams::FluidSink(_)
             | ObjectParams::FluidPipe(_) => return None,
+            ObjectParams::Ticker(_) => return None,
+            ObjectParams::FluidMixer(_) => return None,
+            ObjectParams::FluidBlender(_) => return None,
+            ObjectParams::FluidSplitter(_) => return None,
+            ObjectParams::FluidProcessor(_) => return None,
+            ObjectParams::ItemToFluid(_) => return None,
+            ObjectParams::FluidToItem(_) => return None,
+            ObjectParams::VisualTool(_) => return None,
         }
         Some(())
     }
@@ -652,6 +740,14 @@ impl ObjectParams {
             | ObjectParams::FluidValve(_)
             | ObjectParams::FluidSink(_)
             | ObjectParams::FluidPipe(_) => None,
+            ObjectParams::Ticker(_) => None,
+            ObjectParams::FluidMixer(_) => None,
+            ObjectParams::FluidBlender(_) => None,
+            ObjectParams::FluidSplitter(_) => None,
+            ObjectParams::FluidProcessor(_) => None,
+            ObjectParams::ItemToFluid(_) => None,
+            ObjectParams::FluidToItem(_) => None,
+            ObjectParams::VisualTool(_) => None,
         }
     }
 
@@ -686,6 +782,14 @@ impl ObjectParams {
             | ObjectParams::FluidValve(_)
             | ObjectParams::FluidSink(_)
             | ObjectParams::FluidPipe(_) => None,
+            ObjectParams::Ticker(_) => None,
+            ObjectParams::FluidMixer(_) => None,
+            ObjectParams::FluidBlender(_) => None,
+            ObjectParams::FluidSplitter(_) => None,
+            ObjectParams::FluidProcessor(_) => None,
+            ObjectParams::ItemToFluid(_) => None,
+            ObjectParams::FluidToItem(_) => None,
+            ObjectParams::VisualTool(_) => None,
         }
     }
 
@@ -720,6 +824,14 @@ impl ObjectParams {
             | ObjectParams::FluidValve(_)
             | ObjectParams::FluidSink(_)
             | ObjectParams::FluidPipe(_) => &[],
+            ObjectParams::Ticker(_) => &[],
+            ObjectParams::FluidMixer(_) => &[],
+            ObjectParams::FluidBlender(_) => &[],
+            ObjectParams::FluidSplitter(_) => &[],
+            ObjectParams::FluidProcessor(_) => &[],
+            ObjectParams::ItemToFluid(_) => &[],
+            ObjectParams::FluidToItem(_) => &[],
+            ObjectParams::VisualTool(_) => &[],
         }
     }
 
@@ -754,6 +866,14 @@ impl ObjectParams {
             ObjectKind::FluidValve => ObjectParams::FluidValve(decode(value)?),
             ObjectKind::FluidSink => ObjectParams::FluidSink(decode(value)?),
             ObjectKind::FluidPipe => ObjectParams::FluidPipe(decode(value)?),
+            ObjectKind::Ticker => ObjectParams::Ticker(decode(value)?),
+            ObjectKind::FluidMixer => ObjectParams::FluidMixer(decode(value)?),
+            ObjectKind::FluidBlender => ObjectParams::FluidBlender(decode(value)?),
+            ObjectKind::FluidSplitter => ObjectParams::FluidSplitter(decode(value)?),
+            ObjectKind::FluidProcessor => ObjectParams::FluidProcessor(decode(value)?),
+            ObjectKind::ItemToFluid => ObjectParams::ItemToFluid(decode(value)?),
+            ObjectKind::FluidToItem => ObjectParams::FluidToItem(decode(value)?),
+            ObjectKind::VisualTool => ObjectParams::VisualTool(decode(value)?),
         })
     }
 }
@@ -790,6 +910,14 @@ impl Serialize for ObjectParams {
             ObjectParams::FluidValve(p) => p.serialize(serializer),
             ObjectParams::FluidSink(p) => p.serialize(serializer),
             ObjectParams::FluidPipe(p) => p.serialize(serializer),
+            ObjectParams::Ticker(p) => p.serialize(serializer),
+            ObjectParams::FluidMixer(p) => p.serialize(serializer),
+            ObjectParams::FluidBlender(p) => p.serialize(serializer),
+            ObjectParams::FluidSplitter(p) => p.serialize(serializer),
+            ObjectParams::FluidProcessor(p) => p.serialize(serializer),
+            ObjectParams::ItemToFluid(p) => p.serialize(serializer),
+            ObjectParams::FluidToItem(p) => p.serialize(serializer),
+            ObjectParams::VisualTool(p) => p.serialize(serializer),
         }
     }
 }
@@ -2529,6 +2657,281 @@ pub struct FluidSinkParams {
     pub triggers: Triggers,
 }
 
+/// One step of a `fluid_mixer`'s step table.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct MixerStep {
+    /// Volume pulled from each input port (index = port).
+    #[serde(default)]
+    pub pull: Vec<f64>,
+    /// Delay after all the material for this step has been collected.
+    #[serde(default)]
+    pub delay: f64,
+}
+
+/// The fluid clock (`ticker`). FlexSim requires exactly one per fluid model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TickerParams {
+    /// Length of one simulation tick.
+    #[serde(default = "one_f64")]
+    pub tick_length: f64,
+    /// Global list of fluid sub-components, FlexSim's "sub-components" table.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>,
+    #[serde(default)]
+    pub triggers: Triggers,
+}
+
+impl Default for TickerParams {
+    fn default() -> Self {
+        Self {
+            tick_length: 1.0,
+            components: Vec::new(),
+            triggers: Triggers::default(),
+        }
+    }
+}
+
+/// Batch mixer (`fluid_mixer`): waits for a full batch before releasing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FluidMixerParams {
+    /// Product id of the material released by the mixer.
+    #[serde(default = "one_f64")]
+    pub product_id: f64,
+    /// Ordered steps; each pulls from its input ports, then waits `delay`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<MixerStep>,
+    #[serde(default)]
+    pub triggers: Triggers,
+}
+
+impl Default for FluidMixerParams {
+    fn default() -> Self {
+        Self {
+            product_id: 1.0,
+            steps: Vec::new(),
+            triggers: Triggers::default(),
+        }
+    }
+}
+
+/// Continuous blender (`fluid_blender`): mixes inputs at a fixed ratio.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FluidBlenderParams {
+    /// Desired output rate of the blend.
+    #[serde(default = "one_f64")]
+    pub output_rate: f64,
+    /// Share of the output taken from each input port (normalised on use).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ratios: Vec<f64>,
+    /// Share of the incoming material lost in the blend (0..1).
+    #[serde(default)]
+    pub loss: f64,
+    #[serde(default)]
+    pub triggers: Triggers,
+}
+
+impl Default for FluidBlenderParams {
+    fn default() -> Self {
+        Self {
+            output_rate: 1.0,
+            ratios: Vec::new(),
+            loss: 0.0,
+            triggers: Triggers::default(),
+        }
+    }
+}
+
+/// One row of a `fluid_splitter`'s percent table (= one output port).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct SplitPercent {
+    /// Free-text description of the port (modeller use only).
+    #[serde(default)]
+    pub description: String,
+    /// Share of the outgoing material for this port (0..100).
+    #[serde(default)]
+    pub percent: f64,
+}
+
+/// `fluid_splitter` parameters.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FluidSplitterParams {
+    /// One entry per output port.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<SplitPercent>,
+    /// Total volume the splitter sends per time unit (0 = unlimited).
+    #[serde(default)]
+    pub output_rate: f64,
+    #[serde(default)]
+    pub triggers: Triggers,
+}
+
+impl Default for FluidSplitterParams {
+    fn default() -> Self {
+        Self {
+            outputs: Vec::new(),
+            output_rate: 0.0,
+            triggers: Triggers::default(),
+        }
+    }
+}
+
+/// Continuous processor (`fluid_processor`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FluidProcessorParams {
+    /// Maximum output rate (volume per time unit).
+    #[serde(default = "one_f64")]
+    pub max_output_rate: f64,
+    /// Maximum volume the processor can hold.
+    #[serde(default = "hundred_f64")]
+    pub max_capacity: f64,
+    /// Share of incoming material lost (0..1), e.g. evaporation.
+    #[serde(default)]
+    pub loss: f64,
+    /// First input port used (FlexSim "Receive Port Number").
+    #[serde(default)]
+    pub receive_port: u32,
+    /// First output port used (FlexSim "Destination Port Number").
+    #[serde(default)]
+    pub destination_port: u32,
+    #[serde(default)]
+    pub triggers: Triggers,
+}
+
+impl Default for FluidProcessorParams {
+    fn default() -> Self {
+        Self {
+            max_output_rate: 1.0,
+            max_capacity: 100.0,
+            loss: 0.0,
+            receive_port: 0,
+            destination_port: 0,
+            triggers: Triggers::default(),
+        }
+    }
+}
+
+/// `item_to_fluid`: one discrete flow item becomes fluid.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemToFluidParams {
+    /// Volume created per discrete unit.
+    #[serde(default = "one_f64")]
+    pub fluid_per_unit: f64,
+    /// Discrete units represented by one flow item.
+    #[serde(default = "one_f64")]
+    pub units_per_item: f64,
+    #[serde(default)]
+    pub triggers: Triggers,
+}
+
+impl Default for ItemToFluidParams {
+    fn default() -> Self {
+        Self {
+            fluid_per_unit: 1.0,
+            units_per_item: 1.0,
+            triggers: Triggers::default(),
+        }
+    }
+}
+
+/// `fluid_to_item`: fluid is packed back into discrete flow items.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FluidToItemParams {
+    /// Volume of fluid consumed by one flow item.
+    #[serde(default = "one_f64")]
+    pub fluid_per_item: f64,
+    /// Discrete units represented by one flow item.
+    #[serde(default = "one_f64")]
+    pub units_per_item: f64,
+    #[serde(default)]
+    pub triggers: Triggers,
+}
+
+impl Default for FluidToItemParams {
+    fn default() -> Self {
+        Self {
+            fluid_per_item: 1.0,
+            units_per_item: 1.0,
+            triggers: Triggers::default(),
+        }
+    }
+}
+
+/// Shape drawn by a `visual_tool`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VisualShape {
+    #[default]
+    Box,
+    Plane,
+    Column,
+    Sphere,
+}
+
+impl VisualShape {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VisualShape::Box => "box",
+            VisualShape::Plane => "plane",
+            VisualShape::Column => "column",
+            VisualShape::Sphere => "sphere",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<VisualShape> {
+        Some(match value {
+            "box" => VisualShape::Box,
+            "plane" => VisualShape::Plane,
+            "column" => VisualShape::Column,
+            "sphere" => VisualShape::Sphere,
+            _ => return None,
+        })
+    }
+}
+
+fn default_visual_size() -> [f64; 3] {
+    [2.0, 2.0, 2.0]
+}
+
+/// `visual_tool`: decoration / container with no simulation behaviour.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VisualToolParams {
+    /// Which primitive to draw.
+    #[serde(default)]
+    pub shape: VisualShape,
+    /// Size in model units (x, y, z).
+    #[serde(default = "default_visual_size")]
+    pub size: [f64; 3],
+    /// Fill colour as `#rrggbb`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// Caption drawn on the object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub triggers: Triggers,
+}
+
+impl Default for VisualToolParams {
+    fn default() -> Self {
+        Self {
+            shape: VisualShape::Box,
+            size: default_visual_size(),
+            color: None,
+            text: None,
+            triggers: Triggers::default(),
+        }
+    }
+}
 fn hundred_f64() -> f64 {
     100.0
 }

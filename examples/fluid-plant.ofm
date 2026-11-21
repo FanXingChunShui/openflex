@@ -1,0 +1,197 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "fluid-plant",
+  "description": "FlexSim 7.5 fluid objects: ticker, processor, splitter, tank, mixer and the item bridge",
+  "time_unit": "minutes",
+  "run": {
+    "stop_time": 200.0,
+    "warmup": 0.0,
+    "seed": 1,
+    "replications": 3
+  },
+  "objects": [
+    {
+      "name": "Clock",
+      "kind": "ticker",
+      "pos": [
+        -14,
+        6
+      ],
+      "params": {
+        "tick_length": 0.5,
+        "components": [
+          "water",
+          "syrup"
+        ]
+      }
+    },
+    {
+      "name": "Water",
+      "kind": "fluid_generator",
+      "pos": [
+        -12,
+        0
+      ],
+      "params": {
+        "flow_rate": 6.0
+      }
+    },
+    {
+      "name": "Cook",
+      "kind": "fluid_processor",
+      "pos": [
+        -7,
+        0
+      ],
+      "params": {
+        "max_output_rate": 5.0,
+        "max_capacity": 30.0,
+        "loss": 0.05
+      }
+    },
+    {
+      "name": "Diverge",
+      "kind": "fluid_splitter",
+      "pos": [
+        -2,
+        0
+      ],
+      "params": {
+        "outputs": [
+          {
+            "description": "bottling",
+            "percent": 50
+          },
+          {
+            "description": "blending",
+            "percent": 25
+          },
+          {
+            "description": "packing",
+            "percent": 25
+          }
+        ]
+      }
+    },
+    {
+      "name": "Buffer",
+      "kind": "fluid_tank",
+      "pos": [
+        2,
+        2
+      ],
+      "params": {
+        "capacity": 40.0,
+        "initial_level": 5.0,
+        "max_outflow": 8.0
+      }
+    },
+    {
+      "name": "Blend",
+      "kind": "fluid_blender",
+      "pos": [
+        2,
+        -2
+      ],
+      "params": {
+        "output_rate": 4.0,
+        "ratios": [
+          1.0
+        ],
+        "loss": 0.0
+      }
+    },
+    {
+      "name": "Bottling",
+      "kind": "fluid_sink",
+      "pos": [
+        7,
+        2
+      ],
+      "params": {}
+    },
+    {
+      "name": "Packer",
+      "kind": "fluid_to_item",
+      "pos": [
+        11,
+        -2
+      ],
+      "params": {
+        "fluid_per_item": 2.0,
+        "units_per_item": 1.0
+      }
+    },
+    {
+      "name": "Orders",
+      "kind": "sink",
+      "pos": [
+        15,
+        -2
+      ],
+      "params": {}
+    },
+    {
+      "name": "Dock",
+      "kind": "visual_tool",
+      "pos": [
+        11,
+        2
+      ],
+      "params": {
+        "shape": "box",
+        "size": [
+          4.0,
+          3.0,
+          1.5
+        ],
+        "color": "#5c9ea8",
+        "text": "loading dock"
+      }
+    },
+    {
+      "name": "Bulk",
+      "kind": "fluid_sink",
+      "pos": [
+        7,
+        -2
+      ],
+      "params": {}
+    }
+  ],
+  "connections": [
+    {
+      "from": "Water",
+      "to": "Cook"
+    },
+    {
+      "from": "Cook",
+      "to": "Diverge"
+    },
+    {
+      "from": "Diverge",
+      "to": "Buffer"
+    },
+    {
+      "from": "Diverge",
+      "to": "Blend"
+    },
+    {
+      "from": "Diverge",
+      "to": "Packer"
+    },
+    {
+      "from": "Buffer",
+      "to": "Bottling"
+    },
+    {
+      "from": "Blend",
+      "to": "Bulk"
+    },
+    {
+      "from": "Packer",
+      "to": "Orders"
+    }
+  ]
+}

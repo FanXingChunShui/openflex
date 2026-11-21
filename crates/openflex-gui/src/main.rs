@@ -645,6 +645,14 @@ fn parse_params(kind: ObjectKind, value: serde_json::Value) -> Result<ObjectPara
         ObjectKind::FluidValve => ObjectParams::FluidValve(decode(value)?),
         ObjectKind::FluidSink => ObjectParams::FluidSink(decode(value)?),
         ObjectKind::FluidPipe => ObjectParams::FluidPipe(decode(value)?),
+        ObjectKind::Ticker => ObjectParams::Ticker(decode(value)?),
+        ObjectKind::FluidMixer => ObjectParams::FluidMixer(decode(value)?),
+        ObjectKind::FluidBlender => ObjectParams::FluidBlender(decode(value)?),
+        ObjectKind::FluidSplitter => ObjectParams::FluidSplitter(decode(value)?),
+        ObjectKind::FluidProcessor => ObjectParams::FluidProcessor(decode(value)?),
+        ObjectKind::ItemToFluid => ObjectParams::ItemToFluid(decode(value)?),
+        ObjectKind::FluidToItem => ObjectParams::FluidToItem(decode(value)?),
+        ObjectKind::VisualTool => ObjectParams::VisualTool(decode(value)?),
     })
 }
 
@@ -682,6 +690,14 @@ const KINDS: &[&str] = &[
     "fluid_valve",
     "fluid_sink",
     "fluid_pipe",
+    "ticker",
+    "fluid_mixer",
+    "fluid_blender",
+    "fluid_splitter",
+    "fluid_processor",
+    "item_to_fluid",
+    "fluid_to_item",
+    "visual_tool",
 ];
 
 const DIST_CHOICES: &[&str] = &[
@@ -1645,6 +1661,255 @@ impl EditForm {
                     .changed();
                 changed |= optional_f64(ui, "flow rate", &mut p.flow_rate);
                 changed |= optional_f64(ui, "temperature", &mut p.temperature);
+            }
+            ObjectParams::Ticker(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.tick_length)
+                            .speed(0.05)
+                            .prefix("tick length "),
+                    )
+                    .changed();
+                ui.label(
+                    egui::RichText::new(format!("{} sub-component(s)", p.components.len()))
+                        .size(9.0_f32)
+                        .monospace()
+                        .color(palette::TEXT_DIM),
+                );
+            }
+            ObjectParams::FluidMixer(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.product_id)
+                            .speed(1.0)
+                            .prefix("product id "),
+                    )
+                    .changed();
+                // The step table is a list of (pull volumes, delay) rows; the
+                // JSON editor stays the place for long tables.
+                ui.label(
+                    egui::RichText::new(format!("{} mixer step(s)", p.steps.len()))
+                        .size(9.0_f32)
+                        .monospace()
+                        .color(palette::TEXT_DIM),
+                );
+                if p.steps.is_empty() {
+                    ui.label(
+                        egui::RichText::new(
+                            "Without steps the mixer releases material as it arrives.",
+                        )
+                        .size(9.0_f32)
+                        .color(palette::TEXT_DIM),
+                    );
+                }
+                if ui.small_button("+ step").clicked() {
+                    p.steps.push(openflex_model::MixerStep::default());
+                    changed = true;
+                }
+            }
+            ObjectParams::FluidBlender(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.output_rate)
+                            .speed(0.1)
+                            .prefix("output rate "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.loss)
+                            .speed(0.01)
+                            .range(0.0..=1.0)
+                            .prefix("loss "),
+                    )
+                    .changed();
+                ui.label(
+                    egui::RichText::new(format!("{} ratio(s)", p.ratios.len()))
+                        .size(9.0_f32)
+                        .monospace()
+                        .color(palette::TEXT_DIM),
+                );
+                if ui.small_button("+ ratio").clicked() {
+                    p.ratios.push(1.0);
+                    changed = true;
+                }
+            }
+            ObjectParams::FluidSplitter(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.output_rate)
+                            .speed(0.1)
+                            .range(0.0..=f64::INFINITY)
+                            .prefix("output rate "),
+                    )
+                    .changed();
+                // One row per output port; the sum must stay at or below 100 %.
+                let mut remove: Option<usize> = None;
+                for (index, output) in p.outputs.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        changed |= ui
+                            .add(
+                                egui::TextEdit::singleline(&mut output.description)
+                                    .hint_text("port")
+                                    .desired_width(70.0)
+                                    .font(egui::TextStyle::Small),
+                            )
+                            .changed();
+                        changed |= ui
+                            .add(
+                                egui::DragValue::new(&mut output.percent)
+                                    .speed(1.0)
+                                    .range(0.0..=100.0)
+                                    .suffix(" %"),
+                            )
+                            .changed();
+                        if ui.small_button("x").clicked() {
+                            remove = Some(index);
+                        }
+                    });
+                }
+                if let Some(index) = remove {
+                    p.outputs.remove(index);
+                    changed = true;
+                }
+                if ui.small_button("+ port").clicked() {
+                    p.outputs.push(openflex_model::SplitPercent {
+                        description: String::new(),
+                        percent: 0.0,
+                    });
+                    changed = true;
+                }
+                let total: f64 = p.outputs.iter().map(|output| output.percent).sum();
+                if total > 100.0 + 1e-9 {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "percentages add up to {total:.0} % — must be at most 100 %"
+                        ))
+                        .size(9.0_f32)
+                        .color(palette::AMBER),
+                    );
+                }
+            }
+            ObjectParams::FluidProcessor(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.max_output_rate)
+                            .speed(0.1)
+                            .prefix("max output rate "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.max_capacity)
+                            .speed(1.0)
+                            .prefix("max capacity "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.loss)
+                            .speed(0.01)
+                            .range(0.0..=1.0)
+                            .prefix("loss "),
+                    )
+                    .changed();
+                ui.horizontal(|ui| {
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut p.receive_port)
+                                .speed(1.0)
+                                .prefix("receive port "),
+                        )
+                        .changed();
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut p.destination_port)
+                                .speed(1.0)
+                                .prefix("destination port "),
+                        )
+                        .changed();
+                });
+            }
+            ObjectParams::ItemToFluid(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.fluid_per_unit)
+                            .speed(0.1)
+                            .prefix("fluid per unit "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.units_per_item)
+                            .speed(1.0)
+                            .prefix("units per item "),
+                    )
+                    .changed();
+                ui.label(
+                    egui::RichText::new(format!(
+                        "one item → {:.2} volume",
+                        p.fluid_per_unit * p.units_per_item
+                    ))
+                    .size(9.0_f32)
+                    .monospace()
+                    .color(palette::TEXT_DIM),
+                );
+            }
+            ObjectParams::FluidToItem(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.fluid_per_item)
+                            .speed(0.1)
+                            .prefix("fluid per item "),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.units_per_item)
+                            .speed(1.0)
+                            .prefix("units per item "),
+                    )
+                    .changed();
+                ui.label(
+                    egui::RichText::new(format!("{:.2} volume → one item", p.fluid_per_item))
+                        .size(9.0_f32)
+                        .monospace()
+                        .color(palette::TEXT_DIM),
+                );
+            }
+            ObjectParams::VisualTool(p) => {
+                egui::ComboBox::from_id_salt("visual-shape")
+                    .selected_text(p.shape.as_str())
+                    .show_ui(ui, |ui| {
+                        for shape in [
+                            openflex_model::VisualShape::Box,
+                            openflex_model::VisualShape::Plane,
+                            openflex_model::VisualShape::Column,
+                            openflex_model::VisualShape::Sphere,
+                        ] {
+                            if ui
+                                .selectable_label(p.shape == shape, shape.as_str())
+                                .clicked()
+                            {
+                                p.shape = shape;
+                                changed = true;
+                            }
+                        }
+                    });
+                ui.horizontal(|ui| {
+                    for (index, label) in ["x ", "y ", "z "].into_iter().enumerate() {
+                        changed |= ui
+                            .add(
+                                egui::DragValue::new(&mut p.size[index])
+                                    .speed(0.1)
+                                    .range(0.01..=1000.0)
+                                    .prefix(label),
+                            )
+                            .changed();
+                    }
+                });
+                changed |= optional_string(ui, "colour", &mut p.color);
+                changed |= optional_string(ui, "text", &mut p.text);
             }
             ObjectParams::FluidSink(_) => {
                 ui.label("Fluid sink: no kind-specific parameters (see JSON for triggers).");
@@ -6620,7 +6885,20 @@ idle,busy,blocked,down\n",
             | ObjectKind::FluidPipe
             | ObjectKind::FluidValve
             | ObjectKind::FluidGenerator
-            | ObjectKind::FluidSink => egui::Color32::from_rgb(92, 176, 172),
+            | ObjectKind::FluidSink
+            | ObjectKind::Ticker
+            | ObjectKind::FluidMixer
+            | ObjectKind::FluidBlender
+            | ObjectKind::FluidSplitter
+            | ObjectKind::FluidProcessor => egui::Color32::from_rgb(92, 176, 172),
+            // The two bridges sit on the boundary between the two worlds, so
+            // they get a hue between the fluid teal and the discrete slate.
+            ObjectKind::ItemToFluid | ObjectKind::FluidToItem => {
+                egui::Color32::from_rgb(112, 166, 184)
+            }
+            // Decoration is deliberately neutral so it never reads as an object
+            // that participates in the flow.
+            ObjectKind::VisualTool => egui::Color32::from_rgb(140, 144, 152),
             _ => egui::Color32::from_rgb(124, 136, 152),
         }
     }
@@ -11882,6 +12160,52 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn the_flexsim_parity_kinds_are_addable_and_editable() {
+        // Every kind the FlexSim 7.5 library has and OpenFlex now matches must
+        // be in the picker and decode into the right params variant.
+        for kind in [
+            ObjectKind::Ticker,
+            ObjectKind::FluidMixer,
+            ObjectKind::FluidBlender,
+            ObjectKind::FluidSplitter,
+            ObjectKind::FluidProcessor,
+            ObjectKind::ItemToFluid,
+            ObjectKind::FluidToItem,
+            ObjectKind::VisualTool,
+        ] {
+            assert!(
+                KINDS.contains(&kind.as_str()),
+                "{} missing from the add-object picker",
+                kind.as_str()
+            );
+            let params = parse_params(kind, serde_json::json!({})).expect("empty params decode");
+            assert_eq!(
+                params.kind(),
+                kind,
+                "{} decoded to the wrong variant",
+                kind.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn the_visual_tool_form_round_trips_its_params() {
+        let params = parse_params(
+            ObjectKind::VisualTool,
+            serde_json::json!({"shape": "column", "size": [1.0, 2.0, 6.0], "color": "#8899aa"}),
+        )
+        .expect("params");
+        match params {
+            ObjectParams::VisualTool(tool) => {
+                assert_eq!(tool.shape, openflex_model::VisualShape::Column);
+                assert_eq!(tool.size, [1.0, 2.0, 6.0]);
+                assert_eq!(tool.color.as_deref(), Some("#8899aa"));
+            }
+            other => panic!("expected a visual tool, got {other:?}"),
+        }
     }
 
     #[test]

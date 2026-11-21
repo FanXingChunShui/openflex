@@ -96,6 +96,38 @@ pub fn describe_kind(kind: ObjectKind) -> (&'static str, &'static str) {
             "Transports fluid volume with a fixed travel delay.",
             "length / speed: travel time (default 1 / 1)\ndelay: optional delay override\nflow_rate: optional volume per time unit cap",
         ),
+        ObjectKind::Ticker => (
+            "The fluid clock: one per model, defines the tick and the sub-components.",
+            "tick_length: length of one fluid tick, default 1\ncomponents: list of sub-component names (FlexSim sub-components table)",
+        ),
+        ObjectKind::FluidMixer => (
+            "Mixes several inputs into one product, always in batches.",
+            "product_id: id of the material released, default 1\nsteps: [{ pull: [volume per input port], delay }] — one entry per batch step",
+        ),
+        ObjectKind::FluidBlender => (
+            "Continuously blends several inputs at fixed ratios.",
+            "output_rate: desired blend rate, default 1\nratios: [share per input port] (normalised)\nloss: share of incoming material lost, 0..1",
+        ),
+        ObjectKind::FluidSplitter => (
+            "Sends material to several outputs by percentage.",
+            "outputs: [{ description, percent }] — one row per output port, percentages sum to <= 100\noutput_rate: optional cap on the total volume sent per time unit",
+        ),
+        ObjectKind::FluidProcessor => (
+            "Continuously processes fluid with a capacity and a loss percentage.",
+            "max_output_rate: default 1\nmax_capacity: default 100\nloss: share of incoming material lost, 0..1\nreceive_port / destination_port: first port used (0 = first available)",
+        ),
+        ObjectKind::ItemToFluid => (
+            "Converts discrete flow items into fluid (bridge between item and fluid objects).",
+            "fluid_per_unit: volume created per discrete unit, default 1\nunits_per_item: discrete units represented by one flow item, default 1",
+        ),
+        ObjectKind::FluidToItem => (
+            "Packs fluid back into discrete flow items.",
+            "fluid_per_item: volume consumed by one flow item, default 1\nunits_per_item: discrete units represented by one flow item, default 1",
+        ),
+        ObjectKind::VisualTool => (
+            "Scenery or a container for other objects; no simulation behaviour.",
+            "shape: box | plane | column | sphere\nsize: [x, y, z] in model units\ncolor: optional #rrggbb\ntext: optional caption",
+        ),
         ObjectKind::BasicTe => (
             "A generic task executer.",
             "speed: distance per time unit, default 1\ncapacity: integer, default 1",

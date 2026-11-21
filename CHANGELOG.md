@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### FlexSim 7.5 对象库对齐
+
+对照 `FlexSimChinese7.5/help/FlexSimObjectLibrary` 的权威清单，补齐了缺失的 8 个对象。
+
+- **流体对象**：新增 `ticker`（流体时钟 + 子组件表）、`fluid_processor`（速率/容量/损耗，
+  下游堵塞时物料在器内回压）、`fluid_blender`（连续配比混合 + 损耗）、
+  `fluid_mixer`（按步表整批释放）、`fluid_splitter`（按下表百分比分流，下游不足时**按比例缩放**保持配比）。
+- **两个离散↔流体桥接**：`item_to_fluid`（每个流物件转成 `fluid_per_unit × units_per_item` 体积）、
+  `fluid_to_item`（每 `fluid_per_item` 体积打包成一个流物件）。校验器不再把这两个对象当成
+  「流体与离散不能相连」的违例，它们正是跨界连接器。
+- **装饰对象**：`visual_tool`（box/plane/column/sphere + 尺寸/颜色/文字），完全不参与仿真，
+  也不出现在统计报告里。
+- 新对象全部走快照/校验/JSON 往返，GUI 的「添加对象」选择器、类型配色、属性表单均已接线
+  （分流器提供逐端口百分比编辑并实时提示总和超 100%）。
+- 示例模型 `examples/fluid-plant.ofm`：`ticker → generator → processor → splitter(50/25/25)`
+  分送水箱/混合器/打包桥，实测三条支路 `2.52 / 1.25 / 1.25` 体积每秒，与百分比一致。
+- 测试：模型层 `flexsim_parity`（10 项）、引擎行为 `flexsim_fluid_objects`（12 项）、
+  GUI 选择器与表单（2 项）。
+
 ## v1.32.0 — 2026-11-21
 
 本轮把 `SimReport` 里**一直存在却没在桌面版显示**的统计数据全部接出来（流程 token 与块级统计、流体液位与流量、Little 定律校验、逐复现明细、峰值内容），并统一了「利用率」在四处展示中的对象范围。发布节奏保持**至少 3 小时一版**。
