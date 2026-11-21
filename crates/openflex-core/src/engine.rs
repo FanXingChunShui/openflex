@@ -1164,10 +1164,9 @@ impl ObjectRt {
     fn accrue_up_time(&mut self, now: f64) {
         let dt = (now - self.up_time_checkpoint).max(0.0);
         self.up_time_checkpoint = now;
-        let counted = self
-            .failure
-            .as_ref()
-            .is_some_and(|failure| Self::counts_up_time(failure, self.state, self.phase));
+        let counted = self.failure.as_ref().is_some_and(|failure| {
+            Self::counts_up_time(failure, self.state, self.phase, self.block_reason)
+        });
         if let Some(failure) = self.failure.as_mut() {
             if counted {
                 failure.up_time += dt;
@@ -1179,7 +1178,12 @@ impl ObjectRt {
     }
 
     /// Whether `state` (with `phase`) advances the failure clock.
-    fn counts_up_time(failure: &FailureRt, state: State, phase: Phase) -> bool {
+    fn counts_up_time(
+        failure: &FailureRt,
+        state: State,
+        phase: Phase,
+        block_reason: BlockReason,
+    ) -> bool {
         if failure.count_states.is_empty() {
             return false;
         }
@@ -1189,6 +1193,12 @@ impl ObjectRt {
             "setup" => state == State::Busy && phase == Phase::Setup,
             "processing" => state == State::Busy && phase == Phase::Processing,
             "blocked" => state == State::Blocked,
+            "waiting_for_operator" => {
+                state == State::Blocked && block_reason == BlockReason::Operator
+            }
+            "waiting_for_transport" => {
+                state == State::Blocked && block_reason == BlockReason::Transport
+            }
             "down" => state == State::Down,
             "off_shift" => state == State::OffShift,
             _ => false,
@@ -3520,7 +3530,12 @@ impl<'m> Simulation<'m> {
         if clock.count_states.is_empty() {
             return;
         }
-        if !ObjectRt::counts_up_time(&clock, self.objects[index].state, self.objects[index].phase) {
+        if !ObjectRt::counts_up_time(
+            &clock,
+            self.objects[index].state,
+            self.objects[index].phase,
+            self.objects[index].block_reason,
+        ) {
             return;
         }
         let remaining = (clock.threshold - clock.up_time).max(0.0);
@@ -9104,7 +9119,32 @@ impl<'m> Simulation<'m> {
     // Failures
     // -----------------------------------------------------------------------
 
+    /// task-163: charge the interval up to a state-limited failure event. The
+    /// clock otherwise only settles on state changes, so the event that reaches
+    /// the remaining threshold would see stale `up_time` and re-arm itself.
+    fn settle_failure_clock(&mut self, index: usize) {
+        let state = self.objects[index].state;
+        let phase = self.objects[index].phase;
+        let now = self.now;
+        let checkpoint = self.objects[index].up_time_checkpoint;
+        let Some(clock) = self.objects[index].failure.as_ref() else {
+            return;
+        };
+        if clock.count_states.is_empty() {
+            return;
+        }
+        let block_reason = self.objects[index].block_reason;
+        let counted = ObjectRt::counts_up_time(clock, state, phase, block_reason);
+        if let Some(clock) = self.objects[index].failure.as_mut()
+            && counted
+        {
+            clock.up_time += (now - checkpoint).max(0.0);
+        }
+        self.objects[index].up_time_checkpoint = now;
+    }
+
     fn handle_breakdown(&mut self, index: usize, generation: u64) -> Result<(), SimError> {
+        self.settle_failure_clock(index);
         let Some(params) = self.processor_params(index) else {
             return Ok(());
         };
@@ -12754,5 +12794,194 @@ mod tests {
         assert!(text.contains("tracked_variables[0].name"), "{text}");
         assert!(text.contains("tracked_variables[0].expression"), "{text}");
         assert!(text.contains("tracked_interval"), "{text}");
+    }
+
+    fn failure_model(count_states: &str, interarrival: f64, max_arrivals: Option<u32>) -> String {
+        let max_line = max_arrivals
+            .map(|max| format!(r#", "max_arrivals": {max}"#))
+            .unwrap_or_default();
+        // `count_states` is inserted verbatim (empty = omit the field).
+        format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "mtbf",
+          "run": {{ "stop_time": 100.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": {interarrival} }},
+                "first_arrival": 0.0{max_line} }} }},
+            {{ "name": "P", "kind": "processor", "pos": [0.0, 0.0], "params": {{
+                "process_time": {{ "distribution": "constant", "value": 10.0 }},
+                "triggers": {{ "on_breakdown": [{{ "action": "script", "source": "log(\"fail\");" }}] }},
+                "failure": {{
+                  "mtbf": {{ "distribution": "constant", "value": 15.0 }},
+                  "mttr": {{ "distribution": "constant", "value": 1.0 }}{count_states} }} }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [{{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }}]
+        }}"#
+        )
+    }
+
+    /// task-163: an empty `count_time_in_states` is exactly the old wall-clock
+    /// behaviour (bit-for-bit identical report).
+    #[test]
+    fn empty_count_time_in_states_matches_the_omitted_field() {
+        let omitted = Model::from_json(&failure_model("", 20.0, None)).expect("omitted");
+        let empty = Model::from_json(&failure_model(
+            r#", "count_time_in_states": []"#,
+            20.0,
+            None,
+        ))
+        .expect("empty");
+        let reference = crate::run_model(&omitted).expect("run omitted");
+        let actual = crate::run_model(&empty).expect("run empty");
+        assert_eq!(actual, reference, "empty list must not change any number");
+    }
+
+    /// task-163: counting only `processing` ignores idle time, so a single short
+    /// job never reaches the 15 time-unit MTBF (the wall clock does fail).
+    #[test]
+    fn processing_only_clock_ignores_idle_time() {
+        // One item only (next arrival beyond stop): 10 processing units < 15.
+        let model = Model::from_json(&failure_model(
+            r#", "count_time_in_states": ["processing"]"#,
+            100.0,
+            Some(1),
+        ))
+        .expect("model");
+        let report = crate::run_model(&model).expect("run");
+        assert_eq!(
+            report.objects["P"].down_fraction.mean, 0.0,
+            "the clock pauses while the processor is idle"
+        );
+        let wall = Model::from_json(&failure_model("", 100.0, Some(1))).expect("wall");
+        assert!(
+            crate::run_model(&wall).expect("wall run").objects["P"]
+                .down_fraction
+                .mean
+                > 0.0,
+            "wall clock still fails while idle"
+        );
+    }
+
+    /// task-163: the counted clock pauses during an idle gap and resumes on the
+    /// next processing interval, so the first breakdown lands at t = 25 rather
+    /// than at the wall-clock t = 15.
+    #[test]
+    fn processing_clock_pauses_and_resumes_across_an_idle_gap() {
+        let model = Model::from_json(&failure_model(
+            r#", "count_time_in_states": ["processing"]"#,
+            20.0,
+            None,
+        ))
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let real: Vec<f64> = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "script_log" && event.message == "fail")
+            .map(|event| event.time)
+            .collect();
+        let first = real.first().copied().expect("processing clock fires");
+        // Work at 0..10 (10 units), idle 10..20, work 20..25 -> threshold 15.
+        assert!((first - 25.0).abs() < 1e-9, "first failure at {first}");
+    }
+
+    /// task-163: support/usage of a task sequence: the engine generates the
+    /// standard legs; baseline occurrences are consumed, extras are appended in
+    /// exactly the listed order (unload, load, travel here).
+    #[test]
+    fn task_sequence_appends_extra_legs_in_order() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "task-steps",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1000.0 },
+                "max_arrivals": 1, "first_arrival": 0.0 } },
+            { "name": "P", "kind": "processor", "pos": [100.0, 0.0], "params": {
+                "process_time": { "distribution": "constant", "value": 1.0 },
+                "process_operator": "D" } },
+            { "name": "K", "kind": "sink", "params": {} },
+            { "name": "D", "kind": "dispatcher", "pos": [0.0, 0.0], "params": {
+                "task_sequence": ["travel", "travel", "load", "unload",
+                                  "unload", "load", "travel"] } },
+            { "name": "T", "kind": "transporter", "pos": [0.0, 0.0], "params": {
+                "speed": 10.0, "load_time": { "distribution": "constant", "value": 2.0 },
+                "unload_time": { "distribution": "constant", "value": 3.0 },
+                "home": "D" } }
+          ],
+          "connections": [
+            { "from": "S", "to": "P" }, { "from": "P", "to": "K" },
+            { "from": "D", "to": "T" }
+          ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let times: Vec<f64> = trace
+            .object("T")
+            .filter(|event| event.event == "task_step_done")
+            .map(|event| event.time)
+            .collect();
+        assert_eq!(times.len(), 3, "exactly three extra legs: {times:?}");
+        // Extra legs in order: unload (3), load (2), travel (100/10 = 10).
+        let home = trace
+            .object("T")
+            .filter(|event| event.event == "transport_home")
+            .map(|event| event.time)
+            .next()
+            .expect("return home");
+        assert!(
+            (times[0] - home - 3.0).abs() < 1e-9,
+            "{times:?} home={home}"
+        );
+        let deltas: Vec<f64> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        assert!((deltas[0] - 2.0).abs() < 1e-9, "{deltas:?}");
+        assert!((deltas[1] - 10.0).abs() < 1e-9, "{deltas:?}");
+    }
+
+    /// task-163: counted time really advances inside the selected state: a
+    /// single 20-unit processing block reaches a 15-unit MTBF at t = 15.
+    #[test]
+    fn processing_clock_advances_inside_the_counted_state() {
+        let json = failure_model(
+            r#", "count_time_in_states": ["processing"]"#,
+            100.0,
+            Some(1),
+        )
+        .replace(
+            r#""process_time": { "distribution": "constant", "value": 10.0 }"#,
+            r#""process_time": { "distribution": "constant", "value": 20.0 }"#,
+        );
+        let model = Model::from_json(&json).expect("model");
+        let (_, trace) = crate::simulate_traced(
+            &model,
+            &SimConfig {
+                stop_time: 100.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect("run");
+        let first = trace
+            .events
+            .iter()
+            .find(|event| event.event == "script_log" && event.message == "fail")
+            .map(|event| event.time)
+            .expect("counted clock fires");
+        assert!((first - 15.0).abs() < 1e-9, "first failure at {first}");
     }
 }

@@ -21,6 +21,17 @@
   未定义变量是明确错误：`expression error at performance_measures.X: unknown global variable 'Missing'`。
   实测 `$Batch * 2` 精确给出 20.0（CI 0）、`completed / time` 给出 0.27、`completed` 给出 137.33 ±34.81（n=3）。
 
+- **故障时钟按状态计时的正确性修复**：状态限定模式（`failure.count_time_in_states`）下，
+  `Breakdown` 事件到达时没有先结算当前状态区间，读到的是过期的 `up_time`，导致真实故障被推迟到
+  下一次状态切换（例如 processing-only 的首次故障从 t=25 变成 t=40）。新增
+  `settle_failure_clock(index)`：事件处理前按当前 state/phase/block_reason 结算、且不递增 generation
+  （避免把当前事件判成 stale）；顺带补上 `waiting_for_operator`／`waiting_for_transport` 两个状态的映射。
+  空列表（墙钟）路径完全未改，并有 `[]` 与省略字段**逐位相等**的兼容测试。
+  实测同一模型：只按 processing 计时 `down_fraction` 8.3%，墙钟 25%。
+- **修正任务腿语义的误导注释**：`TaskStep` 文档原称「标准序列是 travel, travel, load, unload, travel」，
+  实际 `task_sequence` 条目只**消耗基线计数**，超出部分按顺序**追加为额外腿**、不是可重排的标准腿。
+  注释已改正，并加 `task_sequence_appends_extra_legs_in_order` 钉住现行语义。
+
 ### 报告与 CLI
 
 - **性能指标进入所有渲染出口**：`experiment` 文本表按指标名追加列（CJK 宽度按东亚字符宽度对齐）、

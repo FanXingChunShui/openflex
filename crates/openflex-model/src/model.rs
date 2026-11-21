@@ -2065,11 +2065,13 @@ impl Default for ElevatorParams {
 
 /// One leg of a dispatcher task sequence (task-44).
 ///
-/// The engine already performs the standard sequence `travel` (to the pickup
-/// point), `travel` (to the requester), `load`, `unload`, `travel` (home). A
-/// model can add extra legs: every additional `travel` costs one more trip
-/// between the pickup point and the requester, every `load`/`unload` costs the
-/// task executer's load/unload time again.
+/// The engine itself generates the standard task legs (pickup travel, load,
+/// delivery travel, unload, return-home travel). A `task_sequence` never
+/// re-orders those baseline legs: entries are matched against the baseline
+/// counts (the first two `travel`s, the first `load` and the first `unload`
+/// are consumed by the baseline) and every entry beyond its baseline is
+/// appended as an **extra** leg, in the listed order, after the standard task
+/// has completed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum TaskStep {
