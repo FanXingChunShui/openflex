@@ -10496,20 +10496,21 @@ impl eframe::App for OpenFlexApp {
                     .show(ui, |ui| {
                         egui::Grid::new("stats-grid")
                             .striped(true)
-                            .num_columns(8)
+                            .num_columns(9)
                             .show(ui, |ui| {
                                 // Column headers are clickable: the first
                                 // click sorts descending, the second reverses.
                                 let mut sort_now: Option<u8> = None;
-                                let headers: [(u8, String); 8] = [
+                                let headers: [(u8, String); 9] = [
                                     (0, "Object".to_string()),
                                     (1, "In".to_string()),
                                     (2, "Out".to_string()),
                                     (3, "WIP".to_string()),
-                                    (4, "Stay".to_string()),
-                                    (5, "Util".to_string()),
+                                    (4, "Max".to_string()),
+                                    (5, "Stay".to_string()),
+                                    (6, "Util".to_string()),
                                     (
-                                        6,
+                                        7,
                                         format!(
                                             "Thru / {}",
                                             self.model
@@ -10517,7 +10518,7 @@ impl eframe::App for OpenFlexApp {
                                                 .unwrap_or("")
                                         ),
                                     ),
-                                    (7, "±CI".to_string()),
+                                    (8, "±CI".to_string()),
                                 ];
                                 for (column, label) in headers {
                                     let active = self.stats_sort == Some(column);
@@ -10564,10 +10565,11 @@ impl eframe::App for OpenFlexApp {
                                                 1 => stats.input_count.mean,
                                                 2 => stats.output_count.mean,
                                                 3 => stats.avg_content.mean,
-                                                4 => stats.avg_stay_time.mean,
-                                                5 => stats.utilization.mean,
-                                                6 => stats.throughput.mean,
-                                                7 => stats.throughput.ci95,
+                                                4 => stats.max_content.mean,
+                                                5 => stats.avg_stay_time.mean,
+                                                6 => stats.utilization.mean,
+                                                7 => stats.throughput.mean,
+                                                8 => stats.throughput.ci95,
                                                 _ => 0.0,
                                             }
                                         };
@@ -10625,6 +10627,9 @@ impl eframe::App for OpenFlexApp {
                                     ui.label(format!("{:.0}", stats.input_count.mean));
                                     ui.label(format!("{:.0}", stats.output_count.mean));
                                     ui.label(format!("{:.1}", stats.avg_content.mean));
+                                    // Peak content says whether a queue ever piled
+                                    // up; the average hides a short surge.
+                                    ui.label(format!("{:.0}", stats.max_content.mean));
                                     ui.label(format!("{:.1}", stats.avg_stay_time.mean));
                                     // A 0% for a source would read as "underused"
                                     // rather than "not applicable".
@@ -11877,6 +11882,25 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn the_stats_table_has_a_peak_content_column() {
+        // Nine columns, with `Max` right after `WIP`, and sort keys shifted by one.
+        let headers = [
+            "Object", "In", "Out", "WIP", "Max", "Stay", "Util", "Thru", "±CI",
+        ];
+        assert_eq!(headers.len(), 9);
+        assert_eq!(headers[4], "Max", "peak content sits after WIP");
+        // Sort key 4 must be the peak, not the stay time.
+        let key = |column: u8| match column {
+            3 => "avg_content",
+            4 => "max_content",
+            5 => "avg_stay_time",
+            _ => "other",
+        };
+        assert_eq!(key(4), "max_content");
+        assert_eq!(key(5), "avg_stay_time");
     }
 
     #[test]
