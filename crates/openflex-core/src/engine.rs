@@ -1531,6 +1531,11 @@ pub fn resume_from_checkpoint(
         return Err(error);
     }
     sim.finalize_stats()?;
+    let end_actions = sim.model.model_triggers.end_of_replication.clone();
+    sim.fire_model_actions("model_triggers.end_of_replication", end_actions);
+    if let Some(error) = sim.trigger_error.take() {
+        return Err(error);
+    }
     sim.replication_result(index, resume_at)
 }
 
@@ -2159,6 +2164,36 @@ pub fn simulate_with_checkpoint_traced(
     Ok((result, checkpoint, trace))
 }
 
+/// task-164: execute one lifecycle hook's actions with a throwaway simulation
+/// context (used by the CLI experiment runner for the experiment/scenario
+/// boundaries). The returned trace contains the hook's `script_log` messages.
+pub fn fire_model_hook_actions(
+    model: &Model,
+    config: &SimConfig,
+    actions: Vec<Action>,
+    location: &str,
+) -> Result<TraceLog, SimError> {
+    if actions.is_empty() {
+        return Ok(TraceLog::default());
+    }
+    let mut sim = Simulation::new(model, config.clone(), true)?;
+    sim.fire_model_actions(location, actions);
+    if let Some(error) = sim.trigger_error.take() {
+        return Err(error);
+    }
+    Ok(sim.trace.unwrap_or_default())
+}
+
+/// task-164: script-log messages of a hook's trace, in order.
+pub fn hook_logs(trace: &TraceLog) -> Vec<String> {
+    trace
+        .events
+        .iter()
+        .filter(|event| event.event == "script_log")
+        .map(|event| event.message.clone())
+        .collect()
+}
+
 fn simulate_run(
     model: &Model,
     config: &SimConfig,
@@ -2176,6 +2211,11 @@ fn simulate_run(
         sim.restore(checkpoint)?;
     } else {
         sim.start()?;
+        let start_actions = sim.model.model_triggers.start_of_replication.clone();
+        sim.fire_model_actions("model_triggers.start_of_replication", start_actions);
+        if let Some(error) = sim.trigger_error.take() {
+            return Err(error);
+        }
     }
     sim.run_events()?;
     sim.advance_to_stop();
@@ -2190,6 +2230,11 @@ fn simulate_run(
         None
     };
     sim.finalize_stats()?;
+    let end_actions = sim.model.model_triggers.end_of_replication.clone();
+    sim.fire_model_actions("model_triggers.end_of_replication", end_actions);
+    if let Some(error) = sim.trigger_error.take() {
+        return Err(error);
+    }
     let mut objects = BTreeMap::new();
     let elapsed = config.stop_time - config.warmup;
     for object in &sim.objects {
@@ -10432,6 +10477,21 @@ fn collect_model_scripts(model: &Model) -> Vec<(String, String)> {
         ("on_start", &model.model_triggers.on_start),
         ("on_reset", &model.model_triggers.on_reset),
         ("on_stop", &model.model_triggers.on_stop),
+        (
+            "start_of_experiment",
+            &model.model_triggers.start_of_experiment,
+        ),
+        ("end_of_experiment", &model.model_triggers.end_of_experiment),
+        ("start_of_scenario", &model.model_triggers.start_of_scenario),
+        ("end_of_scenario", &model.model_triggers.end_of_scenario),
+        (
+            "start_of_replication",
+            &model.model_triggers.start_of_replication,
+        ),
+        (
+            "end_of_replication",
+            &model.model_triggers.end_of_replication,
+        ),
     ] {
         for (position, action) in actions.iter().enumerate() {
             if let Action::Script { source } = action {
@@ -12983,5 +13043,230 @@ mod tests {
             .map(|event| event.time)
             .expect("counted clock fires");
         assert!((first - 15.0).abs() < 1e-9, "first failure at {first}");
+    }
+
+    fn lifecycle_model(end_script: &str) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "lifecycle",
+          "run": {{ "stop_time": 5.0, "seed": 1, "replications": 1 }},
+          "model_triggers": {{
+            "start_of_experiment": [{{ "action": "script", "source": "log(\"experiment_start\");" }}],
+            "end_of_experiment": [{{ "action": "script", "source": "log(\"experiment_end\");" }}],
+            "start_of_scenario": [{{ "action": "script", "source": "log(\"scenario_start\");" }}],
+            "end_of_scenario": [{{ "action": "script", "source": "log(\"scenario_end\");" }}],
+            "start_of_replication": [{{ "action": "script", "source": "log(\"replication_start\");" }}],
+            "end_of_replication": [{{ "action": "script", "source": "{end_script}" }}]
+          }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 1000.0 }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [{{ "from": "S", "to": "K" }}]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    /// task-164: a plain run fires the two replication hooks around the run and
+    /// leaves the experiment/scenario hooks untouched.
+    #[test]
+    fn replication_lifecycle_hooks_fire_once_per_run() {
+        let model = lifecycle_model(r#"log(\"replication_end\");"#);
+        let config = SimConfig {
+            stop_time: 5.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let logs: Vec<String> = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "script_log")
+            .map(|event| event.message.clone())
+            .collect();
+        assert_eq!(
+            logs,
+            vec![
+                "replication_start".to_string(),
+                "replication_end".to_string()
+            ]
+        );
+        let start = trace
+            .events
+            .iter()
+            .find(|event| event.message == "replication_start")
+            .expect("start log")
+            .time;
+        let end = trace
+            .events
+            .iter()
+            .find(|event| event.message == "replication_end")
+            .expect("end log")
+            .time;
+        assert!(start < 1e-9);
+        assert!((end - 5.0).abs() < 1e-9);
+    }
+
+    /// task-164: the experiment/scenario hooks fire in the documented order
+    /// (2 scenarios x 2 replications) with the expected counts.
+    #[test]
+    fn experiment_lifecycle_hooks_run_in_order() {
+        let model = lifecycle_model(r#"log(\"replication_end\");"#);
+        let config = SimConfig {
+            stop_time: 5.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut order = Vec::new();
+        order.extend(hook_logs(
+            &fire_model_hook_actions(
+                &model,
+                &config,
+                model.model_triggers.start_of_experiment.clone(),
+                "model_triggers.start_of_experiment",
+            )
+            .expect("experiment start"),
+        ));
+        for _scenario in 0..2 {
+            order.extend(hook_logs(
+                &fire_model_hook_actions(
+                    &model,
+                    &config,
+                    model.model_triggers.start_of_scenario.clone(),
+                    "model_triggers.start_of_scenario",
+                )
+                .expect("scenario start"),
+            ));
+            for replication in 0..2 {
+                let config = SimConfig {
+                    stop_time: 5.0,
+                    warmup: 0.0,
+                    seed: replication as u64 + 1,
+                };
+                let (_, trace) = crate::simulate_traced(&model, &config, replication as u32)
+                    .expect("replication");
+                order.extend(
+                    trace
+                        .events
+                        .iter()
+                        .filter(|event| event.event == "script_log")
+                        .map(|event| event.message.clone()),
+                );
+            }
+            order.extend(hook_logs(
+                &fire_model_hook_actions(
+                    &model,
+                    &config,
+                    model.model_triggers.end_of_scenario.clone(),
+                    "model_triggers.end_of_scenario",
+                )
+                .expect("scenario end"),
+            ));
+        }
+        order.extend(hook_logs(
+            &fire_model_hook_actions(
+                &model,
+                &config,
+                model.model_triggers.end_of_experiment.clone(),
+                "model_triggers.end_of_experiment",
+            )
+            .expect("experiment end"),
+        ));
+        let count = |name: &str| order.iter().filter(|message| *message == name).count();
+        assert_eq!(count("replication_start"), 4);
+        assert_eq!(count("replication_end"), 4);
+        assert_eq!(count("scenario_start"), 2);
+        assert_eq!(count("scenario_end"), 2);
+        assert_eq!(count("experiment_start"), 1);
+        assert_eq!(count("experiment_end"), 1);
+        assert_eq!(order.first().map(String::as_str), Some("experiment_start"));
+        assert_eq!(order.last().map(String::as_str), Some("experiment_end"));
+        assert_eq!(
+            &order[1..5],
+            &[
+                "scenario_start".to_string(),
+                "replication_start".to_string(),
+                "replication_end".to_string(),
+                "replication_start".to_string(),
+            ]
+        );
+    }
+
+    /// task-164: a failing lifecycle script is a SimError::Script with the hook
+    /// location; syntax errors are caught by validation before the run.
+    #[test]
+    fn lifecycle_hook_errors_are_reported() {
+        let model = lifecycle_model("nope();");
+        let error = crate::run_model(&model).expect_err("runtime error");
+        let text = error.to_string();
+        assert!(text.contains("model_triggers.end_of_replication"), "{text}");
+        assert!(text.contains("script error at"), "{text}");
+
+        // `lifecycle_model` validates too, so build the broken JSON manually.
+        let bad = Model::from_json(
+            r#"{
+              "format": "openflex-model", "version": 1, "name": "bad-hook",
+              "model_triggers": { "end_of_replication": [
+                { "action": "script", "source": "1 +" } ] },
+              "objects": [
+                { "name": "S", "kind": "source", "params": {} },
+                { "name": "K", "kind": "sink", "params": {} }
+              ],
+              "connections": [{ "from": "S", "to": "K" }]
+            }"#,
+        );
+        assert!(
+            bad.is_err(),
+            "uncompilable hook script must fail validation"
+        );
+    }
+
+    /// task-164: empty new hooks must not make `model_triggers` appear in JSON;
+    /// non-empty new hooks must be written.
+    #[test]
+    fn empty_lifecycle_hooks_keep_the_model_json_unchanged() {
+        let plain = Model::from_json(
+            r#"{
+              "format": "openflex-model", "version": 1, "name": "plain",
+              "objects": [
+                { "name": "S", "kind": "source", "params": {} },
+                { "name": "K", "kind": "sink", "params": {} }
+              ],
+              "connections": [{ "from": "S", "to": "K" }]
+            }"#,
+        )
+        .expect("plain");
+        let empty = Model::from_json(
+            r#"{
+              "format": "openflex-model", "version": 1, "name": "plain",
+              "model_triggers": {},
+              "objects": [
+                { "name": "S", "kind": "source", "params": {} },
+                { "name": "K", "kind": "sink", "params": {} }
+              ],
+              "connections": [{ "from": "S", "to": "K" }]
+            }"#,
+        )
+        .expect("empty");
+        assert_eq!(
+            serde_json::to_value(&plain).expect("plain json"),
+            serde_json::to_value(&empty).expect("empty json"),
+            "empty triggers must serialize exactly like no triggers"
+        );
+        assert!(
+            serde_json::to_value(&plain)
+                .expect("json")
+                .get("model_triggers")
+                .is_none()
+        );
+
+        let model = lifecycle_model(r#"log(\"replication_end\");"#);
+        let value = serde_json::to_value(&model).expect("json");
+        let triggers = value.get("model_triggers").expect("model_triggers present");
+        assert!(triggers.get("start_of_experiment").is_some());
+        assert!(triggers.get("end_of_replication").is_some());
     }
 }

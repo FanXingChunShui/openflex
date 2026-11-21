@@ -1767,6 +1767,22 @@ fn execute_scenario_traced(
     Ok(SimReport::from_replications(model, results))
 }
 
+/// task-164: run one experiment/scenario lifecycle hook and print its logs.
+fn fire_experiment_hook(
+    model: &Model,
+    config: &SimConfig,
+    actions: Vec<openflex_model::Action>,
+    location: &str,
+    quiet: bool,
+) -> Result<(), Failure> {
+    let trace = openflex_core::engine::fire_model_hook_actions(model, config, actions, location)
+        .map_err(Failure::runtime)?;
+    for message in openflex_core::engine::hook_logs(&trace) {
+        note(quiet, &message);
+    }
+    Ok(())
+}
+
 fn run_experiments(
     model: &Model,
     name: Option<&str>,
@@ -1787,6 +1803,14 @@ fn run_experiments(
         )));
     }
     for experiment in experiments {
+        let experiment_config = SimConfig::from_run_settings(&model.run, model.run.seed);
+        fire_experiment_hook(
+            model,
+            &experiment_config,
+            model.model_triggers.start_of_experiment.clone(),
+            "model_triggers.start_of_experiment",
+            quiet,
+        )?;
         let scenarios = if experiment.scenarios.is_empty() {
             vec![Scenario {
                 name: "baseline".into(),
@@ -1825,16 +1849,39 @@ fn run_experiments(
             } else {
                 None
             };
+            let scenario_config =
+                SimConfig::from_run_settings(&scenario_model.run, scenario_model.run.seed);
+            fire_experiment_hook(
+                &scenario_model,
+                &scenario_config,
+                scenario_model.model_triggers.start_of_scenario.clone(),
+                "model_triggers.start_of_scenario",
+                quiet,
+            )?;
             let report = match trace_dir.as_deref() {
                 Some(directory) => execute_scenario_traced(&scenario_model, directory, quiet)?,
                 None => execute(&scenario_model, &[], None, false)?,
             };
+            fire_experiment_hook(
+                &scenario_model,
+                &scenario_config,
+                scenario_model.model_triggers.end_of_scenario.clone(),
+                "model_triggers.end_of_scenario",
+                quiet,
+            )?;
             scenario_reports.push(report::ScenarioReport {
                 name: scenario.name.clone(),
                 overrides: scenario.overrides.clone(),
                 report,
             });
         }
+        fire_experiment_hook(
+            model,
+            &experiment_config,
+            model.model_triggers.end_of_experiment.clone(),
+            "model_triggers.end_of_experiment",
+            quiet,
+        )?;
         let experiment_report = report::ExperimentReport {
             experiment: experiment.name.clone(),
             model: model.name.clone(),

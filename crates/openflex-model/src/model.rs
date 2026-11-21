@@ -3940,11 +3940,37 @@ pub struct ModelTriggers {
     /// Executed when the run reaches its stop time.
     #[serde(default)]
     pub on_stop: Vec<Action>,
+    /// Executed once before the first scenario of an experiment.
+    #[serde(default)]
+    pub start_of_experiment: Vec<Action>,
+    /// Executed once after the last scenario of an experiment.
+    #[serde(default)]
+    pub end_of_experiment: Vec<Action>,
+    /// Executed before each experiment scenario.
+    #[serde(default)]
+    pub start_of_scenario: Vec<Action>,
+    /// Executed after each experiment scenario.
+    #[serde(default)]
+    pub end_of_scenario: Vec<Action>,
+    /// Executed before each replication.
+    #[serde(default)]
+    pub start_of_replication: Vec<Action>,
+    /// Executed after each replication.
+    #[serde(default)]
+    pub end_of_replication: Vec<Action>,
 }
 
 impl ModelTriggers {
     pub fn is_empty(&self) -> bool {
-        self.on_start.is_empty() && self.on_reset.is_empty() && self.on_stop.is_empty()
+        self.on_start.is_empty()
+            && self.on_reset.is_empty()
+            && self.on_stop.is_empty()
+            && self.start_of_experiment.is_empty()
+            && self.end_of_experiment.is_empty()
+            && self.start_of_scenario.is_empty()
+            && self.end_of_scenario.is_empty()
+            && self.start_of_replication.is_empty()
+            && self.end_of_replication.is_empty()
     }
 }
 

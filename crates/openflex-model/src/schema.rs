@@ -599,7 +599,13 @@ fn definitions() -> Value {
             "properties": {
                 "on_start": { "type": "array", "items": { "$ref": "#/$defs/action" } },
                 "on_reset": { "type": "array", "items": { "$ref": "#/$defs/action" } },
-                "on_stop": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+                "on_stop": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "start_of_experiment": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "end_of_experiment": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "start_of_scenario": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "end_of_scenario": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "start_of_replication": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "end_of_replication": { "type": "array", "items": { "$ref": "#/$defs/action" } }
             },
             "additionalProperties": false
         }),
@@ -1356,5 +1362,27 @@ mod tests {
             json!("#/$defs/performance_measure")
         );
         assert_eq!(def["properties"]["unit"]["type"], json!(["string", "null"]));
+    }
+
+    /// task-164: the model-trigger definition exposes the six experiment
+    /// lifecycle hooks.
+    #[test]
+    fn schema_covers_lifecycle_hooks() {
+        let schema = json_schema();
+        let triggers = &schema["$defs"]["model_triggers"]["properties"];
+        for field in [
+            "start_of_experiment",
+            "end_of_experiment",
+            "start_of_scenario",
+            "end_of_scenario",
+            "start_of_replication",
+            "end_of_replication",
+        ] {
+            assert_eq!(
+                triggers[field]["items"]["$ref"],
+                json!("#/$defs/action"),
+                "missing lifecycle hook {field}"
+            );
+        }
     }
 }

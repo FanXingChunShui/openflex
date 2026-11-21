@@ -32,6 +32,13 @@
   实际 `task_sequence` 条目只**消耗基线计数**，超出部分按顺序**追加为额外腿**、不是可重排的标准腿。
   注释已改正，并加 `task_sequence_appends_extra_legs_in_order` 钉住现行语义。
 
+- **实验生命周期钩子（6 个边界）**：`ModelTriggers` 新增 `start_of_experiment` / `end_of_experiment` /
+  `start_of_scenario` / `end_of_scenario` / `start_of_replication` / `end_of_replication`；
+  `is_empty()` 把 6 个新字段全部计入，**空钩子模型的 JSON 与之前逐字节相同**（有对比测试）。
+  复现边界由引擎触发，实验/场景边界经新公开 API `fire_model_hook_actions` 执行、`hook_logs` 取日志；
+  单次 `run` 不触发 experiment/scenario 钩子。实测 `experiment` 输出顺序
+  `exp_start → scn_start → scn_end → scn_start → scn_end → exp_end`。脚本预编译列表补齐 6 个钩子。
+
 ### 报告与 CLI
 
 - **性能指标进入所有渲染出口**：`experiment` 文本表按指标名追加列（CJK 宽度按东亚字符宽度对齐）、

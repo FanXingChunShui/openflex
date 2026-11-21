@@ -1520,6 +1520,12 @@ fn validate_model_triggers(model: &Model) -> Vec<ValidationIssue> {
         ("on_start", &triggers.on_start),
         ("on_reset", &triggers.on_reset),
         ("on_stop", &triggers.on_stop),
+        ("start_of_experiment", &triggers.start_of_experiment),
+        ("end_of_experiment", &triggers.end_of_experiment),
+        ("start_of_scenario", &triggers.start_of_scenario),
+        ("end_of_scenario", &triggers.end_of_scenario),
+        ("start_of_replication", &triggers.start_of_replication),
+        ("end_of_replication", &triggers.end_of_replication),
     ];
     for (trigger, actions) in lists {
         for (position, action) in actions.iter().enumerate() {
