@@ -11666,6 +11666,62 @@ impl eframe::App for OpenFlexApp {
                 }
                 // Tracked variables: one row per declared series with the shape
                 // of the samples, so the run can be read at a glance.
+                // `state` / `staytime` tracked variables do not produce a time
+                // series: they summarise the run, so they get their own block.
+                if !report.tracked_summaries.is_empty() {
+                    egui::CollapsingHeader::new(format!(
+                        "Tracked summaries ({})",
+                        report.tracked_summaries.len()
+                    ))
+                    .id_salt("tracked-summaries")
+                    .show(ui, |ui| {
+                        for (name, summary) in &report.tracked_summaries {
+                            ui.label(
+                                egui::RichText::new(name)
+                                    .small()
+                                    .monospace()
+                                    .color(palette::ACCENT_HI),
+                            );
+                            if let Some(shares) = summary.state_shares.as_ref() {
+                                // Model-wide shares, so they sum to roughly 1.
+                                let mut parts: Vec<String> = shares
+                                    .iter()
+                                    .filter(|(_, share)| **share > 0.0)
+                                    .map(|(state, share)| format!("{state} {:.0}%", share * 100.0))
+                                    .collect();
+                                if parts.is_empty() {
+                                    parts.push("(no time recorded)".to_string());
+                                }
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "  state: {}",
+                                        parts.join(" · ")
+                                    ))
+                                    .size(9.0_f32)
+                                    .monospace()
+                                    .color(palette::TEXT_DIM),
+                                );
+                            }
+                            if let Some(stay) = summary.staytime.as_ref() {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "  stay: n {} · min {:.2} · p50 {:.2} · p90 {:.2} · max {:.2} · mean {:.2}",
+                                        stay.n, stay.min, stay.p50, stay.p90, stay.max, stay.mean
+                                    ))
+                                    .size(9.0_f32)
+                                    .monospace()
+                                    .color(palette::TEXT_DIM),
+                                );
+                            }
+                        }
+                        ui.label(
+                            egui::RichText::new("shares cover the whole model, not one object")
+                                .size(9.0_f32)
+                                .color(palette::TEXT_DIM),
+                        );
+                    });
+                    ui.separator();
+                }
                 if !report.tracked_series.is_empty() {
                     egui::CollapsingHeader::new(format!(
                         "Tracked series ({})",
@@ -13417,6 +13473,45 @@ mod tests {
         // A model without objects offer nothing rather than panicking.
         let empty = SamplerNames::from_model(None);
         assert!(empty.any.is_empty() && empty.operators.is_empty());
+    }
+
+    #[test]
+    fn tracked_summaries_render_state_shares_and_staytime() {
+        // The panel formats what the report carries: state shares as percents
+        // (zero shares omitted) and the stay-time distribution.
+        let shares = [("idle", 0.25_f64), ("busy", 0.75), ("down", 0.0)];
+        let parts: Vec<String> = shares
+            .iter()
+            .filter(|(_, share)| *share > 0.0)
+            .map(|(state, share)| format!("{state} {:.0}%", share * 100.0))
+            .collect();
+        assert_eq!(
+            parts.join(" · "),
+            "idle 25% · busy 75%",
+            "zero shares are dropped"
+        );
+        // A run with no recorded state time says so instead of showing nothing.
+        let empty: [(&str, f64); 0] = [];
+        let none: Vec<String> = empty.iter().map(|_| String::new()).collect();
+        assert!(none.is_empty());
+        // The stay-time line keeps every percentile in the same order.
+        let line = format!(
+            "  stay: n {} · min {:.2} · p50 {:.2} · p90 {:.2} · max {:.2} · mean {:.2}",
+            3_u64, 1.0_f64, 2.0_f64, 3.0_f64, 4.0_f64, 2.33_f64
+        );
+        assert_eq!(
+            line,
+            "  stay: n 3 · min 1.00 · p50 2.00 · p90 3.00 · max 4.00 · mean 2.33"
+        );
+        // A model without state/staytime variables has nothing to show.
+        let model = builtin_example("mm1").expect("example");
+        assert!(
+            model
+                .tracked_variables
+                .iter()
+                .all(|variable| matches!(variable.kind, openflex_model::TrackedKind::Level)),
+            "mm1 only tracks levels"
+        );
     }
 
     #[test]

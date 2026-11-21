@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### 桌面 GUI
+
+- **报告展示跟踪汇总**：`state` / `staytime` 两类跟踪变量不产生时间序列，报告里在
+  `tracked_summaries` 中。GUI 新增 `Tracked summaries (n)` 面板——`state` 显示各状态占比
+  （零占比省略、并注明「覆盖整个模型而非单个对象」），`staytime` 显示
+  `n / min / p50 / p90 / max / mean`。此前这两类数据只能去 JSON 里看。GUI 测试 **134 项**。
+
 ### 模型与引擎
 
 - **脚本错误诊断 + `check-scripts`**：脚本失败时错误文案含
