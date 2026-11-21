@@ -21,6 +21,10 @@
 
 ### 模型与引擎
 
+- **新示例 `examples/conveyor-flow-control.ofm`**：一条带同时演示
+  slug 组、`merge_mode: weighted [3,1]` 的两路合流、光电门 `on_blocked/on_cleared` 脚本、
+  决策点（`item.type == 1` 时打 `express` 标签、`once_per_item`）。实测 300 秒 3 复现：
+  主带 `max WIP 25`、完成 66 件、35 次光电门跃迁脚本日志。
 - **conveyor 决策点**：`ConveyorParams.decision_points: [{ position, range, condition, actions, once_per_item, name }]`。
   件经过感应区时对**该件**求值 `condition`（复用既有表达式语言，`item.*` 指向它），为真按序执行 `actions`；
   `once_per_item` 离开感应区后重置。**复用光电门那套「边界穿越是皮带事件」机制，没有新时间模型**。

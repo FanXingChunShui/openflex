@@ -1,0 +1,180 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "conveyor-flow-control",
+  "description": "Slugs, a merge controller, a photo eye and a decision point on one belt system",
+  "time_unit": "seconds",
+  "run": {
+    "stop_time": 300.0,
+    "warmup": 0.0,
+    "seed": 1,
+    "replications": 3
+  },
+  "objects": [
+    {
+      "name": "FeedA",
+      "kind": "source",
+      "pos": [
+        -16.0,
+        2.0
+      ],
+      "params": {
+        "interarrival": {
+          "distribution": "constant",
+          "value": 3.0
+        }
+      }
+    },
+    {
+      "name": "FeedB",
+      "kind": "source",
+      "pos": [
+        -16.0,
+        -2.0
+      ],
+      "params": {
+        "interarrival": {
+          "distribution": "constant",
+          "value": 3.0
+        },
+        "item_type": 1
+      }
+    },
+    {
+      "name": "LaneA",
+      "kind": "conveyor",
+      "pos": [
+        -8.0,
+        2.0
+      ],
+      "params": {
+        "speed": 1.0,
+        "length": 8.0,
+        "item_spacing": 1.0,
+        "accumulating": true,
+        "slug": true,
+        "slug_min_gap": 1.5
+      }
+    },
+    {
+      "name": "LaneB",
+      "kind": "conveyor",
+      "pos": [
+        -8.0,
+        -2.0
+      ],
+      "params": {
+        "speed": 1.0,
+        "length": 8.0,
+        "item_spacing": 1.0,
+        "accumulating": true
+      }
+    },
+    {
+      "name": "Main",
+      "kind": "conveyor",
+      "pos": [
+        4.0,
+        0.0
+      ],
+      "params": {
+        "speed": 1.0,
+        "length": 24.0,
+        "item_spacing": 1.0,
+        "accumulating": true,
+        "join_inputs": 2,
+        "merge_mode": "weighted",
+        "merge_weight": [
+          3,
+          1
+        ],
+        "photo_eyes": [
+          {
+            "position": 6.0,
+            "name": "PE-sort",
+            "range": 0.5,
+            "triggers": {
+              "on_blocked": [
+                {
+                  "action": "script",
+                  "source": "log(\"PE-sort blocked\");"
+                }
+              ],
+              "on_cleared": [
+                {
+                  "action": "script",
+                  "source": "log(\"PE-sort cleared\");"
+                }
+              ]
+            }
+          }
+        ],
+        "decision_points": [
+          {
+            "position": 14.0,
+            "range": 0.5,
+            "name": "TypeSplit",
+            "condition": "item.type == 1",
+            "actions": [
+              {
+                "action": "set_label",
+                "name": "express",
+                "value": "1"
+              }
+            ],
+            "once_per_item": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "Pack",
+      "kind": "processor",
+      "pos": [
+        38.0,
+        0.0
+      ],
+      "params": {
+        "process_time": {
+          "distribution": "constant",
+          "value": 4.0
+        }
+      }
+    },
+    {
+      "name": "Exit",
+      "kind": "sink",
+      "pos": [
+        46.0,
+        0.0
+      ],
+      "params": {}
+    }
+  ],
+  "connections": [
+    {
+      "from": "FeedA",
+      "to": "LaneA"
+    },
+    {
+      "from": "FeedB",
+      "to": "LaneB"
+    },
+    {
+      "from": "LaneA",
+      "to": "Main"
+    },
+    {
+      "from": "LaneB",
+      "to": "Main"
+    },
+    {
+      "from": "Main",
+      "to": "Pack"
+    },
+    {
+      "from": "Pack",
+      "to": "Exit"
+    }
+  ]
+}
