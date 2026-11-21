@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v1.33.0 — 2026-11-21
+
+本轮以 **FlexSimChinese7.5 全功能对齐**为目标：对照 326 个帮助页建立可执行的功能矩阵，并把矩阵里「小/中」量级的可补缺口批量补齐——对象库 38/39、交通控制准入互斥真正生效、PickLists/全局变量/表达式接线、加工时点钩子与模型级触发器、GUI 对象取样器。发布节奏保持**至少 3 小时一版**。
 
 ### FlexSim 7.5 对象库对齐
 
@@ -53,6 +55,13 @@
   裸名 `Name` 仅在引擎无同名值时回退到全局变量（保证 `time`/`item.type` 等既有路径语义不变），
   `picklist("Shift","Night")` 返回条目取值；未定义变量/列表/条目、以及字符串参与算术都是明确的
   求值错误，绝不静默成 0。`EvalContext` 用带默认实现的新方法扩展，外部调用点零破坏。
+
+### 验证
+
+- `cargo test --workspace --locked`：**688 passed / 0 failed**。
+- GUI 单元测试 **125 项**；`openflex-model` 146 项；`openflex-core --lib` 81 项。
+- `clippy` 0、`fmt` 干净；11 个示例模型全部 validate 通过，GUI 启动无 panic。
+- 交通控制端到端实测（CLI + trace，两车/10 米腿/100 秒）：`capacity=1` **7** 次等待事件（改造前 964）、`capacity=2` 与 `un_timed` 均为 0 次，两车完成时刻不变。
 
 ## v1.32.0 — 2026-11-21
 

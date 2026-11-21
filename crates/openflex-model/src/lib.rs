@@ -16,7 +16,10 @@ pub mod validate;
 pub use action::{Action, SimTrigger, Triggers};
 pub use distribution::Distribution;
 pub use export::{CONCEPT_FORMAT, CONCEPT_VERSION, fsm_concept_json};
-pub use expr::{BUILTIN_VARIABLES, EvalContext, Expr, ExprError, Value, condition};
+pub use expr::{
+    BUILTIN_FUNCTIONS, BUILTIN_VARIABLES, EvalContext, Expr, ExprError, ModelEvalContext,
+    PickListLookup, Value, condition,
+};
 pub use migrate::migrate_json;
 pub use model::*;
 pub use schema::json_schema;

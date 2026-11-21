@@ -133,9 +133,10 @@ use std::path::{Path, PathBuf};
 
 use openflex_model::{
     Action, ArrivalStyle, CombinerMode, ConditionalPort, ConnectionKind, Distribution,
-    DowntimeWindow, EvalContext, FlowBlockKind, Grid, Model, NetworkEdge, Object, ObjectKind,
-    ObjectParams, PortStrategy, ProcessFlow, PullParams, QueueOrder, RackPickPolicy, RackType,
-    SeparateMode, SimTrigger, TableCell, TaskStepKind, TrafficMode, TransferMode, Value,
+    DowntimeWindow, EvalContext, FlowBlockKind, GlobalVariableKind, Grid, Model, NetworkEdge,
+    Object, ObjectKind, ObjectParams, PickListLookup, PortStrategy, ProcessFlow, PullParams,
+    QueueOrder, RackPickPolicy, RackType, SeparateMode, SimTrigger, TableCell, TaskStepKind,
+    TrafficMode, TransferMode, Value,
 };
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
@@ -164,8 +165,9 @@ const MAX_EVENTS: u64 = 50_000_000;
 /// Numerical tolerance for time comparisons.
 const EPS: f64 = 1e-9;
 
-/// task-148: delay before retrying a transport leg blocked by a full
-/// `traffic_control` area. The retry is a normal calendar event (no busy wait).
+/// task-148/154: first fallback retry of a transport leg blocked by a full
+/// `traffic_control` area. The primary path is a directed wake-up when a slot
+/// is released; this timer only guards against a missed wake-up.
 const TRAFFIC_RETRY_DELAY: f64 = 0.1;
 
 /// Label used to carry the number of components inside a container item.
@@ -828,6 +830,12 @@ pub(crate) struct ObjectRt {
     /// current leg. Serialized so a checkpoint restores admissions exactly.
     #[serde(default)]
     traffic_hold: Vec<usize>,
+    /// task-154: stage of the transport leg waiting for a traffic slot.
+    #[serde(default)]
+    traffic_wait_stage: Option<u8>,
+    /// task-154: the control areas that leg needs (one queue entry each).
+    #[serde(default)]
+    traffic_wait_controls: Vec<usize>,
     capacity: u32,
     tasks: usize,
     /// Requester currently served by this transporter (A10 preemption).
@@ -924,6 +932,8 @@ impl ObjectRt {
             person_reserved: Vec::new(),
             task_distance: 0.0,
             traffic_hold: Vec::new(),
+            traffic_wait_stage: None,
+            traffic_wait_controls: Vec::new(),
             capacity: 1,
             tasks: 0,
             serving_requester: None,
@@ -2230,6 +2240,8 @@ struct Simulation<'m> {
     /// task-148: static traffic-control areas and their current occupancy.
     traffic_controls: Vec<TrafficControlRt>,
     traffic_occupancy: Vec<u32>,
+    /// task-154: FIFO waiters per control area (transporter indices).
+    traffic_waiters: Vec<VecDeque<usize>>,
     /// task-56: cached shortest distances for transport legs, keyed by
     /// `(task executer, from object, to object)`. Object positions are fixed
     /// for the whole run, so a hit is always correct; restoring a checkpoint
@@ -2399,6 +2411,7 @@ impl<'m> Simulation<'m> {
             distance_cache: RefCell::new(HashMap::new()),
             charger_in_use: HashMap::new(),
             charger_queue: HashMap::new(),
+            traffic_waiters: vec![VecDeque::new(); traffic_controls.len()],
             traffic_occupancy: vec![0; traffic_controls.len()],
             traffic_controls,
             pause_at: None,
@@ -3002,10 +3015,18 @@ impl<'m> Simulation<'m> {
         // task-148: repeat the admission counters from the restored holdings so
         // a resumed run never leaks (or forgets) traffic-control slots.
         self.traffic_occupancy = vec![0; self.traffic_controls.len()];
-        for object in &self.objects {
+        self.traffic_waiters = vec![VecDeque::new(); self.traffic_controls.len()];
+        for (index, object) in self.objects.iter().enumerate() {
             for &control in &object.traffic_hold {
                 if let Some(slot) = self.traffic_occupancy.get_mut(control) {
                     *slot += 1;
+                }
+            }
+            if object.traffic_wait_stage.is_some() {
+                for &control in &object.traffic_wait_controls {
+                    if let Some(queue) = self.traffic_waiters.get_mut(control) {
+                        queue.push_back(index);
+                    }
                 }
             }
         }
@@ -3068,11 +3089,18 @@ impl<'m> Simulation<'m> {
             EventKind::TransportResume(executor, requester, stage) => {
                 self.handle_transport_resume(executor, requester, stage)
             }
-            EventKind::TrafficWait(transporter, requester, stage) => match stage {
-                1 => self.handle_transport_pickup(transporter, requester),
-                2 => self.handle_operator_released(transporter, requester),
-                _ => self.schedule_transport_pickup(transporter, requester),
-            },
+            EventKind::TrafficWait(transporter, requester, stage) => {
+                if self.objects[transporter].traffic_wait_stage != Some(stage) {
+                    // A directed wake-up already handled this waiter.
+                    Ok(())
+                } else {
+                    match stage {
+                        1 => self.handle_transport_pickup(transporter, requester),
+                        2 => self.handle_operator_released(transporter, requester),
+                        _ => self.schedule_transport_pickup(transporter, requester),
+                    }
+                }
+            }
             EventKind::TransportPickup(transporter, requester) => {
                 self.handle_transport_pickup(transporter, requester)
             }
@@ -7133,11 +7161,7 @@ impl<'m> Simulation<'m> {
             let to = self.objects[home].position;
             let controls = self.traffic_controls_for_leg(from, to);
             if !self.traffic_try_acquire(transporter, &controls) {
-                self.record_object_trace("traffic_wait", transporter);
-                self.schedule(
-                    self.now + TRAFFIC_RETRY_DELAY,
-                    EventKind::TrafficWait(transporter, requester, 0),
-                );
+                self.traffic_wait_for_slot(transporter, requester, 0, &controls);
                 return Ok(());
             }
             let speed_scale = self.traffic_speed_factor(from, to).max(EPS);
@@ -7224,16 +7248,80 @@ impl<'m> Simulation<'m> {
             self.traffic_occupancy[control] += 1;
         }
         self.objects[transporter].traffic_hold = controls.to_vec();
+        self.objects[transporter].traffic_wait_stage = None;
+        self.objects[transporter].traffic_wait_controls.clear();
         true
     }
 
-    /// task-148: release every area held by an executer (idempotent).
+    /// task-148/154: release every area held by an executer (idempotent) and
+    /// wake the first waiter of each released area immediately.
     fn traffic_release(&mut self, transporter: usize) {
         let holds = std::mem::take(&mut self.objects[transporter].traffic_hold);
         for control in holds {
             if let Some(slot) = self.traffic_occupancy.get_mut(control) {
                 *slot = slot.saturating_sub(1);
             }
+            let waiters = {
+                let Some(queue) = self.traffic_waiters.get_mut(control) else {
+                    continue;
+                };
+                let mut found = Vec::new();
+                while let Some(candidate) = queue.pop_front() {
+                    if self.objects[candidate].traffic_wait_stage.is_some()
+                        && !found.contains(&candidate)
+                    {
+                        found.push(candidate);
+                    }
+                }
+                found
+            };
+            // Wake every waiter of the released area: a waiter that also needs
+            // another area re-queues itself if that one is still full, so this
+            // cannot dead-lock and needs no polling.
+            for candidate in waiters {
+                let stage = self.objects[candidate].traffic_wait_stage.unwrap_or(0);
+                let requester = self.objects[candidate]
+                    .serving_requester
+                    .unwrap_or(candidate);
+                self.schedule(
+                    self.now,
+                    EventKind::TrafficWait(candidate, requester, stage),
+                );
+            }
+        }
+    }
+
+    /// task-154: register a blocked leg in the control queues. A released slot
+    /// wakes the queue head immediately; one 0.1 s fallback tick guards against
+    /// a release that happened before this waiter was registered. Re-registering
+    /// after a failed wake-up (multi-area legs) re-enqueues without polling.
+    fn traffic_wait_for_slot(
+        &mut self,
+        transporter: usize,
+        requester: usize,
+        stage: u8,
+        controls: &[usize],
+    ) {
+        let first_wait = self.objects[transporter].traffic_wait_stage != Some(stage);
+        if first_wait {
+            self.objects[transporter].traffic_wait_stage = Some(stage);
+            self.objects[transporter].traffic_wait_controls = controls.to_vec();
+        }
+        for &control in controls {
+            if let Some(queue) = self.traffic_waiters.get_mut(control) {
+                // The queue may already contain this executer from an earlier
+                // wake-up attempt; stale entries are skipped by the stage check.
+                queue.push_back(transporter);
+            }
+        }
+        if first_wait {
+            // One fallback tick only: it covers a release that happened just
+            // before this waiter was registered. After that the directed
+            // wake-up owns the retry, so no 0.1 s polling storm can form.
+            self.schedule(
+                self.now + TRAFFIC_RETRY_DELAY,
+                EventKind::TrafficWait(transporter, requester, stage),
+            );
         }
     }
 
@@ -7462,11 +7550,7 @@ impl<'m> Simulation<'m> {
         let to_position = self.objects[requester].position;
         let controls = self.traffic_controls_for_leg(from_position, to_position);
         if !self.traffic_try_acquire(transporter, &controls) {
-            self.record_object_trace("traffic_wait", transporter);
-            self.schedule(
-                self.now + TRAFFIC_RETRY_DELAY,
-                EventKind::TrafficWait(transporter, requester, 1),
-            );
+            self.traffic_wait_for_slot(transporter, requester, 1, &controls);
             return Ok(());
         }
         let speed_scale = self
@@ -7883,11 +7967,7 @@ impl<'m> Simulation<'m> {
             if home_travel.is_some_and(|travel| travel > EPS) {
                 let controls = self.traffic_controls_for_leg(from_position, to_position);
                 if !self.traffic_try_acquire(transporter, &controls) {
-                    self.record_object_trace("traffic_wait", transporter);
-                    self.schedule(
-                        self.now + TRAFFIC_RETRY_DELAY,
-                        EventKind::TrafficWait(transporter, requester, 2),
-                    );
+                    self.traffic_wait_for_slot(transporter, requester, 2, &controls);
                     return Ok(());
                 }
                 let speed_scale = self
@@ -9629,6 +9709,24 @@ impl<'a, 'm> ExprContext<'a, 'm> {
 }
 
 impl EvalContext for ExprContext<'_, '_> {
+    fn global_variable(&self, name: &str) -> Option<Value> {
+        let variable = self.sim.model.global_variable(name)?;
+        Some(match variable.kind {
+            GlobalVariableKind::Number => Value::Number(variable.value.as_f64()?),
+            GlobalVariableKind::String => Value::Str(variable.value.as_str()?.to_string()),
+        })
+    }
+
+    fn picklist_entry(&self, list: &str, entry: &str) -> PickListLookup {
+        let Some(picklist) = self.sim.model.picklist(list) else {
+            return PickListLookup::UnknownList;
+        };
+        match picklist.value_of(entry) {
+            Some(value) => PickListLookup::Value(value.to_string()),
+            None => PickListLookup::UnknownEntry,
+        }
+    }
+
     fn lookup(&self, path: &str) -> Option<Value> {
         match path {
             "time" | "sim.time" | "now" => return Some(Value::Number(self.sim.now)),
@@ -11970,7 +12068,16 @@ mod tests {
             .iter()
             .filter(|event| event.event == "traffic_wait")
             .count();
-        assert!(wait > 0, "the blocked leg must schedule retries");
+        println!("traffic_wait={wait} times={times:?}");
+        assert!(wait > 0, "the blocked leg must wake at least once");
+        assert!(
+            wait < 100,
+            "directed wake-up must replace polling, got {wait} traffic_wait events"
+        );
+        assert!(
+            (times[1] - 20.0).abs() < 1e-9,
+            "release still delivers at t=20: {times:?}"
+        );
     }
 
     /// task-148: with capacity 2 both transporters are admitted at once.
@@ -12190,5 +12297,69 @@ mod tests {
         let text = error.to_string();
         assert!(text.contains("script error at"), "{text}");
         assert!(text.contains("model_triggers.on_start"), "{text}");
+    }
+
+    /// task-154: engine expressions resolve `$GlobalVariable` and
+    /// `picklist(...)` from the model at run time (trigger action + routing).
+    #[test]
+    fn global_variable_and_picklist_resolve_at_runtime() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "globals",
+          "run": { "stop_time": 10.0, "seed": 1, "replications": 1 },
+          "global_variables": {
+            "BatchSize": { "kind": "number", "value": 12 }
+          },
+          "picklists": {
+            "Shift": { "entries": [ { "name": "Night", "value": "2" } ] }
+          },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1000.0 },
+                "max_arrivals": 1, "first_arrival": 0.0,
+                "triggers": { "on_create": [
+                  { "action": "set_label", "name": "vip", "value": "$BatchSize" } ] } } },
+            { "name": "KA", "kind": "sink", "params": {} },
+            { "name": "KB", "kind": "sink", "params": {} }
+          ],
+          "connections": [
+            { "from": "S", "to": "KA", "strategy": { "type": "by_condition", "conditions": [
+                { "condition": "item.label.vip == $BatchSize && picklist(\"Shift\", \"Night\") == \"2\"",
+                  "port": 0 },
+                { "condition": "1 == 1", "port": 1 } ] } },
+            { "from": "S", "to": "KB" }
+          ]
+        }"#,
+        )
+        .expect("model");
+        let report = crate::run_model(&model).expect("run");
+        assert_eq!(report.objects["KA"].input_count.mean, 1.0);
+        assert_eq!(report.objects["KB"].input_count.mean, 0.0);
+    }
+
+    /// task-154: an undefined global variable is a clear simulation error, not
+    /// a silent zero.
+    #[test]
+    fn undefined_global_variable_is_a_sim_error() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "globals-missing",
+          "run": { "stop_time": 10.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1000.0 },
+                "max_arrivals": 1,
+                "triggers": { "on_create": [
+                  { "action": "set_label", "name": "vip", "value": "$Missing" } ] } } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [{ "from": "S", "to": "K" }]
+        }"#,
+        )
+        .expect("model");
+        let error = crate::run_model(&model).expect_err("unknown variable");
+        let text = error.to_string();
+        assert!(text.contains("Missing"), "{text}");
+        assert!(text.contains("global variable"), "{text}");
     }
 }
