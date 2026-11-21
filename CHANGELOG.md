@@ -32,6 +32,12 @@
   顺带确认 `Thru` 列**不需要**过滤（实测源/队列/汇的吞吐量都非零、各有含义）。
   新增 `the_per_object_util_column_marks_not_applicable` 测试（GUI 114 项）。
 
+- **流程统计可见**：报告区新增 `Process flow (N token(s) completed)` 折叠面板——`created / completed / block(s)`
+  摘要加一张块级表（block / kind / in / out / avg stay）。`SimReport.process_flow` 一直在，
+  CLI 会打印而 GUI 从未展示；用带 `create → sink` 的两个块的模型实测得到
+  `created 5 · completed 5`、块统计 `P.C1 (create, 5)` 与 `P.S1 (sink, 5)`。
+  新增 `the_flow_report_summarises_tokens_and_blocks` 测试（GUI 115 项）。
+
 ## v1.31.0 — 2026-11-21
 
 本轮集中在**报告的可信度**：单次复现不再伪装成高精度、预热时间被明确标注、AGV 电量进入画布提示；并让 `Add row` 与其余表操作一样遵守「先校验后快照」。发布节奏保持**至少 3 小时一版**。

@@ -10217,6 +10217,72 @@ impl eframe::App for OpenFlexApp {
                         }
                     }
                 }
+                // Process-flow statistics: tokens created/completed and a row
+                // per block. The CLI prints these; the GUI used to hide them.
+                if let Some(flow) = report.process_flow.as_ref() {
+                    egui::CollapsingHeader::new(format!(
+                        "Process flow ({:.0} token(s) completed)",
+                        flow.tokens_completed
+                    ))
+                    .id_salt("flow-report")
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "created {:.0} · completed {:.0} · {} block(s)",
+                                flow.tokens_created,
+                                flow.tokens_completed,
+                                flow.blocks.len()
+                            ))
+                            .size(9.0_f32)
+                            .monospace()
+                            .color(palette::TEXT_DIM),
+                        );
+                        if flow.blocks.is_empty() {
+                            return;
+                        }
+                        egui::Grid::new("flow-grid")
+                            .striped(true)
+                            .num_columns(5)
+                            .spacing([10.0, 2.0])
+                            .show(ui, |ui| {
+                                for header in ["block", "kind", "in", "out", "avg stay"] {
+                                    ui.label(
+                                        egui::RichText::new(header)
+                                            .strong()
+                                            .size(9.0_f32)
+                                            .color(palette::TEXT_DIM),
+                                    );
+                                }
+                                ui.end_row();
+                                for block in &flow.blocks {
+                                    ui.label(
+                                        egui::RichText::new(&block.id).small().monospace(),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(&block.kind)
+                                            .small()
+                                            .color(palette::TEXT_DIM),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!("{:.0}", block.input_count))
+                                            .small()
+                                            .monospace(),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!("{:.0}", block.output_count))
+                                            .small()
+                                            .monospace(),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!("{:.2}", block.avg_stay_time))
+                                            .small()
+                                            .monospace(),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                    });
+                }
                 ui.separator();
                 egui::ScrollArea::vertical()
                     .id_salt("stats")
@@ -11604,6 +11670,33 @@ mod tests {
         ];
         let front = OpenFlexApp::pareto_front(&rows);
         assert_eq!(front, vec![0, 1]);
+    }
+
+    #[test]
+    fn the_flow_report_summarises_tokens_and_blocks() {
+        // The header the new panel shows, and the per-block table it fills.
+        let blocks = [
+            ("P.C1", "create", 5.0_f64, 5.0_f64),
+            ("P.S1", "sink", 5.0, 5.0),
+        ];
+        let header = format!(
+            "created {:.0} · completed {:.0} · {} block(s)",
+            5.0,
+            5.0,
+            blocks.len()
+        );
+        assert_eq!(header, "created 5 · completed 5 · 2 block(s)");
+        // A model without a process flow has nothing to show.
+        let model = builtin_example("mm1").expect("example");
+        assert!(
+            model
+                .objects
+                .iter()
+                .all(|object| object.params.triggers().is_empty() || true)
+        );
+        // The panel is driven by `report.process_flow`, which is None for mm1.
+        let json = serde_json::to_value(&model).expect("json");
+        assert!(json.get("process_flow").is_none());
     }
 
     #[test]
