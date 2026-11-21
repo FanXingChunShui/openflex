@@ -129,6 +129,315 @@ pub fn traced_items(log: &TraceLog) -> Vec<(u64, usize)> {
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Cross-item path aggregation (`openflex trace --paths`)
+// ---------------------------------------------------------------------------
+
+/// One distinct visit sequence, shared by every item that followed it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PathGroup {
+    /// Object names, adjacent duplicates collapsed (see [`compress_path`]).
+    pub path: Vec<String>,
+    /// Item ids that took this path, ascending.
+    pub items: Vec<u64>,
+    /// Earliest first step and latest last step in the group, model time.
+    pub span: (f64, f64),
+}
+
+impl PathGroup {
+    /// Number of items in the group.
+    pub fn count(&self) -> usize {
+        self.items.len()
+    }
+
+    /// Time between the first step of the earliest item and the last step of
+    /// the latest one.
+    pub fn duration(&self) -> f64 {
+        self.span.1 - self.span.0
+    }
+}
+
+/// Collapse consecutive visits to the same object into one step.
+///
+/// Only *adjacent* duplicates are collapsed. An item that returns to an object
+/// it left earlier (`S → P → S`) keeps both `S` entries: that round trip is
+/// real traffic, and hiding it would make two different routes look identical.
+/// The alternative rule (deduplicate globally) would also erase `S → P → S`
+/// down to `S → P`, which is exactly the case an analyst wants to see.
+pub fn compress_path(steps: &[ItemTraceStep]) -> Vec<String> {
+    let mut path: Vec<String> = Vec::with_capacity(steps.len());
+    for step in steps {
+        if path.last() != Some(&step.object) {
+            path.push(step.object.clone());
+        }
+    }
+    path
+}
+
+/// Event kinds whose `object` is the object the item currently occupies.
+///
+/// `flow` is deliberately absent: it is recorded on the object *sending* the
+/// item, at a moment when the item has already left it (usually the receiver
+/// logs the matching `enter`). Keeping it would make a simple `S → K` route
+/// read as `S → K → S`, i.e. invent a return trip that never happened.
+fn is_visit_event(event: &str) -> bool {
+    !matches!(event, "flow")
+}
+
+/// Object sequence of one item, restricted to the objects it actually occupied.
+///
+/// Adjacent duplicates are collapsed (see [`compress_path`]); events that only
+/// name the sender (`flow`) are skipped so the route reflects where the item
+/// was, not who pushed it.
+pub fn visit_sequence(trace: &ItemTrace) -> Vec<String> {
+    let steps: Vec<ItemTraceStep> = trace
+        .steps
+        .iter()
+        .filter(|step| is_visit_event(&step.event))
+        .cloned()
+        .collect();
+    compress_path(&steps)
+}
+
+/// Group items by their compressed path.
+///
+/// Groups are sorted by item count (descending) and, for equal counts, by the
+/// path itself (lexicographic), so the output is stable across runs and the
+/// commonest route is always first.
+pub fn path_groups(traces: &[ItemTrace]) -> Vec<PathGroup> {
+    let mut grouped: BTreeMap<Vec<String>, PathGroup> = BTreeMap::new();
+    for trace in traces {
+        let path = visit_sequence(trace);
+        let first = trace.started_at().unwrap_or(0.0);
+        let last = trace.ended_at().unwrap_or(first);
+        let group = grouped.entry(path.clone()).or_insert_with(|| PathGroup {
+            path,
+            items: Vec::new(),
+            span: (first, last),
+        });
+        group.items.push(trace.item);
+        group.span.0 = group.span.0.min(first);
+        group.span.1 = group.span.1.max(last);
+    }
+
+    let mut groups: Vec<PathGroup> = grouped.into_values().collect();
+    for group in &mut groups {
+        group.items.sort_unstable();
+    }
+    groups.sort_by(|a, b| {
+        b.items
+            .len()
+            .cmp(&a.items.len())
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    groups
+}
+
+/// Render the cross-item path aggregation in the requested format.
+///
+/// The summary always names the number of distinct paths and the coverage
+/// (`grouped items / traced items`); when nothing was tagged it says so
+/// instead of printing an empty table.
+pub fn render_path_groups(log: &TraceLog, format: Format) -> Result<String, ReportError> {
+    let traces = item_traces(log, None);
+    let groups = path_groups(&traces);
+    let traced = traces.len();
+    let grouped: usize = groups.iter().map(PathGroup::count).sum();
+    let coverage = if traced == 0 {
+        0.0
+    } else {
+        grouped as f64 / traced as f64
+    };
+    let untagged = log.events.len() - item_event_count(log);
+
+    if traced == 0 {
+        return Ok(empty_paths(format, untagged));
+    }
+
+    Ok(match format {
+        Format::Json => {
+            let mut text = serde_json::to_string_pretty(&serde_json::json!({
+                "groups": groups
+                    .iter()
+                    .map(|group| serde_json::json!({
+                        "path": group.path,
+                        "count": group.count(),
+                        "items": group.items,
+                        "first_time": group.span.0,
+                        "last_time": group.span.1,
+                    }))
+                    .collect::<Vec<_>>(),
+                "traced_items": traced,
+                "grouped_items": grouped,
+                "coverage": coverage,
+                "untagged_events": untagged,
+                "truncated": log.truncated,
+            }))?;
+            text.push('\n');
+            text
+        }
+        Format::Csv => {
+            let mut out = String::from("count,path,items,first_time,last_time\n");
+            for group in &groups {
+                let _ = writeln!(
+                    out,
+                    "{},{},{},{:.6},{:.6}",
+                    group.count(),
+                    crate::csv_field(&group.path.join(" -> ")),
+                    // `;` keeps the item list in one field while staying easy
+                    // to split again; the ids themselves never contain commas.
+                    group
+                        .items
+                        .iter()
+                        .map(|item| item.to_string())
+                        .collect::<Vec<_>>()
+                        .join(";"),
+                    group.span.0,
+                    group.span.1
+                );
+            }
+            out
+        }
+        Format::Markdown => {
+            let mut out = String::new();
+            let _ = writeln!(out, "# {}", i18n::t("path_groups"));
+            let _ = writeln!(out);
+            let _ = writeln!(
+                out,
+                "{}",
+                path_summary_line(&groups, traced, grouped, coverage, untagged)
+            );
+            let _ = writeln!(out);
+            let _ = writeln!(
+                out,
+                "| {} | {} | {} | {} | {} |",
+                i18n::t("count"),
+                i18n::t("path"),
+                i18n::t("sample_items"),
+                i18n::t("first_time"),
+                i18n::t("last_time")
+            );
+            let _ = writeln!(out, "|---:|---|---:|---:|---:|");
+            for group in &groups {
+                let _ = writeln!(
+                    out,
+                    "| {} | {} | {} | {} | {} |",
+                    group.count(),
+                    markdown_cell(&group.path.join(" → ")),
+                    sample_items(&group.items),
+                    fmt_time(group.span.0),
+                    fmt_time(group.span.1)
+                );
+            }
+            if log.truncated {
+                let _ = writeln!(out, "\n{}", i18n::t("trace_truncated"));
+            }
+            out
+        }
+        Format::Table => {
+            let path_width = groups
+                .iter()
+                .map(|group| crate::display_width(&group.path.join(" → ")))
+                .max()
+                .unwrap_or(0)
+                .max(crate::display_width(i18n::t("path")));
+            let sample_width = groups
+                .iter()
+                .map(|group| crate::display_width(&sample_items(&group.items)))
+                .max()
+                .unwrap_or(0)
+                .max(crate::display_width(i18n::t("sample_items")));
+            let mut out = String::new();
+            let _ = writeln!(
+                out,
+                "{}",
+                path_summary_line(&groups, traced, grouped, coverage, untagged)
+            );
+            let _ = writeln!(out);
+            let _ = writeln!(
+                out,
+                "{:>6}  {}  {}  {:>10}  {:>10}",
+                i18n::t("count"),
+                crate::pad_right(i18n::t("path"), path_width),
+                crate::pad_right(i18n::t("sample_items"), sample_width),
+                i18n::t("first_time"),
+                i18n::t("last_time")
+            );
+            let _ = writeln!(out, "{}", "-".repeat(path_width + sample_width + 34));
+            for group in &groups {
+                let _ = writeln!(
+                    out,
+                    "{:>6}  {}  {}  {:>10}  {:>10}",
+                    group.count(),
+                    crate::pad_right(&group.path.join(" → "), path_width),
+                    crate::pad_right(&sample_items(&group.items), sample_width),
+                    fmt_time(group.span.0),
+                    fmt_time(group.span.1)
+                );
+            }
+            if log.truncated {
+                let _ = writeln!(out, "{}", i18n::t("trace_truncated"));
+            }
+            out
+        }
+    })
+}
+
+/// First few item ids of a group, with an ellipsis when there are more.
+fn sample_items(items: &[u64]) -> String {
+    const SHOWN: usize = 5;
+    let mut text = items
+        .iter()
+        .take(SHOWN)
+        .map(|item| item.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if items.len() > SHOWN {
+        text.push_str(", …");
+    }
+    text
+}
+
+fn path_summary_line(
+    groups: &[PathGroup],
+    traced: usize,
+    grouped: usize,
+    coverage: f64,
+    untagged: usize,
+) -> String {
+    i18n::path_groups_summary(groups.len(), grouped, traced, coverage, untagged)
+}
+
+/// Clear message for a trace that contains no item tag at all.
+fn empty_paths(format: Format, untagged: usize) -> String {
+    match format {
+        Format::Json => {
+            let mut text = serde_json::to_string_pretty(&serde_json::json!({
+                "groups": [],
+                "traced_items": 0,
+                "grouped_items": 0,
+                "coverage": 0.0,
+                "untagged_events": untagged,
+                "hint": "the trace has no event tagged with an item id",
+            }))
+            .unwrap_or_default();
+            text.push('\n');
+            text
+        }
+        Format::Csv => "count,path,items,first_time,last_time\n".to_string(),
+        Format::Markdown => format!(
+            "# {}\n\n{}\n",
+            i18n::t("path_groups"),
+            i18n::t("no_tagged_items")
+        ),
+        Format::Table => format!(
+            "{}: {}\n",
+            i18n::t("path_groups"),
+            i18n::t("no_tagged_items")
+        ),
+    }
+}
+
 /// Number of events that carry an item id.
 pub fn item_event_count(log: &TraceLog) -> usize {
     log.events

@@ -196,6 +196,15 @@ fn english(key: &str) -> &'static str {
         "span" => "Span",
         "time" => "Time",
         "event" => "Event",
+        "path_groups" => "Path groups",
+        "no_tagged_items" => {
+            "no event in this trace is tagged with an item id, so no path can be grouped"
+        }
+        "count" => "Count",
+        "path" => "Path",
+        "sample_items" => "Sample items",
+        "first_time" => "First",
+        "last_time" => "Last",
         _ => "",
     }
 }
@@ -325,8 +334,47 @@ fn chinese(key: &str) -> &'static str {
         "span" => "总时长",
         "time" => "时间",
         "event" => "事件",
+        "path_groups" => "路径分组",
+        "no_tagged_items" => "该 trace 没有任何带物件 ID 的事件，无法归组路径",
+        "count" => "件数",
+        "path" => "路径",
+        "sample_items" => "样例件",
+        "first_time" => "最早",
+        "last_time" => "最晚",
         _ => "",
     }
+}
+
+/// One-line summary printed above the `--paths` grouping.
+///
+/// Kept in this module like the other summary helpers so the wording and the
+/// punctuation are language-correct instead of being pieced together from
+/// translated fragments.
+pub fn path_groups_summary(
+    groups: usize,
+    grouped: usize,
+    traced: usize,
+    coverage: f64,
+    untagged: usize,
+) -> String {
+    let percent = coverage * 100.0;
+    let mut text = match language() {
+        Language::En => format!(
+            "Path groups: {groups} distinct paths, {grouped}/{traced} items grouped, coverage {percent:.1}%"
+        ),
+        Language::Zh => {
+            format!("路径分组：{groups} 种路径，{grouped}/{traced} 件已归档，覆盖率 {percent:.1}%")
+        }
+    };
+    if untagged > 0 {
+        match language() {
+            Language::En => text.push_str(&format!(
+                ", {untagged} events without an item tag (not part of any path)"
+            )),
+            Language::Zh => text.push_str(&format!("，{untagged} 个无物件 ID 的事件未参与路径")),
+        }
+    }
+    text
 }
 
 /// Summary line of the experiment table header.
@@ -471,6 +519,13 @@ mod tests {
             "span",
             "time",
             "event",
+            "path_groups",
+            "no_tagged_items",
+            "count",
+            "path",
+            "sample_items",
+            "first_time",
+            "last_time",
         ];
         for key in keys {
             assert!(!english(key).is_empty(), "missing English key {key}");

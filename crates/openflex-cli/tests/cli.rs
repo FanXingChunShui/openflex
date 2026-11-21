@@ -5027,3 +5027,165 @@ fn trace_without_item_tags_says_so() {
         "an untagged trace must say why nothing can be traced: {message}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Cross-item path aggregation (task-172)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn trace_paths_groups_items_and_reports_coverage() {
+    let dir = TempDir::new("trace-paths");
+    let trace = traced_fixture(&dir);
+
+    let output = openflex(&["trace", &path_str(&trace), "--paths", "--quiet"]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.contains("Path groups:"), "{text}");
+    assert!(text.contains("coverage 100.0%"), "{text}");
+    assert!(text.contains("distinct paths"), "{text}");
+    assert!(text.contains("Sample items"), "{text}");
+
+    // Every traced id must appear in exactly one group, and the group sizes
+    // must add up to the number of traced items.
+    let json_output = openflex(&[
+        "trace",
+        &path_str(&trace),
+        "--paths",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&json_output), 0, "stderr: {}", stderr(&json_output));
+    let summary = json(stdout(&json_output).as_str());
+    let groups = summary["groups"].as_array().expect("groups");
+    let mut grouped: Vec<u64> = groups
+        .iter()
+        .flat_map(|group| group["items"].as_array().expect("items"))
+        .filter_map(|item| item.as_u64())
+        .collect();
+    grouped.sort_unstable();
+    let traced = summary["traced_items"].as_u64().unwrap_or(0) as usize;
+    assert_eq!(grouped.len(), traced, "group sizes must cover every item");
+    assert_eq!(summary["grouped_items"].as_u64(), Some(traced as u64));
+    assert_eq!(summary["coverage"], 1.0);
+
+    // The ids in the groups are exactly the ids `--items` lists.
+    let listed = openflex(&[
+        "trace",
+        &path_str(&trace),
+        "--items",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    let listed = json(stdout(&listed).as_str());
+    let mut listed_ids: Vec<u64> = listed
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|entry| entry["item"].as_u64())
+        .collect();
+    listed_ids.sort_unstable();
+    assert_eq!(grouped, listed_ids, "groups and --items disagree");
+}
+
+#[test]
+fn trace_paths_compresses_consecutive_visits() {
+    let dir = TempDir::new("trace-paths-compress");
+    // One item is created, enters and exits the same source, then goes to the
+    // sink: the compressed path must not repeat the source.
+    let model = dir.write(
+        "flow.ofm",
+        r#"{
+  "format": "openflex-model", "version": 1, "name": "paths-demo",
+  "time_unit": "seconds",
+  "run": { "stop_time": 10.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+  "objects": [
+    { "name": "S", "kind": "source", "params": {
+        "interarrival": { "distribution": "constant", "value": 100.0 },
+        "max_arrivals": 1 } },
+    { "name": "K", "kind": "sink", "params": {} }
+  ],
+  "connections": [ { "from": "S", "to": "K" } ]
+}"#,
+    );
+    let trace = dir.join("trace.jsonl");
+    let run = openflex(&[
+        "run",
+        &path_str(&model),
+        "--trace",
+        &path_str(&trace),
+        "--quiet",
+    ]);
+    assert_eq!(code(&run), 0, "stderr: {}", stderr(&run));
+
+    let paths = openflex(&[
+        "trace",
+        &path_str(&trace),
+        "--paths",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&paths), 0, "stderr: {}", stderr(&paths));
+    let summary = json(stdout(&paths).as_str());
+    let path = summary["groups"][0]["path"].as_array().expect("path");
+    let names: Vec<&str> = path.iter().filter_map(|name| name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["S", "K"],
+        "adjacent visits are collapsed: {names:?}"
+    );
+    assert_eq!(summary["groups"][0]["count"], 1);
+}
+
+#[test]
+fn trace_paths_exclude_the_other_selectors() {
+    let dir = TempDir::new("trace-paths-conflict");
+    let trace = traced_fixture(&dir);
+
+    let with_item = openflex(&["trace", &path_str(&trace), "--paths", "--item", "1"]);
+    assert_eq!(code(&with_item), 2, "clap must reject --paths with --item");
+
+    let with_items = openflex(&["trace", &path_str(&trace), "--paths", "--items"]);
+    assert_eq!(
+        code(&with_items),
+        2,
+        "clap must reject --paths with --items"
+    );
+}
+
+#[test]
+fn trace_paths_on_an_untagged_trace_explains_itself() {
+    let dir = TempDir::new("trace-paths-untagged");
+    let trace = dir.write(
+        "untagged.jsonl",
+        "{\"time\":0.0,\"seq\":0,\"event\":\"operator_loaded\",\"object\":\"T\",\"data\":{}}\n",
+    );
+
+    let output = openflex(&["trace", &path_str(&trace), "--paths", "--quiet"]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert!(
+        stdout(&output).contains("no event in this trace is tagged"),
+        "the empty result must explain itself: {}",
+        stdout(&output)
+    );
+
+    let json_output = openflex(&[
+        "trace",
+        &path_str(&trace),
+        "--paths",
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    let summary = json(stdout(&json_output).as_str());
+    assert_eq!(summary["groups"].as_array().map(Vec::len), Some(0));
+    assert_eq!(summary["coverage"], 0.0);
+    assert!(
+        summary["hint"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no event")
+    );
+}

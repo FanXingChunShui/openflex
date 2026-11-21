@@ -40,8 +40,9 @@ pub use experiment::{
     write_experiment_reports_with_sections,
 };
 pub use item_trace::{
-    ItemTrace, ItemTraceStep, item_event_count, item_of, item_trace, item_traces, read_trace_file,
-    render_item_list, render_item_trace, render_trace_summary, traced_items,
+    ItemTrace, ItemTraceStep, PathGroup, compress_path, item_event_count, item_of, item_trace,
+    item_traces, path_groups, read_trace_file, render_item_list, render_item_trace,
+    render_path_groups, render_trace_summary, traced_items, visit_sequence,
 };
 pub use sim::{
     REPLICATIONS_CSV, REPORT_CSV, REPORT_JSON, REPORT_MARKDOWN, to_csv, to_csv_with_flow,

@@ -233,8 +233,11 @@ enum Command {
         #[arg(long, value_name = "ID", conflicts_with = "items")]
         item: Option<u64>,
         /// List every item id that appears in the trace, with its step count.
-        #[arg(long, conflicts_with = "item")]
+        #[arg(long, conflicts_with_all = ["item", "paths"])]
         items: bool,
+        /// Group all items by the (compressed) path they took, with counts.
+        #[arg(long, conflicts_with_all = ["item", "items"])]
+        paths: bool,
         /// Output format.
         #[arg(long, value_enum, default_value_t = Format::Table)]
         format: Format,
@@ -916,12 +919,15 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             file,
             item,
             items,
+            paths,
             format,
             output,
         } => {
             let log = report::read_trace_file(&file)
                 .map_err(|error| Failure::from(error).with_path(&file))?;
-            let text = if items {
+            let text = if paths {
+                report::render_path_groups(&log, format.into())?
+            } else if items {
                 report::render_item_list(&log, format.into())?
             } else if let Some(item) = item {
                 let Some(trace) = report::item_trace(&log, item) else {
