@@ -4,6 +4,16 @@
 
 ### 报告与 CLI
 
+- **终端图表 `openflex chart`**：`--of utilization | measures | series:<名字>`，
+  `--kind bar|line`、`--width N`（钳制 10..120）、`--format table|markdown`、`-o` 写文件。
+  - 利用率：只为「有容量含义」的对象画条（复用与 GUI 同一判定，避免两个界面对同一模型给出不同结论），
+    实测 `mm1` 的 `Server` 为 **79.8%**；
+  - 指标：每个指标一根条，注记 `n` 与 95% CI（`n<2` 显示 `—`，不出 `±0.000`）；
+  - 跟踪时序：8 级块字符 sparkline（按宽度分桶重采样，行尾给 min..max 与均值）。
+  - 边界文案齐全：`(no data)`、全零、单点、常量；条长对负值用 `|value|` 并在图上注明，不静默误导；
+    非零但不足一格的值强制 1 格（避免「非零看起来像 0」）；中文标签用东亚宽度对齐，
+    未知序列退出码 2 并列出可用名。
+
 - **Item Trace（单件路径追踪）**：新 `openflex trace <file.jsonl>` 子命令——
   无参数出摘要（事件数、带 item 的事件数、可追踪件数、时间范围），
   `--items` 列每件 id 与步数，`--item <id>` 打完整路径表（Time / Object / Event）并给摘要

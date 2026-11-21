@@ -5189,3 +5189,227 @@ fn trace_paths_on_an_untagged_trace_explains_itself() {
             .contains("no event")
     );
 }
+
+// ---------------------------------------------------------------------------
+// Terminal charts (task-174)
+// ---------------------------------------------------------------------------
+
+/// Model with one measured and one tracked series, for chart tests.
+const CHART_MODEL: &str = r#"{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "chart-demo",
+  "time_unit": "seconds",
+  "run": { "stop_time": 60.0, "warmup": 0.0, "seed": 3, "replications": 2 },
+  "performance_measures": [
+    { "name": "Done", "expression": "completed" },
+    { "name": "Zero", "expression": "0" }
+  ],
+  "tracked_variables": [ { "name": "WIP", "expression": "Queue1.content" } ],
+  "tracked_interval": 1.0,
+  "objects": [
+    { "name": "Source1", "kind": "source", "params": {
+        "interarrival": { "distribution": "exponential", "mean": 5.0 } } },
+    { "name": "Queue1", "kind": "queue", "params": {} },
+    { "name": "Proc1", "kind": "processor", "params": {
+        "process_time": { "distribution": "constant", "value": 4.0 } } },
+    { "name": "Sink1", "kind": "sink", "params": {} }
+  ],
+  "connections": [
+    { "from": "Source1", "to": "Queue1" },
+    { "from": "Queue1", "to": "Proc1" },
+    { "from": "Proc1", "to": "Sink1" }
+  ]
+}
+"#;
+
+/// Run a model and return the path of its archived `report.json`.
+fn charted_report(dir: &TempDir, name: &str, model: &str) -> PathBuf {
+    let model = dir.write(name, model);
+    let reports = dir.join("reports");
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--report-dir",
+        &path_str(&reports),
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    reports.join("report.json")
+}
+
+#[test]
+fn chart_utilization_draws_bars() {
+    let dir = TempDir::new("chart-utilization");
+    let report = charted_report(&dir, "chart.ofm", CHART_MODEL);
+
+    let output = openflex(&[
+        "chart",
+        &path_str(&report),
+        "--of",
+        "utilization",
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.contains("Utilisation"), "{text}");
+    // Only the processor has a capacity signal; queues and sinks are skipped.
+    assert!(
+        text.contains("Proc1"),
+        "the processor must be charted: {text}"
+    );
+    assert!(
+        !text.contains("Queue1"),
+        "the queue must not be charted: {text}"
+    );
+    assert!(text.contains('█'), "a bar must be drawn: {text}");
+    assert!(
+        text.contains('%'),
+        "utilisation prints a percentage: {text}"
+    );
+}
+
+#[test]
+fn chart_measures_annotate_the_interval() {
+    let dir = TempDir::new("chart-measures");
+    let report = charted_report(&dir, "chart.ofm", CHART_MODEL);
+
+    let output = openflex(&["chart", &path_str(&report), "--of", "measures", "--quiet"]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.contains("Done"), "{text}");
+    assert!(text.contains("Zero"), "{text}");
+    assert!(
+        text.contains("n=2"),
+        "the sample count must be shown: {text}"
+    );
+    assert!(text.contains("95% CI ±"), "n>=2 shows the interval: {text}");
+    assert!(text.contains('█'), "a bar must be drawn: {text}");
+}
+
+#[test]
+fn chart_series_draws_a_sparkline_or_bar() {
+    let dir = TempDir::new("chart-series");
+    let report = charted_report(&dir, "chart.ofm", CHART_MODEL);
+
+    let line = openflex(&["chart", &path_str(&report), "--of", "series:WIP", "--quiet"]);
+    assert_eq!(code(&line), 0, "stderr: {}", stderr(&line));
+    let text = stdout(&line);
+    assert!(text.contains("Tracked series: WIP"), "{text}");
+    assert!(
+        text.chars().any(|c| ('▁'..='█').contains(&c)),
+        "a sparkline must be drawn: {text}"
+    );
+
+    let bars = openflex(&[
+        "chart",
+        &path_str(&report),
+        "--of",
+        "series:WIP",
+        "--kind",
+        "bar",
+        "--quiet",
+    ]);
+    assert_eq!(code(&bars), 0, "stderr: {}", stderr(&bars));
+    assert!(stdout(&bars).contains('█'), "{}", stdout(&bars));
+}
+
+#[test]
+fn chart_unknown_series_lists_the_available_names() {
+    let dir = TempDir::new("chart-unknown-series");
+    let report = charted_report(&dir, "chart.ofm", CHART_MODEL);
+
+    let output = openflex(&["chart", &path_str(&report), "--of", "series:Nope"]);
+    assert_eq!(code(&output), 2, "a typo is a usage error");
+    let message = stderr(&output);
+    assert!(message.contains("no tracked series 'Nope'"), "{message}");
+    assert!(
+        message.contains("WIP"),
+        "the available names must be listed: {message}"
+    );
+}
+
+#[test]
+fn chart_line_needs_a_series() {
+    let dir = TempDir::new("chart-line-usage");
+    let report = charted_report(&dir, "chart.ofm", CHART_MODEL);
+
+    let output = openflex(&[
+        "chart",
+        &path_str(&report),
+        "--of",
+        "utilization",
+        "--kind",
+        "line",
+    ]);
+    assert_eq!(code(&output), 2);
+    assert!(
+        stderr(&output).contains("needs a time series"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn chart_width_is_clamped() {
+    let dir = TempDir::new("chart-width");
+    let report = charted_report(&dir, "chart.ofm", CHART_MODEL);
+    let bars = |width: &str| {
+        let output = openflex(&[
+            "chart",
+            &path_str(&report),
+            "--of",
+            "utilization",
+            "--width",
+            width,
+            "--quiet",
+        ]);
+        assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+        stdout(&output)
+            .lines()
+            .find(|line| line.starts_with("Proc1"))
+            .map(|line| line.chars().filter(|c| *c == '█').count())
+            .unwrap_or(0)
+    };
+    assert_eq!(bars("1"), openflex_report::MIN_WIDTH, "too small clamps up");
+    assert_eq!(
+        bars("5000"),
+        openflex_report::MAX_WIDTH,
+        "too large clamps down"
+    );
+}
+
+#[test]
+fn chart_markdown_and_output_file() {
+    let dir = TempDir::new("chart-markdown");
+    let report = charted_report(&dir, "chart.ofm", CHART_MODEL);
+    let path = dir.join("chart.md");
+
+    let output = openflex(&[
+        "chart",
+        &path_str(&report),
+        "--of",
+        "utilization",
+        "--format",
+        "markdown",
+        "--output",
+        &path_str(&path),
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert!(stdout(&output).is_empty(), "nothing must go to stdout");
+    let text = fs::read_to_string(&path).expect("chart.md");
+    assert!(text.starts_with("## Utilisation"), "{text}");
+    assert!(text.contains("```"), "{text}");
+}
+
+#[test]
+fn chart_without_measures_says_no_data() {
+    let dir = TempDir::new("chart-no-data");
+    // `MODEL` declares no measures and no tracked series.
+    let report = charted_report(&dir, "plain.ofm", MODEL);
+
+    let output = openflex(&["chart", &path_str(&report), "--of", "measures", "--quiet"]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert!(stdout(&output).contains("(no data)"), "{}", stdout(&output));
+}

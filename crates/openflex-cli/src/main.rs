@@ -224,6 +224,27 @@ enum Command {
         #[arg(long, short = 'o', value_name = "FILE")]
         output: Option<PathBuf>,
     },
+    /// Draw a terminal chart from a saved report.
+    Chart {
+        /// Report JSON written by `run --report-dir` or `--format json`.
+        #[arg(value_name = "REPORT_JSON")]
+        report: PathBuf,
+        /// Data source: `utilization`, `measures`, or `series:<name>`.
+        #[arg(long, value_name = "SOURCE", default_value = "utilization")]
+        of: String,
+        /// Chart kind; defaults to bar for utilization/measures, line for a series.
+        #[arg(long, value_enum)]
+        kind: Option<ChartKindArg>,
+        /// Drawing width in characters (clamped to 10..=120).
+        #[arg(long, default_value_t = 40)]
+        width: usize,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = ChartFormat::Table)]
+        format: ChartFormat,
+        /// Write the chart here instead of standard output.
+        #[arg(long, short = 'o', value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
     /// Inspect an event trace written by `run --trace`.
     Trace {
         /// Trace file (JSON Lines) written by `run --trace`.
@@ -424,6 +445,27 @@ enum ObjectCommand {
     List,
     /// Show the parameters of one object kind.
     Describe { kind: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ChartKindArg {
+    Bar,
+    Line,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ChartFormat {
+    Table,
+    Markdown,
+}
+
+impl From<ChartKindArg> for report::ChartKind {
+    fn from(kind: ChartKindArg) -> Self {
+        match kind {
+            ChartKindArg::Bar => report::ChartKind::Bar,
+            ChartKindArg::Line => report::ChartKind::Line,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -913,6 +955,64 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                 .map_err(|error| Failure::from(error).with_path(&candidate))?;
             let comparison = report::compare_reports(&baseline, &before, &candidate, &after);
             let text = report::render_comparison(&comparison, format.into())?;
+            emit(&text, output.as_deref(), quiet)
+        }
+        Command::Chart {
+            report: path,
+            of,
+            kind,
+            width,
+            format,
+            output,
+        } => {
+            let sim = report::read_report(&path)
+                .map_err(|error| Failure::from(error).with_path(&path))?;
+            let (mut spec, default_kind, needs_series) = match of.as_str() {
+                "utilization" => (
+                    report::utilization_spec(&sim, width),
+                    report::ChartKind::Bar,
+                    false,
+                ),
+                "measures" => (
+                    report::measures_spec(&sim, width),
+                    report::ChartKind::Bar,
+                    false,
+                ),
+                other => {
+                    let Some(name) = other.strip_prefix("series:") else {
+                        return Err(Failure::usage(anyhow!(
+                            "unknown chart source '{other}' (expected utilization, measures or series:<name>)"
+                        )));
+                    };
+                    if name.trim().is_empty() {
+                        return Err(Failure::usage(anyhow!(
+                            "--of series: needs a series name, e.g. --of series:WIP"
+                        )));
+                    }
+                    let spec = report::series_spec(&sim, name, width).map_err(|error| {
+                        match error {
+                            // A wrong series name is an argument mistake, not a
+                            // broken input file: report it as a usage error.
+                            report::ReportError::UnknownSeries { .. } => {
+                                Failure::usage(anyhow!("{error}"))
+                            }
+                            other => Failure::from(other),
+                        }
+                    })?;
+                    (spec, report::ChartKind::Line, true)
+                }
+            };
+            let kind = kind.map(report::ChartKind::from).unwrap_or(default_kind);
+            if kind == report::ChartKind::Line && !needs_series {
+                return Err(Failure::usage(anyhow!(
+                    "--kind line needs a time series; use --of series:<name> (utilization/measures are bar charts)"
+                )));
+            }
+            spec.kind = kind;
+            let text = match format {
+                ChartFormat::Table => report::render_chart(&spec),
+                ChartFormat::Markdown => report::render_chart_markdown(&spec),
+            };
             emit(&text, output.as_deref(), quiet)
         }
         Command::Trace {

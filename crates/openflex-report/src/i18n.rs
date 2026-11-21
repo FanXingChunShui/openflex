@@ -205,6 +205,17 @@ fn english(key: &str) -> &'static str {
         "sample_items" => "Sample items",
         "first_time" => "First",
         "last_time" => "Last",
+        "chart_utilization" => "Utilisation",
+        "chart_measures" => "Performance measures",
+        "chart_series" => "Tracked series",
+        "chart_no_data" => "no data",
+        "chart_all_zero" => "all values are zero; nothing to draw",
+        "chart_single_point" => "single point, a line needs at least two samples",
+        "chart_constant" => "constant",
+        "chart_mean" => "mean",
+        "chart_samples" => "samples",
+        "chart_bucketed" => "bucketed for display",
+        "chart_negative" => "bar length shows |value|",
         _ => "",
     }
 }
@@ -341,6 +352,17 @@ fn chinese(key: &str) -> &'static str {
         "sample_items" => "样例件",
         "first_time" => "最早",
         "last_time" => "最晚",
+        "chart_utilization" => "利用率",
+        "chart_measures" => "性能指标",
+        "chart_series" => "跟踪序列",
+        "chart_no_data" => "无数据",
+        "chart_all_zero" => "所有值均为 0，无可绘制内容",
+        "chart_single_point" => "单点，折线至少需要两个采样",
+        "chart_constant" => "常量",
+        "chart_mean" => "均值",
+        "chart_samples" => "个采样",
+        "chart_bucketed" => "显示时已分桶",
+        "chart_negative" => "条长表示 |值|",
         _ => "",
     }
 }
@@ -526,6 +548,17 @@ mod tests {
             "sample_items",
             "first_time",
             "last_time",
+            "chart_utilization",
+            "chart_measures",
+            "chart_series",
+            "chart_no_data",
+            "chart_all_zero",
+            "chart_single_point",
+            "chart_constant",
+            "chart_mean",
+            "chart_samples",
+            "chart_bucketed",
+            "chart_negative",
         ];
         for key in keys {
             assert!(!english(key).is_empty(), "missing English key {key}");

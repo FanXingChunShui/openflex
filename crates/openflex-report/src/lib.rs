@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use openflex_core::{Aggregate, SimReport};
 
 mod batch;
+mod chart;
 mod compare;
 mod experiment;
 pub mod i18n;
@@ -33,6 +34,11 @@ mod xlsx;
 
 pub use batch::{
     BatchMeans, BatchMeansSummary, ObjectBatchMeans, batch_means, batch_means_with_objects,
+};
+pub use chart::{
+    ChartKind, ChartSeries, ChartSpec, MAX_WIDTH, MIN_WIDTH, ValueFormat, clamp_width,
+    counts_for_utilization, measures_spec, render as render_chart,
+    render_markdown as render_chart_markdown, series_spec, utilization_spec,
 };
 pub use compare::{Comparison, MetricComparison, ObjectComparison, ReportRef, compare_reports};
 pub use experiment::{
@@ -88,6 +94,8 @@ pub enum ReportError {
         line: usize,
         source: serde_json::Error,
     },
+    #[error("the report has no tracked series '{name}' (available: {available})")]
+    UnknownSeries { name: String, available: String },
     #[error("batch means: {0}")]
     BatchMeans(String),
     #[error("could not build the Excel workbook: {0}")]
