@@ -1069,8 +1069,12 @@ fn model_fields() -> Vec<String> {
         .find("pub struct Model {")
         .expect("Model struct moved: update the schema-coverage test");
     let body = &source[start..];
+    // The file may be checked out with CRLF (Windows runners with autocrlf), so
+    // match the closing brace at either line ending: the struct ends at a line
+    // whose only content is `}`.
     let end = body
         .find("\n}\n")
+        .or_else(|| body.find("\n}\r\n"))
         .expect("Model struct body is not closed at column 0");
     let mut fields = Vec::new();
     for line in body[..end].lines().skip(1) {
