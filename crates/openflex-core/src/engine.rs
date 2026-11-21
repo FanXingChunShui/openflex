@@ -2447,6 +2447,10 @@ struct Simulation<'m> {
     /// task-168: completed-item stay times for `staytime` summaries.
     stay_samples: Vec<f64>,
     track_staytime: bool,
+    /// task-171: item hints for the next `flow` trace event per object.
+    flow_item_hints: HashMap<usize, u64>,
+    /// task-171: item served by each executer task, for transport_* events.
+    transport_item_hints: HashMap<usize, u64>,
     /// task-56: cached shortest distances for transport legs, keyed by
     /// `(task executer, from object, to object)`. Object positions are fixed
     /// for the whole run, so a hit is always correct; restoring a checkpoint
@@ -2643,6 +2647,8 @@ impl<'m> Simulation<'m> {
             tracked_prev: BTreeMap::new(),
             stay_samples: Vec::new(),
             track_staytime,
+            flow_item_hints: HashMap::new(),
+            transport_item_hints: HashMap::new(),
             pause_at: None,
             shaft_owner: HashMap::new(),
             trigger_depth: 0,
@@ -3569,12 +3575,86 @@ impl<'m> Simulation<'m> {
             Some(index) => self.objects[index].name.clone(),
             None => "sim".to_string(),
         };
+        let item_id = self.event_item_id(kind);
+        if let EventKind::Flow(index) = kind {
+            self.flow_item_hints.remove(index);
+        }
+        if let EventKind::TransportHome(transporter) = kind {
+            self.transport_item_hints.remove(transporter);
+        }
         if let Some(log) = self.trace.as_mut() {
             let mut event = TraceEvent::new(time, seq, name, object);
             if let Some((key, value)) = detail {
                 event = event.with(key, value);
             }
+            if let Some(item) = item_id {
+                event = event.with("item", item as f64);
+            }
             log.push(event);
+        }
+    }
+
+    /// task-171: the single item currently associated with an object, if the
+    /// association is unambiguous. Never guesses between several items.
+    fn sole_item_id(&self, index: usize) -> Option<u64> {
+        let object = &self.objects[index];
+        let mut ids = Vec::new();
+        if let Some(item) = object.processing_item.as_ref() {
+            ids.push(item.id);
+        }
+        ids.extend(object.content.iter().map(|item| item.id));
+        ids.extend(object.out_pending.iter().map(|item| item.id));
+        ids.sort_unstable();
+        ids.dedup();
+        if ids.len() == 1 { Some(ids[0]) } else { None }
+    }
+
+    /// task-171: item id for an event kind when it is unambiguous at record time.
+    fn event_item_id(&self, kind: &EventKind) -> Option<u64> {
+        match kind {
+            // `create_item` assigns the next id before this event is handled.
+            EventKind::Arrive(_) => Some(self.items_created + 1),
+            EventKind::SetupDone(index, _) | EventKind::ProcessDone(index, _) => self
+                .objects
+                .get(*index)
+                .and_then(|object| object.processing_item.as_ref())
+                .map(|item| item.id),
+            EventKind::Flow(index) => self
+                .flow_item_hints
+                .get(index)
+                .copied()
+                .or_else(|| self.sole_item_id(*index)),
+            EventKind::TransportPickup(transporter, requester)
+            | EventKind::TransportArrive(transporter, requester)
+            | EventKind::TransportDepart(transporter, requester) => self
+                .transport_item_hints
+                .get(transporter)
+                .copied()
+                .or_else(|| self.sole_item_id(*requester)),
+            EventKind::TransportHome(transporter) => self
+                .transport_item_hints
+                .get(transporter)
+                .copied()
+                .or_else(|| {
+                    self.objects[*transporter]
+                        .serving_requester
+                        .and_then(|requester| self.sole_item_id(requester))
+                }),
+            _ => None,
+        }
+    }
+
+    /// task-171: append a real object-boundary event carrying the item id.
+    fn record_item_trace(&mut self, label: &str, object: usize, item: u64) {
+        if self.trace.is_none() {
+            return;
+        }
+        let time = self.now;
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        let name = self.objects[object].name.clone();
+        if let Some(log) = self.trace.as_mut() {
+            log.push(TraceEvent::new(time, seq, label, name).with("item", item as f64));
         }
     }
 
@@ -4126,6 +4206,8 @@ impl<'m> Simulation<'m> {
             created: self.now,
             entry_time: self.now,
         };
+        self.record_item_trace("enter", source, item.id);
+        self.flow_item_hints.insert(source, item.id);
         let actions = self.trigger_actions(source, SimTrigger::OnCreate);
         if !actions.is_empty() {
             self.action_location = format!("{}.on_create", self.objects[source].name);
@@ -4476,7 +4558,7 @@ impl<'m> Simulation<'m> {
             self.action_location = format!("{}.on_exit", self.objects[from].name);
             self.apply_actions(from, &mut item, exit_actions)?;
         }
-        self.receive_item(target, to_port, item)
+        self.receive_item_from(target, to_port, item, Some(from))
     }
 
     /// Receive an item at the target object: entry triggers, capacity already
@@ -4486,11 +4568,26 @@ impl<'m> Simulation<'m> {
         &mut self,
         target: usize,
         to_port: u32,
+        item: FlowItem,
+    ) -> Result<bool, SimError> {
+        self.receive_item_from(target, to_port, item, None)
+    }
+
+    fn receive_item_from(
+        &mut self,
+        target: usize,
+        to_port: u32,
         mut item: FlowItem,
+        from: Option<usize>,
     ) -> Result<bool, SimError> {
         if !self.can_accept(target, to_port) {
             return Ok(false);
         }
+        if let Some(from) = from {
+            self.record_item_trace("exit", from, item.id);
+        }
+        self.record_item_trace("enter", target, item.id);
+        self.flow_item_hints.insert(target, item.id);
         let kind = self.objects[target].kind;
         // Trigger the receiving object's OnEntry/OnReceive logic.
         let actions = self.trigger_actions(target, SimTrigger::OnEntry);
@@ -4517,6 +4614,7 @@ impl<'m> Simulation<'m> {
                 }
                 self.objects[target].acc.stay_sum += now - item.entry_time;
                 self.objects[target].acc.stay_count += 1;
+                self.record_item_trace("exit", target, item.id);
                 self.trigger_actions_run(target, SimTrigger::OnExit, &mut item)?;
             }
             ObjectKind::Queue | ObjectKind::Rack => {
@@ -6977,6 +7075,9 @@ impl<'m> Simulation<'m> {
             self.objects[dispatcher].requests.remove(position);
             self.objects[transporter].tasks += 1;
             self.objects[transporter].serving_requester = Some(requester);
+            if let Some(item) = self.sole_item_id(requester) {
+                self.transport_item_hints.insert(transporter, item);
+            }
             self.objects[transporter].task_distance =
                 self.transport_estimate_distance(transporter, requester);
             self.objects[transporter].acc.input += 1;
@@ -14071,5 +14172,218 @@ mod tests {
             serde_json::to_string(&a).expect("json"),
             serde_json::to_string(&crate::run_model(&plain).expect("repeat")).expect("json")
         );
+    }
+
+    fn trace_item_events(trace: &TraceLog) -> Vec<(String, String, u64)> {
+        trace
+            .events
+            .iter()
+            .filter_map(|event| {
+                event
+                    .data
+                    .get("item")
+                    .map(|item| (event.event.clone(), event.object.clone(), *item as u64))
+            })
+            .collect()
+    }
+
+    fn simple_trace_model(max_arrivals: u32) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "item-path",
+          "run": {{ "stop_time": 100.0, "seed": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1.0 }},
+                "max_arrivals": {max_arrivals} }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [{{ "from": "S", "to": "K" }}]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    /// task-171: one item keeps one id across its whole source -> sink path and
+    /// gets real enter/exit events on both objects.
+    #[test]
+    fn item_trace_follows_one_item_from_source_to_sink() {
+        let model = simple_trace_model(1);
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let events = trace_item_events(&trace);
+        assert_eq!(
+            events,
+            vec![
+                ("arrive".to_string(), "S".to_string(), 1),
+                ("enter".to_string(), "S".to_string(), 1),
+                ("exit".to_string(), "S".to_string(), 1),
+                ("enter".to_string(), "K".to_string(), 1),
+                ("exit".to_string(), "K".to_string(), 1),
+                ("flow".to_string(), "S".to_string(), 1),
+            ]
+        );
+        assert_eq!(trace.events[0].event, "arrive");
+        assert_eq!(trace.events[0].data["item"], 1.0);
+        assert_eq!(trace_object(&trace, "K", "enter"), 1);
+        assert_eq!(trace_object(&trace, "K", "exit"), 1);
+    }
+
+    fn trace_object(trace: &TraceLog, object: &str, event: &str) -> usize {
+        trace
+            .events
+            .iter()
+            .filter(|entry| entry.object == object && entry.event == event)
+            .count()
+    }
+
+    /// task-171: enter/exit are real object-boundary events and enter comes
+    /// before exit for each object.
+    #[test]
+    fn item_enter_exit_are_paired_in_order() {
+        let model = simple_trace_model(1);
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        for object in ["S", "K"] {
+            let enter = trace
+                .events
+                .iter()
+                .position(|event| event.object == object && event.event == "enter")
+                .expect("enter");
+            let exit = trace
+                .events
+                .iter()
+                .position(|event| event.object == object && event.event == "exit")
+                .expect("exit");
+            assert!(enter < exit, "enter must precede exit for {object}");
+            assert!(trace.events[enter].data.contains_key("item"));
+            assert!(trace.events[exit].data.contains_key("item"));
+        }
+    }
+
+    /// task-171: two interleaved items never swap ids on their enter/exit path.
+    #[test]
+    fn interleaved_items_keep_distinct_ids() {
+        let model = simple_trace_model(2);
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (result, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        assert_eq!(result.items_created, 2);
+        let ids: std::collections::BTreeSet<u64> = trace_item_events(&trace)
+            .into_iter()
+            .map(|(_, _, id)| id)
+            .collect();
+        assert_eq!(ids, [1, 2].into_iter().collect());
+        for id in [1, 2] {
+            let path: Vec<(String, String)> = trace_item_events(&trace)
+                .into_iter()
+                .filter(|(_, _, entry)| *entry == id)
+                .map(|(event, object, _)| (event, object))
+                .collect();
+            assert!(
+                path.contains(&("enter".to_string(), "S".to_string())),
+                "{id}: {path:?}"
+            );
+            assert!(
+                path.contains(&("enter".to_string(), "K".to_string())),
+                "{id}: {path:?}"
+            );
+            assert!(
+                path.contains(&("exit".to_string(), "K".to_string())),
+                "{id}: {path:?}"
+            );
+        }
+    }
+
+    /// task-171: all transport events carry the served item id, including the
+    /// return-home leg (where the requester link may already be cleared).
+    #[test]
+    fn transport_events_carry_the_served_item_id() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "trace-transport",
+          "run": { "stop_time": 100.0, "seed": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1000.0 },
+                "max_arrivals": 1, "first_arrival": 0.0 } },
+            { "name": "P", "kind": "processor", "pos": [10.0, 0.0], "params": {
+                "process_time": { "distribution": "constant", "value": 1.0 },
+                "process_operator": "D" } },
+            { "name": "K", "kind": "sink", "params": {} },
+            { "name": "D", "kind": "dispatcher", "pos": [0.0, 0.0], "params": {} },
+            { "name": "T", "kind": "transporter", "pos": [0.0, 0.0],
+               "params": { "speed": 1.0, "home": "D" } }
+          ],
+          "connections": [
+            { "from": "S", "to": "P" }, { "from": "P", "to": "K" },
+            { "from": "D", "to": "T" }
+          ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        for event in [
+            "transport_pickup",
+            "transport_depart",
+            "transport_arrive",
+            "transport_home",
+        ] {
+            let entry = trace
+                .object("T")
+                .find(|entry| entry.event == event)
+                .unwrap_or_else(|| panic!("missing {event}"));
+            assert_eq!(entry.data.get("item"), Some(&1.0), "{entry:?}");
+        }
+    }
+
+    /// task-171: events unrelated to a tracked item do not get a guessed id.
+    #[test]
+    fn unrelated_events_do_not_carry_an_item_id() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "trace-unrelated",
+          "run": { "stop_time": 20.0, "seed": 1 },
+          "tracked_variables": [{ "name": "Clock", "expression": "time" }],
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1000.0 },
+                "max_arrivals": 1, "first_arrival": 1000.0 } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [{ "from": "S", "to": "K" }]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 20.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let samples: Vec<_> = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "tracked_sample")
+            .collect();
+        assert!(!samples.is_empty());
+        assert!(samples.iter().all(|event| !event.data.contains_key("item")));
+        assert!(trace_item_events(&trace).is_empty());
     }
 }

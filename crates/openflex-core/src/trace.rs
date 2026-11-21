@@ -45,6 +45,10 @@ pub struct TraceEvent {
     /// Name of the object the event belongs to.
     pub object: String,
     /// Extra numeric fields (lane index, generation, ...), empty when unused.
+    ///
+    /// task-171: an item-related event carries `data["item"]`, the `FlowItem::id`
+    /// (the same id space as `items_created`). `data["token"]` is **not** an item
+    /// id: it is a process-flow token or processor phase token.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub data: BTreeMap<String, f64>,
     /// Text payload for log-style events (script `log`), empty otherwise.

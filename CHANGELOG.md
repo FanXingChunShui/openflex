@@ -4,6 +4,17 @@
 
 ### 模型与引擎
 
+- **trace 事件带上 flow item id**：`TraceEvent.data["item"]` 现写 `FlowItem::id`（与 `items_created` 同源），
+  并**真正新增 `enter` / `exit` 两个边界事件**（进入/离开对象各一次，成对且有序）。
+  `arrive` / `flow` / `process_done` / `setup_done` / `transport_pickup|depart|arrive|home` 均带该键；
+  **无法唯一确定是哪件时不写**（宁可缺键也不写错值）。`data["token"]` 仍是 process-flow token /
+  processor 相位令牌，文档已明确两者语义不同。
+  实测一件物件的完整路径：
+  `arrive(S) → enter(S) → exit(S) → enter(P) → transport_pickup/depart/arrive(T) → flow(P)
+   → process_done(P) → exit(P) → enter(K) → exit(K) → transport_home(T)`，
+  两件并发时 id `{1,2}` 不串。
+  这为 Item Trace（「这一件走了哪条路径」）提供了数据基础。
+
 - **任务腿 `utilize` / `break`**：`TaskStep` 新增 `Extra { kind, duration, condition }`，
   在既有 append 机制里作为额外腿执行（**不引入 `task_sequence_mode`**，旧 travel/load/unload 的
   数值与顺序逐位不变）：`utilize` 计入执行器 `utilize` 细分并保持 Busy、不可派新活；

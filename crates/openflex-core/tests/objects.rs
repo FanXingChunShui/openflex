@@ -928,10 +928,10 @@ fn trace_records_every_processed_event() {
             .any(|event| event.event == "process_done" && event.time < 20.0),
         "processor events must carry the object name"
     );
-    // A queue batch timeout / shift change style event carries its detail.
+    // task-171: item events carry the flow-item id (arrival at t = 0).
     let first = &trace.events[0];
     assert_eq!(first.time, 0.0);
-    assert!(first.data.is_empty() || first.data.contains_key("token"));
+    assert_eq!(first.data.get("item"), Some(&1.0));
 }
 
 #[test]
@@ -955,12 +955,19 @@ fn trace_is_off_for_normal_runs() {
     let (_, trace) = simulate_traced(&model, &config, 0).expect("traced run");
     let plain = simulate(&model, &config, 0).expect("plain run");
     assert_eq!(plain.items_completed, 1);
-    // The sink delivery happens inside the source's `flow` event, so the trace
-    // only contains the arrival and that flow.
-    assert_eq!(trace.len(), 2);
+    // task-171: the arrival plus the real enter/exit boundary events and the
+    // source flow; the sink delivery happens inside the source's flow event.
+    assert_eq!(trace.len(), 6);
     assert_eq!(trace.events[0].event, "arrive");
-    assert_eq!(trace.events[1].event, "flow");
-    assert_eq!(trace.object("K").count(), 0);
+    assert_eq!(trace.events[0].data.get("item"), Some(&1.0));
+    assert!(trace.events.iter().any(|event| event.event == "flow"));
+    assert_eq!(
+        trace
+            .object("K")
+            .filter(|event| matches!(event.event.as_str(), "enter" | "exit"))
+            .count(),
+        2
+    );
 }
 
 // ---------------------------------------------------------------------------
