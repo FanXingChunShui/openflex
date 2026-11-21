@@ -5,6 +5,13 @@
 > 以及本仓库 `crates/`、`docs/` 的当前实现。**未接触 FlexSim 源代码、二进制、安装包或反编译产物。**
 > 帮助文档页面本身是厂商公开发布的用户手册，属于净室可用的公开材料。
 
+> **两份文档的分工**（避免读者以为口径矛盾）：本文件 = 面向**帮助文档全量功能面**，
+> 把 326 页里出现的每一个功能点（含 GUI 编辑器、3D 媒体、C++ 编译期、许可证等生态环境）
+> 都记成一行，所以 ⛔ 自然更多；`docs/COMPATIBILITY.md` = 面向**建模语义**的覆盖
+> （对象库与核心机制、路由、统计、运行），不把 GUI/脚本生态计入，所以它的 ⛔ 很少。
+> 同一个能力在两份表里可能一个是 ✅、一个是 ⛔（例：3D 渲染在语义表不计、在功能面表计 ⛔）。
+> 看"模型能不能建对"读 COMPATIBILITY；看"FlexSim 的功能面还差多少"读本文件。
+
 清点口径与任务卡一致（`glob` 枚举，非 `find`）：
 
 | 目录 | 页数 | 目录 | 页数 |
@@ -37,7 +44,7 @@
 | Labels（对象与流项目上的命名数据） | `item.label(name)` 表达式 + `set_label`/`increment_label` 动作 | 🟡 | 仅数值标签；文档允许字符串、列表、表（`FlexSimConcepts/Labels.html`），`PickListEntry.value` 是字符串但流项目标签无字符串通道 |
 | Item 与 Current（两个访问变量） | 表达式里 `item`、`object`、`time` 等隐式绑定 | 🟡 | 无 `current`/`parnode(1)`/`ownerobject(c)` 这套 C 风格访问变量，依赖 rhai 沙箱的扁平 API |
 | Ports（输入/输出/中心三类端口） | `connections[]`（A 连接）+ `pull`/`operator`/`transport_ref` 具名字段 | 🟡 | 无"中心端口"这一等概念：FlexSim 用 S 连接建立对象间引用，OpenFlex 用具名字符串引用（`model.rs`）；语义等价但不可自由新增任意引用通道 |
-| Pick Lists（点选即得代码的列表控件） | `model.picklists` 可声明并校验 | ⛔ | **只做了 schema**：`validate.rs:2019` 校验条目非空/重名，但 `openflex-core` 与 `openflex-cli` **零引用**（`grep picklist` 无命中），运行时不解析、不参与任何字段求值 |
+| Pick Lists（点选即得代码的列表控件） | `model.picklists` + 表达式 `picklist("list","entry")` + GUI 面板 | ✅ | 模型字段 `model.rs:4005`、校验 `validate.rs:2079`、Schema `schema.rs:756`、表达式求值 `expr.rs:205`、GUI 增删改 `main.rs:2659`；没有 FlexSim 那种"点选即插入模板代码"的编辑器机制（模板代码见下一行） |
 | Return Values（代码字段的返回值语义） | 表达式/脚本有返回值；`script_condition` 用 `result` 标签 | ✅ | `expr.rs`、`action.rs` |
 | Template Code（弹窗与代码双向绑定的 `/**tag:*/` 机制） | 无对应物 | ⛔ | 纯 GUI 编辑器机制；OpenFlex 用 JSON 直接表达参数，不需要模板注入 |
 | Model Units（时间/长度/流体单位，创建后不可改） | `time_unit`（秒/分/小时/天） | 🟡 | 只有时间单位；**长度单位与流体单位没有独立字段**（`model.rs` Model 无 `length_unit`/`fluid_unit`），运输距离与流体量按无量纲数处理 |
@@ -53,7 +60,7 @@
 | FixedResources（Source/Queue/Processor/Sink/Combiner/Separator/MultiProcessor/BasicFR/Rack） | 同名 `kind` 全部实现 | ✅ | `openflex objects list` 共 38 类可运行对象 |
 | TaskExecuters（Dispatcher/Operator/Transporter/Elevator/Crane/ASRSvehicle/BasicTE/Robot） | 同名或变体（`person`/`resource`） | 🟡 | 见 `docs/COMPATIBILITY.md` 逐项说明；本矩阵不重复 |
 | Fluid Objects（11 个） | `fluid_*` / `ticker` / 桥接两向 | 🟡 | 固定步长积分；无多相/可压缩 |
-| NetworkNode / TrafficControl | `network_node` ✅；`traffic_control` 🟡 | 🟡 | 准入互斥正由另一名队友补（任务卡已注明），本表不重复判定 |
+| NetworkNode / TrafficControl | `network_node` ✅；`traffic_control` ✅ | ✅ | 准入互斥已生效：`capacity` 满则等待、释放时定向唤醒（`engine.rs:7397` `traffic_try_acquire` / `traffic_hold` 随快照恢复） |
 
 > 对象库 38/39 已对齐，本矩阵覆盖的是**对象库之外**的部分；上表只为完整性登记，不重复队友的逐项结论。
 
@@ -78,7 +85,7 @@
 | Rack Page（Floor Storage、Shelf Tilt、Pick/Place Y Offset、标记货位） | `rack` 四类 + `aisles`/`bays`/`pick_policy`/`min_dwell` | 🟡 | 无 Floor Storage 模式、无倾斜/Y 偏移视觉量、无"已叫车货位高亮" |
 | Rack SizeTable Page（逐 bay/level 自定义尺寸） | 无 | ⛔ | 只支持均匀网格 |
 | BasicFR Advanced Page（Transport Out Notify/Complete 等专属触发器） | `basic_fr` 通用触发器 | ⛔ | 无运输通知类触发器 |
-| Breakdowns / Breaks Page（MTBF/MTTR 成员列表，一对象可属多个 MTBF 组） | `failure {mtbf,mttr}` 在对象上 | 🟡 | **不能表达"一个对象属于多个 MTBF/MTTR 组"**，也无"多个停机请求叠加"的停机栈 |
+| Breakdowns / Breaks Page（MTBF/MTTR 成员列表，一对象可属多个 MTBF 组） | `failure` 在对象上（非独立组对象） | 🟡 | 故障参数已含首次故障与状态计时；**不能表达"一个对象属于多个 MTBF/MTTR 组"**，也无"多个停机请求叠加"的停机栈 |
 | Container Page（容器件的打包方法） | 无容器件概念 | ⛔ | Flowitem Bin 的 Container 类型与打包方法未实现 |
 | Container Functionality Page（VisualTool 内含对象时的输入端口代理） | `visual_tool` 存在 | ⛔ | 无"把输入连接动作转交给内部对象"的能力 |
 | Collision Page（碰撞检测球、检查间隔） | 无 | ⛔ | TaskExecuter 无碰撞检测 |
@@ -87,8 +94,8 @@
 | ASRSvehicle / Crane / Robot Page（升降速度、行程顺序、关节速度表） | `asrs_vehicle`/`crane`/`robot` 变体 | 🟡 | 有路径策略；无关节/升降速度表与运动学曲线 |
 | Robot Geometry Page（逐关节相对速度/复位位置/手动定位） | 无 | ⛔ | 无关节模型 |
 | NetworkNode Page（最大停留车辆数等） | `network_node`（`edges`/`max_travelers`） | ✅ | `max_travelers` 已建模（`NetworkNodeParams`） |
-| NetworkNodes / Speeds Page（TrafficControl 关联节点、按含量调速度表） | `traffic_control` 参数 | 🟡 | 准入互斥由队友补；"按含量分档调速度"表未实现 |
-| Traffic Control Page（互斥 / 非定时两种模式） | `traffic_control`（capacity/mode/speed_factor） | 🟡 | 同上 |
+| NetworkNodes / Speeds Page（TrafficControl 关联节点、按含量调速度表） | `traffic_control`（capacity/mode/speed_factor） | 🟡 | 准入互斥已生效；**"按含量分档调速度"表**仍只有单一 `speed_factor`，无逐档曲线 |
+| Traffic Control Page（互斥 / 非定时两种模式） | `traffic_control`（`mode: mutual_exclusion` / `un_timed`） | ✅ | 两种模式均生效：互斥按 `capacity` 限名额，`un_timed` 不限名额只缩放 `speed_factor` |
 | Fluid 各类页（Generator/Tank/Mixer/Blender/Splitter/Pipe/Processor/Conveyor/Terminator/ItemToFluid/FluidToItem/Ticker） | 同名 `fluid_*` | 🟡 | 见对象库表；流体页的 Marks（低/中/高液位触发）、Steps（分批延迟）、Sensors（传送带传感器）、Recipe/Percents 表可配置但语义简化 |
 | Fluid Marks Page（低/中/高液位升降触发） | `on_port`/`on_factor` 等 | ⛔ | 无液位穿越触发器 |
 | Fluid Sensors Page（FluidConveyor 传感器表） | 无 | ⛔ | 无离散传感器 |
@@ -128,9 +135,9 @@
 | Breakdown/Repair Trigger（OnBreakDown/OnRepair） | `on_breakdown`/`on_repair` | ✅ | |
 | Down/Up Trigger（MTBF 组级） | 无组级触发器 | ⛔ | 只有对象级 `on_breakdown` |
 | Load/Unload Trigger（OnLoad/OnUnload） | 无 | ⛔ | 无装载/卸载时点钩子 |
-| Setup/Process Finish Trigger（OnSetupFinish/OnProcessFinish） | 无 | ⛔ | **重要缺口**：无加工完成时点钩子，只能靠 `on_exit` 近似（语义不同：exit 在下游接收后） |
+| Setup/Process Finish Trigger（OnSetupFinish/OnProcessFinish） | `params.triggers.setup_finish` / `process_finish` | ✅ | `SimTrigger::SetupFinish`/`ProcessFinish`（`action.rs:181/183`，JSON 名 `setup_finish`/`process_finish` 见 `action.rs:211/239`）；在两个边界触发且早于 `on_exit`；`setup_time=0` 无独立 setup 阶段故不触发 |
 | OnEmpty / OnFull Trigger（流体满/空） | `fluid_*` 有液位但无此类触发器 | ⛔ | |
-| OnEntryRequest Trigger（TrafficControl 准入裁决） | `traffic_control` 参数 | ⛔ | 准入互斥由队友补参数侧；**裁决钩子**仍缺 |
+| OnEntryRequest Trigger（TrafficControl 准入裁决） | `traffic_control` 参数（无裁决钩子） | ⛔ | 准入互斥已由引擎内建（名额 + 等待），但**没有可编程的准入裁决钩子**——模型无法自定义"这批车优先放行"之类的规则 |
 | OnReceiveTaskSequence | 无 | ⛔ | TaskExecuter 无接收任务序列的钩子 |
 | OnResourceAvailable | 无 | ⛔ | Dispatcher 无"下游可用"回调 |
 | OnDraw Trigger | `on_draw`（schema 层） | 🟡 | 见 ObjectWindows 行 |
@@ -155,13 +162,13 @@
 | FlexSim 7.5 功能 | OpenFlex 现状 | 状态 | 证据或缺口说明 |
 |---|---|---|---|
 | Global Tables（全局表，数值/字符串，任意对象可读） | `model.global_tables`（schema + 校验 + 引擎 `table_cell` 读取 + 写入 API） | ✅ | `engine.rs:3069`；表达式 `table[name,row,col]`；Studio 有编辑器 |
-| Global Variables（全局变量与宏定义） | `model.global_variables` | 🟡 | 有变量；**无宏定义**（FlexSim 的 macro 文本替换） |
-| MTBF/MTTR（组对象，成员列表，独立/整组故障，只在指定状态计时） | 对象级 `failure {mtbf,mttr}` | 🟡 | 无组对象、无 FirstFailureTime 负值忽略、**无"只在 processing 状态累计 Up Time"** |
+| Global Variables（全局变量与宏定义） | `model.global_variables` + 表达式 `$Name` | 🟡 | 变量已完整（字段 `model.rs`、校验 `validate.rs:2024`、Schema `schema.rs:751`、`$Name` 求值走 `EvalContext::global_variable`（`expr.rs:195`，按 `kind` 返回数字或字符串）、GUI 面板）；**无宏定义**（FlexSim 的 macro 是文本替换，语义不同） |
+| MTBF/MTTR（组对象，成员列表，独立/整组故障，只在指定状态计时） | 对象级 `failure {mtbf, mttr, repair_operator, first_failure_time, count_time_in_states}` | 🟡 | 首次故障（负值=忽略，A8）与**只在指定状态累计 Up Time**（`count_time_in_states`）均已实现（`model.rs:1415-1437`）；仍无**组对象**（一个对象不能同时属多个 MTBF 组、无组级 Down/Up 触发器）、无停机请求栈 |
 | Time Tables（计划停机：成员/函数表/状态/日周重复/日期模式/相接合并） | `params.timetable {windows}` + `shifts` | 🟡 | 有窗口与重复；**无 Down/Resume 函数钩子、无相接时段自动合并、无按日期模式** |
 | User Commands（自定义命令，参数类型标注，可被模型调用） | 无 | ⛔ | 模型无法定义新命令；只能复用内置表达式函数 |
 | User Events（按设定时刻执行的函数） | 无 | ⛔ | 无定时用户事件 |
-| Model Triggers（模型级触发器：OnReset/OnRunStart 等） | `on_reset` 是对象级 | ⛔ | **无模型级触发器**；跨对象初始化只能逐对象写 |
-| Tracked Variables（Work In Progress / Time In System 等可追踪量） | 报告内置若干聚合量 | 🟡 | 无用户自定义 tracked variable |
+| Model Triggers（模型级触发器：OnReset/OnRunStart 等） | `model.model_triggers` | ✅ | `ModelTriggers` 含 `on_start`/`on_reset`/`on_stop`（`model.rs`，Schema `schema.rs:761`，执行点 `engine.rs:3322/9484/1516`）；执行失败上报 `SimError::Script`。仍无 FlexSim 的实验生命周期钩子（Start/End of Experiment/Scenario/Replication 共 6 个） |
+| Tracked Variables（Work In Progress / Time In System 等可追踪量） | `model.tracked_variables` + `tracked_interval` + `SimReport.tracked_series` | 🟡 | 可声明任意**数值表达式**的时序（`model.rs:3921` 字段 name/expression，采样间隔 `model.rs:4012`，结果 `engine.rs:2122`）；但 FlexSim 的 Tracked Variable 有 **Level/State/Staytime/Kinetic** 等类型，这里只有"表达式采样"一种 |
 | Event List（待处理事件列表，可快进到某事件） | `--trace` + trace 回放 + Studio 事件列表 | ✅ | `simulate_traced`、`TraceLog`、Studio 分页 trace |
 | Event Log（记录已发生事件，可导出 CSV） | `--trace <FILE>` | 🟡 | 有 trace 导出；无"Enable Logging + 时间段过滤 + CSV 导出"这套交互，也无"两次日志 diff 定位不复现点"的辅助 |
 | Excel Interface（多工作表导入/导出） | `--xlsx`（3 sheet 导出）+ `import --xlsx` | 🟡 | 有 xlsx 双向；无"任意工作表映射到 Global Table / 到达表"的通用界面 |
@@ -217,7 +224,7 @@
 |---|---|---|---|
 | Experimenter：Variables（标签/全局表/对象数/位置等任意可变量） | `Scenario.overrides`（对象参数替换） | 🟡 | 只能覆盖**对象参数**；不能直接改变量、标签、对象个数、位置 |
 | Experimenter：Scenarios（变量取值组合） | `experiments[].scenarios` + `--set` | ✅ | 含 `stop_time`/`warmup` 覆盖（对齐 FlexSim 的 Scenario 定义） |
-| Experimenter：Performance Measures（自定义指标函数） | 报告固定字段 | 🟡 | 同 §4 末行：指标不可由模型定义 |
+| Experimenter：Performance Measures（自定义指标函数） | `model.performance_measures` | ✅ | `PerformanceMeasure{name, expression, unit?}`（`model.rs:3905`）；每复现结束求值（`engine.rs:2902`），报告/实验/优化自动带上；未定义变量是明确 `SimError` |
 | Experimenter：Analyzing Results（均值/标准差/置信区间/场景对比） | `report` 汇总 + `compare` + batch-means 置信区间 | ✅ | `openflex-report/src/batch.rs` |
 | Optimizer：Design（决策变量、约束、目标函数、多目标权重） | `openflex optimize`（grid/random/genetic，多目标加权、Pareto） | 🟡 | 有搜索与目标；**无约束（线性/非线性）表达**、无贝叶斯优化 |
 | Optimizer：Run / Results（迭代过程、收敛图） | optimize 输出 | 🟡 | 有结果与 Pareto 前沿；无迭代收敛可视化 |
@@ -261,7 +268,7 @@
 | ModelLibraries Node（隐藏定义） | 无 | ⛔ | |
 | Kinematics Concepts / Commands（initkinematics/addkinematic/updatekinematics） | 无 | ⛔ | 无运动学 |
 | SQL Queries（query() 命令、SQL 语法过滤/排序/优先级） | 无 SQL | ⛔ | **重要缺口**：全局表无法用 SQL 查询；列表/优先级场景需大量手工逻辑 |
-| Sampler（引用对象/变量/标签/表的可视化取引用工具） | 无 | ⛔ | 纯 GUI 工具；OpenFlex 用字符串名引用 |
+| Sampler（引用对象/变量/标签/表的可视化取引用工具） | GUI `object_picker`（下拉候选 + 手输 + `unknown` 提示） | 🟡 | `main.rs:1079` 定义，7 处调用（setup/process operator、home×2、charger、shaft）；候选按语义过滤（operator 只列 Dispatcher/Resource），名字不存在时琥珀 `unknown`；**只覆盖 5 个对象引用字段**，没有 FlexSim 那样对标签、表格单元格、统计项的取样 |
 | State List（状态号与宏对照表：STOPPED/TRAVEL_LOADED/…） | `StateTimes`：5 个顶层状态 + 6 个明细项 | 🟡 | 实际有 **idle/busy/blocked/down/off_shift** 顶层，加明细 **setup/processing/waiting_for_operator/waiting_for_transport/door_opening/door_closing**（`stats.rs`），比 5 个更细；仍**无状态号↔宏的对照表**，也无 Travel Empty/Travel Loaded/Loading/Unloading 这类执行器状态 |
 | View Attributes Reference（自定义 GUI 的视图属性全集） | 无 | ⛔ | 依赖自建 GUI |
 | GUI Events and View Attributes（OnClick/OnDrag/OnDraw…） | 无 | ⛔ | 无 GUI 事件模型 |
@@ -312,64 +319,68 @@
 
 ---
 
-## 17. 汇总统计
+## 17. 汇总统计（v1.33.0 后复核）
 
 矩阵共 **197 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行）。
 
-| 状态 | 行数 | 占比 |
-|---|---:|---:|
-| ✅ 一致 | **32** | 16.2% |
-| 🟡 部分 | **89** | 45.2% |
-| ⛔ 缺口 | **76** | 38.6% |
-| **合计** | **197** | 100% |
+| 状态 | 行数 | 占比 | 相比 task-150 首版 |
+|---|---:|---:|---|
+| ✅ 一致 | **38** | 19.3% | 32 → 38（+6） |
+| 🟡 部分 | **87** | 44.2% | 89 → 87 |
+| ⛔ 缺口 | **72** | 36.5% | 76 → 72（−4） |
+| **合计** | **197** | 100% | — |
 
-按目录分布（行数 / ✅ / 🟡 / ⛔）：
+按目录分布（行数 / 一致 / 部分 / 缺口）：
 
 | 目录 | 行数 | 一致 | 部分 | 缺口 | 缺口密度 |
 |---|---:|---:|---:|---:|---|
-| FlexSimConcepts | 13 | 5 | 5 | 3 | 23% |
-| FlexSimObjectLibrary | 4 | 1 | 3 | 0 | — （队友已对齐，仅登记） |
-| ObjectWindows | 33 | 5 | 17 | 11 | 33% |
-| PickLists | 34 | 9 | 12 | 13 | 38% |
+| FlexSimConcepts | 13 | 6 | 5 | 2 | 15% |
+| FlexSimObjectLibrary | 4 | 2 | 2 | 0 | — （队友已对齐，仅登记） |
+| ObjectWindows | 33 | 6 | 16 | 11 | 33% |
+| PickLists | 34 | 10 | 12 | 12 | 35% |
 | TaskSequences | 8 | 0 | 3 | 5 | 62% |
-| ModelingTools | 22 | 2 | 7 | 13 | 59% |
+| ModelingTools | 22 | 3 | 7 | 12 | 55% |
 | ModelingViews | 13 | 2 | 10 | 1 | 8% |
 | ChartingReporting | 11 | 1 | 5 | 5 | 45% |
-| ExperimenterOptimizer | 7 | 2 | 5 | 0 | 0% |
+| ExperimenterOptimizer | 7 | 3 | 4 | 0 | 0% |
 | MainMenuToolbar | 11 | 0 | 9 | 2 | 18% |
 | FlexSimCoding | 6 | 0 | 4 | 2 | 33% |
-| MiscellaneousConcepts | 13 | 1 | 2 | 10 | 77% |
+| MiscellaneousConcepts | 13 | 1 | 3 | 9 | 69% |
 | GeneralWindows | 7 | 1 | 3 | 3 | 43% |
 | 3DMedia | 6 | 0 | 0 | 6 | 100% |
 | GettingStarted | 7 | 3 | 2 | 2 | 29%（含许可证类有意差异） |
 | Commands + Tutorials | 2 | 0 | 2 | 0 | — （Commands 4 页正文为空） |
 
-**读法**：⛔ 76 行里，约 30 行属于"有意差异"（3D 渲染、C++ 编译、节点树、许可证，见 §19），
-真正可补的功能缺口约 **45–50 行**；🟡 89 行里大多数是"有核心行为、缺复杂选项"，
-按 §18 的 Top 10 逐个补齐后可显著上移。
+**读法**：⛔ 72 行里约 **30 行属于"有意差异"**（3D 渲染管线、C++ 编译期、通用节点树、
+许可证体系，见 §19），真正可补的功能缺口约 **40–45 行**。缺口密度最高的三个目录是
+**3DMedia（100%，全属有意差异）、MiscellaneousConcepts（69%，节点树/运动学/自建 GUI）、
+TaskSequences（62%，任务序列构造）**。
 
-## 18. 剩余缺口 Top 10（按"影响建模能力 × 实现代价"排序）
+## 18. 剩余缺口 Top 10（v1.33.0 后重排）
+
+原 Top-10 的第 **1（加工时点钩子）、2（PickLists 接线）、4（自定义性能指标）、
+5→（原第 6 的 tracked variable 部分）、7（模型级触发器）** 以及 Sampler、TrafficControl 准入互斥
+均已落地，从榜上移出。下表是**现在真正剩下的**：
 
 | # | 缺口 | 为什么重要 | 工作量 |
 |---|---|---|---|
-| 1 | **加工完成时点钩子（OnSetupFinish/OnProcessFinish）缺失** | 文档 `PickLists/ProcessFinish.html` 明确这是"加工完成、件尚未离开"的唯一时点；现在只能用 `on_exit` 近似，而 exit 在下游接收后才触发，导致"完工即打标签/发消息"这类常见逻辑语义错位 | **小**（引擎已有状态迁移点，加两个触发点即可） |
-| 2 | **PickLists 只做 schema 未接线** | `model.picklists` 能解析能校验，但 `openflex-core`/`openflex-cli` 零引用；用户写了 picklist 却无任何运行时效果，属于"看起来支持实际不支持" | **小**（把 `PickList` 接入表达式求值 + 一个 CLI 查看命令） |
-| 3 | **自定义任务序列构造 API（createemptytasksequence/inserttask/dispatchtasksequence）** | FlexSim 的运输逻辑几乎都靠自建任务序列；没有它就无法表达"取货→加工→送回→充电"这类多段流程，TaskExecuter 永远只能是两段 | **大**（需引入任务序列对象模型 + 调度器改造） |
-| 4 | **性能指标不可由模型定义（Performance Measure picklist）** | 实验器只能看固定字段，无法回答"每件平均成本""单位时间利润"这类业务指标；这是仿真项目的最终交付物 | **中**（`metrics[]` + 表达式求值 + 报告列注入） |
-| 5 | **SQL 查询（query()）缺失** | 全局表/列表的过滤排序目前要靠手工脚本；FlexSim 用 SQL 表达"取优先级最高且满足条件的 3 件" | **中**（可先实现 SELECT/WHERE/ORDER BY/LIMIT 子集） |
-| 6 | **Tracked Variables 与执行器状态细分（State List）** | 面向固定资源的状态已细到 setup/processing/waiting_for_*/门开合，但**任务执行器没有 travel_empty/travel_loaded/loading/unloading/utilize 这些状态**，无法回答"车辆空驶占比""装卸占多少时间"；且无用户自定义 tracked variable | **中**（补执行器状态枚举 + 自定义 tracked variable + 报告列） |
-| 7 | **模型级触发器与实验生命周期钩子（Model Triggers / Start-End of Warmup·Run·Scenario·Experiment）** | 跨对象初始化、每复现前重置、实验前后汇总都要靠这些钩子；现在只能在每个对象上重复写 `on_reset` | **小**（6+2 个钩子点，集中在引擎的运行边界） |
-| 8 | **MTBF/MTTR 组对象与"只在指定状态计时"** | 文档 `MTBF MTTR/index.html` 明确支持一个对象属多个组、组内独立/整组故障、只累计 processing 时间；现在只有对象级墙钟计时，可用率会算错 | **中**（组对象 + 状态感知计时器 + 停机栈） |
-| 9 | **图表 DSL 与 Item Trace / Utilization Analysis / Financial Objects** | 报告是固定表格，无法回答"这条产线的利用率随时间怎么变""这一件走了哪条路径"；Dashboard 是 FlexSim 的主要交付界面 | **大**（图表描述模型 + 数据绑定 + 渲染） |
-| 10 | **调试器（断点/单步/调用栈/局部变量/性能剖析）** | 模型逻辑出错时现在只有 `log()` 和 trace；文档 `FlexSimCoding/Debugging/*` 5 页描述的是完整调试体验，是模型可维护性的关键 | **大**（rhai 侧调试协议 + Studio 面板） |
+| 1 | **自定义任务序列构造 API**（`createemptytasksequence` / `inserttask` / `dispatchtasksequence`，含 UTILIZE/BREAK/协同任务） | 现有 `dispatcher.task_sequence` 只能在标准腿之间插 travel/load/unload 三类腿；表达不了"取货→加工→送回→充电""双人抬"这类多段流程 | **大**（任务序列对象模型 + 调度器改造） |
+| 2 | **图表 DSL 与 Item Trace / Utilization Analysis / Financial Objects** | 报告是固定表格 + 少量柱状/时序，无法回答"这一件走了哪条路径""利用率分解到每个状态"；Dashboard 是 FlexSim 的主交付界面 | **大**（图表描述模型 + 数据绑定 + 渲染） |
+| 3 | **调试器**（断点 / 单步 / 调用栈 / 局部变量 / 性能剖析） | 模型逻辑出错时只有 `log()` 与 trace；`FlexSimCoding/Debugging/*` 5 页描述的是完整调试体验 | **大**（rhai 调试协议 + Studio 面板） |
+| 4 | **SQL 查询（`query()`）** | 全局表/列表的过滤排序要靠手工脚本；FlexSim 用 SQL 表达"取优先级最高且满足条件的 3 件" | **中**（先做 SELECT/WHERE/ORDER BY/LIMIT 子集） |
+| 5 | **MTBF/MTTR 组对象与停机请求栈** | 参数侧（首次故障、只在指定状态计时）已补齐，但一个对象仍不能属多个 MTBF 组、没有组级 Down/Up 触发器、多次停止不能叠加 | **中**（组对象 + 停机栈） |
+| 6 | **执行器状态细分**（`travel_empty` / `travel_loaded` / `loading` / `unloading` / `utilize`） | 固定资源状态已细到 setup/processing/waiting_for_*/门开合，但任务执行器只有粗粒度，回答不了"车辆空驶占比" | **中**（状态枚举 + 报告列） |
+| 7 | **FlexSim 的实验生命周期钩子**（Start/End of Experiment / Scenario / Replication，6 个） | `model_triggers` 只有 `on_start`/`on_reset`/`on_stop`；实验前后汇总、每场景初始化无从挂载 | **小**（6 个钩子点，落在引擎运行边界） |
+| 8 | **Tracked Variable 的类型体系**（Level / State / Staytime / Kinetic） | 现在只有"数值表达式按间隔采样"一种；做不了随件停留时间的分布、状态累积、液位/电量这类速率型追踪 | **中**（类型枚举 + 各自采样器） |
+| 9 | **Conveyor 完整行为**（slug 构建、合流控制、光电门阵列、Mass Flow） | 现有 conveyor 有速度/间距/容量/curve/photo_eyes/stations，但 slug/merge controller/transfers 全缺 | **大** |
+| 10 | **PickLists 的模板代码机制**（`/**tag:*/` 双向绑定 + 点选插入代码） | 现在 picklist 是可读的命名列表（表达式取值），但不是 FlexSim 那种"点选即生成代码"的编辑体验 | **中**（偏编辑器工程，收益取决于是否做 GUI 代码编辑） |
 
-**次级但低成本的项目**（不建议排进 Top 10，但可顺手做）：`FlushContent`（整批走完前拒绝新件）、
-字符串标签（现在标签只有数值通道）、Recent 文件列表、多停止时间列表、`Groups` 持久化命名分组、
-`Model Layouts` 从 localStorage 迁入模型文件、`on_draw` 渲染端接线。
+**次级但低成本**（不进 Top 10，可顺手做）：`FlushContent`（整批走完前拒绝新件）、
+字符串标签（标签目前只有数值通道）、Recent 文件列表、多停止时间列表、`Groups` 持久化命名分组、
+`Model Layouts` 从 localStorage 迁入模型文件、`on_draw` 渲染端接线、`OnEntryRequest` 准入裁决钩子。
 
-> 注：`UseSameNumOperators`（Same as Setup）已实现，不再列入待办。
-
----
+> 已移出榜单（v1.33.0 落地）：加工时点钩子、PickLists/全局变量接线、模型级触发器、
+> Performance Measure、Tracked Variables（基础版）、Sampler、TrafficControl 准入互斥。
 
 ## 19. 有意差异（非缺口，需在文档中持续声明）
 

@@ -161,10 +161,12 @@ fn markdown_cell(value: &str) -> String {
 /// a meaningless `±0.000`.
 fn measure_cell(aggregate: Option<&openflex_core::Aggregate>) -> String {
     match aggregate {
+        // `mean ±ci` with the interval omitted when there is only one sample,
+        // so the cell reads the same way whether or not the interval exists.
         Some(aggregate) if aggregate.n >= 2 => {
-            format!("{:.3}{}", aggregate.mean, fmt_ci_precise(aggregate))
+            format!("{:.3} {}", aggregate.mean, fmt_ci_precise(aggregate))
         }
-        Some(aggregate) => format!("{:.3}", aggregate.mean),
+        Some(aggregate) => format!("{:.3} {}", aggregate.mean, crate::NO_INTERVAL),
         None => crate::NO_INTERVAL.to_string(),
     }
 }
@@ -179,13 +181,13 @@ fn measure_widths(experiment: &ExperimentReport, measures: &[String]) -> Vec<usi
                 .scenarios
                 .iter()
                 .map(|scenario| {
-                    measure_cell(scenario.report.performance_measures.get(name))
-                        .chars()
-                        .count()
+                    crate::display_width(&measure_cell(
+                        scenario.report.performance_measures.get(name),
+                    ))
                 })
                 .max()
                 .unwrap_or(0);
-            name.chars().count().max(widest).max(8)
+            crate::display_width(name).max(widest).max(8)
         })
         .collect()
 }
@@ -225,7 +227,7 @@ pub fn to_table_with_sections(
 ) -> String {
     let mut out = header(experiment);
     let measures = measure_columns(experiment.scenarios.iter().map(|s| &s.report));
-    let measure_widths = measure_widths(&experiment, &measures);
+    let measure_widths = measure_widths(experiment, &measures);
     let _ = writeln!(out);
     let _ = write!(
         out,
@@ -241,7 +243,7 @@ pub fn to_table_with_sections(
         i18n::t("util_short")
     );
     for (name, width) in measures.iter().zip(&measure_widths) {
-        let _ = write!(out, " {:>width$}", name, width = *width);
+        let _ = write!(out, " {}", crate::pad_left(name, *width));
     }
     let _ = writeln!(out);
     let _ = writeln!(
@@ -271,8 +273,8 @@ pub fn to_table_with_sections(
             fmt_percent(summary.utilization)
         );
         for (name, width) in measures.iter().zip(&measure_widths) {
-            let cell = scenario.report.performance_measures.get(name);
-            let _ = write!(out, " {:>width$}", measure_cell(cell), width = *width);
+            let cell = measure_cell(scenario.report.performance_measures.get(name));
+            let _ = write!(out, " {}", crate::pad_left(&cell, *width));
         }
         let _ = writeln!(out);
     }
@@ -448,12 +450,7 @@ pub fn to_markdown_with_sections(
             i18n::t("replications_label")
         );
         for name in &measures {
-            let _ = write!(
-                out,
-                " | {} | {} CI",
-                markdown_cell(name),
-                i18n::t("interval")
-            );
+            let _ = write!(out, " | {} | {}", markdown_cell(name), i18n::t("interval"));
         }
         let _ = writeln!(out, " |");
         let _ = write!(out, "|---|---:");

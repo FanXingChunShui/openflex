@@ -91,12 +91,21 @@ FlexSim 侧的报告能力（E37 中、E33 高）：
 openflex v1 报告（`--format json|table|csv`）：
 
 ```
-runtime:   model, seed, replications, stop_time, warmup, stopped_at, events_processed
-objects[]: name, kind, input, output, content_current/min/max/avg,
-           staytime_avg/min/max/p50/p90/p95/p99, states{name: {total, share}},
-           utilization_busy, utilization_effective, travel_distance
-aggregate: throughput_rate, wip_avg, cycle_time_avg（= WIP/吞吐，Little 定律一致性检查）
+runtime:     model, time_unit, stop_time, warmup, base_seed, replications[],
+             （每个复现：index, seed, final_time, objects{...}）
+objects[]:   kind, input_count, output_count, avg_content, max_content,
+             avg_stay_time, state_times{idle,busy,blocked,down,off_shift,
+             setup,processing,waiting_for_operator,waiting_for_transport,
+             door_opening,door_closing}, utilization, throughput,
+             （其余按对象类型：battery_remaining、fluid 液位/流量等）
+aggregate:   created/completed（Aggregate：mean, std_dev, min, max, ci95, n）
+performance_measures: {name: Aggregate}（模型声明了才出现）
+tracked_series:       {name: [(t, value), ...]}（模型声明了才出现）
 ```
+
+> **字段名以 `crates/openflex-core/src/stats.rs` 的 `ObjectStats` / `StateTimes` / `Aggregate`
+> 为准**（2026-11 核对）。早期草稿曾用 `content_current` / `utilization_busy` / `p95` 这类名字，
+> 实现里并不存在——分位数与有效利用率目前**没有**独立字段。
 
 **Little 定律自检**：`content_avg ≈ throughput_rate × staytime_avg`（相对误差 > 5% 时输出 warning）。这是最有价值的自动一致性检查，能立刻暴露"事件结算漏掉最后一段时长"之类的实现错误（`[openflex 定义]`）。
 
@@ -147,7 +156,15 @@ n 个复现的样本均值  x̄ = (1/n) Σ x_i
 ```
 
 - `n < 2` 时不报区间（报 `null` 并标注 `insufficient_replications`）；
-- `t` 分位数用小样本 t 分布（v1 可用查表 + 线性插值实现，避免引入统计库依赖）；
+- `t` 分位数的实现与文档同义（`crates/openflex-core/src/stats.rs` 的 `t_critical_95`）：
+  **自由度 1..29 查固定表**（双侧 95%，`df=1 → 12.706`、`df=29 → 2.045`），
+  **`df ≥ 30` 直接用正态分位 1.96**；**不做线性插值**（用表值直接命中，超出表格范围即切换 1.96）。
+  这样小样本区间足够宽、大样本不额外放大；
+- 另提供 **batch-means** 区间（`openflex-report/src/batch.rs`、`run --batch-means [N]`，默认 10 批）：
+  把**连续的复现**分成 k 批、先算批内均值，再把 k 个批均值当作独立样本，
+  用 `k−1` 自由度的 t 分位求 95% 区间。适用于复现级样本噪声较大、
+  或一次长运行已被切成多段的情形（`--batch-means-objects` 同时对每对象的
+  input/output/avg_wip/utilization 出批均值）；
 - **两场景比较**：若两场景区间不重叠 ⇒ 判定显著不同（v1 的保守近似）；正式版建议用双样本 t 检验（Welch：`t = (x̄₁−x̄₂)/sqrt(s₁²/n₁+s₂²/n₂)`）。
 
 ## 5. Dashboard 与图表（v1 只输出数据，不渲染 UI）

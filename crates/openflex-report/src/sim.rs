@@ -504,7 +504,7 @@ pub(crate) fn measures_table(report: &SimReport) -> String {
     let width = report
         .performance_measures
         .keys()
-        .map(|name| name.chars().count())
+        .map(|name| crate::display_width(name))
         .max()
         .unwrap_or(0)
         .max(12)
@@ -515,15 +515,14 @@ pub(crate) fn measures_table(report: &SimReport) -> String {
     for (name, aggregate) in &report.performance_measures {
         let _ = writeln!(
             out,
-            "{:<width$} {} {:>10}  {} {:>8}  {} {}",
-            name,
+            "{} {} {:>10}  {} {:>8}  {} {}",
+            crate::pad_right(name, width),
             i18n::t("mean"),
             format!("{:.3}", aggregate.mean),
             i18n::t("interval"),
             fmt_ci_precise(aggregate),
             i18n::t("samples"),
-            aggregate.n,
-            width = width
+            aggregate.n
         );
     }
     out

@@ -409,6 +409,55 @@ pub fn measure_columns<'a>(reports: impl IntoIterator<Item = &'a SimReport>) -> 
     columns
 }
 
+/// Display width of a string in a monospaced terminal.
+///
+/// Measure and scenario names are user data and may be Chinese; those take two
+/// cells per character, so counting `char`s would misalign every later column.
+pub fn display_width(value: &str) -> usize {
+    value.chars().map(char_width).sum()
+}
+
+fn char_width(c: char) -> usize {
+    // Enough of the East Asian Wide/Fullwidth ranges for model names in
+    // practice (CJK, Hangul, fullwidth forms); everything else counts as one.
+    match c as u32 {
+        0x1100..=0x115F
+        | 0x2E80..=0x303E
+        | 0x3041..=0x33FF
+        | 0x3400..=0x4DBF
+        | 0x4E00..=0x9FFF
+        | 0xA000..=0xA4CF
+        | 0xAC00..=0xD7A3
+        | 0xF900..=0xFAFF
+        | 0xFE30..=0xFE6F
+        | 0xFF00..=0xFF60
+        | 0xFFE0..=0xFFE6
+        | 0x20000..=0x3FFFD => 2,
+        _ => 1,
+    }
+}
+
+/// Left-align `value` in `width` display cells.
+pub fn pad_right(value: &str, width: usize) -> String {
+    let used = display_width(value);
+    let mut out = String::from(value);
+    for _ in used..width {
+        out.push(' ');
+    }
+    out
+}
+
+/// Right-align `value` in `width` display cells.
+pub fn pad_left(value: &str, width: usize) -> String {
+    let used = display_width(value);
+    let mut out = String::new();
+    for _ in used..width {
+        out.push(' ');
+    }
+    out.push_str(value);
+    out
+}
+
 /// Quote a CSV field that contains a comma, a quote or a newline.
 ///
 /// Measure names are user-supplied, so a name like `a,b` or one containing a

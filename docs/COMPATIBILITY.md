@@ -11,6 +11,13 @@
 > 规格与证据来源见 [research/evidence.md](research/evidence.md) 与 [spec/](spec/)。
 > 所有结论来自公开帮助文档（`help.autodesk.com/view/FLEXSIMIN/2025/ENU/`）与公开教材，未接触 FlexSim 源代码或二进制。
 
+> **两份文档的分工**：本表 = 面向**建模语义**的覆盖（对象库、路由、触发器、统计、运行与文件），
+> 只记录"模型能不能建对"，不把 FlexSim 的 GUI 编辑器、3D 媒体导入、C++ 编译期、许可证、
+> 自建 GUI 等**生态环境**当作条目——那些不实现的项在本表里不会出现 ⛔。
+> 面向帮助文档全量功能面（326 页，含上述生态项）的清单见
+> [FEATURE_PARITY_75.md](FEATURE_PARITY_75.md)，它的 ⛔ 明显更多是正常的：
+> 两份表口径不同，不是自相矛盾。
+
 ## FlexSim 7.5 中文版对象库逐项对照
 
 以 `/Users/ckwang/Downloads/FlexSimChinese7.5/FlexSimChinese7.5/help/FlexSimObjectLibrary`
@@ -102,6 +109,7 @@
 | OnContentChange / OnStateChange / OnReset / OnStop / OnResume | `params.triggers.*` | ✅ | OnStop/OnResume 经 `simulate_until`/`resume_from_checkpoint` 触发 |
 | OnSetupFinish / OnProcessFinish | `params.triggers.setup_finish` / `process_finish` | ✅ | 在 setup 结束、加工时钟结束两个边界触发，早于 `on_exit`；`setup_time = 0` 时无独立 setup 阶段故不触发 |
 | OnCreate | `params.triggers.on_create` | ✅ | Source 创建项时触发 |
+| OnDraw | `params.triggers.on_draw` | 🟡 | 可写、可校验（`schema.rs:180` 接受，`action.rs:194` 注明 schema/validation only）；**图形端尚未接线**，即触发器不会在重绘时真正执行——FlexSim 的"OnDraw 里不得用随机函数"约束因此暂不适用 |
 | Send To Port：First Available | `strategy: first_available` | ✅ | 默认 |
 | Send To Port：Round Robin | `round_robin` | ✅ | |
 | Send To Port：Random | `random` | ✅ | |

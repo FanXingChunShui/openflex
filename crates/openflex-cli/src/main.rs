@@ -36,7 +36,6 @@ mod templates;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::fmt::Write as _;
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -44,8 +43,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, anyhow, bail};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use openflex_core::{
-    Aggregate, SimConfig, SimReport, derive_seed, simulate, simulate_traced,
-    simulate_with_checkpoint,
+    SimConfig, SimReport, derive_seed, simulate, simulate_traced, simulate_with_checkpoint,
 };
 use openflex_model::{Model, ObjectKind, Scenario, TimeUnit};
 use openflex_report::{self as report, i18n};

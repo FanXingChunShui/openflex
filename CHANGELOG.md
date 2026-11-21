@@ -21,6 +21,17 @@
   未定义变量是明确错误：`expression error at performance_measures.X: unknown global variable 'Missing'`。
   实测 `$Batch * 2` 精确给出 20.0（CI 0）、`completed / time` 给出 0.27、`completed` 给出 137.33 ±34.81（n=3）。
 
+### 报告与 CLI
+
+- **性能指标进入所有渲染出口**：`experiment` 文本表按指标名追加列（CJK 宽度按东亚字符宽度对齐）、
+  `report.csv` 追加独立指标段、`experiment.csv` 每指标列对 `<name>,<name>_ci95`、
+  Markdown 追加 `## Performance measures` 小节、xlsx 的 Summary 页补同名指标块。
+  新增 i18n 四键（性能指标 / 均值 / 95% 置信区间 / 样本数）。
+- **修掉两处既有缺陷**：n=1 时指标不再打 `±0.000`（四个出口统一走 `fmt_ci_opt`，显示 `—`）；
+  `run --format table` 与 `report --format table` 对同一份报告的输出现在**逐字节相同**
+  （该节下沉到 report crate，测试用 `assert_eq!` 锁住）。
+  无指标的模型，六种输出经 `cmp` 验证与改动前**逐字节一致**。新增 15 项测试。
+
 ### 桌面 GUI（功能补齐）
 
 - **报告展示跟踪时序**：模型声明了 `tracked_variables` 时，报告面板新增 `Tracked series (n)` 表格

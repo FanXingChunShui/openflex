@@ -181,7 +181,6 @@ fn english(key: &str) -> &'static str {
         "measure" => "Measure",
         "samples" => "Samples",
         "interval" => "95% CI",
-        "no_interval" => "—",
         _ => "",
     }
 }
@@ -428,7 +427,6 @@ mod tests {
             "measure",
             "samples",
             "interval",
-            "no_interval",
         ];
         for key in keys {
             assert!(!english(key).is_empty(), "missing English key {key}");

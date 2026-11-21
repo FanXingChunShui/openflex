@@ -4552,3 +4552,250 @@ fn studio_checkpoint_rename_and_delete() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["file"], "checkpoint.rep0-renamed.json");
 }
+
+// ---------------------------------------------------------------------------
+// Model-defined performance measures (task-159)
+// ---------------------------------------------------------------------------
+
+/// Model with three measures, including a CJK name and an underscore name.
+const MEASURE_MODEL: &str = r#"{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "measure-demo",
+  "time_unit": "seconds",
+  "run": { "stop_time": 120.0, "warmup": 0.0, "seed": 5, "replications": 2 },
+  "global_variables": { "Batch": { "kind": "number", "value": 10 } },
+  "performance_measures": [
+    { "name": "DoubleBatch", "expression": "$Batch * 2" },
+    { "name": "done_per_time", "expression": "completed / time" },
+    { "name": "完成量", "expression": "completed" }
+  ],
+  "objects": [
+    { "name": "Source1", "kind": "source", "params": {
+        "interarrival": { "distribution": "exponential", "mean": 4.0 } } },
+    { "name": "Sink1", "kind": "sink", "params": {} }
+  ],
+  "connections": [ { "from": "Source1", "to": "Sink1" } ],
+  "experiments": [
+    { "name": "measures", "replications": 2, "scenarios": [
+      { "name": "baseline", "overrides": [] },
+      { "name": "wide", "overrides": [
+        { "object": "Source1", "param": "interarrival",
+          "value": { "distribution": "exponential", "mean": 2.0 } } ] }
+    ] }
+  ]
+}
+"#;
+
+/// Same shape as `MEASURE_MODEL` but with a single replication, which is where
+/// an interval must not be printed.
+const MEASURE_MODEL_ONE_REP: &str = r#"{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "measure-one",
+  "time_unit": "seconds",
+  "run": { "stop_time": 120.0, "warmup": 0.0, "seed": 5, "replications": 1 },
+  "performance_measures": [ { "name": "done", "expression": "completed" } ],
+  "objects": [
+    { "name": "Source1", "kind": "source", "params": {
+        "interarrival": { "distribution": "exponential", "mean": 4.0 } } },
+    { "name": "Sink1", "kind": "sink", "params": {} }
+  ],
+  "connections": [ { "from": "Source1", "to": "Sink1" } ],
+  "experiments": [
+    { "name": "single", "replications": 1, "scenarios": [ { "name": "baseline", "overrides": [] } ] }
+  ]
+}
+"#;
+
+#[test]
+fn experiment_table_shows_measure_columns() {
+    let dir = TempDir::new("measures-table");
+    let model = dir.write("measure.ofm", MEASURE_MODEL);
+
+    let output = openflex(&["experiment", &path_str(&model), "--quiet"]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+
+    let header = text
+        .lines()
+        .find(|line| line.starts_with("Scenario"))
+        .expect("scenario header row");
+    for name in ["DoubleBatch", "done_per_time", "完成量"] {
+        assert!(header.contains(name), "header lost {name}: {header}");
+    }
+    let baseline = text
+        .lines()
+        .find(|line| line.starts_with("baseline"))
+        .expect("baseline row");
+    // `$Batch * 2` is exactly 20 whatever the run does.
+    assert!(
+        baseline.contains("20.000"),
+        "row lost the value: {baseline}"
+    );
+}
+
+#[test]
+fn experiment_csv_and_markdown_show_measures() {
+    let dir = TempDir::new("measures-formats");
+    let model = dir.write("measure.ofm", MEASURE_MODEL);
+
+    let csv = openflex(&[
+        "experiment",
+        &path_str(&model),
+        "--format",
+        "csv",
+        "--quiet",
+    ]);
+    assert_eq!(code(&csv), 0, "stderr: {}", stderr(&csv));
+    let text = stdout(&csv);
+    assert!(
+        text.contains("# performance measures"),
+        "csv needs the note:\n{text}"
+    );
+    let header = text
+        .lines()
+        .find(|line| line.starts_with("experiment,"))
+        .expect("csv header");
+    assert!(header.contains("DoubleBatch"), "csv header: {header}");
+    assert!(header.contains("完成量_ci95"), "csv header: {header}");
+    let row = text
+        .lines()
+        .find(|line| line.starts_with("measures,baseline"))
+        .expect("baseline csv row");
+    assert!(row.contains("20.000000"), "csv row: {row}");
+
+    let markdown = openflex(&[
+        "experiment",
+        &path_str(&model),
+        "--format",
+        "markdown",
+        "--quiet",
+    ]);
+    assert_eq!(code(&markdown), 0, "stderr: {}", stderr(&markdown));
+    let text = stdout(&markdown);
+    assert!(
+        text.contains("## Performance measures"),
+        "markdown needs the section:\n{text}"
+    );
+    assert!(text.contains("| 完成量 |"), "markdown rows:\n{text}");
+}
+
+#[test]
+fn run_report_files_carry_measures() {
+    let dir = TempDir::new("measures-report-dir");
+    let model = dir.write("measure.ofm", MEASURE_MODEL);
+    let reports = dir.join("reports");
+
+    let output = openflex(&[
+        "run",
+        &path_str(&model),
+        "--report-dir",
+        &path_str(&reports),
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+
+    let csv = fs::read_to_string(reports.join("report.csv")).expect("report.csv");
+    assert!(csv.contains("measure,mean,std_dev,ci95,min,max,n"), "{csv}");
+    assert!(csv.contains("DoubleBatch,20.000000"), "{csv}");
+
+    let markdown = fs::read_to_string(reports.join("report.md")).expect("report.md");
+    assert!(markdown.contains("## Performance measures"), "{markdown}");
+
+    let json = json(&fs::read_to_string(reports.join("report.json")).expect("report.json"));
+    assert!(json["performance_measures"]["DoubleBatch"].is_object());
+}
+
+#[test]
+fn run_table_shows_measures_like_report_table() {
+    // The `run` and `report` table paths used to disagree: only `report`
+    // printed the measure section. Both must now show the same block.
+    let dir = TempDir::new("measures-run-table");
+    let model = dir.write("measure.ofm", MEASURE_MODEL);
+    let reports = dir.join("reports");
+
+    let run = openflex(&[
+        "run",
+        &path_str(&model),
+        "--report-dir",
+        &path_str(&reports),
+        "--quiet",
+    ]);
+    assert_eq!(code(&run), 0, "stderr: {}", stderr(&run));
+    let run_text = stdout(&run);
+    assert!(
+        run_text.contains("Performance measures"),
+        "run --format table lost the section:\n{run_text}"
+    );
+
+    let reread = openflex(&["report", &path_str(&reports.join("report.json")), "--quiet"]);
+    assert_eq!(code(&reread), 0, "stderr: {}", stderr(&reread));
+    let reread_text = stdout(&reread);
+    assert!(
+        reread_text.contains("Performance measures"),
+        "report --format table lost the section:\n{reread_text}"
+    );
+    // Same input, same rendering: the two paths must agree byte for byte.
+    assert_eq!(
+        run_text, reread_text,
+        "run and report disagree on the same report"
+    );
+}
+
+#[test]
+fn single_replication_measure_has_no_interval() {
+    let dir = TempDir::new("measures-one-rep");
+    let model = dir.write("one.ofm", MEASURE_MODEL_ONE_REP);
+
+    let run = openflex(&["run", &path_str(&model), "--quiet"]);
+    assert_eq!(code(&run), 0, "stderr: {}", stderr(&run));
+    let text = stdout(&run);
+    assert!(
+        !text.contains("±0.000"),
+        "a single sample must not show an interval:\n{text}"
+    );
+
+    let experiment = openflex(&["experiment", &path_str(&model), "--quiet"]);
+    assert_eq!(code(&experiment), 0, "stderr: {}", stderr(&experiment));
+    let text = stdout(&experiment);
+    assert!(!text.contains("±0.000"), "experiment table:\n{text}");
+    let row = text
+        .lines()
+        .find(|line| line.starts_with("baseline"))
+        .expect("baseline row");
+    assert!(
+        row.contains("—"),
+        "the interval cell must show a dash: {row}"
+    );
+}
+
+#[test]
+fn measure_names_do_not_break_csv_columns() {
+    let dir = TempDir::new("measures-csv-columns");
+    let model = dir.write("measure.ofm", MEASURE_MODEL);
+    let reports = dir.join("reports");
+    assert_eq!(
+        code(&openflex(&[
+            "run",
+            &path_str(&model),
+            "--report-dir",
+            &path_str(&reports),
+            "--quiet"
+        ])),
+        0
+    );
+
+    let csv = fs::read_to_string(reports.join("report.csv")).expect("report.csv");
+    let block = csv
+        .split_once("measure,mean,std_dev,ci95,min,max,n\n")
+        .map(|(_, rest)| rest)
+        .expect("measure block");
+    let rows: Vec<&str> = block.lines().filter(|line| !line.is_empty()).collect();
+    assert_eq!(rows.len(), 3, "one row per measure:\n{csv}");
+    for row in rows {
+        // The CJK and underscore names must not introduce separators.
+        assert_eq!(row.matches(',').count(), 6, "column count shifted: {row}");
+    }
+    assert!(csv.contains("完成量,"), "the CJK name must survive:\n{csv}");
+}

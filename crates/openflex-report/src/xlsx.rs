@@ -109,6 +109,33 @@ fn write_summary(
         worksheet.write_number_with_format(row, 2, *ci95, number)?;
     }
     worksheet.set_column_width(2, 14)?;
+
+    // Model-defined performance measures: same shape as the totals block, with
+    // an empty CI cell when the measure has fewer than two samples.
+    if !report.performance_measures.is_empty() {
+        let start = 14u32;
+        worksheet.write_string_with_format(start, 0, i18n::t("performance_measures"), bold)?;
+        worksheet.write_string_with_format(start + 1, 0, i18n::t("measure"), bold)?;
+        worksheet.write_string_with_format(start + 1, 1, i18n::t("mean"), bold)?;
+        worksheet.write_string_with_format(start + 1, 2, i18n::t("interval"), bold)?;
+        worksheet.write_string_with_format(start + 1, 3, "n", bold)?;
+        worksheet.write_string_with_format(start + 1, 4, "std_dev", bold)?;
+        worksheet.write_string_with_format(start + 1, 5, "min", bold)?;
+        worksheet.write_string_with_format(start + 1, 6, "max", bold)?;
+        for (offset, (name, aggregate)) in report.performance_measures.iter().enumerate() {
+            let row = start + 2 + offset as u32;
+            worksheet.write_string(row, 0, name)?;
+            worksheet.write_number_with_format(row, 1, aggregate.mean, number)?;
+            if aggregate.n >= 2 {
+                worksheet.write_number_with_format(row, 2, aggregate.ci95, number)?;
+            }
+            worksheet.write_number(row, 3, aggregate.n as f64)?;
+            worksheet.write_number_with_format(row, 4, aggregate.std_dev, number)?;
+            worksheet.write_number_with_format(row, 5, aggregate.min, number)?;
+            worksheet.write_number_with_format(row, 6, aggregate.max, number)?;
+        }
+        worksheet.set_column_width(3, 8)?;
+    }
     Ok(())
 }
 
