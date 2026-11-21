@@ -316,6 +316,8 @@ pub(crate) enum EventKind {
     /// `traffic_control` area (stage 0 = pickup leg, 1 = delivery leg,
     /// 2 = return leg).
     TrafficWait(usize, usize, u8),
+    /// task-158: sample the model's tracked-variable expressions.
+    TrackedSample,
     /// Warm-up boundary: reset the statistics accumulators.
     ResetStats,
 }
@@ -1480,7 +1482,7 @@ pub fn simulate_until(
     // Actions of the trigger (`release_item`, `send_message`) belong to the
     // pause instant, so they run before the snapshot is taken.
     sim.drain_instant_events()?;
-    sim.finalize_stats();
+    sim.finalize_stats()?;
     let checkpoint = sim.snapshot();
     let result = sim.replication_result(index, stop_at)?;
     Ok((result, checkpoint))
@@ -1518,7 +1520,7 @@ pub fn resume_from_checkpoint(
     if let Some(error) = sim.trigger_error.take() {
         return Err(error);
     }
-    sim.finalize_stats();
+    sim.finalize_stats()?;
     sim.replication_result(index, resume_at)
 }
 
@@ -2021,6 +2023,7 @@ impl<'m> SimulationHandle<'m> {
         self.sim.pause_at = Some(time);
         self.sim.run_events()?;
         self.sim.now = time;
+        self.sim.sample_tracked_variables(time)?;
         Ok(())
     }
 
@@ -2115,6 +2118,11 @@ impl<'m> SimulationHandle<'m> {
         self.sim.now
     }
 
+    /// task-158: the model-declared tracked-variable series collected so far.
+    pub fn tracked_series(&self) -> &BTreeMap<String, Vec<(f64, f64)>> {
+        &self.sim.tracked_series
+    }
+
     pub fn is_paused(&self) -> bool {
         self.paused
     }
@@ -2171,7 +2179,7 @@ fn simulate_run(
     } else {
         None
     };
-    sim.finalize_stats();
+    sim.finalize_stats()?;
     let mut objects = BTreeMap::new();
     let elapsed = config.stop_time - config.warmup;
     for object in &sim.objects {
@@ -2200,6 +2208,7 @@ fn simulate_run(
         process_flow: sim.flow_replication(elapsed),
         fluid: sim.fluid_replication(elapsed),
         performance_measures: sim.evaluate_performance_measures()?,
+        tracked_series: sim.tracked_series.clone(),
     };
     Ok((result, checkpoint, sim.trace.unwrap_or_default()))
 }
@@ -2256,6 +2265,10 @@ struct Simulation<'m> {
     traffic_occupancy: Vec<u32>,
     /// task-154: FIFO waiters per control area (transporter indices).
     traffic_waiters: Vec<VecDeque<usize>>,
+    /// task-158: parsed tracked-variable expressions and their sampled series.
+    tracked_exprs: Vec<(String, Expr)>,
+    tracked_interval: f64,
+    tracked_series: BTreeMap<String, Vec<(f64, f64)>>,
     /// task-56: cached shortest distances for transport legs, keyed by
     /// `(task executer, from object, to object)`. Object positions are fixed
     /// for the whole run, so a hit is always correct; restoring a checkpoint
@@ -2399,6 +2412,21 @@ impl<'m> Simulation<'m> {
 
         let fluid = build_fluid_runtime(model);
         let traffic_controls = build_traffic_controls(model);
+        let mut tracked_exprs = Vec::new();
+        for variable in &model.tracked_variables {
+            let expression =
+                Expr::parse(&variable.expression).map_err(|error| SimError::Expression {
+                    location: format!("tracked_variables.{}", variable.name),
+                    detail: format!("expression does not compile: {error}"),
+                })?;
+            tracked_exprs.push((variable.name.clone(), expression));
+        }
+        let tracked_interval = model.tracked_interval.unwrap_or(1.0);
+        if !tracked_exprs.is_empty() && (!tracked_interval.is_finite() || tracked_interval <= 0.0) {
+            return Err(SimError::Config(
+                "tracked_interval must be a positive number of time units".into(),
+            ));
+        }
 
         let seed = config.seed;
         let mut sim = Self {
@@ -2428,6 +2456,9 @@ impl<'m> Simulation<'m> {
             traffic_waiters: vec![VecDeque::new(); traffic_controls.len()],
             traffic_occupancy: vec![0; traffic_controls.len()],
             traffic_controls,
+            tracked_exprs,
+            tracked_interval,
+            tracked_series: BTreeMap::new(),
             pause_at: None,
             shaft_owner: HashMap::new(),
             trigger_depth: 0,
@@ -2508,6 +2539,15 @@ impl<'m> Simulation<'m> {
         if let Some(fluid) = self.fluid.as_ref() {
             let first = fluid.step;
             self.schedule(first, EventKind::FluidStep);
+        }
+        // task-158: model-declared tracked variables sample on a fixed interval
+        // from the end of warm-up up to (but not including) the stop time; the
+        // final sample at the stop time is added by `finalize_stats`.
+        if !self.tracked_exprs.is_empty() {
+            let first = self.config.warmup + self.tracked_interval;
+            if first < self.config.stop_time - EPS {
+                self.schedule(first, EventKind::TrackedSample);
+            }
         }
         // B7: create blocks start producing tokens.
         if self.process_flow.is_some() {
@@ -2965,6 +3005,7 @@ impl<'m> Simulation<'m> {
             process_flow: self.flow_replication(elapsed),
             fluid: self.fluid_replication(elapsed),
             performance_measures,
+            tracked_series: self.tracked_series.clone(),
         }
     }
 
@@ -2975,13 +3016,71 @@ impl<'m> Simulation<'m> {
         }
     }
 
-    fn finalize_stats(&mut self) {
+    /// task-158: evaluate every tracked expression and append `(time, value)`
+    /// samples. A failing expression is reported with the variable name.
+    fn sample_tracked_variables(&mut self, at: f64) -> Result<(), SimError> {
+        if self.tracked_exprs.is_empty() {
+            return Ok(());
+        }
+        if !self.tracked_series.is_empty()
+            && self.tracked_series.values().all(|samples| {
+                samples
+                    .last()
+                    .is_some_and(|(time, _)| (at - *time).abs() <= EPS)
+            })
+        {
+            return Ok(());
+        }
+        let expressions = self.tracked_exprs.clone();
+        for (name, expression) in expressions {
+            let location = format!("tracked_variables.{name}");
+            let value = expression
+                .eval(&ExprContext::new(self, None))
+                .map_err(|error| SimError::Expression {
+                    location: location.clone(),
+                    detail: error.to_string(),
+                })?;
+            let number = value.as_number().map_err(|_| SimError::Expression {
+                location: location.clone(),
+                detail: format!(
+                    "tracked variable '{name}' must evaluate to a number, got {value:?}"
+                ),
+            })?;
+            let samples = self.tracked_series.entry(name).or_default();
+            if samples
+                .last()
+                .is_some_and(|(time, _)| (at - *time).abs() <= EPS)
+            {
+                continue;
+            }
+            samples.push((at, number));
+        }
+        Ok(())
+    }
+
+    fn handle_tracked_sample(&mut self) -> Result<(), SimError> {
+        let at = self.now;
+        self.sample_tracked_variables(at)?;
+        let next = at + self.tracked_interval;
+        let horizon = match self.pause_at {
+            Some(pause) => pause.min(self.config.stop_time),
+            None => self.config.stop_time,
+        };
+        if next < horizon - EPS {
+            self.schedule(next, EventKind::TrackedSample);
+        }
+        Ok(())
+    }
+
+    fn finalize_stats(&mut self) -> Result<(), SimError> {
         let now = self.now;
         for object in &mut self.objects {
             object.finalize(now);
         }
         self.finalize_flow();
         self.finalize_fluid();
+        self.sample_tracked_variables(self.now)?;
+        Ok(())
     }
 
     /// Capture the current state (B12); called at the stop time, before the
@@ -3144,6 +3243,7 @@ impl<'m> Simulation<'m> {
             EventKind::FlowAdvance(block) => self.handle_flow_advance(block),
             EventKind::FlowDelayDone(block, token) => self.handle_flow_delay_done(block, token),
             EventKind::FluidStep => self.handle_fluid_step(),
+            EventKind::TrackedSample => self.handle_tracked_sample(),
             EventKind::ChargeDone(executor) => self.handle_charge_done(executor),
             EventKind::TransportResume(executor, requester, stage) => {
                 self.handle_transport_resume(executor, requester, stage)
@@ -9570,6 +9670,7 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
             "traffic_wait",
             Some(("requester", *requester as f64 + *stage as f64 * 0.0)),
         ),
+        EventKind::TrackedSample => (None, "tracked_sample", None),
         EventKind::ResetStats => (None, "reset_stats", None),
     }
 }
@@ -12524,5 +12625,134 @@ mod tests {
         assert!(report.performance_measures.is_empty());
         let report_json = serde_json::to_value(&report).expect("report json");
         assert!(report_json.get("performance_measures").is_none());
+    }
+
+    fn tracked_model(variables: &str, interval: &str) -> String {
+        format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "tracked",
+          "run": {{ "stop_time": 5.0, "seed": 1, "replications": 1 }},
+          "tracked_variables": [{variables}],
+          {interval}
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 1000.0 }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [{{ "from": "S", "to": "K" }}]
+        }}"#
+        )
+    }
+
+    /// task-158: a tracked variable samples once per interval and the final
+    /// stop time is included.
+    #[test]
+    fn tracked_variable_samples_at_a_fixed_interval() {
+        let model = Model::from_json(&tracked_model(
+            r#"{ "name": "Clock", "expression": "time" }"#,
+            "",
+        ))
+        .expect("model");
+        let report = crate::run_model(&model).expect("run");
+        let samples = &report.tracked_series["Clock"];
+        assert_eq!(
+            samples,
+            &vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0), (5.0, 5.0)]
+        );
+    }
+
+    /// task-158: two tracked variables keep separate series and independent
+    /// expressions.
+    #[test]
+    fn tracked_variables_are_independent() {
+        let model = Model::from_json(&tracked_model(
+            r#"{ "name": "A", "expression": "time" },
+               { "name": "B", "expression": "time * 2" }"#,
+            "",
+        ))
+        .expect("model");
+        let report = crate::run_model(&model).expect("run");
+        let a = &report.tracked_series["A"];
+        let b = &report.tracked_series["B"];
+        assert_eq!(a.len(), 5);
+        assert_eq!(b.len(), 5);
+        for ((time, value), (other_time, doubled)) in a.iter().zip(b) {
+            assert_eq!(time, other_time);
+            assert!((doubled - value * 2.0).abs() < 1e-12);
+        }
+    }
+
+    /// task-158: a bad tracked expression is a hard error that names the
+    /// variable and the sample time.
+    #[test]
+    fn unknown_tracked_variable_symbol_is_an_error() {
+        let model = Model::from_json(&tracked_model(
+            r#"{ "name": "Broken", "expression": "missing_symbol" }"#,
+            "",
+        ))
+        .expect("model");
+        let error = crate::run_model(&model).expect_err("bad tracked expression");
+        let text = error.to_string();
+        assert!(text.contains("tracked_variables.Broken"), "{text}");
+        assert!(text.contains("missing_symbol"), "{text}");
+    }
+
+    /// task-158: models without tracked variables keep the old report JSON and
+    /// do not schedule sampling events.
+    #[test]
+    fn models_without_tracked_variables_are_unchanged() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "no-tracked",
+          "run": { "stop_time": 5.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1.0 },
+                "max_arrivals": 1 } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [{ "from": "S", "to": "K" }]
+        }"#,
+        )
+        .expect("model");
+        let report = crate::run_model(&model).expect("run");
+        assert!(report.tracked_series.is_empty());
+        let json = serde_json::to_value(&report).expect("report json");
+        assert!(json.get("tracked_series").is_none());
+        assert!(
+            serde_json::to_value(&model)
+                .expect("model json")
+                .get("tracked_variables")
+                .is_none()
+        );
+    }
+
+    /// task-158: name/uniqueness/expression/interval checks run from
+    /// `Model::validate` (validate.rs belongs to another task).
+    #[test]
+    fn tracked_variable_validation_rejects_bad_definitions() {
+        let duplicate = tracked_model(
+            r#"{ "name": "A", "expression": "time" },
+               { "name": "A", "expression": "created" }"#,
+            "",
+        );
+        let error = Model::from_json(&duplicate).expect_err("duplicate");
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate tracked variable name"),
+            "{error}"
+        );
+
+        let bad = tracked_model(
+            r#"{ "name": "Bad Name", "expression": "1 +" }"#,
+            r#""tracked_interval": 0.0,"#,
+        );
+        let error = Model::from_json(&bad).expect_err("bad definition");
+        let text = error.to_string();
+        assert!(text.contains("tracked_variables[0].name"), "{text}");
+        assert!(text.contains("tracked_variables[0].expression"), "{text}");
+        assert!(text.contains("tracked_interval"), "{text}");
     }
 }

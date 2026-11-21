@@ -4,6 +4,12 @@
 
 ### 模型与引擎（FlexSim 7.5 剩余缺口）
 
+- **Tracked Variables（跟踪变量）**：模型新增 `tracked_variables: [{ name, expression }]` 与
+  `tracked_interval`，运行期按固定间隔把表达式采样成时间序列，写进 `SimReport.tracked_series`
+  （`name → [(time, value)]`，空时不序列化）；采样点为 `warmup + k·interval … stop_time`，
+  `SimulationHandle::tracked_series()` 供 GUI 取用。实测 `Clock = time` 得
+  `(1,1)…(5,5)`、`TwiceClock = time * 2` 得 `(1,2)…(5,10)`，两条互不污染；
+  未定义符号在运行期是明确 `SimError`。新增 5 项引擎测试。
 - **自定义性能指标（Performance Measure）**：模型新增 `performance_measures: [{ name, expression, unit }]`，
   复现结束时用表达式求值（可读 `time` / `created` / `completed`、全局变量、对象字段），
   `SimReport` 聚合成 `name → Aggregate`（多复现给 mean/std/CI/min/max/n），

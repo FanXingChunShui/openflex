@@ -262,6 +262,9 @@ pub struct ReplicationResult {
     /// model declares none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub performance_measures: BTreeMap<String, f64>,
+    /// Model-declared tracked-variable samples (time, value).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tracked_series: BTreeMap<String, Vec<(f64, f64)>>,
 }
 
 /// Aggregated metric across replications.
@@ -512,6 +515,9 @@ pub struct SimReport {
     /// Model-defined performance measures, aggregated over the replications.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub performance_measures: BTreeMap<String, Aggregate>,
+    /// Tracked-variable samples of the first replication (empty when none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tracked_series: BTreeMap<String, Vec<(f64, f64)>>,
     /// Little's law (`L = λW`) self-check; `None` only for reports built by
     /// hand that do not want the check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -541,6 +547,10 @@ impl SimReport {
         let process_flow = aggregate_flow(&replications);
         let fluid = aggregate_fluid(&replications);
         let performance_measures = aggregate_performance_measures(&replications);
+        let tracked_series = replications
+            .first()
+            .map(|replication| replication.tracked_series.clone())
+            .unwrap_or_default();
         Self {
             model: model.name.clone(),
             description: model.description.clone(),
@@ -555,6 +565,7 @@ impl SimReport {
             process_flow,
             fluid,
             performance_measures,
+            tracked_series,
             little_check,
         }
     }

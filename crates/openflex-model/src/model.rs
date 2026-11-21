@@ -3912,6 +3912,19 @@ pub struct PerformanceMeasure {
     pub unit: Option<String>,
 }
 
+/// A model-declared time-series variable (FlexSim Tracked Variables).
+///
+/// The expression is sampled on a fixed model-time interval during the run;
+/// samples appear in `SimReport::tracked_series`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrackedVariable {
+    /// Identifier used as the series name.
+    pub name: String,
+    /// Expression sampled at every interval.
+    pub expression: String,
+}
+
 /// Model-level triggers (FlexSim model start / reset / stop).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -3991,6 +4004,12 @@ pub struct Model {
     /// User-defined performance measures, evaluated per replication.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub performance_measures: Vec<PerformanceMeasure>,
+    /// Model-declared tracked variables, sampled over time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tracked_variables: Vec<TrackedVariable>,
+    /// Sampling interval for tracked variables (model time units, default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracked_interval: Option<f64>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
 }
@@ -4206,8 +4225,66 @@ impl Model {
     }
 
     /// Validate the whole model; see [`crate::validate`].
+    ///
+    /// task-158: tracked-variable checks live here (the shared `validate.rs`
+    /// belongs to another task): identifiers, uniqueness, expression syntax and
+    /// a positive sampling interval.
     pub fn validate(&self) -> Result<(), ModelError> {
-        crate::validate::validate(self)
+        let mut issues = crate::validate::validate_collect(self);
+        issues.extend(self.tracked_variable_issues());
+        if issues.is_empty() {
+            Ok(())
+        } else {
+            Err(ModelError::Invalid(issues))
+        }
+    }
+
+    fn tracked_variable_issues(&self) -> Vec<ValidationIssue> {
+        let mut issues = Vec::new();
+        let mut names = std::collections::BTreeSet::new();
+        for (position, variable) in self.tracked_variables.iter().enumerate() {
+            let at = format!("tracked_variables[{position}]");
+            let valid = {
+                let mut chars = variable.name.chars();
+                match chars.next() {
+                    Some(first) if first.is_alphabetic() || first == '_' => {
+                        chars.all(|c| c.is_alphanumeric() || c == '_')
+                    }
+                    _ => false,
+                }
+            };
+            if !valid {
+                issues.push(ValidationIssue::new(
+                    format!("{at}.name"),
+                    "must be a valid identifier (letters, digits and _; not starting with a digit)",
+                ));
+            } else if !names.insert(variable.name.as_str()) {
+                issues.push(ValidationIssue::new(
+                    format!("{at}.name"),
+                    "duplicate tracked variable name",
+                ));
+            }
+            if variable.expression.trim().is_empty() {
+                issues.push(ValidationIssue::new(
+                    format!("{at}.expression"),
+                    "expression cannot be empty",
+                ));
+            } else if let Err(error) = Expr::parse(&variable.expression) {
+                issues.push(ValidationIssue::new(
+                    format!("{at}.expression"),
+                    format!("expression does not compile: {error}"),
+                ));
+            }
+        }
+        if let Some(interval) = self.tracked_interval
+            && (!interval.is_finite() || interval <= 0.0)
+        {
+            issues.push(ValidationIssue::new(
+                "tracked_interval",
+                "must be a positive number of time units",
+            ));
+        }
+        issues
     }
 }
 
