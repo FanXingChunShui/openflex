@@ -3229,9 +3229,6 @@ pub struct NetworkNodeParams {
     /// Explicit edge lengths to other nodes (overrides the euclidean default).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edges: Vec<NetworkEdge>,
-    /// FlexSim "Maximum Number of Travelers" (0 = unlimited).
-    #[serde(default)]
-    pub max_travelers: u32,
     #[serde(default)]
     pub triggers: Triggers,
 }

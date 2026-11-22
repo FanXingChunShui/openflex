@@ -4,6 +4,23 @@
 
 ### 模型与引擎
 
+- **移除 `max_travelers`（声明但未接线的参数）**：取证审计发现 `NetworkNodeParams.max_travelers`
+  **有字段、有 GUI 控件、有 `objects describe` 文案，但 `openflex-core` 零引用**——用户设了值、界面接受、
+  文档说支持，模型却毫无变化。实现节点级限额需要重写 network 路由的占用模型（逐节点转移事件 + 占用队列），
+  **不做半成品**，因此把字段、GUI 控件与 CLI 文案一并删除。旧模型含该字段会被明确拒绝：
+  `unknown field max_travelers, expected edges or triggers`。
+  记录在此而不是让它悄悄消失：这是一个**曾经对外承诺过却从未生效**的参数。
+- **装卸时长精确断言**：新增 `explicit_load_and_unload_durations_are_exact` —— `load_time=5` 时载货腿
+  在到达后 5.0 才出发、`unload_time=3` 时 `operator_loaded` 在 requester 到达后 3.0 触发（1e-9 内）。
+  此前只有"两次运行一致"，**没有断言时长真的生效**。
+
+### 示例
+
+- **`examples/three-varieties.ofm`**：对应 FlexSim「First Model」——三种产品各一台专机、共用一台测试站、
+  不合格返工回入口。`by_item_type` 分流到专机、`by_condition` 按测试站输入计数决定返工。
+  实测 480 分钟 5 复现：测试站 util **0.763** 成为瓶颈，入口缓冲因 FIFO 队头被占机阻塞而堆积——
+  这正好是「瓶颈在哪、测试站前的缓冲是否重要」这个教学问题的答案。
+
 - **conveyor `Motor` 对象**：新增 `ObjectKind::Motor` + `MotorParams { running, triggers }`（`running` 缺省 true、
   空时不序列化，旧模型 JSON 与报告逐位不变）。Motor 通过 **A 连接**控制它所连的 conveyor：
   `running: false` 时皮带**停止推进**、已存在件位置冻结、`can_accept` 为假（上游不再往皮带上堆）、

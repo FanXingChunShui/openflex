@@ -96,7 +96,7 @@
 | Transporter Page（Lift speed / 升降） | `ElevatorParams` 有垂直速度与停靠时间；transporter 无升降 | 🟡 | 升降能力只在 `elevator` 上（`speed` 垂直速度 + `stop_time` 门停靠）；`transporter` 无叉车升降时长，取放瞬时完成 |
 | ASRSvehicle / Crane / Robot Page（升降速度、行程顺序、关节速度表） | `asrs_vehicle`/`crane`/`robot` 变体 | 🟡 | 有路径策略；无关节/升降速度表与运动学曲线 |
 | Robot Geometry Page（逐关节相对速度/复位位置/手动定位） | 无 | ⛔ | 无关节模型 |
-| NetworkNode Page（最大停留车辆数等） | `network_node`（`edges` 已生效；`max_travelers` **仅声明**） | 🟡 | **未找到实现：`max_travelers` 只有字段/GUI/文档，`openflex-core` 从不读取它**（`grep` 零引用）；节点容量上限实际不生效 |
+| NetworkNode Page（最大停留车辆数） | **无**（`max_travelers` 曾是死参数，已移除） | ⛔ | 审计发现该字段声明了但引擎从不读取；实现节点级限额需重写 network 路由的占用模型，因此**删除字段而非保留虚标** |
 | NetworkNodes / Speeds Page（TrafficControl 关联节点、按含量调速度表） | `traffic_control`（capacity/mode/speed_factor） | 🟡 | 准入互斥已生效；**"按含量分档调速度"表**仍只有单一 `speed_factor`，无逐档曲线 |
 | Traffic Control Page（互斥 / 非定时两种模式） | `traffic_control`（`mode: mutual_exclusion` / `un_timed`） | ✅ | 两种模式均生效：互斥按 `capacity` 限名额，`un_timed` 不限名额只缩放 `speed_factor` |
 | Fluid 各类页（Generator/Tank/Mixer/Blender/Splitter/Pipe/Processor/Conveyor/Terminator/ItemToFluid/FluidToItem/Ticker） | 同名 `fluid_*` | 🟡 | 见对象库表；流体页的 Marks（低/中/高液位触发）、Steps（分批延迟）、Sensors（传送带传感器）、Recipe/Percents 表可配置但语义简化 |

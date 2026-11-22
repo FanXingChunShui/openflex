@@ -17624,4 +17624,138 @@ mod tests {
             serde_json::to_string(&b).expect("json")
         );
     }
+
+    /// task-186: the retired max_travelers field is now rejected by the model
+    /// (it was declared but never wired; keeping it silently was worse).
+    #[test]
+    fn removed_max_travelers_is_rejected() {
+        let json = r#"{
+          "format": "openflex-model", "version": 1, "name": "dead-param",
+          "objects": [
+            { "name": "N", "kind": "network_node", "params": { "max_travelers": 1 } }
+          ]
+        }"#;
+        let error = Model::from_json(json).expect_err("max_travelers must be rejected");
+        assert!(error.to_string().contains("max_travelers"), "{error}");
+    }
+
+    /// task-186: a NetworkNode without max_travelers serializes and reports
+    /// exactly as before (no new field/row).
+    #[test]
+    fn network_nodes_without_max_travelers_are_unchanged() {
+        let model = Model::from_json(
+            r#"{
+              "format": "openflex-model", "version": 1, "name": "node",
+              "run": { "stop_time": 5.0, "seed": 1 },
+              "objects": [
+                { "name": "S", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 1000.0 },
+                    "max_arrivals": 1 } },
+                { "name": "N", "kind": "network_node", "pos": [1.0, 2.0], "params": {} },
+                { "name": "K", "kind": "sink", "params": {} }
+              ],
+              "connections": [{ "from": "S", "to": "K" }]
+            }"#,
+        )
+        .expect("model");
+        let value = serde_json::to_value(&model).expect("json");
+        assert!(value["objects"][1]["params"].get("max_travelers").is_none());
+        let a = crate::run_model(&model).expect("first");
+        let b = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&a).expect("json"),
+            serde_json::to_string(&b).expect("json")
+        );
+    }
+
+    /// task-186: explicit load/unload durations are observable and exact:
+    /// load_time=5 moves the delivery leg 5 after pickup; unload_time=3 puts
+    /// OperatorLoaded 3 after arriving at the requester.
+    #[test]
+    fn explicit_load_and_unload_durations_are_exact() {
+        let json = explicit_route_model(
+            r#"{"kind": "travel", "target": "pickup"},
+               {"kind": "load"},
+               {"kind": "travel", "target": "requester"},
+               {"kind": "unload"},
+               {"kind": "travel", "target": "home"}"#,
+            "explicit",
+        )
+        .replace(
+            r#""speed": 1.0, "home": "D""#,
+            r#""speed": 1.0, "home": "D",
+                "load_time": { "distribution": "constant", "value": 5.0 },
+                "unload_time": { "distribution": "constant", "value": 3.0 }"#,
+        );
+        let model = Model::from_json(&json).expect("model");
+        let config = SimConfig {
+            stop_time: 40.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let route = |event_name: &str| -> Vec<(f64, f64)> {
+            trace
+                .object("T")
+                .filter(|event| event.event == event_name)
+                .map(|event| (event.time, event.data["x"]))
+                .collect()
+        };
+        let pickup_arrive = route("transport_route_arrive")
+            .into_iter()
+            .find(|(_, x)| *x == 0.0)
+            .map(|(time, _)| time)
+            .expect("pickup");
+        let delivery_depart = route("transport_route_depart")
+            .into_iter()
+            .find(|(_, x)| *x == 10.0)
+            .map(|(time, _)| time)
+            .expect("delivery depart");
+        let requester_arrive = route("transport_route_arrive")
+            .into_iter()
+            .find(|(_, x)| *x == 10.0)
+            .map(|(time, _)| time)
+            .expect("requester arrive");
+        let loaded = trace
+            .events
+            .iter()
+            .find(|event| event.event == "operator_loaded")
+            .map(|event| event.time)
+            .expect("operator loaded");
+        assert!(
+            (delivery_depart - pickup_arrive - 5.0).abs() < 1e-9,
+            "load: {pickup_arrive}->{delivery_depart}"
+        );
+        assert!(
+            (loaded - requester_arrive - 3.0).abs() < 1e-9,
+            "unload: {requester_arrive}->{loaded}"
+        );
+    }
+
+    /// task-186: NetworkNode JSON round-trips without the retired field; the
+    /// serialized params stay empty for the old `{ "params": {} }` form.
+    #[test]
+    fn network_node_json_round_trips_without_the_retired_field() {
+        let json = r#"{
+          "format": "openflex-model", "version": 1, "name": "node-roundtrip",
+          "run": { "stop_time": 1.0, "seed": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "N", "kind": "network_node", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [{ "from": "S", "to": "K" }]
+        }"#;
+        let model = Model::from_json(json).expect("model");
+        let value = serde_json::to_value(&model).expect("json");
+        assert!(
+            !value["objects"][1]["params"]
+                .as_object()
+                .expect("params")
+                .contains_key("max_travelers")
+        );
+        let text =
+            serde_json::to_string(&serde_json::to_value(&model).expect("json")).expect("json");
+        assert!(!text.contains("max_travelers"));
+    }
 }

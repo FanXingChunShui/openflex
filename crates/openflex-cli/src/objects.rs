@@ -126,7 +126,7 @@ pub fn describe_kind(kind: ObjectKind) -> (&'static str, &'static str) {
         ),
         ObjectKind::NetworkNode => (
             "A node of the travel network that transporters and operators follow.",
-            "edges: optional [{ from, to, distance, directed }] overriding the euclidean edge length\nmax_travelers: how many travellers may stand on this node, 0 = unlimited",
+            "edges: optional [{ from, to, distance, directed }] overriding the euclidean edge length",
         ),
         ObjectKind::TrafficControl => (
             "Limits how many travellers occupy an area of the travel network at once.",

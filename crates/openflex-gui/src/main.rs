@@ -2448,13 +2448,9 @@ impl EditForm {
                 );
             }
             ObjectParams::NetworkNode(p) => {
-                changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut p.max_travelers)
-                            .speed(1.0)
-                            .prefix("max travellers "),
-                    )
-                    .changed();
+                // There is no "max travellers" control: the field it edited was
+                // declared but the engine never read it, so setting it changed
+                // nothing. It has been removed rather than left looking real.
                 ui.label(
                     egui::RichText::new(format!("{} explicit edge(s)", p.edges.len()))
                         .size(9.0_f32)

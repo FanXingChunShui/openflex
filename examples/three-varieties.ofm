@@ -1,0 +1,207 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "three-varieties",
+  "description": "FlexSim First Model: three product types, one machine each, a shared tester, failed units return. The tester is the bottleneck (util 0.76); the entry buffer backs up because it releases FIFO and a busy machine blocks the head of line.",
+  "time_unit": "minutes",
+  "run": {
+    "stop_time": 480.0,
+    "warmup": 0.0,
+    "seed": 1,
+    "replications": 5
+  },
+  "objects": [
+    {
+      "name": "ArriveA",
+      "kind": "source",
+      "pos": [
+        -22.0,
+        6.0
+      ],
+      "params": {
+        "interarrival": {
+          "distribution": "exponential",
+          "mean": 9.0
+        },
+        "item_type": 0
+      }
+    },
+    {
+      "name": "ArriveB",
+      "kind": "source",
+      "pos": [
+        -22.0,
+        0.0
+      ],
+      "params": {
+        "interarrival": {
+          "distribution": "exponential",
+          "mean": 11.0
+        },
+        "item_type": 1
+      }
+    },
+    {
+      "name": "ArriveC",
+      "kind": "source",
+      "pos": [
+        -22.0,
+        -6.0
+      ],
+      "params": {
+        "interarrival": {
+          "distribution": "exponential",
+          "mean": 13.0
+        },
+        "item_type": 2
+      }
+    },
+    {
+      "name": "EntryBuffer",
+      "kind": "queue",
+      "pos": [
+        -12.0,
+        0.0
+      ],
+      "params": {}
+    },
+    {
+      "name": "MachineA",
+      "kind": "processor",
+      "pos": [
+        -2.0,
+        6.0
+      ],
+      "params": {
+        "process_time": {
+          "distribution": "exponential",
+          "mean": 6.0
+        }
+      }
+    },
+    {
+      "name": "MachineB",
+      "kind": "processor",
+      "pos": [
+        -2.0,
+        0.0
+      ],
+      "params": {
+        "process_time": {
+          "distribution": "exponential",
+          "mean": 7.0
+        }
+      }
+    },
+    {
+      "name": "MachineC",
+      "kind": "processor",
+      "pos": [
+        -2.0,
+        -6.0
+      ],
+      "params": {
+        "process_time": {
+          "distribution": "exponential",
+          "mean": 8.0
+        }
+      }
+    },
+    {
+      "name": "Tester",
+      "kind": "processor",
+      "pos": [
+        10.0,
+        0.0
+      ],
+      "params": {
+        "process_time": {
+          "distribution": "exponential",
+          "mean": 5.5
+        }
+      }
+    },
+    {
+      "name": "Ship",
+      "kind": "sink",
+      "pos": [
+        20.0,
+        0.0
+      ],
+      "params": {}
+    }
+  ],
+  "connections": [
+    {
+      "from": "ArriveA",
+      "to": "EntryBuffer"
+    },
+    {
+      "from": "ArriveB",
+      "to": "EntryBuffer"
+    },
+    {
+      "from": "ArriveC",
+      "to": "EntryBuffer"
+    },
+    {
+      "from": "EntryBuffer",
+      "to": "MachineA",
+      "strategy": {
+        "type": "by_item_type"
+      }
+    },
+    {
+      "from": "EntryBuffer",
+      "to": "MachineB",
+      "strategy": {
+        "type": "by_item_type"
+      }
+    },
+    {
+      "from": "EntryBuffer",
+      "to": "MachineC",
+      "strategy": {
+        "type": "by_item_type"
+      }
+    },
+    {
+      "from": "MachineA",
+      "to": "Tester"
+    },
+    {
+      "from": "MachineB",
+      "to": "Tester"
+    },
+    {
+      "from": "MachineC",
+      "to": "Tester"
+    },
+    {
+      "from": "Tester",
+      "to": "Ship",
+      "strategy": {
+        "type": "by_condition",
+        "conditions": [
+          {
+            "condition": "object.Tester.input % 5 != 0",
+            "port": 0
+          }
+        ]
+      }
+    },
+    {
+      "from": "Tester",
+      "to": "EntryBuffer",
+      "strategy": {
+        "type": "by_condition",
+        "conditions": [
+          {
+            "condition": "object.Tester.input % 5 == 0",
+            "port": 1
+          }
+        ]
+      }
+    }
+  ]
+}
