@@ -34,7 +34,7 @@
 分派解码器），317 页有效正文 >200 字符；4 个 `Commands/*` 页是 JS 驱动的命令索引（正文仅标题），
 1 个 `TaskSequences/Example.html` 是空占位页。**其余 321 页均按正文判定功能点。**
 
-**状态图例**：✅ 一致（可按文档语义工作）· 🟡 部分（核心行为有，复杂选项简化）· ⛔ 缺口（不实现）。
+**状态图例**：✅ 一致（可按文档语义工作）· 🟡 部分（核心行为有，复杂选项简化）· ⛔ 缺口（不实现）· 📄 参考页（教程/术语/索引，没有功能面，不计入缺口——把它记成 🟡 会把"不是功能"错算成"只做了一半"）。
 
 ---
 
@@ -53,7 +53,7 @@
 | Model Units（时间/长度/流体单位，创建后不可改） | `time_unit`（秒/分/小时/天） | 🟡 | 只有时间单位；**长度单位与流体单位没有独立字段**（`model.rs` Model 无 `length_unit`/`fluid_unit`），运输距离与流体量按无量纲数处理 |
 | Model Tree View（树视图浏览全部数据） | Studio 模型树（重命名/复制/删除） | 🟡 | 有树形操作，但底层不是 FlexSim 的通用节点树，无法任意插入数字/字符串/对象/指针节点 |
 | Order of Events（单个对象的固定事件序列） | 引擎内对象状态机 + 触发器时序 | ✅ | `engine.rs`；与 `docs/spec/logic.md` 的时序表一致 |
-| FlexSim Concepts Overview | — | 🟡 | 概念索引页，无独立功能（**证据薄弱：无可执行行为，无法测试**） |
+| FlexSim Concepts Overview | — | 📄 | 概念索引页，无独立功能可对照 |
 | Simulation Model Units 的"Model Start Time" | 无 | ⛔ | 只支持 `t=0` 起点；文档允许把 0 时刻映射到真实日期时间 |
 
 ## 2. FlexSimObjectLibrary（39 页）— 对象库（已由队友对齐，本表仅登记结论）
@@ -306,11 +306,11 @@
 
 | FlexSim 7.5 功能 | OpenFlex 现状 | 状态 | 证据或缺口说明 |
 |---|---|---|---|
-| Getting Started（软件定位与建模流程） | `README`、`docs/` | 🟡 | **证据薄弱：纯文档，无测试或校验**（文档存在不等于流程可依） |
+| Getting Started（软件定位与建模流程） | `README`、`docs/`、`examples/` | 📄 | 教程流程页；对应的首个示例已单独成行（First Model） |
 | First Model（三品种加工示例） | `examples/three-varieties.ofm` | ✅ | 三品种各一台专机（`by_item_type` 分流）+ 共用测试站 + 不合格返工回入口（`by_condition`）。实测 480 分钟 5 复现：测试站 util **0.763** 成为瓶颈，入口缓冲因 FIFO 队头被占机阻塞而堆积 |
 | Interacting With FlexSim（建/命名/连接/导航） | Studio 交互 | 🟡 | 有建/连/导航；无键盘拖拽建连（A/S/Q 键语义） |
 | Keyboard Interaction（3D 视图快捷键） | Studio 快捷键 | 🟡 | 有部分快捷键；无 FlexSim 全套 |
-| Terminology（术语表） | `docs/spec/flexsim-to-openflex.md` 术语表 | 🟡 | **证据薄弱：纯文档，无测试或校验** |
+| Terminology（术语表） | `docs/spec/flexsim-to-openflex.md` 术语表 | 📄 | 术语参考页，无功能面 |
 | License Activation（激活/归还/修复/并发服务器） | 无（开源，无许可） | ⛔ | 有意差异，不算缺口 |
 | License Activation Example / Reference（激活错误码） | 无 | ⛔ | 同上 |
 
@@ -325,7 +325,7 @@
 
 ## 17. 汇总统计（task-185 取证审计后）
 
-矩阵共 **207 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行）。
+矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 39 行、🟡 97 行、⛔ 73 行、📄 3 行（参考页，不计入缺口）。
 其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行。
 
 | 状态 | 行数 | 占比 |
