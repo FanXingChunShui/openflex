@@ -10387,6 +10387,13 @@ impl eframe::App for OpenFlexApp {
                         );
                     }
                     if !self.decl_rows.is_empty() {
+                        // Compare every scenario against the first that ran, the
+                        // way the Experimenter's summary column does.
+                        let baseline = self
+                            .decl_rows
+                            .iter()
+                            .find_map(|outcome| outcome.report.as_ref())
+                            .map(|report| report.completed.mean);
                         egui::Grid::new("declared-grid")
                             .striped(true)
                             .num_columns(4)
@@ -10412,13 +10419,33 @@ impl eframe::App for OpenFlexApp {
                                     );
                                     match outcome.report.as_ref() {
                                         Some(report) => {
+                                            let delta = baseline.map(|base| {
+                                                report.completed.mean - base
+                                            });
                                             ui.label(
-                                                egui::RichText::new(format!(
-                                                    "{:.1}",
-                                                    report.completed.mean
-                                                ))
+                                                egui::RichText::new(match delta {
+                                                    Some(delta) if delta.abs() > 0.05 => {
+                                                        format!(
+                                                            "{:.1} ({:+.1})",
+                                                            report.completed.mean, delta
+                                                        )
+                                                    }
+                                                    _ => format!(
+                                                        "{:.1}",
+                                                        report.completed.mean
+                                                    ),
+                                                })
                                                 .small()
-                                                .monospace(),
+                                                .monospace()
+                                                .color(match delta {
+                                                    Some(delta) if delta > 0.05 => {
+                                                        palette::OK.gamma_multiply(0.9)
+                                                    }
+                                                    Some(delta) if delta < -0.05 => {
+                                                        palette::AMBER
+                                                    }
+                                                    _ => palette::TEXT,
+                                                }),
                                             );
                                             ui.label(
                                                 egui::RichText::new(format!(
@@ -13908,6 +13935,28 @@ mod tests {
         // A model without objects offer nothing rather than panicking.
         let empty = SamplerNames::from_model(None);
         assert!(empty.any.is_empty() && empty.operators.is_empty());
+    }
+
+    #[test]
+    fn a_scenario_is_compared_against_the_first_that_ran() {
+        // Mirrors the cell rule: the first scenario with a report is the
+        // baseline, deltas below the 0.05 display threshold are dropped.
+        let label = |value: f64, baseline: Option<f64>| {
+            let delta = baseline.map(|base| value - base);
+            match delta {
+                Some(delta) if delta.abs() > 0.05 => {
+                    format!("{value:.1} ({delta:+.1})")
+                }
+                _ => format!("{value:.1}"),
+            }
+        };
+        assert_eq!(label(10.0, Some(10.0)), "10.0", "no delta for the baseline");
+        assert_eq!(label(12.34, Some(10.0)), "12.3 (+2.3)");
+        // Avoid a half-way decimal: `{:.1}` rounds 7.65 up, which would make the
+        // expectation about the formatter rather than the delta rule.
+        assert_eq!(label(7.6, Some(10.0)), "7.6 (-2.4)");
+        assert_eq!(label(10.02, Some(10.0)), "10.0", "below the threshold");
+        assert_eq!(label(3.0, None), "3.0", "no baseline yet");
     }
 
     #[test]
