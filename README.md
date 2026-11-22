@@ -142,6 +142,12 @@ openflex experiment model.ofm --format json  # 运行模型里声明的实验
 openflex experiment model.ofm --report-dir exp --trace  # 每个场景/复现的 trace
 openflex report out/report.json              # 读回报告并重新渲染
 openflex compare a.json b.json               # A/B 对比两个报告
+openflex chart out/report.json               # 终端图表（--of utilization | measures | series:<名字>）
+openflex trace events.jsonl                  # trace 摘要（件数/时间范围）
+openflex trace events.jsonl --items          # 每件 id 与步数
+openflex trace events.jsonl --item 7         # 单件完整路径表
+openflex trace events.jsonl --paths          # 跨件路径分组 + 覆盖率
+openflex check-scripts model.ofm             # 只编译所有脚本，不跑仿真（退出码 2 = 有编译错误）
 openflex import --csv arrivals.csv --out model.ofm   # 从到达表生成模型
 openflex import --objects objects.csv --connections connections.csv --out model.ofm  # 从对象/连接表生成
 openflex layout model.ofm --svg out.svg      # 导出 2D 布局图
@@ -173,15 +179,15 @@ cargo run --release -p openflex-cli --example bench_mm1 -- --model examples/mm1.
 | Processor | `kind: "processor"` | setup + process、容量、故障维修、操作员 |
 | Sink | `kind: "sink"` | 统计吞吐与停留时间 |
 | Combiner / Separator | `kind: "combiner"` / `"separator"` | pack / join、拆分 |
-| Conveyor | `kind: "conveyor"` | 速度、长度、累积/非累积 |
+| Conveyor | `kind: "conveyor"` | 速度/长度/曲线/容量、累积与非累积、**slug 组**、**合流控制器**（round_robin/weighted/by_item_type）、**光电门四状态**、**决策点** |
 | Merge / Split | `kind: "merge"` / `"split"` | 多路合流 / 分流 |
-| Transporter / Dispatcher | `kind: "transporter"` / `"dispatcher"` | 任务执行器（简化版） |
+| Transporter / Dispatcher | `kind: "transporter"` / `"dispatcher"` | 两段/三段标准任务链；`task_sequence_mode: "explicit"` 可声明完整路线（`travel/load/unload/utilize/break` + `OperatorReleased` 同步） |
 | Resource / Operator | `kind: "resource"` | 资源池与停机窗口 |
 | Rack | `kind: "rack"` | 货架存储 |
-| 对象触发器 | `params.triggers` | 结构化动作，不执行任意代码 |
+| 对象触发器 | `params.triggers` | 结构化动作 + `action: "script"`（**rhai 沙箱**，无文件/网络/时钟 API） |
 | Send To Port | `connections[].strategy` | 与 FlexSim 的路由规则对应 |
-| Experimenter | `experiments[]` + `openflex experiment` | 场景 × 复现、置信区间 |
-| 3D 视图 / 树视图 / GUI | ⛔ 暂缺 | CLI 优先；见路线图 |
+| Experimenter | `experiments[]` + `openflex experiment` + GUI `Declared experiments` 面板 | 场景 × 复现、置信区间、逐场景失败隔离 |
+| 3D 视图 / 树视图 / GUI | ✅ 桌面 GUI（`openflex-gui`，egui）+ Studio（`openflex studio`） | 桌面安装包覆盖 Windows/macOS/Linux；3D 为投影式透视，非原生 3D 渲染管线 |
 
 ## 项目结构
 
