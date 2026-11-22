@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## v1.39.0 — 2026-11-23
+
+这一轮的重点不是加功能，而是**让功能清单变得可核查**，并按核查结果修掉问题：
+
+- 对矩阵里 41 行 ✅ 逐行取证（实现符号 + 行为级测试），**8 行证据不足被降级**，随后又修好了 3 行；
+- 其中最重要的一条：`NetworkNodeParams.max_travelers` **有字段、有界面、有文档，引擎却从不读它**——
+  用户设了值、模型毫无变化。实现节点限额需要重写路由模型，所以**删掉字段**而不是留个虚标；
+- 新增两项 CI 检查，专门防止这类问题复发：**文档引用的测试名必须真实存在**、
+  **新参数若引擎不读就让构建失败**。
+
+功能侧：新增 conveyor **Motor**（开/停控制）、补齐 GUI 里**六类对象的属性表单**（此前只能改 JSON）、
+补上 FlexSim「First Model」对应的三品种示例。
+发布节奏保持**至少 3 小时一版**。
 
 ### 模型与引擎
 
@@ -55,6 +67,15 @@
 
 ### 报告与 CLI
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**910 passed / 0 failed**。
+- GUI **140 项**、`openflex-core --lib` **180 项**、`openflex-model` + report + CLI 其余。
+- `clippy --workspace --all-targets` 0 警告、`fmt` 干净；**64 个示例模型全部 validate 通过**。
+- `scripts/acceptance.sh`（golden 数值验收）：**all golden checks passed**。
+- `scripts/check-doc-evidence.sh`：47 个被引用的测试名全部解析到真实 `fn`。
+- `scripts/check-dead-params.sh`：7 个已知死参数被冻结；实测新增探针字段会让它退出 1。
 
 ## v1.38.0 — 2026-11-22
 
