@@ -2068,6 +2068,7 @@ dependencies = [
  "egui",
  "openflex-core",
  "openflex-model",
+ "openflex-report",
  "serde",
  "serde_json",
 ]

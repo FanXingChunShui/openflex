@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### 桌面 GUI
+
+- **已声明实验面板**：左侧新增 `Declared experiments (n)` —— 列出模型 JSON 里 `experiments`
+  的每个实验（场景数 × 复现数），可 `run` 单个或 `Run all`；跑在后台线程（不冻结界面），
+  结果表按 `实验/场景` 给出 `completed`、吞吐与成败，失败行用琥珀色并悬停显示原因。
+  此前 GUI 只能跑自己的参数扫描，**看不到模型里声明的场景**（`grep experiments` 在 GUI 里是 0 命中）。
+  依赖新增 GUI → `openflex-report`（显示报告本就该由它渲染）。GUI 测试 **138 项**。
+
 ### 报告与 CLI
 
 - **实验执行提取为可复用 API**：模型声明的 `experiments` 执行逻辑此前埋在 CLI 的 `main.rs` 里，GUI 完全用不上

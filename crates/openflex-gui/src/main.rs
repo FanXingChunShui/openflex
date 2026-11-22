@@ -2801,6 +2801,11 @@ struct OpenFlexApp {
     exp_count: u32,
     exp_rows: Vec<ExpRow>,
     exp_rx: Option<Receiver<ExpResult>>,
+    /// Declared-experiment runs (the `experiments` block in the model JSON).
+    decl_rx: Option<Receiver<Vec<openflex_report::ScenarioOutcome>>>,
+    decl_rows: Vec<openflex_report::ScenarioOutcome>,
+    decl_running: bool,
+    decl_error: Option<String>,
     exp_running: bool,
     exp_mode_param: bool,
     exp_path: String,
@@ -2942,6 +2947,10 @@ impl OpenFlexApp {
             exp_count: 4,
             exp_rows: Vec::new(),
             exp_rx: None,
+            decl_rx: None,
+            decl_rows: Vec::new(),
+            decl_running: false,
+            decl_error: None,
             exp_running: false,
             exp_mode_param: false,
             exp_path: String::new(),
@@ -3282,6 +3291,60 @@ impl OpenFlexApp {
             self.pl_entry_edit
                 .retain(|(list, _), _| list != &list_owned);
             self.status = format!("{list_owned}: entry {row} removed");
+        }
+    }
+
+    /// Run the `experiments` declared in the model on a worker thread. The GUI
+    /// keeps its own parameter sweep; this is the model's own Experimenter.
+    fn run_declared_experiments(&mut self, only: Option<String>) {
+        let Some(model) = self.model else {
+            return;
+        };
+        if self.decl_running {
+            return;
+        }
+        let base = model.clone();
+        let parallel = self.parallel_runs;
+        let source_model = base.name.clone();
+        let (tx, rx) = channel();
+        self.decl_rx = Some(rx);
+        self.decl_running = true;
+        self.decl_error = None;
+        self.status = format!("Experiments: running {}…", source_model);
+        std::thread::spawn(move || {
+            let options = openflex_report::ExperimentOptions {
+                parallel: if parallel { Some(0) } else { None },
+                experiment: only,
+                trace_root: None,
+            };
+            let outcomes = openflex_report::run_declared_experiments_with_options(&base, &options);
+            let _ = tx.send(outcomes);
+        });
+    }
+
+    /// Collect the finished declared-experiment run, if any.
+    fn poll_declared_experiments(&mut self) {
+        let Some(rx) = self.decl_rx.as_ref() else {
+            return;
+        };
+        let Ok(outcomes) = rx.try_recv() else {
+            return;
+        };
+        self.decl_rx = None;
+        self.decl_running = false;
+        let failed = outcomes
+            .iter()
+            .filter(|outcome| outcome.error.is_some())
+            .count();
+        let ran = outcomes.len();
+        self.decl_rows = outcomes;
+        self.status = if failed == 0 {
+            format!("Experiments: {ran} scenario(s) ran")
+        } else {
+            format!("Experiments: {ran} scenario(s), {failed} failed")
+        };
+        if ran == 0 {
+            self.decl_error = Some("the model declares no experiments".into());
         }
     }
 
@@ -7890,6 +7953,7 @@ impl eframe::App for OpenFlexApp {
             self.window_title = title;
         }
         self.poll_report();
+        self.poll_declared_experiments();
         self.poll_experiment();
         self.poll_timeseries();
         self.poll_optimize();
@@ -10257,6 +10321,142 @@ impl eframe::App for OpenFlexApp {
                             self.apply_flow();
                         }
                     });
+                ui.separator();
+                // The model's own Experimenter: scenarios declared in the JSON,
+                // as opposed to this panel's parameter sweep.
+                egui::CollapsingHeader::new(format!(
+                    "Declared experiments ({})",
+                    self.model.map(|model| model.experiments.len()).unwrap_or(0)
+                ))
+                .id_salt("declared-experiments")
+                .show(ui, |ui| {
+                    let Some(model) = self.model else {
+                        return;
+                    };
+                    if model.experiments.is_empty() {
+                        empty_state(
+                            ui,
+                            "No declared experiments",
+                            "A model can declare experiments: [{ name, scenarios }].",
+                        );
+                        return;
+                    }
+                    let mut run_only: Option<Option<String>> = None;
+                    for experiment in &model.experiments {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(&experiment.name)
+                                    .small()
+                                    .monospace()
+                                    .color(palette::ACCENT_HI),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} scenario(s) × {} rep(s)",
+                                    experiment.scenarios.len(),
+                                    experiment.replications
+                                ))
+                                .size(9.0_f32)
+                                .color(palette::TEXT_DIM),
+                            );
+                            if ui
+                                .small_button("run")
+                                .on_hover_text(format!("run only '{}'", experiment.name))
+                                .clicked()
+                            {
+                                run_only = Some(Some(experiment.name.clone()));
+                            }
+                        });
+                    }
+                    ui.horizontal(|ui| {
+                        if primary_button(ui, self.decl_running, "Run all") && !self.decl_running {
+                            run_only = Some(None);
+                        }
+                        if self.decl_running {
+                            ui.spinner();
+                        }
+                    });
+                    if let Some(only) = run_only {
+                        self.run_declared_experiments(only);
+                    }
+                    if let Some(error) = self.decl_error.as_ref() {
+                        ui.label(
+                            egui::RichText::new(error)
+                                .size(9.0_f32)
+                                .color(palette::AMBER),
+                        );
+                    }
+                    if !self.decl_rows.is_empty() {
+                        egui::Grid::new("declared-grid")
+                            .striped(true)
+                            .num_columns(4)
+                            .spacing([10.0, 2.0])
+                            .show(ui, |ui| {
+                                for header in ["scenario", "completed", "thru", "note"] {
+                                    ui.label(
+                                        egui::RichText::new(header)
+                                            .strong()
+                                            .size(9.0_f32)
+                                            .color(palette::TEXT_DIM),
+                                    );
+                                }
+                                ui.end_row();
+                                for outcome in &self.decl_rows {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{} / {}",
+                                            outcome.experiment, outcome.scenario
+                                        ))
+                                        .small()
+                                        .monospace(),
+                                    );
+                                    match outcome.report.as_ref() {
+                                        Some(report) => {
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{:.1}",
+                                                    report.completed.mean
+                                                ))
+                                                .small()
+                                                .monospace(),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{:.4}",
+                                                    report.completed.mean / report.stop_time
+                                                ))
+                                                .small()
+                                                .monospace(),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new("ok")
+                                                    .size(9.0_f32)
+                                                    .color(palette::OK.gamma_multiply(0.9)),
+                                            );
+                                        }
+                                        None => {
+                                            ui.label("—");
+                                            ui.label("—");
+                                            ui.label(
+                                                egui::RichText::new(
+                                                    outcome
+                                                        .error
+                                                        .as_deref()
+                                                        .unwrap_or("failed"),
+                                                )
+                                                .size(9.0_f32)
+                                                .color(palette::AMBER),
+                                            )
+                                            .on_hover_text(
+                                                outcome.error.as_deref().unwrap_or("failed"),
+                                            );
+                                        }
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                    }
+                });
                 ui.separator();
                 panel_heading(ui, "Experiment");
                 ui.horizontal(|ui| {
@@ -13708,6 +13908,46 @@ mod tests {
         // A model without objects offer nothing rather than panicking.
         let empty = SamplerNames::from_model(None);
         assert!(empty.any.is_empty() && empty.operators.is_empty());
+    }
+
+    #[test]
+    fn declared_experiments_land_in_the_panel() {
+        // The worker sends outcomes through a channel; the poll turns them into
+        // rows and a status line, including the failure count.
+        let outcome = |scenario: &str, report: bool| openflex_report::ScenarioOutcome {
+            experiment: "base".into(),
+            scenario: scenario.into(),
+            overrides: Vec::new(),
+            report: None,
+            error: if report {
+                None
+            } else {
+                Some("bad override".into())
+            },
+            error_kind: None,
+            trace_files: Vec::new(),
+            logs: Vec::new(),
+        };
+        let mut app = OpenFlexApp::new(None);
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.decl_rx = Some(rx);
+        app.decl_running = true;
+        tx.send(vec![outcome("baseline", true), outcome("broken", false)])
+            .expect("send");
+        app.poll_declared_experiments();
+        assert!(!app.decl_running, "the poll clears the running flag");
+        assert_eq!(app.decl_rows.len(), 2);
+        assert!(app.status.contains("1 failed"), "status: {}", app.status);
+        // A second poll with nothing pending leaves the rows alone.
+        app.poll_declared_experiments();
+        assert_eq!(app.decl_rows.len(), 2);
+        // An empty model reports that instead of showing an empty table.
+        let mut empty = OpenFlexApp::new(None);
+        let (tx, rx) = std::sync::mpsc::channel();
+        empty.decl_rx = Some(rx);
+        tx.send(Vec::new()).expect("send");
+        empty.poll_declared_experiments();
+        assert!(empty.decl_error.is_some());
     }
 
     #[test]
