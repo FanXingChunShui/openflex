@@ -49,7 +49,7 @@
 | 26 | Model Triggers | `ModelTriggers.on_start/on_reset/on_stop`；`fire_model_actions` | `model_triggers_fire_at_start_reset_and_stop`（engine.rs，断言三处各触发）；`model_trigger_errors_are_reported` | 有证据 |
 | 27 | Event List | `trace.rs` `TraceLog`/`TraceEvent`；`simulate_traced`；CLI `--trace`；Studio 事件列表 | `trace_writes_parseable_jsonl_events`（cli.rs）；`reads_a_jsonl_trace_file`（item_trace.rs） | 有证据 |
 | 28 | Quick Properties（上下文属性面板） | `openflex-gui` `apply_form` + 各 kind 表单控件 | `the_visual_tool_form_round_trips_its_params`；`form_position_round_trips_exactly`（GUI，断言改后参数值正确） | 有证据（表单往返级） |
-| 29 | Find Objects（按名称/类型查找） | `openflex-gui` 模型树内联过滤（`self.search` + name/kind 子串匹配，main.rs 树渲染处） | 无（`grep fn .*search` 无测试；过滤逻辑内联在 UI 闭包里，不可单测） | **证据薄弱（无测试，逻辑不可单测）** → 已降级 |
+| 29 | Find Objects（按名称/类型查找） | `tree_row_matches`（GUI 纯函数，从 UI 闭包抽出） | `the_tree_search_matches_names_and_kinds`（main.rs，断言空串全显示、名称与 kind 双向匹配、大小写不敏感、不误匹配别的 kind） | 有证据 |
 | 30 | Reports：State Report（状态占比） | `stats.rs` `StateTimes.fraction`；报告 `state_times` | `state_tracked_variable_reports_state_shares`（engine.rs，断言占比）；`state_fractions_sum_to_one` | 有证据 |
 | 31 | Experimenter：`experiments[]` | `Model.experiments`；`openflex-report/src/experiment.rs`；CLI `experiment`；GUI 面板 | `returns_one_outcome_per_scenario_with_full_reports`（experiments.rs，断言 2×2=4 个结果）；`a_failing_scenario_does_not_stop_its_siblings` | 有证据 |
 | 32 | Dashboard Item Trace（逐件轨迹） | `openflex-report/src/item_trace.rs`（`traced_items`/路径分组）；CLI `trace --item/--items/--paths` | `groups_steps_per_item_in_time_order`；`traced_items_matches_the_tagged_events`；`item_metrics_count_distinct_objects_and_span`（item_trace.rs） | 有证据 |

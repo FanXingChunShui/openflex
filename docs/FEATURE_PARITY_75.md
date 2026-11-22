@@ -196,7 +196,7 @@
 | Toolbox（工具集中管理：Global Table/Time Table/Dashboard…） | Studio 侧栏 | 🟡 | 有等效入口，但不是"可 Add 任意工具对象"的工具箱 |
 | Library Icon Grid（图标库拖拽建对象） | Studio 新建对象 | 🟡 | 可从列表新建；无拖拽图标网格与自定义库 |
 | Edit Selected Objects（批量改坐标/尺寸/旋转/复位位置） | 批量编辑/复制/删除、对齐分布 | 🟡 | 有批量操作；无"复位位置"概念 |
-| Find Objects（按名称/类型查找） | 模型树搜索（内联过滤） | 🟡 | **证据薄弱：过滤逻辑内联在 UI 闭包里，无测试覆盖**（名称/kind 子串匹配） |
+| Find Objects（按名称/类型查找） | 模型树搜索 `tree_row_matches`（纯函数） | ✅ | 名称与 kind 双向子串匹配、大小写不敏感；**已从 UI 闭包抽出以便单测**（`the_tree_search_matches_names_and_kinds`） |
 | Groups（对象分组，组信息存于 /Tools/Groups 与对象属性） | 多选 | 🟡 | 有临时多选；**无持久化命名分组**（模型里没有 `groups` 字段） |
 | Model Layouts（同一模型的多种布局） | 命名布局预设（localStorage） | 🟡 | 有预设但存于浏览器本地，**不在模型文件里**，不可版本化 |
 | Light Source Editor（光源位置/强度） | 无 | ⛔ | 无光照模型 |

@@ -10,6 +10,9 @@
   **不做半成品**，因此把字段、GUI 控件与 CLI 文案一并删除。旧模型含该字段会被明确拒绝：
   `unknown field max_travelers, expected edges or triggers`。
   记录在此而不是让它悄悄消失：这是一个**曾经对外承诺过却从未生效**的参数。
+- **模型树查找变成可测的纯函数**：审计指出「按名称/类型查找」的过滤逻辑内联在 UI 闭包里、
+  无法单测（属**可测性缺陷**而非单纯缺测试）。抽出 `tree_row_matches(needle, name, kind)` 并补测试
+  （空串全显示、名称与 kind 双向匹配、大小写不敏感、不误匹配别的 kind），矩阵该行从 🟡 升为 ✅。
 - **装卸时长精确断言**：新增 `explicit_load_and_unload_durations_are_exact` —— `load_time=5` 时载货腿
   在到达后 5.0 才出发、`unload_time=3` 时 `operator_loaded` 在 requester 到达后 3.0 触发（1e-9 内）。
   此前只有"两次运行一致"，**没有断言时长真的生效**。

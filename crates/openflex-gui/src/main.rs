@@ -1124,6 +1124,15 @@ fn sparkline(ui: &mut egui::Ui, series: &[(f64, f64)], width: f32, height: f32) 
     true
 }
 
+/// Whether a model-tree row matches the search box.
+///
+/// `needle` is expected lowercased already; the check is case-insensitive on
+/// both the object name and its kind, so typing "proc" finds processors by kind
+/// as well as objects whose name contains it.
+fn tree_row_matches(needle: &str, name: &str, kind: ObjectKind) -> bool {
+    needle.is_empty() || name.to_lowercase().contains(needle) || kind.as_str().contains(needle)
+}
+
 /// World-space waypoints of a dispatcher's declared `explicit` route, starting
 /// at the dispatcher itself. `pickup` / `requester` depend on the run, so a
 /// route that uses them stops there rather than inventing a position.
@@ -9609,9 +9618,7 @@ impl eframe::App for OpenFlexApp {
                                 .enumerate()
                                 .filter(|(_, object)| object.kind == kind)
                                 .filter(|(_, object)| {
-                                    needle.is_empty()
-                                        || object.name.to_lowercase().contains(&needle)
-                                        || kind.as_str().contains(&needle)
+                                    tree_row_matches(&needle, &object.name, kind)
                                 })
                                 .map(|(index, _)| index)
                                 .collect();
@@ -14199,6 +14206,24 @@ mod tests {
             !json.contains("triggers"),
             "empty triggers stay absent: {json}"
         );
+    }
+
+    #[test]
+    fn the_tree_search_matches_names_and_kinds() {
+        // An empty box shows everything; names and kinds both match, and the
+        // comparison is case-insensitive because the needle is lowercased once.
+        assert!(tree_row_matches("", "Proc1", ObjectKind::Processor));
+        assert!(tree_row_matches("proc", "Proc1", ObjectKind::Processor));
+        assert!(tree_row_matches("proc", "Machine", ObjectKind::Processor));
+        assert!(tree_row_matches(
+            "machine",
+            "Machine",
+            ObjectKind::Processor
+        ));
+        assert!(!tree_row_matches("sink", "Machine", ObjectKind::Processor));
+        // A needle that only appears in another kind's name must not match.
+        assert!(!tree_row_matches("queue", "Proc1", ObjectKind::Processor));
+        assert!(tree_row_matches("queue", "Q1", ObjectKind::Queue));
     }
 
     #[test]
