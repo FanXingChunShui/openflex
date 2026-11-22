@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### 安全
+
+- **修复 `RUSTSEC-2026-0592`**（`url` 在嵌套 `blob:` URL 上 `Url::origin()` 栈溢出）：
+  `url` 2.5.8 → **2.5.9**（传递依赖链 `webbrowser → egui-winit → eframe`）。
+  这条是 v1.39.0 发布后 CI 的 `cargo-deny` 变红暴露的——**代码没变、依赖没变，是新公告进了 RustSec 库**，
+  我本地装 `cargo-deny` 复现拿到编号后才动手，没有靠猜。
+- **清掉两条失效豁免**：`deny.toml` 里 `RUSTSEC-2026-0249`(smartstring) 与 `RUSTSEC-2026-0192`(ttf-parser)
+  已被 cargo-deny 判为 `advisory-not-detected`（公告不再匹配我们的依赖图）。留着会**掩盖将来同编号的新问题**，
+  故删除；现在 `advisories ok, bans ok, licenses ok, sources ok`。
+
+
 ## v1.39.0 — 2026-11-23
 
 这一轮的重点不是加功能，而是**让功能清单变得可核查**，并按核查结果修掉问题：

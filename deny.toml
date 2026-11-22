@@ -30,12 +30,6 @@ yanked = "deny"
 # no fix and is not exploitable here, add `{ id = "RUSTSEC-...", reason = "..." }`
 # instead of disabling the check.
 ignore = [
-  # smartstring (rhai's string type) is unmaintained but has no safe upgrade;
-  # rhai 1.x still depends on it and the crate has no known vulnerability.
-  { id = "RUSTSEC-2026-0249", reason = "transitive dependency of rhai; no safe upgrade, no known vulnerability" },
-  # ttf-parser (via epaint/egui fonts) is unmaintained but has no known
-  # vulnerability and no drop-in replacement in the GUI dependency chain.
-  { id = "RUSTSEC-2026-0192", reason = "transitive dependency of eframe/egui fonts; no known vulnerability" },
 ]
 
 [licenses]
