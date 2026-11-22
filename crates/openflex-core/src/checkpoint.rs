@@ -52,7 +52,7 @@
 use rand_chacha::ChaCha12Rng;
 use serde::{Deserialize, Serialize};
 
-use crate::engine::{Event, FlowRuntime, FluidRuntime, ObjectRt};
+use crate::engine::{Event, ExplicitState, FlowRuntime, FluidRuntime, ObjectRt};
 use crate::error::SimError;
 use crate::stats::SimConfig;
 
@@ -64,6 +64,12 @@ pub const CHECKPOINT_FORMAT_VERSION: u32 = 1;
 ///
 /// The payload is JSON serialisable; use [`Checkpoint::to_json`] and
 /// [`Checkpoint::from_json`] so the format version is validated.
+///
+/// Compatibility policy: `explicit_routes` was added after the initial
+/// checkpoint layout. Older files that omit it deserialize with an empty map,
+/// which is deliberately interpreted as "the explicit chain starts from
+/// scratch"; `format_version` is unchanged because the addition is
+/// backward-compatible and the old failure mode was already a chain restart.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
     /// Layout version, see [`CHECKPOINT_FORMAT_VERSION`].
@@ -99,6 +105,11 @@ pub struct Checkpoint {
     /// Fluid sub-system (B5); `None` when the model has no fluid objects.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) fluid: Option<FluidRuntime>,
+    /// task-183: explicit task-chain state, keyed by object name. Older
+    /// checkpoints omit this field; restoring them is explicitly the
+    /// "chain starts from scratch" compatibility policy.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub(crate) explicit_routes: std::collections::BTreeMap<String, ExplicitState>,
     /// Run settings of the saved run.
     pub(crate) config: SimConfig,
 }

@@ -12,7 +12,15 @@
   结果表把每个场景与**首个跑成功的场景**对比，差值超过 0.05 时显示 `12.3 (+2.3)` 并按好坏变色
   ——这是 FlexSim Experimenter 摘要列的读法。GUI 测试 **139 项**。
 
-### 报告与 CLI
+### 模型与引擎
+
+- **`explicit` 链状态进入检查点**：`Checkpoint.explicit_routes: BTreeMap<String, ExplicitState>`（键是**对象名**，非下标），
+  保存剩余腿表、`requester`、`loaded` / `operator_loaded` / `waiting_release` / `release_seen` / `leg_in_progress`、
+  当前腿 kind、当前 travel 目标与**剩余时间**；`restore` 按对象名重建并按 `checkpoint.now + remaining` 恢复当前腿
+  （绝对 deadline 用 `#[serde(skip)]`，由事件日历保留触发时刻）。
+  核心断言达成：t=5 中途存盘再 resume 到 t=20，与不中断跑完的 `ReplicationResult` **逐位相同**（含执行器状态细分）；
+  在 `waiting_for_release` 时刻存盘也能正确续等。旧 checkpoint 缺该字段时按「链从头开始」，已在 `Checkpoint`
+  文档注明为向后兼容策略，`format_version` 不变。
 
 - **实验执行提取为可复用 API**：模型声明的 `experiments` 执行逻辑此前埋在 CLI 的 `main.rs` 里，GUI 完全用不上
   （GUI 只能跑自己的参数扫描，看不到模型里的场景）。现在移到 `openflex-report`：

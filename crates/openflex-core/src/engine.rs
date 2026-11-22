@@ -549,28 +549,38 @@ struct StateDetail {
 }
 
 /// task-169: one dispatched task leg (old append kinds plus utilize/break).
-#[derive(Debug, Clone)]
-struct ExplicitLeg {
-    kind: PendingLeg,
-    target: Option<([f64; 2], f64)>,
-    duration: Option<f64>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ExplicitLeg {
+    pub(crate) kind: PendingLeg,
+    pub(crate) target: Option<([f64; 2], f64)>,
+    pub(crate) duration: Option<f64>,
 }
 
-#[derive(Debug, Clone)]
-struct ExplicitState {
-    legs: VecDeque<ExplicitLeg>,
-    requester: usize,
-    loaded: bool,
-    operator_loaded: bool,
-    waiting_release: bool,
-    release_seen: bool,
-    leg_in_progress: bool,
-    current: Option<PendingLeg>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ExplicitState {
+    pub(crate) legs: VecDeque<ExplicitLeg>,
+    pub(crate) requester: usize,
+    pub(crate) loaded: bool,
+    pub(crate) operator_loaded: bool,
+    pub(crate) waiting_release: bool,
+    pub(crate) release_seen: bool,
+    pub(crate) leg_in_progress: bool,
+    pub(crate) current: Option<PendingLeg>,
+    /// Destination of the current travel leg (rebuilt into `explicit_target`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) current_target: Option<([f64; 2], f64)>,
+    /// Absolute deadline of the current leg; not serialized, rebuilt from
+    /// `remaining` on restore.
+    #[serde(skip)]
+    pub(crate) leg_deadline: Option<f64>,
+    /// Remaining time of the current leg, the value checkpointed (task-183).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) remaining: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum PendingLeg {
+pub(crate) enum PendingLeg {
     Travel,
     Load,
     Unload,
@@ -3472,6 +3482,17 @@ impl<'m> Simulation<'m> {
             event_count: self.event_count,
             process_flow: self.process_flow.clone(),
             fluid: self.fluid.clone(),
+            explicit_routes: self
+                .explicit_routes
+                .iter()
+                .map(|(index, state)| {
+                    let mut state = state.clone();
+                    state.remaining = state
+                        .leg_deadline
+                        .map(|deadline| (deadline - self.now).max(0.0));
+                    (self.objects[*index].name.clone(), state)
+                })
+                .collect(),
             config: self.config.clone(),
         }
     }
@@ -3572,6 +3593,24 @@ impl<'m> Simulation<'m> {
             ));
         }
         self.fluid = checkpoint.fluid.clone();
+        // task-183: rebuild explicit-chain state by object name. Missing
+        // explicit_routes means an older checkpoint: the chain starts from
+        // scratch (documented compatibility policy).
+        self.explicit_routes.clear();
+        self.explicit_target.clear();
+        for (name, saved) in &checkpoint.explicit_routes {
+            let Some(&index) = self.by_name.get(name) else {
+                continue;
+            };
+            let mut state = saved.clone();
+            if let Some(remaining) = state.remaining {
+                state.leg_deadline = Some(checkpoint.now + remaining);
+            }
+            if let Some(target) = state.current_target {
+                self.explicit_target.insert(index, target);
+            }
+            self.explicit_routes.insert(index, state);
+        }
         // A resumed run does not replay the trace of the saved segment.
         self.trace = None;
         Ok(())
@@ -7280,6 +7319,9 @@ impl<'m> Simulation<'m> {
                         release_seen: false,
                         leg_in_progress: false,
                         current: None,
+                        current_target: None,
+                        leg_deadline: None,
+                        remaining: None,
                     },
                 );
                 self.set_state(transporter, State::Busy);
@@ -9011,6 +9053,8 @@ impl<'m> Simulation<'m> {
                 };
                 state.leg_in_progress = true;
                 state.current = Some(leg.kind);
+                state.current_target = None;
+                state.leg_deadline = None;
                 (leg, state.requester, state.loaded)
             };
             match leg.kind {
@@ -9021,6 +9065,9 @@ impl<'m> Simulation<'m> {
                         ));
                     };
                     self.explicit_target.insert(transporter, (destination, z));
+                    if let Some(state) = self.explicit_routes.get_mut(&transporter) {
+                        state.current_target = Some((destination, z));
+                    }
                     let from = self.objects[transporter].position;
                     let controls = self.traffic_controls_for_leg(from, destination);
                     if !self.traffic_try_acquire(transporter, &controls) {
@@ -9077,6 +9124,9 @@ impl<'m> Simulation<'m> {
                     let load = self.transport_load_time(transporter);
                     self.set_state(transporter, State::Busy);
                     self.set_executor_activity(transporter, ExecutorActivity::Loading);
+                    if let Some(state) = self.explicit_routes.get_mut(&transporter) {
+                        state.leg_deadline = Some(self.now + dwell + load);
+                    }
                     self.schedule(
                         self.now + dwell + load,
                         EventKind::ExplicitLegDone(transporter),
@@ -9104,6 +9154,9 @@ impl<'m> Simulation<'m> {
                     self.objects[transporter].acc.detail.door_opening += door_open;
                     self.set_state(transporter, State::Busy);
                     self.set_executor_activity(transporter, ExecutorActivity::Unloading);
+                    if let Some(state) = self.explicit_routes.get_mut(&transporter) {
+                        state.leg_deadline = Some(self.now + door_open + dwell + unload);
+                    }
                     self.schedule(
                         self.now + door_open + dwell + unload,
                         EventKind::ExplicitLegDone(transporter),
@@ -9159,6 +9212,9 @@ impl<'m> Simulation<'m> {
         );
         self.record_route_leg("transport_route_depart", transporter, destination);
         if travel > EPS {
+            if let Some(state) = self.explicit_routes.get_mut(&transporter) {
+                state.leg_deadline = Some(self.now + travel);
+            }
             self.schedule(self.now + travel, EventKind::ExplicitLegDone(transporter));
         } else {
             self.objects[transporter].position = destination;
@@ -9183,6 +9239,8 @@ impl<'m> Simulation<'m> {
         };
         let kind = state.current.take();
         state.leg_in_progress = false;
+        state.current_target = None;
+        state.leg_deadline = None;
         let requester = state.requester;
         match kind {
             Some(PendingLeg::Travel) => {
@@ -17143,5 +17201,118 @@ mod tests {
             .collect();
         assert_eq!(logs.iter().filter(|message| **message == "dp").count(), 1);
         assert_eq!(logs.iter().filter(|message| **message == "eye").count(), 1);
+    }
+
+    fn explicit_checkpoint_model() -> Model {
+        Model::from_json(&explicit_route_model(
+            r#"{"kind": "travel", "target": "pickup"},
+               {"kind": "load"},
+               {"kind": "travel", "target": "requester"},
+               {"kind": "unload"},
+               {"kind": "travel", "target": "home"}"#,
+            "explicit",
+        ))
+        .expect("model")
+    }
+
+    /// task-183: a checkpoint mid-route resumes with the same report as an
+    /// uninterrupted run, including the explicit-chain state.
+    #[test]
+    fn explicit_chain_checkpoint_matches_uninterrupted_run() {
+        let model = explicit_checkpoint_model();
+        let save = SimConfig {
+            stop_time: 5.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, checkpoint) =
+            crate::simulate_with_checkpoint(&model, &save, 0, None).expect("checkpoint");
+        let resume = SimConfig {
+            stop_time: 20.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let resumed =
+            crate::resume_from_checkpoint(&model, &resume, 0, &checkpoint, 20.0).expect("resume");
+        let direct = crate::simulate(&model, &resume, 0).expect("direct");
+        assert_eq!(
+            serde_json::to_string(&direct).expect("json"),
+            serde_json::to_string(&resumed).expect("json")
+        );
+    }
+
+    /// task-183: a checkpoint taken while waiting for OperatorReleased restores
+    /// that wait state (and does not leave early).
+    #[test]
+    fn explicit_chain_checkpoint_keeps_waiting_for_release() {
+        let model = explicit_checkpoint_model();
+        let save = SimConfig {
+            stop_time: 10.5,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, checkpoint) =
+            crate::simulate_with_checkpoint(&model, &save, 0, None).expect("checkpoint");
+        let mut sim = Simulation::new(&model, save.clone(), false).expect("sim");
+        sim.restore(&checkpoint).expect("restore");
+        let t = sim.by_name["T"];
+        let state = sim.explicit_routes.get(&t).expect("explicit state");
+        assert!(state.waiting_release);
+        assert!(!state.release_seen);
+        let resume = SimConfig {
+            stop_time: 20.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let resumed =
+            crate::resume_from_checkpoint(&model, &resume, 0, &checkpoint, 20.0).expect("resume");
+        let direct = crate::simulate(&model, &resume, 0).expect("direct");
+        assert_eq!(
+            serde_json::to_string(&direct).expect("json"),
+            serde_json::to_string(&resumed).expect("json")
+        );
+    }
+
+    /// task-183: an old checkpoint without explicit_routes restores safely and
+    /// explicitly follows the "chain starts from scratch" compatibility policy.
+    #[test]
+    fn old_checkpoint_without_explicit_chain_starts_from_scratch() {
+        let model = explicit_checkpoint_model();
+        let save = SimConfig {
+            stop_time: 5.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, checkpoint) =
+            crate::simulate_with_checkpoint(&model, &save, 0, None).expect("checkpoint");
+        let mut value = serde_json::to_value(&checkpoint).expect("json");
+        value
+            .as_object_mut()
+            .expect("object")
+            .remove("explicit_routes");
+        let old = crate::checkpoint::Checkpoint::from_json(&value.to_string()).expect("old");
+        let mut sim = Simulation::new(&model, save, false).expect("sim");
+        sim.restore(&old).expect("restore old");
+        assert!(
+            sim.explicit_routes.is_empty(),
+            "old checkpoint must start a fresh chain"
+        );
+    }
+
+    /// task-183: chain state is keyed by object name in the checkpoint payload,
+    /// so a different model cannot silently receive it.
+    #[test]
+    fn explicit_checkpoint_state_is_keyed_by_object_name() {
+        let model = explicit_checkpoint_model();
+        let save = SimConfig {
+            stop_time: 5.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, checkpoint) =
+            crate::simulate_with_checkpoint(&model, &save, 0, None).expect("checkpoint");
+        let value = serde_json::to_value(&checkpoint).expect("json");
+        assert!(value["explicit_routes"].get("T").is_some());
+        assert!(value["explicit_routes"].get("0").is_none());
     }
 }
