@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v1.38.0 — 2026-11-22
+
+本轮把「模型自己声明的实验」打通到 GUI（此前执行逻辑埋在 CLI 里，桌面端完全看不到模型声明的场景），把 **`explicit` 路线状态纳入检查点**（中途存盘续跑与一次跑完逐位相同），并修掉 README 里一处**明显失实**的功能表（它仍写着「3D 视图 / GUI ⛔ 暂缺」，而三平台桌面安装包已经发布）。
+发布节奏保持**至少 3 小时一版**。
 
 ### 桌面 GUI
 
@@ -31,6 +34,14 @@
   CLI 改为调用它，**三格式输出逐字节不变**（用改动前快照 + 逐字符 `assert_eq` 锁住，13 个 stdout 输出与 9 个归档文件 sha256 相同）。
   一处行为差异如实记录：`experiment --trace` 的 stderr 进度提示不再带事件数。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**898 passed / 0 failed**。
+- GUI **139 项**、`openflex-core --lib` **169 项**、`openflex-report` + CLI 合计 187+。
+- `clippy` 0 警告、`fmt` 干净；63 个示例模型全部 validate 通过。
+- 独立实测：`openflex experiment examples/objects/scenario-stop-warmup.ofm` 两场景结果与提取前一致；
+  `optimize --pareto` 多目标输出正常；检查点续跑与直跑 `ReplicationResult` 逐位相同。
 
 ## v1.37.0 — 2026-11-22
 
