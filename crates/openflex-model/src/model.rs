@@ -85,6 +85,10 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
 fn default_stop_time() -> f64 {
     1_000.0
 }
@@ -146,6 +150,8 @@ pub enum ObjectKind {
     VisualTool,
     NetworkNode,
     TrafficControl,
+    /// task-184: on/off controller for connected conveyors.
+    Motor,
 }
 
 impl ObjectKind {
@@ -189,6 +195,7 @@ impl ObjectKind {
             ObjectKind::VisualTool => "visual_tool",
             ObjectKind::NetworkNode => "network_node",
             ObjectKind::TrafficControl => "traffic_control",
+            ObjectKind::Motor => "motor",
         }
     }
 
@@ -232,6 +239,7 @@ impl ObjectKind {
             "visual_tool" => ObjectKind::VisualTool,
             "network_node" => ObjectKind::NetworkNode,
             "traffic_control" => ObjectKind::TrafficControl,
+            "motor" => ObjectKind::Motor,
             _ => return None,
         })
     }
@@ -277,6 +285,7 @@ impl ObjectKind {
             ObjectKind::VisualTool,
             ObjectKind::NetworkNode,
             ObjectKind::TrafficControl,
+            ObjectKind::Motor,
         ]
     }
 }
@@ -397,6 +406,26 @@ impl<'de> Deserialize<'de> for Object {
 /// Type-specific parameters, one variant per object kind.
 ///
 /// Serialised *without* a tag: the enclosing [`Object`] already names the kind.
+/// task-184: a motor controls the conveyors connected to it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MotorParams {
+    /// Whether the controlled conveyors are powered.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub running: bool,
+    #[serde(default)]
+    pub triggers: Triggers,
+}
+
+impl Default for MotorParams {
+    fn default() -> Self {
+        Self {
+            running: true,
+            triggers: Triggers::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum ObjectParams {
@@ -442,6 +471,7 @@ pub enum ObjectParams {
     VisualTool(VisualToolParams),
     NetworkNode(NetworkNodeParams),
     TrafficControl(TrafficControlParams),
+    Motor(MotorParams),
 }
 
 fn decode<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, String> {
@@ -489,6 +519,7 @@ impl ObjectParams {
             ObjectParams::VisualTool(_) => ObjectKind::VisualTool,
             ObjectParams::NetworkNode(_) => ObjectKind::NetworkNode,
             ObjectParams::TrafficControl(_) => ObjectKind::TrafficControl,
+            ObjectParams::Motor(_) => ObjectKind::Motor,
         }
     }
 
@@ -533,6 +564,7 @@ impl ObjectParams {
             ObjectParams::VisualTool(p) => &p.triggers,
             ObjectParams::NetworkNode(p) => &p.triggers,
             ObjectParams::TrafficControl(p) => &p.triggers,
+            ObjectParams::Motor(p) => &p.triggers,
         }
     }
 
@@ -577,6 +609,7 @@ impl ObjectParams {
             ObjectParams::VisualTool(p) => &mut p.triggers,
             ObjectParams::NetworkNode(p) => &mut p.triggers,
             ObjectParams::TrafficControl(p) => &mut p.triggers,
+            ObjectParams::Motor(p) => &mut p.triggers,
         }
     }
 
@@ -620,7 +653,7 @@ impl ObjectParams {
             ObjectParams::FluidToItem(_) => None,
             ObjectParams::VisualTool(_) => None,
             ObjectParams::NetworkNode(_) => None,
-            ObjectParams::TrafficControl(_) => None,
+            ObjectParams::TrafficControl(_) | ObjectParams::Motor(_) => None,
         }
     }
 
@@ -667,7 +700,7 @@ impl ObjectParams {
             ObjectParams::FluidToItem(_) => None,
             ObjectParams::VisualTool(_) => None,
             ObjectParams::NetworkNode(_) => None,
-            ObjectParams::TrafficControl(_) => None,
+            ObjectParams::TrafficControl(_) | ObjectParams::Motor(_) => None,
         }
     }
 
@@ -730,7 +763,7 @@ impl ObjectParams {
             ObjectParams::FluidToItem(_) => return None,
             ObjectParams::VisualTool(_) => return None,
             ObjectParams::NetworkNode(_) => return None,
-            ObjectParams::TrafficControl(_) => return None,
+            ObjectParams::TrafficControl(_) | ObjectParams::Motor(_) => return None,
         }
         Some(())
     }
@@ -775,7 +808,7 @@ impl ObjectParams {
             ObjectParams::FluidToItem(_) => None,
             ObjectParams::VisualTool(_) => None,
             ObjectParams::NetworkNode(_) => None,
-            ObjectParams::TrafficControl(_) => None,
+            ObjectParams::TrafficControl(_) | ObjectParams::Motor(_) => None,
         }
     }
 
@@ -819,7 +852,7 @@ impl ObjectParams {
             ObjectParams::FluidToItem(_) => None,
             ObjectParams::VisualTool(_) => None,
             ObjectParams::NetworkNode(_) => None,
-            ObjectParams::TrafficControl(_) => None,
+            ObjectParams::TrafficControl(_) | ObjectParams::Motor(_) => None,
         }
     }
 
@@ -863,7 +896,7 @@ impl ObjectParams {
             ObjectParams::FluidToItem(_) => &[],
             ObjectParams::VisualTool(_) => &[],
             ObjectParams::NetworkNode(_) => &[],
-            ObjectParams::TrafficControl(_) => &[],
+            ObjectParams::TrafficControl(_) | ObjectParams::Motor(_) => &[],
         }
     }
 
@@ -908,6 +941,7 @@ impl ObjectParams {
             ObjectKind::VisualTool => ObjectParams::VisualTool(decode(value)?),
             ObjectKind::NetworkNode => ObjectParams::NetworkNode(decode(value)?),
             ObjectKind::TrafficControl => ObjectParams::TrafficControl(decode(value)?),
+            ObjectKind::Motor => ObjectParams::Motor(decode(value)?),
         })
     }
 }
@@ -954,6 +988,7 @@ impl Serialize for ObjectParams {
             ObjectParams::VisualTool(p) => p.serialize(serializer),
             ObjectParams::NetworkNode(p) => p.serialize(serializer),
             ObjectParams::TrafficControl(p) => p.serialize(serializer),
+            ObjectParams::Motor(p) => p.serialize(serializer),
         }
     }
 }

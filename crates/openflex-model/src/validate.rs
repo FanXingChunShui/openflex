@@ -284,6 +284,33 @@ fn validate_connection(
             "a source has no input connections",
         ));
     }
+    if from.kind == ObjectKind::Motor {
+        if connection.kind == Some(ConnectionKind::S) {
+            issues.push(ValidationIssue::new(
+                &location,
+                format!(
+                    "motor '{}' cannot use an S connection; connect it to conveyors with A connections",
+                    from.name
+                ),
+            ));
+        } else if !matches!(to.kind, ObjectKind::Conveyor | ObjectKind::Escalator) {
+            issues.push(ValidationIssue::new(
+                &location,
+                format!(
+                    "motor '{}' can only control conveyors, not '{}' ({:?})",
+                    from.name, to.name, to.kind
+                ),
+            ));
+        }
+    } else if to.kind == ObjectKind::Motor {
+        issues.push(ValidationIssue::new(
+            &location,
+            format!(
+                "connections cannot target motor '{}'; connect the motor to its conveyors instead",
+                to.name
+            ),
+        ));
+    }
 
     // S connections are center-port/resource links: they do not route flow
     // items, so they carry no port number or port strategy, and they never
@@ -413,6 +440,11 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
     }
 
     match &object.params {
+        crate::model::ObjectParams::Motor(params) => {
+            if params.running {
+                // default (powered) is always valid
+            }
+        }
         crate::model::ObjectParams::Source(params) => {
             let interarrival_set =
                 params.interarrival != crate::distribution::Distribution::default();

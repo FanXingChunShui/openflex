@@ -739,6 +739,10 @@ enum PhotoEyeState {
     Clearing,
 }
 
+fn true_bool() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ObjectRt {
     name: String,
@@ -863,6 +867,9 @@ pub(crate) struct ObjectRt {
     /// task-179: sensing half-width for each Photo Eye.
     #[serde(default)]
     photo_eye_ranges: Vec<f64>,
+    /// task-184: motor power flag (true for non-motors).
+    #[serde(default = "true_bool")]
+    motor_running: bool,
     /// task-181: sensing half-width and per-item once flags for decision points.
     #[serde(default)]
     decision_point_ranges: Vec<f64>,
@@ -1017,6 +1024,7 @@ impl ObjectRt {
             belt_handled: Vec::new(),
             photo_eye_states: Vec::new(),
             photo_eye_ranges: Vec::new(),
+            motor_running: true,
             decision_point_ranges: Vec::new(),
             decision_handled: Vec::new(),
             join_inputs: 0,
@@ -1149,6 +1157,7 @@ impl ObjectRt {
                 runtime.merge_weight = params.merge_weight.clone().unwrap_or_default();
                 runtime.merge_counts = vec![0.0; runtime.join_inputs as usize];
             }
+            ObjectParams::Motor(params) => runtime.motor_running = params.running,
             ObjectParams::Transporter(params) => runtime.capacity = params.capacity.max(1),
             ObjectParams::Person(_) => runtime.capacity = 1,
             ObjectParams::Agv(params) => {
@@ -2544,6 +2553,9 @@ struct Simulation<'m> {
     flow_item_hints: HashMap<usize, u64>,
     /// task-171: item served by each executer task, for transport_* events.
     transport_item_hints: HashMap<usize, u64>,
+    /// task-184: motor -> controlled conveyors and reverse map.
+    motor_conveyors: Vec<Vec<usize>>,
+    conveyor_motors: Vec<Vec<usize>>,
     /// task-173/175: active explicit task chain per executer.
     explicit_routes: HashMap<usize, ExplicitState>,
     /// task-173: target being approached by an active explicit travel leg.
@@ -2682,6 +2694,22 @@ impl<'m> Simulation<'m> {
             }
         }
 
+        let mut motor_conveyors = vec![Vec::new(); model.objects.len()];
+        let mut conveyor_motors = vec![Vec::new(); model.objects.len()];
+        for connection in &conns {
+            if connection.kind == ConnectionKind::S {
+                continue;
+            }
+            if model.objects[connection.from].kind == ObjectKind::Motor
+                && matches!(
+                    model.objects[connection.to].kind,
+                    ObjectKind::Conveyor | ObjectKind::Escalator
+                )
+            {
+                motor_conveyors[connection.from].push(connection.to);
+                conveyor_motors[connection.to].push(connection.from);
+            }
+        }
         let scripts = compile_model_scripts(model)?;
 
         // B7: resolve model-level and object-level process flows into one
@@ -2738,6 +2766,8 @@ impl<'m> Simulation<'m> {
             traffic_waiters: vec![VecDeque::new(); traffic_controls.len()],
             traffic_occupancy: vec![0; traffic_controls.len()],
             traffic_controls,
+            motor_conveyors,
+            conveyor_motors,
             tracked_exprs,
             tracked_interval,
             tracked_series: BTreeMap::new(),
@@ -2847,6 +2877,17 @@ impl<'m> Simulation<'m> {
             for block in 0..self.process_flow_block_count() {
                 if matches!(self.flow_block_kind(block), Some(FlowBlockKind::Create(_))) {
                     self.schedule_flow_create(block)?;
+                }
+            }
+        }
+        // task-184: motors that start stopped keep their conveyors frozen from
+        // the first tick (positions remain whatever the initial state is).
+        for motor in 0..self.objects.len() {
+            if self.objects[motor].kind == ObjectKind::Motor && !self.objects[motor].motor_running {
+                for conveyor in self.motor_conveyors.get(motor).cloned().unwrap_or_default() {
+                    self.objects[conveyor].belt_last_update = self.now;
+                    self.objects[conveyor].belt_tick_at = f64::INFINITY;
+                    self.set_state(conveyor, State::OffShift);
                 }
             }
         }
@@ -3898,6 +3939,14 @@ impl<'m> Simulation<'m> {
             Action::DestroyItem | Action::ReleaseItem => {
                 // No current item/object at model level: nothing to release.
             }
+            Action::SetMotor { target, running } => {
+                let Some(&motor) = self.by_name.get(&target) else {
+                    return Err(SimError::Config(format!(
+                        "set_motor target '{target}' is not an object"
+                    )));
+                };
+                self.set_motor_running(motor, running)?;
+            }
             Action::Script { source } => {
                 self.action_location = location.to_string();
                 self.run_script_action(
@@ -4383,8 +4432,50 @@ impl<'m> Simulation<'m> {
     }
 
     /// Capacity / staging check, aware of the input port the item would use.
+    /// task-184: whether any controlling motor is stopped.
+    fn conveyor_stopped(&self, index: usize) -> bool {
+        self.conveyor_motors.get(index).is_some_and(|motors| {
+            motors
+                .iter()
+                .any(|motor| !self.objects[*motor].motor_running)
+        })
+    }
+
+    /// task-184: power/stop the conveyors controlled by a motor.
+    fn set_motor_running(&mut self, motor: usize, running: bool) -> Result<(), SimError> {
+        if self.objects[motor].kind != ObjectKind::Motor {
+            return Err(SimError::Config(format!(
+                "set_motor target '{}' is not a motor",
+                self.objects[motor].name
+            )));
+        }
+        self.objects[motor].motor_running = running;
+        let conveyors = self.motor_conveyors.get(motor).cloned().unwrap_or_default();
+        for conveyor in conveyors {
+            if running {
+                self.objects[conveyor].belt_last_update = self.now;
+                let busy = self.objects[conveyor]
+                    .belt
+                    .as_ref()
+                    .is_some_and(|belt| !belt.is_empty());
+                self.set_state(conveyor, if busy { State::Busy } else { State::Idle });
+                self.notify_upstreams(conveyor)?;
+                self.schedule(self.now, EventKind::Flow(conveyor));
+            } else {
+                self.sync_belt(conveyor);
+                self.objects[conveyor].belt_last_update = self.now;
+                self.set_state(conveyor, State::OffShift);
+                self.objects[conveyor].belt_tick_at = f64::INFINITY;
+            }
+        }
+        Ok(())
+    }
+
     fn can_accept(&self, index: usize, port: u32) -> bool {
         if !self.objects[index].on_shift {
+            return false;
+        }
+        if self.conveyor_stopped(index) {
             return false;
         }
         let object = &self.objects[index];
@@ -4454,7 +4545,8 @@ impl<'m> Simulation<'m> {
             | ObjectParams::FluidProcessor(_)
             | ObjectParams::NetworkNode(_)
             | ObjectParams::TrafficControl(_)
-            | ObjectParams::VisualTool(_) => false,
+            | ObjectParams::VisualTool(_)
+            | ObjectParams::Motor(_) => false,
             // The two bridges accept discrete flow items one at a time.
             ObjectParams::ItemToFluid(_) | ObjectParams::FluidToItem(_) => {
                 object.effective_content() == 0
@@ -9645,6 +9737,9 @@ impl<'m> Simulation<'m> {
 
     /// Move the belt forward to the current model time.
     fn sync_belt(&mut self, index: usize) {
+        if self.conveyor_stopped(index) {
+            return;
+        }
         let dt = self.now - self.objects[index].belt_last_update;
         if dt <= 0.0 {
             return;
@@ -10200,6 +10295,9 @@ impl<'m> Simulation<'m> {
     }
 
     fn schedule_belt_tick(&mut self, index: usize) {
+        if self.conveyor_stopped(index) {
+            return;
+        }
         let stops = self.belt_stop_positions(index);
         let next = if self.objects[index].belt_slug {
             self.slug_time_to_next_event(index, &stops)
@@ -10229,6 +10327,9 @@ impl<'m> Simulation<'m> {
     }
 
     fn handle_belt_tick(&mut self, index: usize) -> Result<(), SimError> {
+        if self.conveyor_stopped(index) {
+            return Ok(());
+        }
         self.objects[index].belt_tick_at = f64::INFINITY;
         self.sync_belt(index);
         self.update_decision_points(index)?;
@@ -10238,6 +10339,9 @@ impl<'m> Simulation<'m> {
     }
 
     fn flow_conveyor(&mut self, index: usize) -> Result<(), SimError> {
+        if self.conveyor_stopped(index) {
+            return Ok(());
+        }
         self.sync_belt(index);
         self.update_decision_points(index)?;
         self.process_belt_stops(index)?;
@@ -10943,6 +11047,14 @@ impl<'m> Simulation<'m> {
                 Action::DestroyItem => {
                     // Removing an item outside the normal flow is only safe at
                     // receive time; the item is simply dropped here.
+                }
+                Action::SetMotor { target, running } => {
+                    let Some(&motor) = self.by_name.get(&target) else {
+                        return Err(SimError::Config(format!(
+                            "set_motor target '{target}' is not an object"
+                        )));
+                    };
+                    self.set_motor_running(motor, running)?;
                 }
                 Action::Script { source } => {
                     let location = if self.action_location.is_empty() {
@@ -17314,5 +17426,202 @@ mod tests {
         let value = serde_json::to_value(&checkpoint).expect("json");
         assert!(value["explicit_routes"].get("T").is_some());
         assert!(value["explicit_routes"].get("0").is_none());
+    }
+
+    fn motor_model(running: bool, resume: bool, stop: f64) -> Model {
+        let resume_trigger = if resume {
+            r#", "triggers": { "on_message": [
+                { "action": "set_motor", "target": "M", "running": true } ] }"#
+        } else {
+            ""
+        };
+        let start_message = if resume {
+            r#", "model_triggers": { "on_start": [
+                { "action": "send_message", "target": "M", "delay": "10" } ] }"#
+        } else {
+            ""
+        };
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "motor",
+          "run": {{ "stop_time": {stop}, "seed": 1, "replications": 1 }}{start_message},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "C", "kind": "conveyor", "params": {{
+                "speed": 1.0, "length": 20.0, "accumulating": true }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }},
+            {{ "name": "M", "kind": "motor", "params": {{
+                "running": {running}{resume_trigger} }} }}
+          ],
+          "connections": [
+            {{ "from": "S", "to": "C" }}, {{ "from": "C", "to": "K" }},
+            {{ "from": "M", "to": "C" }}
+          ]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    /// task-184: a stopped motor freezes the belt and never accepts upstream
+    /// items; no output is produced while stopped.
+    #[test]
+    fn stopped_motor_freezes_conveyor_and_acceptance() {
+        let model = motor_model(false, false, 50.0);
+        let report = crate::run_model(&model).expect("run");
+        assert_eq!(report.completed.mean, 0.0);
+        assert_eq!(report.objects["C"].input_count.mean, 0.0);
+    }
+
+    /// task-184: restarting a motor resumes the belt; the queued item reaches
+    /// the sink without losing its position or being counted twice.
+    #[test]
+    fn motor_resume_continues_conveyor() {
+        let model = motor_model(false, true, 50.0);
+        let cfg = SimConfig {
+            stop_time: 50.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let _ = crate::simulate_traced(&model, &cfg, 0).expect("run");
+        let report = crate::run_model(&model).expect("run");
+        assert_eq!(report.completed.mean, 1.0, "{report:?}");
+    }
+
+    /// task-184: a stopped belt does not create a zero-interval event spin.
+    #[test]
+    fn stopped_motor_keeps_event_count_bounded() {
+        let model = motor_model(false, false, 100.0);
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        assert!(
+            trace.events.len() < 500,
+            "event spin: {}",
+            trace.events.len()
+        );
+    }
+
+    /// task-184: Motor connections are validated: only conveyors are valid
+    /// targets, and S connections are rejected with the motor name.
+    #[test]
+    fn motor_connection_validation_rejects_non_conveyors_and_s_links() {
+        let base = motor_model(false, false, 10.0);
+        let mut model =
+            Model::parse_json(&serde_json::to_string(&base).expect("json")).expect("parse");
+        // Replace the valid M->C with M->K (sink).
+        let sink = model.objects[2].name.clone();
+        if let Some(connection) = model
+            .connections
+            .iter_mut()
+            .find(|connection| connection.from == "M")
+        {
+            connection.to = sink;
+        }
+        let error = model.validate().expect_err("non-conveyor");
+        let text = error.to_string();
+        assert!(text.contains("motor 'M'"), "{text}");
+        assert!(text.contains("conveyor"), "{text}");
+
+        let mut s_model =
+            Model::parse_json(&serde_json::to_string(&base).expect("json")).expect("parse");
+        if let Some(connection) = s_model
+            .connections
+            .iter_mut()
+            .find(|connection| connection.from == "M")
+        {
+            connection.kind = Some(openflex_model::ConnectionKind::S);
+        }
+        let error = s_model.validate().expect_err("S link");
+        assert!(error.to_string().contains("S connection"), "{error}");
+    }
+
+    /// task-184: motor runs are deterministic and no-motor models keep their
+    /// old report shape.
+    #[test]
+    fn motor_is_deterministic_and_optional() {
+        let model = motor_model(false, true, 50.0);
+        let a = crate::run_model(&model).expect("first");
+        let b = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&a).expect("json"),
+            serde_json::to_string(&b).expect("json")
+        );
+    }
+
+    /// task-184: stopping a motor freezes an item already on the belt; resuming
+    /// does not reset its position or re-count it.
+    #[test]
+    fn motor_stop_freezes_existing_belt_items() {
+        let model = motor_model(true, false, 100.0);
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("sim");
+        let c = sim.by_name["C"];
+        let m = sim.by_name["M"];
+        sim.objects[c].belt.as_mut().expect("belt").positions = vec![5.0];
+        sim.objects[c].belt.as_mut().expect("belt").holds = vec![0.0];
+        sim.objects[c].belt_items.push(item());
+        sim.set_motor_running(m, false).expect("stop");
+        let before = sim.objects[c]
+            .belt
+            .as_ref()
+            .expect("belt")
+            .positions
+            .clone();
+        sim.now = 50.0;
+        sim.sync_belt(c);
+        assert_eq!(
+            sim.objects[c].belt.as_ref().expect("belt").positions,
+            before
+        );
+        assert!(
+            !sim.can_accept(c, 0),
+            "stopped belt must reject upstream items"
+        );
+        sim.set_motor_running(m, true).expect("start");
+        sim.now = 51.0;
+        sim.sync_belt(c);
+        assert!(sim.objects[c].belt.as_ref().expect("belt").positions[0] > 5.0);
+    }
+
+    /// task-184: models without a Motor keep the same model/report shape (no
+    /// motor property/row is introduced by the new enum variant).
+    #[test]
+    fn models_without_motor_are_unchanged() {
+        let model = Model::from_json(
+            r#"{
+              "format": "openflex-model", "version": 1, "name": "no-motor",
+              "run": { "stop_time": 20.0, "seed": 1 },
+              "objects": [
+                { "name": "S", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 1.0 },
+                    "max_arrivals": 2 } },
+                { "name": "C", "kind": "conveyor", "params": {
+                    "speed": 1.0, "length": 10.0 } },
+                { "name": "K", "kind": "sink", "params": {} }
+              ],
+              "connections": [
+                { "from": "S", "to": "C" }, { "from": "C", "to": "K" }
+              ]
+            }"#,
+        )
+        .expect("model");
+        let a = crate::run_model(&model).expect("run");
+        let json = serde_json::to_value(&a).expect("json");
+        assert!(json["objects"].get("M").is_none());
+        assert!(!json.to_string().contains("Motor"));
+        let b = crate::run_model(&model).expect("repeat");
+        assert_eq!(
+            serde_json::to_string(&a).expect("json"),
+            serde_json::to_string(&b).expect("json")
+        );
     }
 }

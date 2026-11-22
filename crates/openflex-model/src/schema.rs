@@ -570,6 +570,12 @@ fn definitions() -> Value {
         })),
     );
     defs.insert(
+        "motor_params".into(),
+        params_schema(json!({
+            "running": { "type": "boolean", "default": true }
+        })),
+    );
+    defs.insert(
         "resource_params".into(),
         params_schema(json!({
             "capacity": { "type": "integer", "minimum": 1, "default": 1 },
@@ -914,6 +920,7 @@ fn object_schema() -> Value {
         "fluid_valve",
         "fluid_sink",
         "fluid_pipe",
+        "motor",
     ];
     let param_defs = [
         "source_params",
@@ -944,6 +951,7 @@ fn object_schema() -> Value {
         "fluid_valve_params",
         "fluid_sink_params",
         "fluid_pipe_params",
+        "motor_params",
     ];
     let links: Vec<Value> = kinds
         .iter()
@@ -1093,6 +1101,16 @@ fn action_schema() -> Value {
                 "type": "object",
                 "properties": { "action": { "const": "release_item" } },
                 "required": ["action"],
+                "additionalProperties": false
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "action": { "const": "set_motor" },
+                    "target": { "type": "string" },
+                    "running": { "type": "boolean" }
+                },
+                "required": ["action", "target", "running"],
                 "additionalProperties": false
             },
             {

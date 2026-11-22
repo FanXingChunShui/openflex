@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### 模型与引擎
+
+- **conveyor `Motor` 对象**：新增 `ObjectKind::Motor` + `MotorParams { running, triggers }`（`running` 缺省 true、
+  空时不序列化，旧模型 JSON 与报告逐位不变）。Motor 通过 **A 连接**控制它所连的 conveyor：
+  `running: false` 时皮带**停止推进**、已存在件位置冻结、`can_accept` 为假（上游不再往皮带上堆）、
+  且**不产生新事件**（trace 事件数有界，不会零间隔自旋）；置起后从原位置继续、不重复计数。
+  新增 `Action::SetMotor { target, running }` 供触发器/消息切换；`validate` 拒绝 Motor 连到非 conveyor，
+  以及 Motor 上的 S 连接（措辞含 Motor 名）。实测：同一模型 stop → `completed 0`、running → `completed 5`。
+
+### 桌面 GUI
+
+- **补齐六类对象的属性表单**：`multiprocessor`（槽位/设置与加工时间/操作员）、
+  `combiner`（pack/join/batch + 组件数 + 操作员）、`separator`（unpack/split + 数量 + 语义提示）、
+  `merge`（等待全部输入）、`split`（按 item type）、`escalator`（复用 conveyor 表单）此前在 GUI 里
+  只显示「no form yet — edit the JSON below」，现在都有真实编辑器。
+- **Motor 也接入 GUI**：选择器、conveyor 家族配色、`running` 复选框。
+- 删掉 `_ => "no form yet"` 兜底：**所有对象类型都有表单了**，以后新增 kind 会直接编译失败，
+  用编译错误提醒补表单，而不是在界面上留个空壳。
+
+### 报告与 CLI
+
+
 ## v1.38.0 — 2026-11-22
 
 本轮把「模型自己声明的实验」打通到 GUI（此前执行逻辑埋在 CLI 里，桌面端完全看不到模型声明的场景），把 **`explicit` 路线状态纳入检查点**（中途存盘续跑与一次跑完逐位相同），并修掉 README 里一处**明显失实**的功能表（它仍写着「3D 视图 / GUI ⛔ 暂缺」，而三平台桌面安装包已经发布）。

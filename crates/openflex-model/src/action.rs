@@ -36,6 +36,8 @@ pub enum Action {
     /// Release an item the object is currently holding (A4, the counterpart of
     /// `send_to_port: -1` / [`crate::model::PortStrategy::Hold`]).
     ReleaseItem,
+    /// task-184: start or stop a named Motor (and its connected conveyors).
+    SetMotor { target: String, running: bool },
     /// Run a sandboxed FlexScript (rhai) snippet (D2 script layer).
     ///
     /// The script is compiled once when the model is loaded (the model layer
@@ -99,6 +101,13 @@ impl<'de> Deserialize<'de> for Action {
                 check_keys(&map, &name, &[]).map_err(de::Error::custom)?;
                 Action::ReleaseItem
             }
+            "set_motor" => {
+                check_keys(&map, &name, &["target", "running"]).map_err(de::Error::custom)?;
+                Action::SetMotor {
+                    target: field(&mut map, "target", &name).map_err(de::Error::custom)?,
+                    running: field(&mut map, "running", &name).map_err(de::Error::custom)?,
+                }
+            }
             "script" => {
                 check_keys(&map, &name, &["source"]).map_err(de::Error::custom)?;
                 Action::Script {
@@ -107,7 +116,7 @@ impl<'de> Deserialize<'de> for Action {
             }
             other => {
                 return Err(de::Error::custom(format!(
-                    "unknown action '{other}' (expected one of: set_label, set_item_type, increment_label, send_message, destroy_item, release_item, script)"
+                    "unknown action '{other}' (expected one of: set_label, set_item_type, increment_label, send_message, destroy_item, release_item, set_motor, script)"
                 )));
             }
         };

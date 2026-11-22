@@ -655,6 +655,7 @@ fn parse_params(kind: ObjectKind, value: serde_json::Value) -> Result<ObjectPara
         ObjectKind::VisualTool => ObjectParams::VisualTool(decode(value)?),
         ObjectKind::NetworkNode => ObjectParams::NetworkNode(decode(value)?),
         ObjectKind::TrafficControl => ObjectParams::TrafficControl(decode(value)?),
+        ObjectKind::Motor => ObjectParams::Motor(decode(value)?),
     })
 }
 
@@ -702,6 +703,7 @@ const KINDS: &[&str] = &[
     "visual_tool",
     "network_node",
     "traffic_control",
+    "motor",
 ];
 
 const DIST_CHOICES: &[&str] = &[
@@ -1488,7 +1490,7 @@ impl EditForm {
                     &names.operators,
                 );
             }
-            ObjectParams::Conveyor(p) => {
+            ObjectParams::Conveyor(p) | ObjectParams::Escalator(p) => {
                 changed |= ui
                     .add(
                         egui::DragValue::new(&mut p.speed)
@@ -2537,21 +2539,142 @@ impl EditForm {
                 changed |= optional_string(ui, "colour", &mut p.color);
                 changed |= optional_string(ui, "text", &mut p.text);
             }
+            ObjectParams::MultiProcessor(p) => {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.slots)
+                            .speed(1.0)
+                            .range(1..=1000)
+                            .prefix("slots "),
+                    )
+                    .changed();
+                changed |= distribution_editor(ui, "setup time", &mut p.setup_time);
+                changed |= distribution_editor(ui, "process time", &mut p.process_time);
+                changed |= object_picker(
+                    ui,
+                    "setup operator",
+                    &mut p.setup_operator,
+                    &names.operators,
+                );
+                changed |= object_picker(
+                    ui,
+                    "process operator",
+                    &mut p.process_operator,
+                    &names.operators,
+                );
+            }
+            ObjectParams::Combiner(p) => {
+                egui::ComboBox::from_id_salt("combiner-mode")
+                    .selected_text(match p.mode {
+                        openflex_model::CombinerMode::Pack => "pack",
+                        openflex_model::CombinerMode::Join => "join",
+                        openflex_model::CombinerMode::Batch => "batch",
+                    })
+                    .show_ui(ui, |ui| {
+                        for (mode, name) in [
+                            (openflex_model::CombinerMode::Pack, "pack"),
+                            (openflex_model::CombinerMode::Join, "join"),
+                            (openflex_model::CombinerMode::Batch, "batch"),
+                        ] {
+                            if ui.selectable_label(p.mode == mode, name).clicked() {
+                                p.mode = mode;
+                                changed = true;
+                            }
+                        }
+                    });
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.components_per_container)
+                            .speed(1.0)
+                            .range(1..=10_000)
+                            .prefix("components "),
+                    )
+                    .changed();
+                changed |= distribution_editor(ui, "setup time", &mut p.setup_time);
+                changed |= distribution_editor(ui, "process time", &mut p.process_time);
+                changed |= object_picker(
+                    ui,
+                    "setup operator",
+                    &mut p.setup_operator,
+                    &names.operators,
+                );
+                changed |= object_picker(
+                    ui,
+                    "process operator",
+                    &mut p.process_operator,
+                    &names.operators,
+                );
+            }
+            ObjectParams::Separator(p) => {
+                egui::ComboBox::from_id_salt("separator-mode")
+                    .selected_text(match p.separate_mode {
+                        openflex_model::SeparateMode::Unpack => "unpack",
+                        openflex_model::SeparateMode::Split => "split",
+                    })
+                    .show_ui(ui, |ui| {
+                        for (mode, name) in [
+                            (openflex_model::SeparateMode::Unpack, "unpack"),
+                            (openflex_model::SeparateMode::Split, "split"),
+                        ] {
+                            if ui.selectable_label(p.separate_mode == mode, name).clicked() {
+                                p.separate_mode = mode;
+                                changed = true;
+                            }
+                        }
+                    });
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.split_count)
+                            .speed(1.0)
+                            .prefix("split count "),
+                    )
+                    .changed();
+                ui.label(
+                    egui::RichText::new(match p.separate_mode {
+                        openflex_model::SeparateMode::Unpack => {
+                            "unpack releases split_count + 1 items (0 = all components)"
+                        }
+                        openflex_model::SeparateMode::Split => {
+                            "split releases split_count items in total"
+                        }
+                    })
+                    .size(9.0_f32)
+                    .color(palette::TEXT_DIM),
+                );
+            }
+            ObjectParams::Motor(p) => {
+                changed |= ui
+                    .checkbox(&mut p.running, "running")
+                    .on_hover_text("off stops every conveyor connected to this motor")
+                    .changed();
+                ui.label(
+                    egui::RichText::new(
+                        "connect conveyors with A connections; a SetMotor action can switch it",
+                    )
+                    .size(9.0_f32)
+                    .color(palette::TEXT_DIM),
+                );
+            }
+            ObjectParams::Merge(p) => {
+                changed |= ui
+                    .checkbox(&mut p.wait_for_all, "wait for all inputs")
+                    .on_hover_text("release only when every input port has an item")
+                    .changed();
+            }
+            ObjectParams::Split(p) => {
+                changed |= ui
+                    .checkbox(&mut p.by_item_type, "split by item type")
+                    .on_hover_text("route by item_type instead of round-robin")
+                    .changed();
+            }
             ObjectParams::FluidSink(_) => {
                 ui.label("Fluid sink: no kind-specific parameters (see JSON for triggers).");
             }
             ObjectParams::Sink(_) => {
                 ui.label("Sink: no kind-specific parameters (see JSON for process flow).");
-            }
-            _ => {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{}: no form yet — edit the JSON below.",
-                        self.kind.as_str()
-                    ))
-                    .weak(),
-                );
-            }
+            } // Every object kind has a form. A new kind added to the model must
+              // grow an arm here; that compile error is the reminder, which is why
+              // there is no catch-all any more.
         }
         ui.separator();
         egui::CollapsingHeader::new("Timetable (JSON)")
@@ -7914,6 +8037,8 @@ idle,busy,blocked,down\n",
             ObjectKind::VisualTool => egui::Color32::from_rgb(140, 144, 152),
             // Travel-network furniture: nodes and their traffic controllers.
             ObjectKind::NetworkNode => egui::Color32::from_rgb(120, 150, 130),
+            // A motor belongs to the conveyor family it drives.
+            ObjectKind::Motor => egui::Color32::from_rgb(176, 148, 88),
             ObjectKind::TrafficControl => egui::Color32::from_rgb(150, 132, 108),
             _ => egui::Color32::from_rgb(124, 136, 152),
         }

@@ -67,13 +67,14 @@ fn new_kinds_appear_in_the_catalogue() {
         ObjectKind::ItemToFluid,
         ObjectKind::FluidToItem,
         ObjectKind::VisualTool,
+        ObjectKind::Motor,
     ] {
         assert!(all.contains(&kind), "{kind:?} missing from ObjectKind::all");
     }
     assert_eq!(
         all.len(),
-        28 + 10,
-        "28 previous kinds plus the 10 FlexSim 7.5 additions"
+        28 + 11,
+        "28 previous kinds plus the 11 FlexSim 7.5 additions"
     );
 }
 

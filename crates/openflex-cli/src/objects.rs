@@ -132,6 +132,10 @@ pub fn describe_kind(kind: ObjectKind) -> (&'static str, &'static str) {
             "Limits how many travellers occupy an area of the travel network at once.",
             "capacity: travellers allowed inside at the same time, default 1\nmode: mutual_exclusion | un_timed\nspeed_factor: multiplier applied to traveller speed inside the area, default 1",
         ),
+        ObjectKind::Motor => (
+            "Starts and stops the conveyors connected to it.",
+            "running: boolean, default true\ntriggers: on_message etc.; set_motor action stops/starts another motor",
+        ),
         ObjectKind::VisualTool => (
             "Scenery or a container for other objects; no simulation behaviour.",
             "shape: box | plane | column | sphere\nsize: [x, y, z] in model units\ncolor: optional #rrggbb\ntext: optional caption",
