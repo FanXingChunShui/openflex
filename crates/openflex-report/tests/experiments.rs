@@ -257,6 +257,11 @@ fn experiment_reports_group_the_successful_outcomes() {
     assert_eq!(outcomes.iter().filter(|o| !o.succeeded()).count(), 1);
 }
 
+/// Snapshot text with platform line endings normalised to LF.
+fn normalise(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
 /// The three renderings must be byte-for-byte what the CLI printed before the
 /// execution loop moved out of it. The snapshots were captured from
 /// `openflex experiment` on this exact model.
@@ -267,14 +272,21 @@ fn renderings_match_the_pre_extraction_cli_output() {
     let reports = experiment_reports(&outcomes, &model);
     assert_eq!(reports.len(), 1);
 
+    // The fixtures are checked in as text; on Windows `autocrlf` hands them to
+    // `include_str!` with CRLF while the renderers emit LF. Compare normalised
+    // text so the snapshot tests the rendering, not the checkout's line endings.
     let table = render_experiment(&reports[0], Format::Table).expect("table");
-    assert_eq!(table, TABLE_SNAPSHOT, "table output changed");
+    assert_eq!(table, normalise(TABLE_SNAPSHOT), "table output changed");
 
     let csv = render_experiment(&reports[0], Format::Csv).expect("csv");
-    assert_eq!(csv, CSV_SNAPSHOT, "csv output changed");
+    assert_eq!(csv, normalise(CSV_SNAPSHOT), "csv output changed");
 
     let markdown = render_experiment(&reports[0], Format::Markdown).expect("markdown");
-    assert_eq!(markdown, MARKDOWN_SNAPSHOT, "markdown output changed");
+    assert_eq!(
+        markdown,
+        normalise(MARKDOWN_SNAPSHOT),
+        "markdown output changed"
+    );
 }
 
 #[test]

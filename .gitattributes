@@ -1,0 +1,3 @@
+# Snapshot fixtures are compared text-for-text by tests that use `include_str!`.
+# Keep them LF in every checkout so the comparison does not depend on autocrlf.
+crates/openflex-report/tests/fixtures/** text eol=lf
