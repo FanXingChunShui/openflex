@@ -1,0 +1,13 @@
+# Fields declared in the model that the engine never reads, directly or through
+# an accessor. `NetworkNodeParams.max_travelers` used to be on this list and was
+# deleted: it had a field, a GUI control and a CLI description, and changing it
+# did nothing. Each entry below is the same kind of debt — wire it up or delete
+# it — but deciding which needs a design call, so they are frozen here rather
+# than fixed blind. `bash scripts/check-dead-params.sh` fails on anything new.
+DispatcherParams.max_tasks
+FailureParams.repair_operator
+FluidMixerParams.product_id
+FluidProcessorParams.destination_port
+FluidProcessorParams.receive_port
+ProcessorParams.changeover_time
+TickerParams.tick_length

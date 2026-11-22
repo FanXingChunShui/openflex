@@ -443,6 +443,9 @@ jobs:
           files=(scripts/*.sh packaging/*.sh packaging/*/*.sh)
           shellcheck -S warning "${files[@]}"
 
+      - name: no new parameters the engine ignores
+        run: bash scripts/check-dead-params.sh
+
       - name: parity ledger cites real test names
         run: bash scripts/check-doc-evidence.sh
 

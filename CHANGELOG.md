@@ -17,6 +17,18 @@
   在到达后 5.0 才出发、`unload_time=3` 时 `operator_loaded` 在 requester 到达后 3.0 触发（1e-9 内）。
   此前只有"两次运行一致"，**没有断言时长真的生效**。
 
+### 工具与 CI
+
+- **死参数棘轮 `scripts/check-dead-params.sh`**：扫描模型里声明的每个 `*Params` 字段，
+  找出**引擎里从未出现**的那些（含通过访问器间接消费的情况，避免误报），
+  与 `docs/dead-params-allowlist.txt` 比对——**新增一个引擎不读的字段会让 CI 失败**。
+  这条检查直接回应 `max_travelers` 那类问题：用户设了值、界面接受、模型毫无变化。
+  目前冻结 7 个已知项（`max_tasks` / `repair_operator` / `product_id` / 流体收发端口 /
+  `changeover_time` / `tick_length`），每项都待「接线或删除」的设计决定，而不是放着不管。
+  已验证：临时加一个探针字段会让它失败（exit 1），移除后恢复。
+- **`scripts/check-doc-evidence.sh` 接入 CI**：文档里引用的每个测试名必须能在源码里 `fn` 到，
+  防止「取证台账」本身变成新的虚标来源（它当场抓到 2 个把 JSON 策略字符串当测试名的引用）。
+
 ### 示例
 
 - **`examples/three-varieties.ofm`**：对应 FlexSim「First Model」——三种产品各一台专机、共用一台测试站、
