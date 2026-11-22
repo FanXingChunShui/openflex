@@ -209,6 +209,7 @@
 | Reports and Statistics：Summary Report（Excell 导出） | `report`（Markdown/CSV/JSON）+ `--xlsx` | 🟡 | 有汇总报告与 xlsx；**无"用户自选属性列 → Excel"的可配置报告**，列由引擎固定 |
 | Reports and Statistics：State Report（状态占比报表） | 报告含状态占比 | ✅ | |
 | Reports and Statistics：Model Documentation（自动生成模型文档） | 无 | ⛔ | 无文档生成 |
+| Experimenter：模型的场景声明（`experiments[]`） | `experiments[]` + `openflex experiment` + GUI `Declared experiments` 面板 | ✅ | 场景 × 复现、置信区间、per-scenario 失败隔离、hook 日志；GUI 可单个/全部运行并显示成败 |
 | Dashboard Concepts（仪表盘容器，运行中实时刷新） | Studio 仪表盘 + `openflex chart`（终端） | 🟡 | 有动态仪表盘与终端图表；仍无 FlexSim 的"图表对象 + 数据源绑定"可编辑模型 |
 | Dashboard Statistics Page（把对象统计画成图） | Studio 时间序列/柱状图 | 🟡 | 有吞吐柱状与多对象时序；无按"统计项选择器"自由组合 |
 | Dashboard Tracked Variables（把 tracked variable 画成图） | `tracked_series` / `tracked_summaries` + GUI 迷你折线 | 🟡 | 数据与类型体系（level/state/staytime/kinetic）已具备；GUI 有 84×14 迷你折线，无独立图表对象 |

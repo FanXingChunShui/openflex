@@ -46,6 +46,7 @@ cargo build -p openflex-gui --release
 | 全局变量 | 左侧 `Global variables (n)`：输入名字 `+ variable` 新建（默认 number 型、初值 0、重名被拒）， 逐条改值（失焦提交，保持声明的 `kind`），`x` 删除；表达式用 `$Name` 读取 |
 | 取列表 | 左侧 `Pick lists (n)`：输入名字 `+ pick list` 新建（自动带一个起始条目）， 列表内可增删改条目（`name` / `value` 逐格编辑，条目名重复被拒），`x` 删整表； **每个列表至少保留一个条目**（删最后一条被拒并给出原因）；表达式用 `picklist("list","entry")` 取值 |
 | 性能指标 | 左侧 `Performance measures (n)`：逐行编辑 `name` / `expression` / `unit` 三列， `+ measure` 加一行、`-` 删该行、`Apply measures` 提交； 提交前先做本地检查——**有名字没表达式**（或反之）直接报错且模型不动， 整行全空则**自动忽略**（可留空行不影响提交），`unit` 留空时**不写进 JSON**； 最终经 `commit_model_edit` 走校验→快照→清结果。编辑器下方提示表达式可读 `time` / `created` / `completed` / `$globals` |
+| 已声明实验 | 左侧 `Declared experiments (n)` 列出模型 JSON 里 `experiments` 的每个实验（场景 × 复现），可 `run` 单个或 `Run all`；后台线程执行，结果表给 `completed`/吞吐/成败，失败行琥珀色并悬停显示原因 |
 | 路线可视化 | dispatcher 声明 `explicit` 路线时，画布画出**琥珀色虚线**（每段末端小圆点），与蓝色实线的流连线区分；`home`/`pickup` 回到 dispatcher 自身，`requester` 依赖运行时故画到那里即停 |
 | 跟踪汇总 | 报告面板的 `Tracked summaries (n)` 块：`state` 显示各状态占比（省略零占比，并注明覆盖整个模型），`staytime` 显示 n / min / p50 / p90 / max / mean；仅当模型声明了这两类跟踪变量时出现 |
 | 任务序列 | `task_sequence` 编辑区有 `append` / `explicit` 模式切换；explicit 下每个 travel 腿配目标选择器（`home` / `object` / `position` / 无），object 给名字输入、position 给 x/y 输入；`utilize` / `break` 腿在组合框里只读展示（琥珀色 + `x` 可删），避免点击时丢掉 duration |
