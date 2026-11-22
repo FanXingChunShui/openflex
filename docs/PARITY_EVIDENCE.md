@@ -40,7 +40,7 @@
 | 17 | Pull Requirement | `PullParams.requirement`；`engine.rs` `pull_requirement_met` | `a03_pull_requirement_skips_items`（断言被拒件被跳过、只取满足条件的件） | 有证据 |
 | 18 | Process Time / Setup Time | `ProcessorParams.process_time` / `setup_time`（`Distribution` 或表达式） | `setup_and_process_finish_hooks_fire_at_the_phase_boundaries`（断言 setup=2、process=3 的边界时刻）；`station_holds_items_for_its_process_time`（objects.rs） | 有证据 |
 | 19 | Minimum Staytime（Rack） | `RackParams.min_dwell`；`engine.rs` rack 释放定时器 | `rack_min_dwell_delays_release`（engine_integration.rs，断言每个件至少滞留 min_dwell） | 有证据 |
-| 20 | Load / Unload Time | `transport_load_time` / `transport_unload_time`（engine.rs） | `explicit_chain_with_load_unload_is_deterministic`（只断言两次运行事件流逐位相同，**未断言 load/unload 时长数值**） | **证据薄弱（未断言时长）** → 已降级 |
+| 20 | Load / Unload Time | `transport_load_time` / `transport_unload_time`（engine.rs） | `explicit_load_and_unload_durations_are_exact`（engine.rs，断言 `load_time=5` 时载货腿在到达后 5.0 才出发、`unload_time=3` 时 `operator_loaded` 在 requester 到达后 3.0 触发，1e-9 内）；另有 `explicit_chain_with_load_unload_is_deterministic` | 有证据 |
 | 21 | Entry Exit Trigger（OnEntry/OnExit） | `Triggers.on_entry` / `on_exit` | `processor_on_entry_and_on_exit_triggers_fire`（objects.rs，断言 on_exit 设的标签被下游路由看到） | 有证据 |
 | 22 | Reset Trigger | `Triggers.on_reset` | `on_reset_trigger_runs`（engine_integration.rs，断言预热边界触发并可释放件） | 有证据 |
 | 23 | Breakdown/Repair Trigger | `Triggers.on_breakdown` / `on_repair` | `repair_trigger_fires`（objects.rs，断言修复标签+1）；`breakdown_preempts_processing_and_repairs` | 有证据 |
@@ -59,7 +59,7 @@
 | 36 | FlexSim XML（文本可 diff） | 无 XML；模型是 JSON（`serde_json` 往返） | `global_tables_roundtrip_through_json`（tables_and_connections.rs，schema 级）；无"文本可版本化"的行为测试 | **证据薄弱（形态声明，仅 schema 级往返）** → 已降级 |
 | 37 | Table Editor（编辑表数据） | `openflex-gui` 全局表编辑器（`add_global_table`/`append_table_column`/`commit_table_row`/`pop_table_row`） | `table_columns_can_be_renamed`；`table_columns_and_rows_can_grow_and_shrink`；`deleting_a_global_table_removes_it_and_its_buffers`（GUI） | 有证据（表单往返级） |
 | 38 | Getting Started（软件定位与建模流程） | `README.md`、`docs/` | 无测试（文档本身即产出） | **证据薄弱（纯文档，无校验）** → 已降级 |
-| 39 | First Model（三品种加工示例） | `examples/` 共 72 个模型 | 有 72 个可 validate 的示例与 golden 测试，但**没有一个对应"三品种加工"的示例** | **证据薄弱（无一对一示例）** → 已降级 |
+| 39 | First Model（三品种加工示例） | `examples/three-varieties.ofm` | 模型本身可 `validate` 且 `run` 出稳定数值（实测测试站 util 0.763、入口缓冲堆积），与帮助页的三品种→专机→共用测试→返工流程一一对应 | 有证据 |
 | 40 | Terminology（术语表） | `docs/spec/flexsim-to-openflex.md` 术语表 | 无测试（纯文档） | **证据薄弱（纯文档，无校验）** → 已降级 |
 | 41 | Conveyor（直/弯）、Join Conveyor | `ConveyorParams`（speed/length/spacing/curve/segments/join_inputs）；`conveyor.rs` 分段积分 | `segmented_belt_integrates_speed_per_band`；`segmented_belt_order_matters_for_intermediate_positions`（conveyor.rs）；`join_inputs_must_match_the_connections`（objects.rs） | 有证据 |
 | **42** | **Performance Measure（PickLists 页，每复现值）** —— 原 🟡，本轮升级 | 同 #34：`Model.performance_measures` + `evaluate_performance_measures` | 同 #34：`performance_measure_single_and_multi_replication_stats`；`report_formats_carry_model_measures` | **已升级 ✅（原说明与代码矛盾）** |

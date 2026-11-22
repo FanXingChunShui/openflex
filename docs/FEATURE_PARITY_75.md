@@ -124,7 +124,7 @@
 | Place in Bay / Place in Level | `rack.pick_policy` | 🟡 | 有策略枚举，无逐件表达式指定 bay/level |
 | Pass To（Dispatcher 选端口） | `DispatcherParams` 的派发逻辑 | 🟡 | 有派发与优先级；无"Pass To 表达式"钩子 |
 | Queue Strategy（任务序列排队打分） | Dispatcher 优先级排序 | 🟡 | 有优先级；无自定义打分函数 |
-| Load / Unload Time | `load_time`/`unload_time`（分布 + 表达式） | 🟡 | **证据薄弱：只有 `explicit_chain_with_load_unload_is_deterministic` 断言两次运行一致，没有任何测试断言 load/unload 时长对结果的影响** |
+| Load / Unload Time | `load_time`/`unload_time`（分布 + 表达式） | ✅ | 时长精确生效：`load_time=5` → 载货腿在到达后 5.0 出发；`unload_time=3` → `operator_loaded` 在 requester 到达后 3.0 触发（`explicit_load_and_unload_durations_are_exact`，1e-9 内） |
 | Flow Rate / Item Speed（流体/传送带速度） | `conveyor.speed`、流体速率 | 🟡 | 静态或分布；无"每件进入时求值"的 Item Speed picklist |
 | Break To（中断任务序列的接受条件） | 无 | ⛔ | TaskExecuter 无 break 任务与 BreakTo 钩子 |
 | Text Display（VisualTool 的 3D 文字） | `visual_tool` 无文本渲染 | ⛔ | 无 3D 文本 |
@@ -307,7 +307,7 @@
 | FlexSim 7.5 功能 | OpenFlex 现状 | 状态 | 证据或缺口说明 |
 |---|---|---|---|
 | Getting Started（软件定位与建模流程） | `README`、`docs/` | 🟡 | **证据薄弱：纯文档，无测试或校验**（文档存在不等于流程可依） |
-| First Model（三品种加工示例） | `examples/`（72 个模型）、golden 案例 | 🟡 | **证据薄弱：有 72 个可 validate 的示例，但没有一个对应"三品种加工"的示例**，无一对一可比对象 |
+| First Model（三品种加工示例） | `examples/three-varieties.ofm` | ✅ | 三品种各一台专机（`by_item_type` 分流）+ 共用测试站 + 不合格返工回入口（`by_condition`）。实测 480 分钟 5 复现：测试站 util **0.763** 成为瓶颈，入口缓冲因 FIFO 队头被占机阻塞而堆积 |
 | Interacting With FlexSim（建/命名/连接/导航） | Studio 交互 | 🟡 | 有建/连/导航；无键盘拖拽建连（A/S/Q 键语义） |
 | Keyboard Interaction（3D 视图快捷键） | Studio 快捷键 | 🟡 | 有部分快捷键；无 FlexSim 全套 |
 | Terminology（术语表） | `docs/spec/flexsim-to-openflex.md` 术语表 | 🟡 | **证据薄弱：纯文档，无测试或校验** |
@@ -336,9 +336,11 @@
 | **合计** | **207** | 100% |
 
 > **本次审计的净变化**（task-185，详见 [PARITY_EVIDENCE.md](PARITY_EVIDENCE.md)）：
-> ✅ 41 → **35**（降级 8 行：`max_travelers` 未接线、load/unload 无时长断言、查找无测试、
-> XML 仅 schema 级、三行纯文档/概念页、First Model 无一对一示例；同时升级 2 行：
-> Performance Measure 与 Tracked Variables 的四种 kind 已实装），
+> 审计前 ✅ **41** → 审计后 **35**（降级 8 行：`max_travelers` 未接线、load/unload 无时长断言、
+> 查找无测试、XML 仅 schema 级、三行纯文档/概念页、First Model 无一对一示例；同时升级 2 行：
+> Performance Measure 与 Tracked Variables 的四种 kind 已实装）→ **审计后逐项修复，现为 ✅ 39**：
+> `max_travelers` 直接**删除字段**（不留虚标）、load/unload 补了精确时长断言、
+> 查找逻辑抽成纯函数并补测、First Model 补了 `examples/three-varieties.ofm`。
 > ⛔ 70 → **69**（SQL 查询已有只读子集，⛔ → 🟡）。
 > **现在的每一个 ✅ 都能在取证台账里指到实现符号 + 至少一个行为级测试。**
 
