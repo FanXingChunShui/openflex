@@ -74,7 +74,7 @@
 | General Page：3D Shapes / 旋转 / 尺寸 | `pos` 仅二维坐标 | 🟡 | 无 3D 形状与朝向；Studio 有 2D/透视投影但形状是占位体 |
 | General Page：OnDraw 自定义绘制与"返回 1 抑制默认绘制" | `triggers.on_draw` 可声明 | 🟡 | schema 与校验支持，**渲染端未接线**（`action.rs` 注释明说 "the renderer integration is a follow-up"） |
 | Labels Page（对象标签，自动复位选项） | 对象级标签 | 🟡 | 无"Automatically Reset Labels"开关；标签复位只能靠 `on_reset` 手动写 |
-| Triggers Page（每对象不同触发器集合） | 14 个通用触发器 | 🟡 | 见 §7 PickLists 明细；对象专属触发器（`OnArrival`/`OnContinue`/`OnEntryRequest`/`OnResourceAvailable`）缺失 |
+| Triggers Page（每对象不同触发器集合） | 19 个触发器（含 `on_load`/`on_unload`/`on_empty`/`on_full`/`on_entry_request`） | 🟡 | 见 §7 PickLists 明细；仍缺 `OnArrival`/`OnContinue`/`OnResourceAvailable`/`OnReceiveTaskSequence` 等对象专属触发器 |
 | Statistics Window（实时状态与吞吐面板） | CLI 报告 + Studio 面板 + `--timeseries` | ✅ | 时间加权 content、状态占比、停留时间 |
 | Flow Page（Send To Port / Use Transport / Priority / Preempt） | `connections[].strategy`；`Hold` 对应 −1 | 🟡 | `Use Transport`/`Request Transport From` 无对象级开关，运输靠 `transporter`/`dispatcher` 任务；`Priority`/`Preempt` 只在 Dispatcher 侧部分实现 |
 | Source Page（三种到达风格 + 到达表） | 间隔/批量/首件/上限/停止 + `arrival_schedule_from_table` | ✅ | 表驱动到达已接线（`engine.rs` 读全局表） |
@@ -139,8 +139,8 @@
 | Down/Up Trigger（MTBF 组级） | 无组级触发器 | ⛔ | 只有对象级 `on_breakdown` |
 | Load/Unload Trigger（OnLoad/OnUnload） | `Triggers.on_load` / `on_unload` | ✅ | OnLoad 落在 `TransportDepart`（`now+dwell+load`）、OnUnload 落在 `OperatorLoaded`，各一次且**不新增事件**（事件序列/统计不变）；`on_load_script_is_precompiled`、`on_load_fires_at_dwell_plus_load`、`on_load_label_is_visible_in_the_unload_hook`。限制：执行器不持件，钩子的 item 是 requester 的件（已写进 Rust 文档注释） |
 | Setup/Process Finish Trigger（OnSetupFinish/OnProcessFinish） | `params.triggers.setup_finish` / `process_finish` | ✅ | `SimTrigger::SetupFinish`/`ProcessFinish`（`action.rs`；JSON 名 `setup_finish`/`process_finish` 由 `as_str`/`parse` 映射）；在两个边界触发且早于 `on_exit`；`setup_time=0` 无独立 setup 阶段故不触发 |
-| OnEmpty / OnFull Trigger（流体满/空） | `fluid_*` 有液位但无此类触发器 | ⛔ | |
-| OnEntryRequest Trigger（TrafficControl 准入裁决） | `traffic_control` 参数（无裁决钩子） | ⛔ | 准入互斥已由引擎内建（名额 + 等待），但**没有可编程的准入裁决钩子**——模型无法自定义"这批车优先放行"之类的规则 |
+| OnEmpty / OnFull Trigger（流体满/空） | `Triggers.on_empty` / `on_full`（仅 `fluid_tank` 有意义） | ✅ | 锁存去抖，持续空/满只触发一次；**"满"的信号是溢出增量**（tank 满时液位停在 `capacity − 流入步长`，`level == capacity` 永不成立），已写进文档注释。`fluid_on_full_fires_once`、`fluid_on_empty_fires_once`、`fluid_boundary_hooks_do_not_change_reports` |
+| OnEntryRequest Trigger（TrafficControl 准入裁决） | `Triggers.on_entry_request` | ✅ | 在 `traffic_try_acquire` 容量判定**之前**触发；`label("admit")==0` → 拒绝并回退到既有等待重试。**这是 OpenFlex 协议而非 FlexSim 公开 API**，已写进 Rust 文档注释。`on_entry_request_admit_zero_is_retried_later`、`on_entry_request_without_admit_keeps_the_default_path`、`on_entry_request_script_is_precompiled`。限制：上下文是 `FlowItem::probe` 空件，只有 labels 有意义 |
 | OnReceiveTaskSequence | 无 | ⛔ | TaskExecuter 无接收任务序列的钩子 |
 | OnResourceAvailable | 无 | ⛔ | Dispatcher 无"下游可用"回调 |
 | OnDraw Trigger | `on_draw`（schema 层） | 🟡 | 见 ObjectWindows 行 |
@@ -330,7 +330,7 @@
 > 并把 3 个纯教程/术语页从 🟡 改判为 📄。**权威总数以第 325 行的 ✅39 / 🟡97 / ⛔73 / 📄3 为准**，
 > 下表用来看**缺口集中在哪个目录**，不必逐格对齐。
 
-矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 41 行、🟡 99 行、⛔ 69 行、📄 3 行（参考页，不计入缺口）。
+矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 43 行、🟡 99 行、⛔ 67 行、📄 3 行（参考页，不计入缺口）。
 其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行。
 
 | 状态 | 行数 | 占比 |
