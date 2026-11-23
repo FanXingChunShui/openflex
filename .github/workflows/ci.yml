@@ -427,6 +427,41 @@ jobs:
           retention-days: 7
 
   # ---------------------------------------------------------------------------
+  # The GUI crate is excluded from the workspace test jobs, so without this job
+  # its tests never ran in CI: form, canvas and formatting regressions could
+  # only be caught locally. These tests do not open a window, so no virtual
+  # display is needed — only the system libraries the crate links against.
+  # ---------------------------------------------------------------------------
+  gui-tests:
+    name: tests (openflex-gui, Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install GUI system libraries
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if sudo apt-get update -o Acquire::Retries=5 &&
+               sudo apt-get install -y --no-install-recommends \
+                 libxkbcommon-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+                 libgl1-mesa-dev libwayland-dev pkg-config; then
+              exit 0
+            fi
+            echo "apt attempt $attempt failed, retrying"
+            sleep $((attempt * 15))
+          done
+          exit 1
+
+      - name: Tests (openflex-gui)
+        run: cargo test --locked -p openflex-gui
+
+  # ---------------------------------------------------------------------------
   # Repository hygiene: every shell script parses, is shellcheck-clean at
   # warning level, and every YAML/TOML file the release pipeline consumes is
   # syntactically valid.
