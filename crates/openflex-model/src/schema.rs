@@ -179,7 +179,9 @@ fn definitions() -> Value {
                 "on_resume": { "type": "array", "items": { "$ref": "#/$defs/action" } },
                 "on_draw": { "type": "array", "items": { "$ref": "#/$defs/action" } },
                 "on_setup_finish": { "type": "array", "items": { "$ref": "#/$defs/action" } },
-                "on_process_finish": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+                "on_process_finish": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_load": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_unload": { "type": "array", "items": { "$ref": "#/$defs/action" } }
             },
             "additionalProperties": false
         }),
@@ -357,7 +359,13 @@ fn definitions() -> Value {
             "process_operator": { "type": ["string", "null"] }
         })),
     );
-    defs.insert("sink_params".into(), params_schema(json!({})));
+    defs.insert(
+        "sink_params".into(),
+        params_schema(json!({
+            "recycle": { "enum": ["none", "on_entry", "by_batch"], "default": "none" },
+            "recycle_batch": { "type": "integer", "minimum": 1, "default": 100 },
+        })),
+    );
     defs.insert(
         "combiner_params".into(),
         params_schema(json!({

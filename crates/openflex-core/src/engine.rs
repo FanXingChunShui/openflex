@@ -136,8 +136,8 @@ use openflex_model::{
     Distribution, DowntimeWindow, EvalContext, Expr, ExtraTaskLegKind, FlowBlockKind,
     GlobalVariableKind, Grid, MergeMode, Model, NetworkEdge, Object, ObjectKind, ObjectParams,
     PickListLookup, PortStrategy, ProcessFlow, PullParams, QueueOrder, RackPickPolicy, RackType,
-    SeparateMode, SimTrigger, TableCell, TaskSequenceMode, TaskStepKind, TrackedKind, TrafficMode,
-    TransferMode, TravelTarget, TravelTargetName, Value,
+    RecycleMode, SeparateMode, SimTrigger, TableCell, TaskSequenceMode, TaskStepKind, TrackedKind,
+    TrafficMode, TransferMode, TravelTarget, TravelTargetName, Value,
 };
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
@@ -843,6 +843,9 @@ pub(crate) struct ObjectRt {
     charge_time_total: f64,
     #[serde(default)]
     charge_started_at: f64,
+    /// task-188: items counted towards the next sink recycle batch.
+    #[serde(default)]
+    recycled_count: u32,
     /// task-124: remaining cells of a step-by-step person move.
     #[serde(default)]
     person_path: VecDeque<[f64; 2]>,
@@ -1019,6 +1022,7 @@ impl ObjectRt {
             charge_trip_distance: 0.0,
             charge_time_total: 0.0,
             charge_started_at: 0.0,
+            recycled_count: 0,
             person_path: VecDeque::new(),
             person_target: None,
             pending_steps: Vec::new(),
@@ -4863,6 +4867,30 @@ impl<'m> Simulation<'m> {
         let now = self.now;
         match kind {
             ObjectKind::Sink => {
+                // task-188: the item object is dropped as soon as it enters a
+                // sink, so the recycle strategy only makes that explicit and
+                // fires the batch hook; the statistics below stay untouched.
+                let (recycle, batch) = match &self.model.objects[target].params {
+                    ObjectParams::Sink(params) => (params.recycle, params.recycle_batch),
+                    _ => (RecycleMode::None, 100),
+                };
+                let recycled = match recycle {
+                    RecycleMode::None => false,
+                    RecycleMode::OnEntry => true,
+                    RecycleMode::ByBatch => {
+                        self.objects[target].recycled_count =
+                            self.objects[target].recycled_count.saturating_add(1);
+                        if self.objects[target].recycled_count >= batch.max(1) {
+                            self.objects[target].recycled_count = 0;
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                };
+                if recycled {
+                    self.record_item_trace("recycle", target, item.id);
+                }
                 self.objects[target].acc.output += 1;
                 if item.created + EPS >= self.config.warmup {
                     self.stats_completed += 1;
@@ -8513,11 +8541,18 @@ impl<'m> Simulation<'m> {
 
     /// task-166: the loaded delivery leg begins; this is where
     /// `travel_loaded` starts (loading ended at the previous event).
+    /// The transport task finished loading and starts the loaded delivery leg.
+    ///
+    /// task-188: this is the exact `now + dwell + load` instant, so it also
+    /// fires the executer's `on_load` trigger. No extra event is inserted: the
+    /// `TransportDepart` event already *is* the loading-finished instant, so the
+    /// event sequence (and every statistic) is unchanged.
     fn handle_transport_depart(
         &mut self,
         transporter: usize,
         requester: usize,
     ) -> Result<(), SimError> {
+        self.fire_executer_trigger(transporter, requester, SimTrigger::OnLoad)?;
         self.set_state(transporter, State::Busy);
         self.set_executor_activity(transporter, ExecutorActivity::TravelLoaded);
         let from_position = self.objects[transporter].position;
@@ -8880,6 +8915,9 @@ impl<'m> Simulation<'m> {
         transporter: usize,
         requester: usize,
     ) -> Result<(), SimError> {
+        // task-188: this event is the unloading-finished instant, so it fires
+        // the executer's `on_unload` trigger before the operator is granted.
+        self.fire_executer_trigger(transporter, requester, SimTrigger::OnUnload)?;
         self.set_executor_activity(transporter, ExecutorActivity::Utilize);
         // A5: the operator reached the requester, so it stops occupying a slot.
         if self.objects[requester].in_transit > 0 {
@@ -11021,6 +11059,53 @@ impl<'m> Simulation<'m> {
     // Triggers
     // -----------------------------------------------------------------------
 
+    /// task-188: run an executer load/unload trigger against the requester's
+    /// current item.
+    ///
+    /// OpenFlex transport executers are operators/dispatchers, not carriers of
+    /// FlowItems, so there is no "item loaded onto the executer" to hand to the
+    /// hook. The context item is the requester's `processing_item`, or else the
+    /// first waiting item in its content. It is taken out and put back so the
+    /// actions can mutate it in place (labels survive to the other hook).
+    fn fire_executer_trigger(
+        &mut self,
+        executer: usize,
+        requester: usize,
+        trigger: SimTrigger,
+    ) -> Result<(), SimError> {
+        let actions = self.trigger_actions(executer, trigger);
+        if actions.is_empty() {
+            return Ok(());
+        }
+        let Some((mut item, from_processing)) = self.take_context_item(requester) else {
+            return Ok(());
+        };
+        let location = format!("{}.{}", self.objects[executer].name, trigger.as_str());
+        self.action_location = location;
+        let result = self.apply_actions(executer, &mut item, actions);
+        self.put_context_item(requester, item, from_processing);
+        result
+    }
+
+    fn take_context_item(&mut self, requester: usize) -> Option<(FlowItem, bool)> {
+        if let Some(item) = self.objects[requester].processing_item.take() {
+            return Some((item, true));
+        }
+        if self.objects[requester].content.is_empty() {
+            None
+        } else {
+            Some((self.objects[requester].content.remove(0), false))
+        }
+    }
+
+    fn put_context_item(&mut self, requester: usize, item: FlowItem, from_processing: bool) {
+        if from_processing {
+            self.objects[requester].processing_item = Some(item);
+        } else {
+            self.objects[requester].content.insert(0, item);
+        }
+    }
+
     fn trigger_actions(&self, index: usize, trigger: SimTrigger) -> Vec<Action> {
         let params = &self.model.objects[index].params;
         params.triggers().actions(trigger)
@@ -12207,6 +12292,11 @@ fn collect_model_scripts(model: &Model) -> Vec<(String, String)> {
             ("on_draw", &triggers.on_draw),
             ("setup_finish", &triggers.on_setup_finish),
             ("process_finish", &triggers.on_process_finish),
+            // task-188: these two fire on the transporter path; leaving them out
+            // made a `script` action there fail with "not precompiled" even
+            // though validation accepted it.
+            ("on_load", &triggers.on_load),
+            ("on_unload", &triggers.on_unload),
         ];
         for (trigger, actions) in lists {
             for (position, action) in actions.iter().enumerate() {
@@ -18067,5 +18157,246 @@ mod tests {
             "the plain belt must stay bounded: {events}"
         );
         assert!(events > 0, "the plain belt must keep delivering items");
+    }
+
+    fn recycle_model(recycle: &str) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "sink-recycle",
+          "run": {{ "stop_time": 100.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 10.0 }},
+                "max_arrivals": 6, "first_arrival": 0.0 }} }},
+            {{ "name": "K", "kind": "sink", "params": {{ "recycle": "{recycle}" }} }}
+          ],
+          "connections": [ {{ "from": "S", "to": "K" }} ]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    /// task-188: the recycle strategy must not change any sink statistic.
+    #[test]
+    fn sink_recycle_keeps_the_statistics() {
+        let none = crate::run_model(&recycle_model("none")).expect("none");
+        let entry = crate::run_model(&recycle_model("on_entry")).expect("on_entry");
+        let none_sink = &none.replications[0].objects["K"];
+        let entry_sink = &entry.replications[0].objects["K"];
+        assert_eq!(none_sink.input_count, entry_sink.input_count);
+        assert_eq!(none_sink.output_count, entry_sink.output_count);
+        assert_eq!(none_sink.avg_stay_time, entry_sink.avg_stay_time);
+        assert_eq!(
+            none.replications[0].items_completed,
+            entry.replications[0].items_completed
+        );
+    }
+
+    /// task-188: the same seed reproduces the identical report with recycling.
+    #[test]
+    fn sink_recycle_is_deterministic() {
+        let first = crate::run_model(&recycle_model("by_batch")).expect("first");
+        let second = crate::run_model(&recycle_model("by_batch")).expect("second");
+        assert_eq!(first.replications, second.replications);
+    }
+
+    /// task-188: `by_batch` with a zero batch size is rejected by validation.
+    #[test]
+    fn sink_by_batch_rejects_zero_batch() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "bad-recycle",
+          "run": { "stop_time": 10.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": { "recycle": "by_batch", "recycle_batch": 0 } }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+        )
+        .expect_err("by_batch with a zero batch must be rejected");
+        let text = model.to_string();
+        assert!(
+            text.contains("recycle_batch"),
+            "the error must mention recycle_batch, got: {text}"
+        );
+    }
+
+    fn load_trigger_model(on_load: &str, on_unload: &str) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "load-triggers",
+          "run": {{ "stop_time": 100.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "pos": [0, 0], "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 100.0 }},
+                "first_arrival": 0.0 }} }},
+            {{ "name": "P", "kind": "processor", "pos": [0, 0], "params": {{
+                "process_time": {{ "distribution": "constant", "value": 1.0 }},
+                "process_operator": "D" }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }},
+            {{ "name": "D", "kind": "dispatcher", "pos": [10, 0], "params": {{}} }},
+            {{ "name": "T", "kind": "transporter", "pos": [10, 0], "params": {{
+                "speed": 10.0, "load_time": {{ "distribution": "constant", "value": 3.0 }},
+                "home": "D",
+                "triggers": {{ "on_load": [ {on_load} ], "on_unload": [ {on_unload} ] }} }} }}
+          ],
+          "connections": [
+            {{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }},
+            {{ "from": "D", "to": "T" }}
+          ]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    /// task-188: models without the new triggers keep their JSON untouched.
+    #[test]
+    fn load_triggers_are_not_serialized_when_empty() {
+        let model = load_trigger_model("", "");
+        let text = serde_json::to_string(&model).expect("serialize");
+        assert!(!text.contains("on_load"), "empty on_load must be omitted");
+        assert!(
+            !text.contains("on_unload"),
+            "empty on_unload must be omitted"
+        );
+        // And the run is deterministic.
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(first.replications, second.replications);
+    }
+
+    /// task-188: `on_load` fires exactly when the loaded delivery leg starts
+    /// (`pickup + dwell + load`, dwell is 0 here).
+    /// A `script` action in `on_load` must be precompiled like every other
+    /// trigger list: it is collected by a hand-written list, and missing an
+    /// entry made the run fail with "not precompiled" even though validation
+    /// accepted the model.
+    #[test]
+    fn on_load_script_is_precompiled() {
+        let model = Model::from_json(
+            r#"{
+              "format": "openflex-model", "version": 1, "name": "load-script",
+              "run": { "stop_time": 60.0, "seed": 1, "replications": 1 },
+              "objects": [
+                { "name": "S", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 20.0 },
+                    "max_arrivals": 2, "first_arrival": 0.0 } },
+                { "name": "P", "kind": "processor", "params": {
+                    "process_time": { "distribution": "constant", "value": 2.0 },
+                    "process_operator": "D" } },
+                { "name": "T", "kind": "transporter", "params": {
+                    "speed": 2.0, "capacity": 1,
+                    "triggers": {
+                      "on_load": [ { "action": "script", "source": "log(\"loaded\");" } ],
+                      "on_unload": [ { "action": "script", "source": "log(\"unloaded\");" } ] } } },
+                { "name": "D", "kind": "dispatcher", "params": {} },
+                { "name": "K", "kind": "sink", "params": {} }
+              ],
+              "connections": [
+                { "from": "S", "to": "P" }, { "from": "P", "to": "K" },
+                { "from": "D", "to": "T" }
+              ]
+            }"#,
+        )
+        .expect("model");
+        let config = SimConfig::from_run_settings(&model.run, model.run.seed);
+        let (_, trace) =
+            crate::simulate_traced(&model, &config, 0).expect("the hooks must not fail");
+        let logs = super::hook_logs(&trace);
+        assert!(
+            logs.iter().any(|line| line.contains("loaded")),
+            "on_load script ran: {logs:?}"
+        );
+        assert!(
+            logs.iter().any(|line| line.contains("unloaded")),
+            "on_unload script ran: {logs:?}"
+        );
+    }
+
+    #[test]
+    fn on_load_fires_at_dwell_plus_load() {
+        let model = load_trigger_model(
+            r#"{ "action": "set_label", "name": "loaded", "value": "1" }"#,
+            "",
+        );
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let mut pickup_at = None;
+        let mut depart_at = None;
+        while let Some(Reverse(event)) = sim.events.pop() {
+            match event.kind {
+                EventKind::TransportPickup(..) if pickup_at.is_none() => {
+                    pickup_at = Some(event.time);
+                }
+                EventKind::TransportDepart(..) if depart_at.is_none() => {
+                    depart_at = Some(event.time);
+                }
+                _ => {}
+            }
+            sim.now = event.time;
+            sim.handle(event.kind).expect("handle");
+            if pickup_at.is_some() && depart_at.is_some() {
+                break;
+            }
+        }
+        let pickup = pickup_at.expect("pickup event");
+        let depart = depart_at.expect("depart event");
+        assert!(
+            (depart - (pickup + 3.0)).abs() < 1e-9,
+            "on_load must fire at pickup + dwell + load: {pickup} -> {depart}"
+        );
+    }
+
+    /// task-188: the `on_load` hook mutates the requester's item and the
+    /// `on_unload` hook sees that same item.
+    #[test]
+    fn on_load_label_is_visible_in_the_unload_hook() {
+        let model = load_trigger_model(
+            r#"{ "action": "set_label", "name": "loaded", "value": "1" }"#,
+            r#"{ "action": "increment_label", "name": "unloaded", "by": "1" }"#,
+        );
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let processor = sim.by_name["P"];
+        let mut seen_load = false;
+        let mut seen_unload = false;
+        while let Some(Reverse(event)) = sim.events.pop() {
+            let is_depart = matches!(event.kind, EventKind::TransportDepart(..));
+            let is_loaded = matches!(event.kind, EventKind::OperatorLoaded(..));
+            sim.now = event.time;
+            sim.handle(event.kind).expect("handle");
+            if is_depart {
+                let item = sim.objects[processor]
+                    .content
+                    .first()
+                    .expect("the requester still holds the item");
+                assert_eq!(item.labels.get("loaded"), Some(&1.0), "on_load label");
+                seen_load = true;
+            }
+            if is_loaded {
+                let item = sim.objects[processor]
+                    .content
+                    .first()
+                    .expect("the requester still holds the item");
+                assert_eq!(item.labels.get("loaded"), Some(&1.0), "label survived");
+                assert_eq!(
+                    item.labels.get("unloaded"),
+                    Some(&1.0),
+                    "on_unload sees the same item"
+                );
+                seen_unload = true;
+                break;
+            }
+        }
+        assert!(seen_load && seen_unload, "both hooks must fire");
     }
 }

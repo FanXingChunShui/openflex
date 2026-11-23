@@ -2714,8 +2714,42 @@ impl EditForm {
             ObjectParams::FluidSink(_) => {
                 ui.label("Fluid sink: no kind-specific parameters (see JSON for triggers).");
             }
-            ObjectParams::Sink(_) => {
-                ui.label("Sink: no kind-specific parameters (see JSON for process flow).");
+            ObjectParams::Sink(p) => {
+                egui::ComboBox::from_id_salt("sink-recycle")
+                    .selected_text(match p.recycle {
+                        openflex_model::RecycleMode::None => "recycle: none",
+                        openflex_model::RecycleMode::OnEntry => "recycle: on entry",
+                        openflex_model::RecycleMode::ByBatch => "recycle: by batch",
+                    })
+                    .show_ui(ui, |ui| {
+                        for (mode, name) in [
+                            (openflex_model::RecycleMode::None, "none"),
+                            (openflex_model::RecycleMode::OnEntry, "on entry"),
+                            (openflex_model::RecycleMode::ByBatch, "by batch"),
+                        ] {
+                            if ui.selectable_label(p.recycle == mode, name).clicked() {
+                                p.recycle = mode;
+                                changed = true;
+                            }
+                        }
+                    });
+                if p.recycle == openflex_model::RecycleMode::ByBatch {
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut p.recycle_batch)
+                                .speed(1.0)
+                                .range(1..=1_000_000)
+                                .prefix("batch "),
+                        )
+                        .changed();
+                }
+                ui.label(
+                    egui::RichText::new(
+                        "recycling is a bookkeeping choice: the item is dropped on entry either way",
+                    )
+                    .size(9.0_f32)
+                    .color(palette::TEXT_DIM),
+                );
             } // Every object kind has a form. A new kind added to the model must
               // grow an arm here; that compile error is the reminder, which is why
               // there is no catch-all any more.

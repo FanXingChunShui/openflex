@@ -7,7 +7,7 @@
 
 use crate::model::{
     ArrivalStyle, CombinerMode, Connection, ConnectionKind, Model, ModelError, Object, ObjectKind,
-    PortStrategy, SeparateMode, ValidationIssue,
+    ObjectParams, PortStrategy, RecycleMode, SeparateMode, ValidationIssue,
 };
 use crate::model::{FORMAT_NAME, FORMAT_VERSION};
 
@@ -72,6 +72,15 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
 
     let mut seen = std::collections::BTreeMap::new();
     for object in &model.objects {
+        if let ObjectParams::Sink(params) = &object.params
+            && params.recycle == RecycleMode::ByBatch
+            && params.recycle_batch == 0
+        {
+            issues.push(ValidationIssue::new(
+                format!("objects.{}", object.name),
+                "sink `by_batch` recycling needs a positive `recycle_batch`",
+            ));
+        }
         if !is_identifier(&object.name) {
             issues.push(ValidationIssue::new(
                 format!("objects.{}", object.name),
@@ -1943,6 +1952,8 @@ fn validate_trigger_scripts(object: &Object) -> Vec<ValidationIssue> {
         ("on_draw", &triggers.on_draw),
         ("setup_finish", &triggers.on_setup_finish),
         ("process_finish", &triggers.on_process_finish),
+        ("on_load", &triggers.on_load),
+        ("on_unload", &triggers.on_unload),
     ];
     for (trigger, actions) in lists {
         for (position, action) in actions.iter().enumerate() {

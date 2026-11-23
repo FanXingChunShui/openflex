@@ -1541,9 +1541,32 @@ impl Default for MultiProcessorParams {
     }
 }
 
+/// task-188: what a sink does with a flow item after counting it.
+///
+/// The item object is dropped as soon as it enters a sink either way, so the
+/// strategies only make that explicit and give long runs a batch hook; they
+/// never change the sink statistics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RecycleMode {
+    /// Keep the (already dropped) item accounting implicit.
+    #[default]
+    None,
+    /// Recycle every item on entry.
+    OnEntry,
+    /// Recycle every `recycle_batch` items.
+    ByBatch,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SinkParams {
+    /// task-188: recycling strategy (the item is dropped on entry either way).
+    #[serde(default)]
+    pub recycle: RecycleMode,
+    /// task-188: batch size for [`RecycleMode::ByBatch`].
+    #[serde(default = "hundred_u32")]
+    pub recycle_batch: u32,
     /// Optional object-level process flow (B7). Its `create` blocks can run at
     /// t = 0 or whenever this object receives an item (`on_entry`), and its
     /// `transfer` blocks can inject tokens as flow items into other objects.
@@ -4577,6 +4600,10 @@ fn describe_ignored_path(path: &str, names: &[&str]) -> String {
     }
     let key = path.rsplit('.').next().unwrap_or(path);
     format!("{result} (unknown key '{key}')")
+}
+
+fn hundred_u32() -> u32 {
+    100
 }
 
 fn one_u32() -> u32 {

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### 模型与引擎
+
+- **`OnLoad` / `OnUnload` 触发器**：运输链路上「装货完成」与「卸货完成」两个时点各触发一次。
+  OnLoad 落在既有的 `TransportDepart`（`now + dwell + load`）、OnUnload 落在 `OperatorLoaded`——
+  **不需要新增事件，事件序列与统计都不变**（这比我原计划的「新增 `TransportLoaded`」更保守）。
+  实测（`transport_depart`/`operator_loaded` 同刻）：t=0 pickup/depart/OnLoad、t=10 OperatorLoaded/OnUnload。
+  **两条限制已写进 Rust 文档注释**：① OpenFlex 的执行器/操作员**不持有** FlowItem，钩子拿到的是
+  requester（processor）的件，**不是"搬运件"**；② 该钩子不改变事件流。
+- **Sink 回收策略**：`recycle: none|on_entry|by_batch` + `recycle_batch`（默认 100），`by_batch` 且 0 被明确拒绝。
+  **如实说明**：当前引擎在 Sink 入口本就丢弃件对象，所以回收**不改变任何运行时内存行为**——
+  本项是把既有行为显式化 + 批次 hook + 校验，不是省内存的优化。
+- **修掉一个只有跑起来才会发现的缺口**：`collect_model_scripts` 用**手写的触发器清单**做预编译，
+  新增的 `on_load`/`on_unload` 没被收进去，于是这两个钩子里写 `action: "script"` 会在运行时失败
+  （`script source was not precompiled`），而 `validate` 却放行。已补上并用 `on_load_script_is_precompiled` 钉住。
+
 ### 桌面 GUI
 
 - **`visual_tool` 现在真的会画出来**：此前它只可编辑（形状/大小/颜色/文字都能填），但**画布上什么都不画**——

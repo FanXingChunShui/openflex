@@ -217,6 +217,19 @@ pub enum SimTrigger {
     /// now: OpenFlex has no renderer, and the FlexSim rule "never use random
     /// functions in OnDraw" therefore applies to future integrations.
     OnDraw,
+    /// The executer finished loading (task-188). Fires at `now + dwell + load`
+    /// of the transport task.
+    ///
+    /// **Item context**: OpenFlex transport executers are operators/dispatchers
+    /// and do not carry a [`FlowItem`]; the hook sees the *requester's*
+    /// processing or waiting item, not an item loaded onto the executer.
+    OnLoad,
+    /// The executer finished unloading (task-188). Fires on the `OperatorLoaded`
+    /// event of the transport task.
+    ///
+    /// **Item context**: same as [`SimTrigger::OnLoad`] — the requester's item,
+    /// not an item unloaded from the executer.
+    OnUnload,
 }
 
 impl SimTrigger {
@@ -238,6 +251,8 @@ impl SimTrigger {
             SimTrigger::OnStop => "on_stop",
             SimTrigger::OnResume => "on_resume",
             SimTrigger::OnDraw => "on_draw",
+            SimTrigger::OnLoad => "on_load",
+            SimTrigger::OnUnload => "on_unload",
         }
     }
 
@@ -258,6 +273,8 @@ impl SimTrigger {
             "on_stop" => SimTrigger::OnStop,
             "on_resume" => SimTrigger::OnResume,
             "on_draw" => SimTrigger::OnDraw,
+            "on_load" => SimTrigger::OnLoad,
+            "on_unload" => SimTrigger::OnUnload,
             "setup_finish" => SimTrigger::SetupFinish,
             "process_finish" => SimTrigger::ProcessFinish,
             _ => return None,
@@ -310,6 +327,21 @@ pub struct Triggers {
     /// The processing phase just finished (see [`SimTrigger::ProcessFinish`]).
     #[serde(default)]
     pub on_process_finish: Vec<Action>,
+    /// The executer finished loading a transport task (task-188). Fires at
+    /// `now + dwell + load`; the transport event chain gains a
+    /// `TransportLoaded` event, so the event *sequence* changes while the
+    /// statistics and the total task duration do not.
+    ///
+    /// The hook's item context is the **requester's** processing or waiting
+    /// item: OpenFlex transport executers are operators and never hold a
+    /// `FlowItem` of their own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_load: Vec<Action>,
+    /// The executer finished unloading a transport task (see
+    /// [`SimTrigger::OnUnload`]). Fires on the `OperatorLoaded` event; the item
+    /// context is the requester's item, not an item unloaded from the executer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_unload: Vec<Action>,
 }
 
 impl Triggers {
@@ -331,6 +363,8 @@ impl Triggers {
             SimTrigger::OnDraw => self.on_draw.clone(),
             SimTrigger::SetupFinish => self.on_setup_finish.clone(),
             SimTrigger::ProcessFinish => self.on_process_finish.clone(),
+            SimTrigger::OnLoad => self.on_load.clone(),
+            SimTrigger::OnUnload => self.on_unload.clone(),
         }
     }
 
@@ -351,5 +385,7 @@ impl Triggers {
             && self.on_draw.is_empty()
             && self.on_setup_finish.is_empty()
             && self.on_process_finish.is_empty()
+            && self.on_load.is_empty()
+            && self.on_unload.is_empty()
     }
 }
