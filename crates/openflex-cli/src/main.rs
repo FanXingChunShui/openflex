@@ -613,15 +613,38 @@ impl From<openflex_model::ModelError> for Failure {
     }
 }
 
+/// Exit code used when the worker thread cannot be joined.
+const EXIT_PANICKED: i32 = 70;
+
 fn main() {
+    // Windows hands the main thread a 1 MB stack, and a debug build of this
+    // binary needs more than that before it even reaches clap: every subcommand
+    // aborted with "has overflowed its stack" on Windows while passing
+    // everywhere else. Do the work on a thread whose stack we choose so the
+    // behaviour does not depend on the platform default.
+    const MAIN_STACK: usize = 32 * 1024 * 1024;
+    let code = std::thread::Builder::new()
+        .name("openflex".to_string())
+        .stack_size(MAIN_STACK)
+        .spawn(real_main)
+        .map(|handle| handle.join().unwrap_or(EXIT_PANICKED))
+        .unwrap_or(EXIT_PANICKED);
+    std::process::exit(code);
+}
+
+/// The actual command line program; returns the process exit code.
+fn real_main() -> i32 {
     let args: Vec<OsString> = std::env::args_os().collect();
     let json_errors = wants_json_errors(&args);
     let cli = parse_cli(&args, json_errors);
     let quiet = cli.quiet;
     let progress = cli.progress && !quiet;
-    if let Err(failure) = run(cli.command, quiet, progress) {
-        emit_failure(&failure, json_errors);
-        std::process::exit(failure.code);
+    match run(cli.command, quiet, progress) {
+        Ok(()) => 0,
+        Err(failure) => {
+            emit_failure(&failure, json_errors);
+            failure.code
+        }
     }
 }
 

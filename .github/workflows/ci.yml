@@ -45,6 +45,17 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo clippy --workspace --all-targets --exclude openflex-gui
 
+      # Run the binary before the test suite, so a startup failure reads as
+      # "the binary cannot start on this OS" instead of as 111 broken tests.
+      # This is how the Windows stack overflow surfaced, and only after a release.
+      - name: Binary smoke test (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cargo build --locked -p openflex-cli
+          .\target\debug\openflex.exe --version
+          .\target\debug\openflex.exe distributions | Select-Object -First 2
+          .\target\debug\openflex.exe validate examples\mm1.ofm
+
       - name: Tests
         run: cargo test --workspace --locked --exclude openflex-gui
 
