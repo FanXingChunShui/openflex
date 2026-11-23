@@ -294,12 +294,14 @@
 
 | 字段 | 现状 | 意向 |
 |---|---|---|
-| `DispatcherParams.max_tasks` | 引擎从不读 | **接线**：限制同时挂起的任务数（超限排队），FlexSim 有对应语义 |
-| `ProcessorParams.changeover_time` | 引擎从不读 | **接线**：换型时间（按 item type 变化时插入 setup），FlexSim 有对应语义 |
 | `TickerParams.tick_length` | 引擎从不读 | **接线**：Ticker 的固定时间步长（流体批处理节奏） |
 | `FailureParams.repair_operator` | 引擎从不读 | **接线**：维修时向 dispatcher 要操作员（与 setup/process operator 同构） |
 | `FluidMixerParams.product_id` | 引擎从不读 | 待定：属于 Initial Product Window 的一部分，与"子组分列表"一起做或一起删 |
 | `FluidProcessorParams.receive_port` / `destination_port` | 引擎从不读 | 待定：流体端口的显式收发，需要先决定流体是否采用端口模型 |
+
+**已处理**：
+- `DispatcherParams.max_tasks` ✅ 已接线（挂起任务上限，超限排队、完成时唤醒，无忙等）
+- `ProcessorParams.changeover_time` ✅ 已接线（类型变化才插入换型，计入 busy，trace 可见 `changeover`）
 
 **已处理的先例**：`NetworkNodeParams.max_travelers` 曾是同类死参数（有字段、有 GUI 控件、有 CLI 文案，
 引擎零引用），因为实现节点级限额要重写 network 路由的占用模型，我们**删除了它**而不是留虚标。
