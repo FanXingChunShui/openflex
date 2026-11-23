@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## v1.43.0 — 2026-11-24
+
+这一版把「**模型声明的每个参数都真的能到达引擎**」这条线走完了：`dead-params-allowlist` 从 5 条降到 **0 条**。
+过程中接了两个真参数（`tick_length`、`repair_operator`），删了三个虚标（`receive_port`/`destination_port`/`product_id`）。
+
+功能侧：**User Events**（按时刻执行的模型级动作，GUI 也有面板）、**`openflex eval`**（不跑模型就能试算表达式/跑沙箱脚本，
+即 Script Console 的可用形态）。
+两次「只有跑起来才会发现」的坑都记在下面：`block(Operator)` 会把对象从 `down` 变成 `blocked` 从而破坏故障状态机；
+`collect_model_scripts` 是手写清单，新触发器漏收会让 `script` 动作在运行时才失败。
+发布节奏保持**至少 3 小时一版**。
 
 ### 模型与引擎
 
@@ -51,6 +60,14 @@
   - 脚本错误附带与引擎一致的 `available:` 变量提示；同时传 `--expr` 与 `--script` 是用法错误。
   这正是「Script Console」缺口的可用形态——调条件、试 picklist、验证 `query()` 都不用改模型。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**955 passed / 0 failed**；`clippy --workspace --all-targets` 0 警告、`fmt` 干净。
+- `scripts/acceptance.sh`：**all golden checks passed**。
+- `scripts/check-dead-params.sh`：**0 known / 0 stale**（此前 7 条）。
+- 独立实测：两份同刻 user event → 2 次、顺序 `[0,1]`、时刻均 10.0；`eval --expr "1+2*3"` → 7、
+  `--time 5` 时 `time*2` → 10；流体 Buffer `on_full`/`on_empty` 各一次。
 
 ## v1.42.0 — 2026-11-24
 
