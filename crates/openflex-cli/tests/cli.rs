@@ -5416,3 +5416,99 @@ fn chart_without_measures_says_no_data() {
     assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
     assert!(stdout(&output).contains("(no data)"), "{}", stdout(&output));
 }
+
+/// `eval` is the scratchpad: it answers model questions without running the
+/// model, and says so plainly when a path needs a run.
+#[test]
+fn eval_answers_expressions_without_running_the_model() {
+    let dir = TempDir::new("eval-expr");
+    let model = dir.write(
+        "eval.ofm",
+        r#"{
+          "format": "openflex-model", "version": 1, "name": "eval-expr",
+          "run": { "stop_time": 10.0, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+    );
+    let output = openflex(&["eval", &path_str(&model), "--expr", "1 + 2 * 3"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output).trim(), "7");
+
+    // `time` comes from the flag, so a formula can be checked at any instant.
+    let output = openflex(&[
+        "eval",
+        &path_str(&model),
+        "--expr",
+        "time * 2",
+        "--time",
+        "5",
+    ]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output).trim(), "10");
+}
+
+#[test]
+fn eval_runs_a_sandboxed_script() {
+    let dir = TempDir::new("eval-script");
+    let model = dir.write(
+        "eval.ofm",
+        r#"{
+          "format": "openflex-model", "version": 1, "name": "eval-script",
+          "run": { "stop_time": 10.0, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+    );
+    let output = openflex(&[
+        "eval",
+        &path_str(&model),
+        "--script",
+        r#"log("hello"); set_label("x", 7.0);"#,
+    ]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.contains("hello"), "logs are printed: {text}");
+    assert!(text.contains("x = 7"), "labels are printed: {text}");
+}
+
+/// Engine state needs a run, so `eval` must say that instead of guessing a
+/// value (a wrong answer here would be worse than no answer).
+#[test]
+fn eval_reports_paths_that_need_a_run() {
+    let dir = TempDir::new("eval-state");
+    let model = dir.write(
+        "eval.ofm",
+        r#"{
+          "format": "openflex-model", "version": 1, "name": "eval-state",
+          "run": { "stop_time": 10.0, "replications": 1 },
+          "objects": [
+            { "name": "Q", "kind": "queue", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "Q", "to": "K" } ]
+        }"#,
+    );
+    let output = openflex(&["eval", &path_str(&model), "--expr", "Q.content"]);
+    assert!(!output.status.success(), "an unanswerable path must fail");
+    let text = stderr(&output);
+    assert!(text.contains("unknown variable"), "stderr: {text}");
+
+    // A script that references an unknown variable gets the same
+    // "available:" hint the engine prints, so the scratchpad teaches too.
+    let output = openflex(&["eval", &path_str(&model), "--script", "log(nope);"]);
+    assert!(!output.status.success());
+    let text = stderr(&output);
+    assert!(text.contains("available:"), "stderr: {text}");
+    assert!(text.contains("set_label("), "stderr: {text}");
+
+    // Both inputs at once is a usage error, not a silent pick.
+    let output = openflex(&["eval", &path_str(&model), "--expr", "1", "--script", "1;"]);
+    assert!(!output.status.success());
+}

@@ -2431,22 +2431,10 @@ impl EditForm {
                             .prefix("loss "),
                     )
                     .changed();
-                ui.horizontal(|ui| {
-                    changed |= ui
-                        .add(
-                            egui::DragValue::new(&mut p.receive_port)
-                                .speed(1.0)
-                                .prefix("receive port "),
-                        )
-                        .changed();
-                    changed |= ui
-                        .add(
-                            egui::DragValue::new(&mut p.destination_port)
-                                .speed(1.0)
-                                .prefix("destination port "),
-                        )
-                        .changed();
-                });
+                // No receive/destination port controls: those two fields were
+                // declared but the engine never read them (fluid flow is not a
+                // port model here), so they are being removed rather than left
+                // looking like settings that do something.
             }
             ObjectParams::ItemToFluid(p) => {
                 changed |= ui

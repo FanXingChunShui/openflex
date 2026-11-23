@@ -868,6 +868,12 @@ pub(crate) struct ObjectRt {
     /// task-190: type of the last item this processor started (changeover).
     #[serde(default)]
     last_item_type: Option<u32>,
+    /// task-191: the breakdown waits for its repair operator to arrive.
+    #[serde(default)]
+    repair_waiting: bool,
+    /// task-191: operator currently doing the repair (released on recovery).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    repair_operator: Option<OperatorSource>,
     /// task-124: remaining cells of a step-by-step person move.
     #[serde(default)]
     person_path: VecDeque<[f64; 2]>,
@@ -1047,6 +1053,8 @@ impl ObjectRt {
             recycled_count: 0,
             dispatcher_active: 0,
             last_item_type: None,
+            repair_waiting: false,
+            repair_operator: None,
             person_path: VecDeque::new(),
             person_target: None,
             pending_steps: Vec::new(),
@@ -7494,6 +7502,15 @@ impl<'m> Simulation<'m> {
             self.objects[index].operator_preempted = false;
             let _ = self.resume_phase(index);
         }
+        // task-191: the repair operator just arrived, so the repair clock starts
+        // now. The operator is remembered and released when the repair ends.
+        if self.objects[index].repair_waiting {
+            self.objects[index].repair_waiting = false;
+            self.objects[index].repair_operator =
+                self.objects[index].operator_sources.last().copied();
+            let repair = self.repair_duration(index);
+            self.schedule(self.now + repair, EventKind::RepairDone(index));
+        }
         self.schedule(self.now, EventKind::Flow(index));
     }
 
@@ -7504,30 +7521,68 @@ impl<'m> Simulation<'m> {
         self.objects[index].operators_pending = 0;
         self.objects[index].requesting_operator = false;
         for source in sources {
-            match source {
-                OperatorSource::Resource(resource) => {
-                    if self.objects[resource].resource_in_use > 0 {
-                        self.objects[resource].resource_in_use -= 1;
-                    }
-                    if self.objects[resource].resource_in_use == 0 {
-                        self.set_state(resource, State::Idle);
-                    }
-                    self.grant_waiting_resource(resource)?;
+            self.release_operator_source(index, source)?;
+        }
+        Ok(())
+    }
+
+    /// task-191: hand one operator source back (shared by `release_operator`
+    /// and the repair-operator release).
+    fn release_operator_source(
+        &mut self,
+        index: usize,
+        source: OperatorSource,
+    ) -> Result<(), SimError> {
+        match source {
+            OperatorSource::Resource(resource) => {
+                if self.objects[resource].resource_in_use > 0 {
+                    self.objects[resource].resource_in_use -= 1;
                 }
-                OperatorSource::Transporter(transporter) => {
-                    let unload_distribution = match &self.model.objects[transporter].params {
-                        ObjectParams::Transporter(params) => params.unload_time.clone(),
-                        _ => Distribution::Constant { value: 0.0 },
-                    };
-                    let unload = self.sample(&unload_distribution).max(0.0);
-                    self.schedule(
-                        self.now + unload,
-                        EventKind::OperatorReleased(transporter, index),
-                    );
+                if self.objects[resource].resource_in_use == 0 {
+                    self.set_state(resource, State::Idle);
                 }
+                self.grant_waiting_resource(resource)?;
+            }
+            OperatorSource::Transporter(transporter) => {
+                let unload_distribution = match &self.model.objects[transporter].params {
+                    ObjectParams::Transporter(params) => params.unload_time.clone(),
+                    _ => Distribution::Constant { value: 0.0 },
+                };
+                let unload = self.sample(&unload_distribution).max(0.0);
+                self.schedule(
+                    self.now + unload,
+                    EventKind::OperatorReleased(transporter, index),
+                );
             }
         }
         Ok(())
+    }
+
+    /// task-191: repair duration for a breakdown that waited for its operator.
+    fn repair_duration(&mut self, index: usize) -> f64 {
+        let Some(params) = self.processor_params(index) else {
+            return 0.0;
+        };
+        let Some(failure) = params.failure else {
+            return 0.0;
+        };
+        self.sample(&failure.mttr).max(0.0)
+    }
+
+    /// task-191: release the operator that performed the repair.
+    fn release_repair_operator(&mut self, index: usize) -> Result<(), SimError> {
+        let Some(source) = self.objects[index].repair_operator.take() else {
+            return Ok(());
+        };
+        if let Some(position) = self.objects[index]
+            .operator_sources
+            .iter()
+            .position(|candidate| *candidate == source)
+        {
+            self.objects[index].operator_sources.remove(position);
+            self.objects[index].operator_held = self.objects[index].operator_held.saturating_sub(1);
+        }
+        self.release_operator_source(index, source)
     }
 
     /// Assign queued requests to idle transporters of a dispatcher.
@@ -11108,6 +11163,25 @@ impl<'m> Simulation<'m> {
         self.pause_phase(index);
         // A9: a breakdown is one downtime request among possibly several.
         self.add_downtime(index, DowntimeSource::Breakdown);
+        // task-191: with `repair_operator` the repair clock only starts once the
+        // dispatcher delivered an operator; the object stays `down` meanwhile
+        // (the utilisation denominator is unchanged). The wait is event driven:
+        // the dispatcher request triggers `dispatch`, and `grant_operator`
+        // starts the clock when the operator arrives.
+        if let Some(name) = failure.repair_operator.as_ref()
+            && let Some(dispatcher) = self.by_name.get(name).copied()
+            && self.objects[dispatcher].kind == ObjectKind::Dispatcher
+        {
+            self.objects[index].repair_waiting = true;
+            self.objects[index].operators_pending =
+                self.objects[index].operators_pending.saturating_add(1);
+            self.objects[index].requesting_operator = true;
+            // The object stays `down` while it waits; blocking here would move
+            // it out of the down state and change the utilisation denominator.
+            self.objects[dispatcher].requests.push_back(index);
+            self.dispatch(dispatcher)?;
+            return Ok(());
+        }
         let repair = self.sample(&failure.mttr).max(0.0);
         self.schedule(self.now + repair, EventKind::RepairDone(index));
         Ok(())
@@ -11124,6 +11198,8 @@ impl<'m> Simulation<'m> {
         // A9: only the breakdown request clears here; other sources (shift,
         // maintenance, manual) keep the object down.
         self.clear_downtime(index, DowntimeSource::Breakdown);
+        // task-191: hand the repair operator back before the object resumes.
+        self.release_repair_operator(index)?;
         self.settle_downtime(index)?;
         self.flow(index)?;
         Ok(())
@@ -12779,6 +12855,23 @@ fn build_process_flows(
 }
 
 /// Resolve the fluid sub-graph once at start-up (B5).
+/// task-191: fluid integration step chosen from the model.
+fn fluid_step_for(model: &Model) -> f64 {
+    let tick = model
+        .objects
+        .iter()
+        .filter_map(|object| match &object.params {
+            ObjectParams::Ticker(params) if params.tick_length > 0.0 => Some(params.tick_length),
+            _ => None,
+        })
+        .fold(f64::INFINITY, f64::min);
+    if tick.is_finite() {
+        tick
+    } else {
+        model.fluid_step.unwrap_or(0.1)
+    }
+}
+
 fn build_fluid_runtime(model: &Model) -> Option<FluidRuntime> {
     let fluid_indices: Vec<usize> = model
         .objects
@@ -12883,7 +12976,11 @@ fn build_fluid_runtime(model: &Model) -> Option<FluidRuntime> {
             ObjectParams::FluidPipe(params) => params.temperature.is_some(),
             _ => false,
         }),
-        step: model.fluid_step.unwrap_or(0.1).max(EPS),
+        // task-191: a ticker drives the fluid integration. There is exactly one
+        // global `FluidStep` loop, so with several tickers the *smallest*
+        // positive `tick_length` wins (our own convention); without a ticker
+        // the explicit `fluid_step` or the historical 0.1 default is used.
+        step: fluid_step_for(model).max(EPS),
         last_time: 0.0,
         total_inflow: 0.0,
         total_throughput: 0.0,
@@ -19001,5 +19098,208 @@ mod tests {
         let first = crate::run_model(&model).expect("first");
         let second = crate::run_model(&model).expect("second");
         assert_eq!(first.replications, second.replications);
+    }
+
+    fn ticker_fluid_model(tick_lengths: &[f64]) -> Model {
+        let tickers: Vec<String> = tick_lengths
+            .iter()
+            .enumerate()
+            .map(|(index, length)| {
+                format!(
+                    r#"{{ "name": "Ticker{index}", "kind": "ticker", "params": {{ "tick_length": {length} }} }}"#
+                )
+            })
+            .collect();
+        let ticker_objects = if tickers.is_empty() {
+            String::new()
+        } else {
+            format!("{},\n            ", tickers.join(",\n            "))
+        };
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "ticker-fluid",
+          "run": {{ "stop_time": 20.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {}
+            {{ "name": "Gen", "kind": "fluid_generator", "params": {{ "flow_rate": 1.0 }} }},
+            {{ "name": "Tank", "kind": "fluid_tank", "params": {{ "capacity": 10.0, "initial_level": 0.0 }} }},
+            {{ "name": "Sink", "kind": "fluid_sink", "params": {{}} }}
+          ],
+          "connections": [
+            {{ "from": "Gen", "to": "Tank" }}, {{ "from": "Tank", "to": "Sink" }}
+          ]
+        }}"#,
+            ticker_objects
+        ))
+        .expect("model")
+    }
+
+    /// task-191: no ticker keeps the existing `fluid_step` default.
+    #[test]
+    fn tick_length_absent_keeps_the_report() {
+        let model = ticker_fluid_model(&[]);
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(first.replications, second.replications);
+    }
+
+    /// task-191: the ticker changes the integration step (numbers differ but
+    /// both runs complete and converge to the same level).
+    #[test]
+    fn tick_length_changes_the_fluid_step() {
+        let coarse = crate::run_model(&ticker_fluid_model(&[1.0])).expect("coarse");
+        let fine = crate::run_model(&ticker_fluid_model(&[0.5])).expect("fine");
+        let level = |report: &crate::SimReport| {
+            report.replications[0]
+                .fluid
+                .as_ref()
+                .and_then(|fluid| fluid.objects.iter().find(|object| object.name == "Tank"))
+                .map(|object| object.level_max)
+                .expect("tank level")
+        };
+        let coarse_level = level(&coarse);
+        let fine_level = level(&fine);
+        assert!(
+            coarse_level > 0.0 && fine_level > 0.0,
+            "both runs must fill the tank"
+        );
+        assert!(
+            (coarse_level - fine_level).abs() > 1e-9,
+            "coarser/finer steps discretise differently: {coarse_level} vs {fine_level}"
+        );
+    }
+
+    /// task-191: with several tickers the smallest positive tick_length wins.
+    #[test]
+    fn tick_length_picks_the_smallest_ticker() {
+        let model = ticker_fluid_model(&[1.0, 0.5]);
+        let config = SimConfig {
+            stop_time: 5.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("trace");
+        let times: Vec<f64> = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "fluid_step")
+            .map(|event| event.time)
+            .collect();
+        assert!(times.len() > 2, "the fluid loop must run");
+        let delta = times[1] - times[0];
+        assert!(
+            (delta - 0.5).abs() < 1e-9,
+            "the smallest tick_length must drive the loop: {delta}"
+        );
+    }
+
+    fn repair_failure_model(repair_operator: Option<&str>) -> Model {
+        let repair = repair_operator
+            .map(|name| format!(r#", "repair_operator": "{name}""#))
+            .unwrap_or_default();
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "repair",
+          "run": {{ "stop_time": 100.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "P", "kind": "processor", "pos": [0, 0], "params": {{
+                "process_time": {{ "distribution": "constant", "value": 5.0 }},
+                "failure": {{
+                    "mtbf": {{ "distribution": "constant", "value": 1000.0 }},
+                    "mttr": {{ "distribution": "constant", "value": 2.0 }},
+                    "first_failure_time": 0.5 {repair} }} }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }},
+            {{ "name": "D", "kind": "dispatcher", "pos": [10, 0], "params": {{}} }},
+            {{ "name": "T", "kind": "transporter", "pos": [10, 0], "params": {{
+                "speed": 1.0, "home": "D" }} }}
+          ],
+          "connections": [
+            {{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }},
+            {{ "from": "D", "to": "T" }}
+          ]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    /// task-191: without `repair_operator` the repair starts immediately.
+    #[test]
+    fn repair_operator_absent_keeps_the_report() {
+        let model = repair_failure_model(None);
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(first.replications, second.replications);
+    }
+
+    /// task-191: with `repair_operator` the object stays down until the operator
+    /// arrives, so the down time grows and the object still recovers.
+    ///
+    #[test]
+    fn repair_operator_waits_for_the_operator() {
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let first_gap = |model: &Model| {
+            let (_, trace) = crate::simulate_traced(model, &config, 0).expect("trace");
+            let breakdown = trace
+                .events
+                .iter()
+                .find(|event| event.event == "breakdown")
+                .map(|event| event.time)
+                .expect("a breakdown");
+            let repair = trace
+                .events
+                .iter()
+                .find(|event| event.event == "repair_done")
+                .map(|event| event.time)
+                .expect("a repair");
+            repair - breakdown
+        };
+        let immediate_gap = first_gap(&repair_failure_model(None));
+        let waited_gap = first_gap(&repair_failure_model(Some("D")));
+        assert!(
+            (immediate_gap - 2.0).abs() < 1e-9,
+            "without an operator the repair starts at once: {immediate_gap}"
+        );
+        assert!(
+            waited_gap > immediate_gap + 5.0,
+            "the repair must wait for the operator to arrive: {waited_gap} vs {immediate_gap}"
+        );
+        // The object recovers and processes the item.
+        let waited = crate::run_model(&repair_failure_model(Some("D"))).expect("waited");
+        assert_eq!(waited.replications[0].items_completed, 1);
+        assert!(
+            waited.replications[0].objects["P"].state_times.down > 0.0,
+            "the waiting time counts as down"
+        );
+    }
+
+    /// task-191: the removed fluid port fields are rejected by the parser.
+    #[test]
+    fn fluid_port_fields_are_rejected() {
+        let error = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "fluid-ports",
+          "run": { "stop_time": 10.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "Gen", "kind": "fluid_generator", "params": { "flow_rate": 1.0 } },
+            { "name": "P", "kind": "fluid_processor", "params": { "receive_port": 0 } },
+            { "name": "Sink", "kind": "fluid_sink", "params": {} }
+          ],
+          "connections": [
+            { "from": "Gen", "to": "P" }, { "from": "P", "to": "Sink" }
+          ]
+        }"#,
+        )
+        .expect_err("receive_port was removed");
+        assert!(
+            error.to_string().contains("receive_port"),
+            "the error must name the removed field: {error}"
+        );
     }
 }

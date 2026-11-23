@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### 模型与引擎
+
+- **`TickerParams.tick_length` 接线**：它现在真的是流体积分步长（全局只有一个 FluidStep 循环，
+  **多 ticker 取最小的正 tick_length**——这是 OpenFlex 约定、不是 FlexSim 公开语义，已写进函数注释）。
+  没有 ticker 时仍用既有 `fluid_step` / 0.1，**逐位不变**。步长变化会改变离散化数值，这是预期：
+  测试断言"1.0 与 0.5 的液位不同但都收敛"，而不是假装相等。
+- **`FailureParams.repair_operator` 接线**：故障修复**必须等 dispatcher 把操作员送到**才开始计时。
+  修复过程中踩到一个只有跑起来才会暴露的坑：等待路径里调 `block(Operator)` 会把对象从 `down` 变成 `blocked`，
+  **破坏故障状态机，对象永远不恢复**。改为不 block、只发 operator 请求，操作员到位时在 `grant_operator`
+  启动修复计时，结束时用新增的 `release_repair_operator()` 只释放 repair 那个操作员（抽出共享的
+  `release_operator_source`）。全程事件驱动、无忙等。实测：无操作员时修复间隔 2.0（1e-9）；
+  有操作员时 **> 7.0**（travel 10 + mttr 2，证明"到位才开始计时"）；`items_completed == 1`（**必须恢复**）；
+  等待计入 `down`。
+  顺带修了夹具本身的问题（`process_time 100` + `mtbf 1` 让对象几乎全在故障循环里，`items_completed` 恒为 0，
+  是"看起来死锁"的第二来源）。
+- **删除 `FluidProcessorParams.receive_port` / `destination_port`**：这两个字段**声明了但引擎从不读取**，
+  而流体在本项目里不是端口模型。按先例（`max_travelers`）删除而不是留虚标——旧模型含这两个字段会被
+  `deny_unknown_fields` 明确拒绝。GUI 里对应的两个输入框一并移除。
+  allowlist 因此从 **5 条降到 1 条**（只剩 `FluidMixerParams.product_id`，需要产品设计决定）。
+
+### 报告与 CLI
+
+- **新增 `openflex eval`（脚本控制台 / 表达式试算）**：不跑模型就能试算表达式或运行沙箱脚本。
+  - `openflex eval model.ofm --expr "1 + 2 * 3"` → `7`；`--time 5` 让 `time` 取任意时刻；
+  - `openflex eval model.ofm --script 'log("hi"); set_label("x", 7.0);'` → 打印日志与标签；
+  - **引擎状态（`Queue1.content`、`item.*`）需要真实运行**，因此明确报 `unknown variable` 而不是编造一个值；
+  - 脚本错误附带与引擎一致的 `available:` 变量提示；同时传 `--expr` 与 `--script` 是用法错误。
+  这正是「Script Console」缺口的可用形态——调条件、试 picklist、验证 `query()` 都不用改模型。
+
+
 ## v1.42.0 — 2026-11-24
 
 这一版把「**声明了但没人读**」当成一类正式缺陷来清：新增 3 个触发器、接通 2 个死参数，并让 GUI 的 141 个测试**第一次进入 CI**。

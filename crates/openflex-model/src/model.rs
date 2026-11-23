@@ -3075,12 +3075,6 @@ pub struct FluidProcessorParams {
     /// Share of incoming material lost (0..1), e.g. evaporation.
     #[serde(default)]
     pub loss: f64,
-    /// First input port used (FlexSim "Receive Port Number").
-    #[serde(default)]
-    pub receive_port: u32,
-    /// First output port used (FlexSim "Destination Port Number").
-    #[serde(default)]
-    pub destination_port: u32,
     #[serde(default)]
     pub triggers: Triggers,
 }
@@ -3091,8 +3085,6 @@ impl Default for FluidProcessorParams {
             max_output_rate: 1.0,
             max_capacity: 100.0,
             loss: 0.0,
-            receive_port: 0,
-            destination_port: 0,
             triggers: Triggers::default(),
         }
     }

@@ -98,6 +98,25 @@ enum Command {
         /// Path to the model file (.ofm or .json).
         model: PathBuf,
     },
+    /// Evaluate one expression or run one script against a model, without running it.
+    ///
+    /// A quick way to try a condition, a pick list or a SQL `query()` before
+    /// wiring it into the model. Engine state such as `item.*` or
+    /// `Queue1.content` needs an actual run, so it is reported as unavailable
+    /// instead of guessed.
+    Eval {
+        /// Path to the model file (.ofm or .json).
+        model: PathBuf,
+        /// Expression to evaluate (for example `Query1.content + 1`).
+        #[arg(long, conflicts_with = "script")]
+        expr: Option<String>,
+        /// Sandboxed script to run (for example `log(1 + 2);`).
+        #[arg(long)]
+        script: Option<String>,
+        /// Model time used for `time` (defaults to 0).
+        #[arg(long, default_value_t = 0.0)]
+        time: f64,
+    },
     /// Run a model and print its statistics.
     Run {
         /// Path to the model file.
@@ -613,6 +632,40 @@ impl From<openflex_model::ModelError> for Failure {
     }
 }
 
+/// Evaluation context for `openflex eval`: model data plus a model time.
+///
+/// Engine state (`item.*`, `Queue1.content`) has no meaning without a run, so
+/// those paths stay unresolved and the evaluator reports them as unknown.
+struct EvalScratchpad<'a> {
+    model: openflex_model::ModelEvalContext<'a>,
+    time: f64,
+}
+
+impl openflex_model::EvalContext for EvalScratchpad<'_> {
+    fn lookup(&self, path: &str) -> Option<openflex_model::Value> {
+        match path {
+            "time" | "sim.time" | "now" => Some(openflex_model::Value::Number(self.time)),
+            _ => self.model.lookup(path),
+        }
+    }
+
+    fn global_variable(&self, name: &str) -> Option<openflex_model::Value> {
+        self.model.global_variable(name)
+    }
+
+    fn picklist_entry(&self, list: &str, entry: &str) -> openflex_model::expr::PickListLookup {
+        self.model.picklist_entry(list, entry)
+    }
+
+    fn global_table(&self, name: &str) -> Option<&openflex_model::GlobalTable> {
+        self.model.global_table(name)
+    }
+
+    fn supports_global_tables(&self) -> bool {
+        self.model.supports_global_tables()
+    }
+}
+
 /// Exit code used when the worker thread cannot be joined.
 const EXIT_PANICKED: i32 = 70;
 
@@ -798,6 +851,85 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                 return Err(Failure::usage(anyhow!(
                     "{failed} script(s) failed to compile"
                 )));
+            }
+            Ok(())
+        }
+        Command::Eval {
+            model,
+            expr,
+            script,
+            time,
+        } => {
+            let text = fs::read_to_string(&model).map_err(|error| {
+                Failure::runtime(anyhow!("could not read model {}: {error}", model.display()))
+                    .with_path(&model)
+            })?;
+            // No validation: `eval` is a scratchpad, and a model that is still
+            // being written is exactly when this is useful.
+            let model = Model::parse_json(&text).map_err(|error| {
+                Failure::model(
+                    &model,
+                    anyhow!("invalid model {}: {error}", model.display()),
+                )
+            })?;
+            match (expr, script) {
+                (Some(expression), None) => {
+                    let parsed = openflex_model::Expr::parse(&expression).map_err(|error| {
+                        Failure::usage(anyhow!("invalid expression {expression:?}: {error}"))
+                    })?;
+                    let context = EvalScratchpad {
+                        model: openflex_model::ModelEvalContext::new(&model),
+                        time,
+                    };
+                    let value = parsed.eval(&context).map_err(|error| {
+                        Failure::usage(anyhow!("cannot evaluate {expression:?}: {error}"))
+                    })?;
+                    println!("{value}");
+                }
+                (None, Some(source)) => {
+                    let engine = openflex_core::script::ScriptEngine::new();
+                    let compiled = engine.compile(&source).map_err(|error| {
+                        Failure::usage(anyhow!("script does not compile: {error}"))
+                    })?;
+                    let mut context = openflex_core::script::ScriptContext::new(time, 0, 0);
+                    let outcome = compiled.run(&mut context).map_err(|error| {
+                        // The engine appends this hint to its own script errors;
+                        // a scratchpad run deserves the same help.
+                        let hint = if error.to_string().contains("Variable not found") {
+                            format!(
+                                "\n  available: {}",
+                                openflex_core::script::SCRIPT_VARIABLES
+                                    .iter()
+                                    .map(|(name, _)| *name)
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        } else {
+                            String::new()
+                        };
+                        Failure::usage(anyhow!("script failed: {error}{hint}"))
+                    })?;
+                    for line in &outcome.logs {
+                        println!("{line}");
+                    }
+                    if let Some(condition) = outcome.condition {
+                        println!("{condition}");
+                    }
+                    if let Some(item_type) = outcome.item_type {
+                        println!("item_type = {item_type}");
+                    }
+                    for (name, value) in &outcome.labels {
+                        println!("{name} = {value}");
+                    }
+                    if outcome.is_empty() {
+                        println!("(no output)");
+                    }
+                }
+                _ => {
+                    return Err(Failure::usage(anyhow!(
+                        "pass exactly one of --expr or --script"
+                    )));
+                }
             }
             Ok(())
         }

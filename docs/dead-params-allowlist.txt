@@ -4,8 +4,4 @@
 # did nothing. Each entry below is the same kind of debt — wire it up or delete
 # it — but deciding which needs a design call, so they are frozen here rather
 # than fixed blind. `bash scripts/check-dead-params.sh` fails on anything new.
-FailureParams.repair_operator
 FluidMixerParams.product_id
-FluidProcessorParams.destination_port
-FluidProcessorParams.receive_port
-TickerParams.tick_length
