@@ -135,7 +135,7 @@
 | Reset Trigger | `on_reset` | ✅ | |
 | OnChange Trigger（watchlist 变量变化） | 无 | ⛔ | 无 watchlist 机制 |
 | Collision Trigger | 无 | ⛔ | 无碰撞 |
-| Breakdown/Repair Trigger（OnBreakDown/OnRepair） | `on_breakdown`/`on_repair` | ✅ | |
+| Breakdown/Repair Trigger（OnBreakDown/OnRepair） | `on_breakdown`/`on_repair`；`FailureParams.repair_operator` | ✅ | 故障修复可要求 dispatcher 送操作员到位才开始计时（等待期间保持 `down`、事件驱动、结束只释放该操作员）。`repair_operator_waits_for_the_operator`、`repair_operator_absent_keeps_the_report` |
 | Down/Up Trigger（MTBF 组级） | 无组级触发器 | ⛔ | 只有对象级 `on_breakdown` |
 | Load/Unload Trigger（OnLoad/OnUnload） | `Triggers.on_load` / `on_unload` | ✅ | OnLoad 落在 `TransportDepart`（`now+dwell+load`）、OnUnload 落在 `OperatorLoaded`，各一次且**不新增事件**（事件序列/统计不变）；`on_load_script_is_precompiled`、`on_load_fires_at_dwell_plus_load`、`on_load_label_is_visible_in_the_unload_hook`。限制：执行器不持件，钩子的 item 是 requester 的件（已写进 Rust 文档注释） |
 | Setup/Process Finish Trigger（OnSetupFinish/OnProcessFinish） | `params.triggers.setup_finish` / `process_finish` | ✅ | `SimTrigger::SetupFinish`/`ProcessFinish`（`action.rs`；JSON 名 `setup_finish`/`process_finish` 由 `as_str`/`parse` 映射）；在两个边界触发且早于 `on_exit`；`setup_time=0` 无独立 setup 阶段故不触发 |
@@ -175,7 +175,7 @@
 | Event List（待处理事件列表，可快进到某事件） | `--trace` + trace 回放 + Studio 事件列表 | ✅ | `simulate_traced`、`TraceLog`、Studio 分页 trace |
 | Event Log（记录已发生事件，可导出 CSV） | `--trace <FILE>` | 🟡 | 有 trace 导出；无"Enable Logging + 时间段过滤 + CSV 导出"这套交互，也无"两次日志 diff 定位不复现点"的辅助 |
 | Excel Interface（多工作表导入/导出） | `--xlsx`（3 sheet 导出）+ `import --xlsx` | 🟡 | 有 xlsx 双向；无"任意工作表映射到 Global Table / 到达表"的通用界面 |
-| Script Console（即时执行 FlexScript） | 无交互式控制台 | ⛔ | 只有模型内脚本；无 REPL |
+| Script Console（即时执行 FlexScript） | `openflex eval --expr` / `--script` | 🟡 | 非交互式（每条命令一次进程），但**不跑模型即可试算表达式/运行沙箱脚本**，`--time` 可指定时刻；引擎状态路径（`Queue1.content`、`item.*`）明确报 `unknown variable` 而不是编造值；脚本错误带 `available:` 提示。`eval_answers_expressions_without_running_the_model`、`eval_runs_a_sandboxed_script`、`eval_reports_paths_that_need_a_run` |
 | Flowitem Bin（流项目类与打包方法、默认标签、形状帧） | 无 | ⛔ | 流项目只有单一形态 |
 | Animation Creator（关键帧动画、代理对象） | 无 | ⛔ | 无动画系统 |
 | AVI Maker（录制模型动画为 AVI） | 无 | ⛔ | |
@@ -330,7 +330,7 @@
 > 并把 3 个纯教程/术语页从 🟡 改判为 📄。**权威总数以第 325 行的 ✅39 / 🟡97 / ⛔73 / 📄3 为准**，
 > 下表用来看**缺口集中在哪个目录**，不必逐格对齐。
 
-矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 43 行、🟡 99 行、⛔ 67 行、📄 3 行（参考页，不计入缺口）。
+矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 43 行、🟡 100 行、⛔ 66 行、📄 3 行（参考页，不计入缺口）。
 其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行。
 
 | 状态 | 行数 | 占比 |
