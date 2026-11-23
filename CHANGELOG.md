@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## v1.42.0 — 2026-11-24
+
+这一版把「**声明了但没人读**」当成一类正式缺陷来清：新增 3 个触发器、接通 2 个死参数，并让 GUI 的 141 个测试**第一次进入 CI**。
+
+- **触发器**：`on_load`/`on_unload`（装卸时点，落在既有的 `TransportDepart`/`OperatorLoaded` 上，**不新增事件**）、流体 `on_empty`/`on_full`、交通准入 `on_entry_request`；
+- **死参数**：`DispatcherParams.max_tasks` 与 `ProcessorParams.changeover_time` 从"改了没反应"变成真行为，allowlist 从 7 条降到 5 条；
+- **GUI**：`visual_tool` 此前只可编辑、画布上什么都不画，现在按自身参数绘制；
+- **CI**：`openflex-gui` 的测试此前被三处 `--exclude` 排除，现在有独立作业并且已通过。
+
+过程中修掉一个只有跑起来才会暴露的缺口：`collect_model_scripts` 用**手写清单**做脚本预编译，新增的触发器漏收会导致 `action: "script"` 在运行时失败而 `validate` 放行。三次新钩子各配了脚本回归测试。
+发布节奏保持**至少 3 小时一版**。
 
 ### 模型与引擎
 
@@ -65,6 +75,15 @@
   原记作 ⛔「6 个 picklist 全缺」，实际 `model_triggers` 有 9 个时点钩子且已有 4 个测试覆盖。
   已改为 ✅ 并注明「原记 ⛔ 是我漏查」。**缺口数量因此 -1**（⛔ 72 → 71）。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**940 passed / 0 failed**。
+- GUI **141 项**（现已在 CI 独立作业中运行）、`openflex-core --lib` **209 项**。
+- `clippy --workspace --all-targets` 0 警告、`fmt` 干净；`scripts/acceptance.sh` **all golden checks passed**。
+- CI 13 个作业全绿（含新增的 `tests (openflex-gui, Linux)`、Windows 二进制冒烟）。
+- 独立实测：`changeover_time` 3 时 busy **0.12 → 0.285**（差值 0.165 = 11 次换型 × 3 / 200）；
+  流体 `on_full`/`on_empty` 各一次；`admit=0` 时首次装载延后但最终完成 2 件。
 
 ## v1.41.0 — 2026-11-24
 
