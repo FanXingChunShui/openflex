@@ -281,17 +281,47 @@ impl Belt {
                 consider(hold);
                 continue;
             }
-            let mut target = self.limit(index);
+            // task-zeno: only events that are actually reachable may drive the
+            // next tick. The leading item's exit and the fixed stop positions
+            // qualify; a follower's `limit` tracks the item in front, which
+            // moves with the belt, so `time_to_reach(pos, limit)` would return
+            // an ever smaller value while the belt is congested (the follower
+            // can never catch a limit that runs away from it). Scheduling those
+            // ticks produced a Zeno loop of ~1e-6 s steps; the follower is now
+            // moved by the same tick as the leader instead.
+            let mut target = if index == 0 {
+                self.length
+            } else {
+                self.limit(index)
+            };
             if let Some(stop) = stops
                 .iter()
                 .copied()
                 .filter(|stop| *stop > self.positions[index] + EPS)
                 .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             {
-                target = target.min(stop);
+                // A stop behind the item in front can never be reached.
+                if stop <= self.limit(index) + EPS {
+                    target = target.min(stop);
+                }
             }
             let gap = target - self.positions[index];
             if gap > EPS {
+                // task-zeno: a follower can only close in on its leader when the
+                // leader is held back (dwelling or jammed against its own
+                // limit). When the leader moves with the belt, `limit` moves
+                // too, so `time_to_reach(pos, limit)` keeps shrinking while the
+                // gap stays constant: scheduling that tick produced a Zeno loop
+                // of ~1e-6 s steps. The follower is moved by the leader's tick
+                // instead.
+                if index > 0 {
+                    let front = index - 1;
+                    let leader_held = self.hold_remaining(front) > EPS
+                        || self.limit(front) - self.positions[front] <= EPS;
+                    if !leader_held {
+                        continue;
+                    }
+                }
                 // task-56: integrate the speed profile.
                 consider(self.time_to_reach(self.positions[index], target));
             }

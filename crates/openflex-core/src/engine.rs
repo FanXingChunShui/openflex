@@ -17978,4 +17978,94 @@ mod tests {
         assert_eq!(report.objects["K1"].input_count.mean, 0.0);
         assert_eq!(report.objects["K2"].input_count.mean, 1.0);
     }
+
+    /// A congested non-accumulating belt with a decision point must not spin in
+    /// tiny `BeltTick`s (the "Zeno" loop): the run has to finish quickly and
+    /// every item still reaches a lane.
+    #[test]
+    fn belt_decision_point_congestion_does_not_zeno() {
+        let model = Model::from_json(
+            r#"{"format":"openflex-model","version":1,"name":"zeno","run":{"stop_time":150,"seed":1,"replications":1},
+             "objects":[
+              {"name":"InfeedA","kind":"source","params":{"interarrival":{"distribution":"exponential","mean":6.0},"item_type":0,"first_arrival":0.0}},
+              {"name":"InfeedB","kind":"source","params":{"interarrival":{"distribution":"exponential","mean":6.0},"item_type":1,"first_arrival":0.0}},
+              {"name":"Sorter","kind":"conveyor","params":{"speed":1.0,"length":12.0,"item_spacing":1.0,
+                "decision_points":[{"position":6.0,"range":0.5,"once_per_item":true,"actions":[]}]}},
+              {"name":"LaneA","kind":"sink","params":{}},{"name":"LaneB","kind":"sink","params":{}}],
+             "connections":[{"from":"InfeedA","to":"Sorter"},{"from":"InfeedB","to":"Sorter"},
+               {"from":"Sorter","to":"LaneA"},{"from":"Sorter","to":"LaneB"}]}"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 150.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let started = std::time::Instant::now();
+        // `run_model` derives the replication seed (this is the CLI path that
+        // reproduces the loop).
+        let report = crate::run_model(&model).expect("run");
+        let result = &report.replications[0];
+        let elapsed = started.elapsed();
+        assert!(elapsed.as_secs() < 10, "the run must not loop: {elapsed:?}");
+        assert!(
+            result.items_completed > 0,
+            "items must still flow through the belt"
+        );
+        assert_eq!(report.replications.len(), 1);
+        let _ = config;
+
+        // Count the events up to the stop time: the run must stay bounded.
+        let config =
+            SimConfig::from_run_settings(&model.run, crate::engine::derive_seed(model.run.seed, 0));
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let mut events = 0usize;
+        while let Some(Reverse(event)) = sim.events.pop() {
+            if event.time > 150.0 - 1e-9 {
+                break;
+            }
+            events += 1;
+            sim.now = event.time;
+            sim.handle(event.kind).expect("handle");
+        }
+        eprintln!("zeno events={events}");
+        assert!(
+            events < 50_000,
+            "the run must stay bounded: {events} events"
+        );
+    }
+
+    /// The same congested belt without a decision point must keep flowing (the
+    /// fix must not stall belts that never had decision points).
+    #[test]
+    fn congested_belt_without_decision_points_still_flows() {
+        let model = Model::from_json(
+            r#"{"format":"openflex-model","version":1,"name":"zeno-plain","run":{"stop_time":150,"seed":1,"replications":1},
+             "objects":[
+              {"name":"InfeedA","kind":"source","params":{"interarrival":{"distribution":"exponential","mean":6.0},"item_type":0,"first_arrival":0.0}},
+              {"name":"InfeedB","kind":"source","params":{"interarrival":{"distribution":"exponential","mean":6.0},"item_type":1,"first_arrival":0.0}},
+              {"name":"Sorter","kind":"conveyor","params":{"speed":1.0,"length":12.0,"item_spacing":1.0}},
+              {"name":"LaneA","kind":"sink","params":{}},{"name":"LaneB","kind":"sink","params":{}}],
+             "connections":[{"from":"InfeedA","to":"Sorter"},{"from":"InfeedB","to":"Sorter"},
+               {"from":"Sorter","to":"LaneA"},{"from":"Sorter","to":"LaneB"}]}"#,
+        )
+        .expect("model");
+        let config =
+            SimConfig::from_run_settings(&model.run, crate::engine::derive_seed(model.run.seed, 0));
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let mut events = 0usize;
+        while let Some(Reverse(event)) = sim.events.pop() {
+            if event.time > 150.0 - 1e-9 {
+                break;
+            }
+            events += 1;
+            sim.now = event.time;
+            sim.handle(event.kind).expect("handle");
+        }
+        assert!(
+            events < 50_000,
+            "the plain belt must stay bounded: {events}"
+        );
+        assert!(events > 0, "the plain belt must keep delivering items");
+    }
 }
