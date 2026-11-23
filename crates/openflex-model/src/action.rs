@@ -38,6 +38,13 @@ pub enum Action {
     ReleaseItem,
     /// task-184: start or stop a named Motor (and its connected conveyors).
     SetMotor { target: String, running: bool },
+    /// task-187: route the current item to one explicit output port.
+    ///
+    /// The override is consumed by the **next** routing decision, so set it
+    /// *before* the object routes the item — `on_entry` works, `on_exit` is too
+    /// late and instead becomes the override for the next object the item
+    /// visits. Models without this action are unaffected.
+    SetDestination { port: u32 },
     /// Run a sandboxed FlexScript (rhai) snippet (D2 script layer).
     ///
     /// The script is compiled once when the model is loaded (the model layer
@@ -108,6 +115,12 @@ impl<'de> Deserialize<'de> for Action {
                     running: field(&mut map, "running", &name).map_err(de::Error::custom)?,
                 }
             }
+            "set_destination" => {
+                check_keys(&map, &name, &["port"]).map_err(de::Error::custom)?;
+                Action::SetDestination {
+                    port: field(&mut map, "port", &name).map_err(de::Error::custom)?,
+                }
+            }
             "script" => {
                 check_keys(&map, &name, &["source"]).map_err(de::Error::custom)?;
                 Action::Script {
@@ -116,7 +129,7 @@ impl<'de> Deserialize<'de> for Action {
             }
             other => {
                 return Err(de::Error::custom(format!(
-                    "unknown action '{other}' (expected one of: set_label, set_item_type, increment_label, send_message, destroy_item, release_item, set_motor, script)"
+                    "unknown action '{other}' (expected one of: set_label, set_item_type, increment_label, send_message, destroy_item, release_item, set_motor, set_destination, script)"
                 )));
             }
         };

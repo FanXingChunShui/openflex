@@ -147,6 +147,45 @@ fn persistence_file() -> Option<std::path::PathBuf> {
 }
 
 fn main() -> eframe::Result<()> {
+    // On Windows the main thread reserves 1 MB of stack, and a debug build of
+    // this crate needs more than that before the first frame: the CLI proved the
+    // same failure mode by aborting every subcommand with "has overflowed its
+    // stack". Windows lets us run the event loop on another thread, so give it a
+    // stack we choose. macOS must keep it on the main thread (AppKit), so the
+    // other platforms call `run_app` directly.
+    #[cfg(windows)]
+    {
+        const MAIN_STACK: usize = 32 * 1024 * 1024;
+        // Stay on `i32` across the thread boundary: `eframe::Error` need not be
+        // `Send`, and we only need its text to report it.
+        let worker = move || match run_app() {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("openflex-gui: {error}");
+                1
+            }
+        };
+        let code = std::thread::Builder::new()
+            .name("openflex-gui".to_string())
+            .stack_size(MAIN_STACK)
+            .spawn(worker)
+            .map_err(|error| eframe::Error::AppCreation(Box::new(error)))?
+            .join()
+            .unwrap_or(70);
+        if code != 0 {
+            std::process::exit(code);
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        run_app()
+    }
+}
+
+/// Creates the eframe application; separated so Windows can host it on a thread
+/// with a larger stack.
+fn run_app() -> eframe::Result<()> {
     let model = std::env::args().nth(1);
     let options = eframe::NativeOptions {
         // Window size/position and collapsing-header state survive restarts.

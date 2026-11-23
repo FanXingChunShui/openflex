@@ -210,6 +210,9 @@ pub struct FlowItem {
     pub created: f64,
     /// Model time the item entered its current object.
     pub entry_time: f64,
+    /// task-187: one-shot output-port override for the item's next routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<u32>,
 }
 
 impl FlowItem {
@@ -221,6 +224,7 @@ impl FlowItem {
             labels: BTreeMap::new(),
             created: now,
             entry_time: now,
+            destination: None,
         }
     }
 }
@@ -3947,6 +3951,11 @@ impl<'m> Simulation<'m> {
                 };
                 self.set_motor_running(motor, running)?;
             }
+            Action::SetDestination { .. } => {
+                return Err(SimError::Config(
+                    "set_destination is only valid for an item-level trigger".into(),
+                ));
+            }
             Action::Script { source } => {
                 self.action_location = location.to_string();
                 self.run_script_action(
@@ -4387,6 +4396,7 @@ impl<'m> Simulation<'m> {
             labels: labels.clone(),
             created: self.now,
             entry_time: self.now,
+            destination: None,
         };
         self.record_item_trace("enter", source, item.id);
         self.flow_item_hints.insert(source, item.id);
@@ -4405,6 +4415,7 @@ impl<'m> Simulation<'m> {
         self.stats_created += 1;
         let mut item = container.clone();
         item.id = self.items_created;
+        item.destination = None;
         item.labels.insert("part".to_string(), part as f64);
         item
     }
@@ -4652,6 +4663,25 @@ impl<'m> Simulation<'m> {
                     && !self.pull_enabled(self.conns[conn].to)
             })
             .collect();
+        if let Some(port) = item.destination {
+            // task-187: explicit destination wins over the routing strategy.
+            let Some(conn) = self.conn_at_port(from, port) else {
+                return Err(SimError::Config(format!(
+                    "set_destination: object '{}' has no output port {} (it has {} output ports)",
+                    self.objects[from].name,
+                    port,
+                    self.outputs[from].len()
+                )));
+            };
+            if !outputs.contains(&conn) {
+                return Err(SimError::Config(format!(
+                    "set_destination: output port {} on object '{}' is not a sendable A connection",
+                    port, self.objects[from].name
+                )));
+            }
+            // A chosen but busy destination keeps the item here for a retry.
+            return Ok(self.conn_accepts(conn).then_some(conn));
+        }
         if outputs.is_empty() {
             return Ok(None);
         }
@@ -4776,6 +4806,9 @@ impl<'m> Simulation<'m> {
             return Ok(false);
         }
         let mut item = item;
+        // task-187: the destination override is consumed by this routing
+        // decision; it must not leak into the receiving object.
+        item.destination = None;
         // The item now leaves the upstream object: its OnExit trigger runs
         // before the receiving object's OnEntry/OnReceive logic (A10-on_exit).
         let exit_actions = self.trigger_actions(from, SimTrigger::OnExit);
@@ -6107,6 +6140,7 @@ impl<'m> Simulation<'m> {
                 labels: labels.clone(),
                 created: self.now,
                 entry_time: self.now,
+                destination: None,
             };
             self.flow_note(block, self.now);
             self.flow_add_token(block, token, None);
@@ -6280,6 +6314,7 @@ impl<'m> Simulation<'m> {
                         labels: token.labels.clone(),
                         created: now,
                         entry_time: now,
+                        destination: None,
                     };
                     self.record_token_trace("token_transfer", block, token.id);
                     if !self.receive_item(target, 0, item)? {
@@ -11056,6 +11091,21 @@ impl<'m> Simulation<'m> {
                     };
                     self.set_motor_running(motor, running)?;
                 }
+                Action::SetDestination { port } => {
+                    let Some(conn) = self.conn_at_port(index, port) else {
+                        return Err(SimError::Config(format!(
+                            "set_destination on object '{}' has no output port {port} (it has {} output ports)",
+                            object_name,
+                            self.outputs[index].len()
+                        )));
+                    };
+                    if !self.outputs[index].contains(&conn) {
+                        return Err(SimError::Config(format!(
+                            "set_destination on object '{object_name}' port {port} is not a sendable A output"
+                        )));
+                    }
+                    item.destination = Some(port);
+                }
                 Action::Script { source } => {
                     let location = if self.action_location.is_empty() {
                         format!("{object_name} script action")
@@ -11246,6 +11296,7 @@ impl<'m> Simulation<'m> {
                 labels: BTreeMap::new(),
                 created: self.now,
                 entry_time: self.now,
+                destination: None,
             };
             self.receive_item(target, 0, item)?;
         }
@@ -12810,6 +12861,7 @@ mod tests {
             labels: BTreeMap::new(),
             created: 0.0,
             entry_time: 0.0,
+            destination: None,
         }
     }
 
@@ -17757,5 +17809,173 @@ mod tests {
         let text =
             serde_json::to_string(&serde_json::to_value(&model).expect("json")).expect("json");
         assert!(!text.contains("max_travelers"));
+    }
+
+    fn set_destination_model(port: u32) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "set-destination",
+          "run": {{ "stop_time": 20.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0,
+                "triggers": {{ "on_create": [
+                    {{ "action": "set_destination", "port": {port} }} ] }} }} }},
+            {{ "name": "K1", "kind": "sink", "params": {{}} }},
+            {{ "name": "K2", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [
+            {{ "from": "S", "to": "K1" }}, {{ "from": "S", "to": "K2" }}
+          ]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    /// task-187: SetDestination wins over the default first-available strategy.
+    #[test]
+    fn set_destination_overrides_routing_strategy() {
+        let report = crate::run_model(&set_destination_model(1)).expect("run");
+        assert_eq!(report.objects["K1"].input_count.mean, 0.0);
+        assert_eq!(report.objects["K2"].input_count.mean, 1.0);
+    }
+
+    /// task-187: an out-of-range destination is a hard error naming the object
+    /// and its output-port count.
+    #[test]
+    fn set_destination_rejects_out_of_range_port() {
+        let error = crate::run_model(&set_destination_model(9)).expect_err("port error");
+        let text = error.to_string();
+        assert!(text.contains("set_destination"), "{text}");
+        assert!(text.contains("'S'"), "{text}");
+        assert!(text.contains("2 output ports"), "{text}");
+    }
+
+    /// task-187: the override is consumed by the first delivery and does not
+    /// leak to the next object's own routing strategy.
+    #[test]
+    fn set_destination_does_not_leak_downstream() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "set-destination-leak",
+          "run": { "stop_time": 20.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1000.0 },
+                "max_arrivals": 1, "first_arrival": 0.0,
+                "triggers": { "on_create": [
+                    { "action": "set_destination", "port": 1 } ] } } },
+            { "name": "Q", "kind": "queue", "params": {} },
+            { "name": "K1", "kind": "sink", "params": {} },
+            { "name": "K2", "kind": "sink", "params": {} }
+          ],
+          "connections": [
+            { "from": "S", "to": "K1" }, { "from": "S", "to": "Q" },
+            { "from": "Q", "to": "K1" }, { "from": "Q", "to": "K2" }
+          ]
+        }"#,
+        )
+        .expect("model");
+        let report = crate::run_model(&model).expect("run");
+        assert_eq!(report.objects["Q"].input_count.mean, 1.0);
+        assert_eq!(report.objects["K1"].input_count.mean, 1.0);
+        assert_eq!(
+            report.objects["K2"].input_count.mean, 0.0,
+            "queued item must not inherit the source's destination override"
+        );
+    }
+
+    /// task-187: routing with no SetDestination remains deterministic and the
+    /// FlowItem default carries no destination field in report JSON.
+    #[test]
+    fn set_destination_is_optional_and_deterministic() {
+        let model = set_destination_model(1);
+        let a = crate::run_model(&model).expect("first");
+        let b = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&a).expect("json"),
+            serde_json::to_string(&b).expect("json")
+        );
+        let plain = Model::from_json(
+            r#"{
+              "format": "openflex-model", "version": 1, "name": "plain-route",
+              "run": { "stop_time": 20.0, "seed": 1 },
+              "objects": [
+                { "name": "S", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 1000.0 },
+                    "max_arrivals": 1 } },
+                { "name": "K", "kind": "sink", "params": {} }
+              ],
+              "connections": [{ "from": "S", "to": "K" }]
+            }"#,
+        )
+        .expect("model");
+        let plain_report = crate::run_model(&plain).expect("plain");
+        assert!(
+            !serde_json::to_string(&plain_report)
+                .expect("json")
+                .contains("destination")
+        );
+    }
+
+    fn decision_destination_model(points: &str) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "decision-destination",
+          "run": {{ "stop_time": 30.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "C", "kind": "conveyor", "params": {{
+                "speed": 1.0, "length": 10.0, "item_spacing": 1.0,
+                "accumulating": true, "decision_points": [{points}] }} }},
+            {{ "name": "K1", "kind": "sink", "params": {{}} }},
+            {{ "name": "K2", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [
+            {{ "from": "S", "to": "C" }},
+            {{ "from": "C", "to": "K1" }}, {{ "from": "C", "to": "K2" }}
+          ]
+        }}"#
+        ))
+        .expect("decision destination model")
+    }
+
+    /// task-187: a decision point using SetDestination sends the item to that
+    /// port; a false condition leaves the default routing untouched.
+    #[test]
+    fn decision_point_set_destination_routes_and_defaults() {
+        let matched = decision_destination_model(
+            r#"{ "position": 5.0, "range": 0.5, "condition": "item.type == 0",
+                 "actions": [{ "action": "set_destination", "port": 1 }] }"#,
+        );
+        let report = crate::run_model(&matched).expect("matched");
+        assert_eq!(report.objects["K1"].input_count.mean, 0.0);
+        assert_eq!(report.objects["K2"].input_count.mean, 1.0);
+
+        let unmatched = decision_destination_model(
+            r#"{ "position": 5.0, "range": 0.5, "condition": "item.type == 99",
+                 "actions": [{ "action": "set_destination", "port": 1 }] }"#,
+        );
+        let report = crate::run_model(&unmatched).expect("unmatched");
+        assert_eq!(report.objects["K1"].input_count.mean, 1.0);
+        assert_eq!(report.objects["K2"].input_count.mean, 0.0);
+    }
+
+    /// task-187: two decision points on the same object each override the
+    /// destination; the last one (in belt order) wins.
+    #[test]
+    fn later_decision_point_destination_wins() {
+        let model = decision_destination_model(
+            r#"{ "position": 3.0, "range": 0.5, "condition": "item.type == 0",
+                 "actions": [{ "action": "set_destination", "port": 0 }] },
+               { "position": 7.0, "range": 0.5, "condition": "item.type == 0",
+                 "actions": [{ "action": "set_destination", "port": 1 }] }"#,
+        );
+        let report = crate::run_model(&model).expect("run");
+        assert_eq!(report.objects["K1"].input_count.mean, 0.0);
+        assert_eq!(report.objects["K2"].input_count.mean, 1.0);
     }
 }

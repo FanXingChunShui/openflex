@@ -1115,6 +1115,15 @@ fn action_schema() -> Value {
             },
             {
                 "type": "object",
+                "properties": {
+                    "action": { "const": "set_destination" },
+                    "port": { "type": "integer", "minimum": 0 }
+                },
+                "required": ["action", "port"],
+                "additionalProperties": false
+            },
+            {
+                "type": "object",
                 "description": "Run a sandboxed FlexScript (rhai) snippet; the engine API is documented in openflex-core::script.",
                 "properties": {
                     "action": { "const": "script" },
