@@ -148,6 +148,9 @@ openflex trace events.jsonl --items          # 每件 id 与步数
 openflex trace events.jsonl --item 7         # 单件完整路径表
 openflex trace events.jsonl --paths          # 跨件路径分组 + 覆盖率
 openflex check-scripts model.ofm             # 只编译所有脚本，不跑仿真（退出码 2 = 有编译错误）
+openflex eval model.ofm --expr "1 + 2 * 3"   # 不跑模型就试算表达式（=7）
+openflex eval model.ofm --expr "time * 2" --time 5   # `time` 可取任意时刻
+openflex eval model.ofm --script 'log("hi"); set_label("x", 7.0);'   # 跑沙箱脚本，打印日志与标签
 openflex import --csv arrivals.csv --out model.ofm   # 从到达表生成模型
 openflex import --objects objects.csv --connections connections.csv --out model.ofm  # 从对象/连接表生成
 openflex layout model.ofm --svg out.svg      # 导出 2D 布局图
