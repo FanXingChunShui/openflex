@@ -4,6 +4,17 @@
 
 ### 模型与引擎
 
+- **把两个"死参数"接上真行为**（它们此前有字段、有界面、引擎从不读，用户改了毫无变化）：
+  - **`DispatcherParams.max_tasks`**：dispatcher 同时挂起任务数上限；达上限时新请求**留在队列里不丢**，
+    任务完成（`finish_task`）或被抢占中止时释放名额并重新派发队首——复用既有事件链，**无忙等**。`0` = 不限（逐位不变）。
+    计数是**每个 dispatcher 各自**的（与 FlexSim 的 per-dispatcher 语义一致）。
+  - **`ProcessorParams.changeover_time`**：**相邻两件 `item_type` 不同**才插入换型（首次加工与同类型连续加工都不插，
+    这与"每次 setup 都延迟"是两回事）；时长计入 Setup 阶段因此自动进 busy/utilization，trace 记 `changeover` 事件。
+    实测 6+6 件交替、换型 3：busy **0.12 → 0.285**（差值 0.165 恰好 = 11 次换型 × 3 / 200），平均停留 2.0 → 4.75。
+    只为常量负值报错；非 Processor 对象忽略该参数。
+  两条已从 `docs/dead-params-allowlist.txt` 删除（`check-dead-params.sh` 现在 **5 known / 0 stale**，剩下的见 `docs/BACKLOG.md`）。
+  **边界**：换型只接单 Processor 路径（`MultiProcessor` 的槽位语义未动）；换型是"延长 setup"而非独立阶段。
+
 - **流体 `OnEmpty` / `OnFull` 触发器**：`Triggers.on_empty` / `on_full`（空不序列化，旧模型 JSON 与报告逐位不变）。
   去抖用**锁存 + 相邻采样对比**，没有引入静默阈值：离开边界即重新武装，所以"持续空/持续满"只触发一次。
   触发点在每个固定 fluid step 末尾（`fluid_advance` 之后）统一扫描，**不改任何液位数值**。

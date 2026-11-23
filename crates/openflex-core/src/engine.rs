@@ -861,6 +861,13 @@ pub(crate) struct ObjectRt {
     /// task-188: items counted towards the next sink recycle batch.
     #[serde(default)]
     recycled_count: u32,
+    /// task-190: tasks handed out by this dispatcher that are still pending
+    /// (`max_tasks` cap).
+    #[serde(default)]
+    dispatcher_active: u32,
+    /// task-190: type of the last item this processor started (changeover).
+    #[serde(default)]
+    last_item_type: Option<u32>,
     /// task-124: remaining cells of a step-by-step person move.
     #[serde(default)]
     person_path: VecDeque<[f64; 2]>,
@@ -1038,6 +1045,8 @@ impl ObjectRt {
             charge_time_total: 0.0,
             charge_started_at: 0.0,
             recycled_count: 0,
+            dispatcher_active: 0,
+            last_item_type: None,
             person_path: VecDeque::new(),
             person_target: None,
             pending_steps: Vec::new(),
@@ -5762,6 +5771,29 @@ impl<'m> Simulation<'m> {
     // Processor
     // -----------------------------------------------------------------------
 
+    /// task-190: changeover delay for a processor switching item types.
+    fn changeover_delay(
+        &mut self,
+        index: usize,
+        params: &openflex_model::ProcessorParams,
+        next_type: Option<u32>,
+    ) -> f64 {
+        let Some(next_type) = next_type else {
+            return 0.0;
+        };
+        let Some(previous) = self.objects[index].last_item_type else {
+            return 0.0;
+        };
+        if previous == next_type {
+            return 0.0;
+        }
+        let delay = self.sample(&params.changeover_time).max(0.0);
+        if delay > EPS {
+            self.record_object_trace("changeover", index);
+        }
+        delay
+    }
+
     fn combiner_params(&self, index: usize) -> Option<openflex_model::CombinerParams> {
         match &self.model.objects[index].params {
             ObjectParams::Combiner(params) => Some(params.clone()),
@@ -5809,7 +5841,15 @@ impl<'m> Simulation<'m> {
             self.set_state(index, State::Idle);
             return Ok(());
         }
-        let setup = self.sample(&params.setup_time).max(0.0);
+        // task-190: a type change between consecutive items adds a changeover
+        // delay to the setup of the next item (same type: no delay; first item:
+        // no previous type, so no delay).
+        let next_type = self.objects[index]
+            .content
+            .first()
+            .map(|item| item.item_type);
+        let changeover = self.changeover_delay(index, &params, next_type);
+        let setup = self.sample(&params.setup_time).max(0.0) + changeover;
         let phase = if setup > 0.0 {
             OperatorPhase::Setup
         } else {
@@ -5821,6 +5861,7 @@ impl<'m> Simulation<'m> {
         let Some(item) = self.take_content(index, 0) else {
             return Ok(());
         };
+        self.objects[index].last_item_type = Some(item.item_type);
         self.objects[index].processing_item = Some(item);
         self.objects[index].phase_token += 1;
         let token = self.objects[index].phase_token;
@@ -7499,6 +7540,16 @@ impl<'m> Simulation<'m> {
         if !self.objects[dispatcher].on_shift {
             return Ok(());
         }
+        // task-190: at most `max_tasks` pending tasks; the extra requests stay
+        // queued (not dropped) and `finish_task`/preemption wake them up because
+        // both call `dispatch` again.
+        let max_tasks = match &self.model.objects[dispatcher].params {
+            ObjectParams::Dispatcher(params) => params.max_tasks,
+            _ => 0,
+        };
+        if max_tasks > 0 && self.objects[dispatcher].dispatcher_active >= max_tasks {
+            return Ok(());
+        }
         // B6: a dispatcher that only owns elevators uses floor-aware call
         // ordering (same floor, then same direction, then nearest floor).
         let elevator_only = !self.transporters[dispatcher].is_empty()
@@ -7518,6 +7569,8 @@ impl<'m> Simulation<'m> {
                 break;
             };
             self.objects[dispatcher].requests.remove(position);
+            self.objects[dispatcher].dispatcher_active =
+                self.objects[dispatcher].dispatcher_active.saturating_add(1);
             self.objects[transporter].tasks += 1;
             self.objects[transporter].serving_requester = Some(requester);
             if let Some(item) = self.sole_item_id(requester) {
@@ -7762,6 +7815,10 @@ impl<'m> Simulation<'m> {
             // the request can be served again instead of blocking the queue.
             self.objects[transporter].serving_requester = None;
             self.objects[transporter].tasks = self.objects[transporter].tasks.saturating_sub(1);
+            if let Some(dispatcher) = self.objects[transporter].assigned_dispatcher {
+                self.objects[dispatcher].dispatcher_active =
+                    self.objects[dispatcher].dispatcher_active.saturating_sub(1);
+            }
             self.set_state(transporter, State::Idle);
             return Ok(());
         };
@@ -7770,6 +7827,10 @@ impl<'m> Simulation<'m> {
         // Abort the transporter task (it is not counted as completed).
         self.objects[transporter].serving_requester = None;
         self.objects[transporter].tasks = self.objects[transporter].tasks.saturating_sub(1);
+        if let Some(dispatcher) = self.objects[transporter].assigned_dispatcher {
+            self.objects[dispatcher].dispatcher_active =
+                self.objects[dispatcher].dispatcher_active.saturating_sub(1);
+        }
         self.set_state(transporter, State::Idle);
         // Pause the interrupted setup/process step and re-queue the request.
         self.pause_phase(index);
@@ -9671,6 +9732,10 @@ impl<'m> Simulation<'m> {
         self.clear_executor_activity(transporter);
         self.release_shaft(transporter);
         self.objects[transporter].tasks = self.objects[transporter].tasks.saturating_sub(1);
+        if let Some(dispatcher) = self.objects[transporter].assigned_dispatcher {
+            self.objects[dispatcher].dispatcher_active =
+                self.objects[dispatcher].dispatcher_active.saturating_sub(1);
+        }
         self.objects[transporter].serving_requester = None;
         self.objects[transporter].acc.output += 1;
         self.drain_agv_battery(transporter)?;
@@ -18717,5 +18782,224 @@ mod tests {
         };
         let result = crate::simulate(&model, &config, 0).expect("script hook runs");
         assert_eq!(result.items_completed, 2);
+    }
+
+    fn max_tasks_model(max_tasks: u32) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "max-tasks",
+          "run": {{ "stop_time": 100.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S1", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "S2", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "P1", "kind": "processor", "pos": [10, 0], "params": {{
+                "process_time": {{ "distribution": "constant", "value": 1.0 }},
+                "process_operator": "D" }} }},
+            {{ "name": "P2", "kind": "processor", "pos": [10, 0], "params": {{
+                "process_time": {{ "distribution": "constant", "value": 1.0 }},
+                "process_operator": "D" }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }},
+            {{ "name": "D", "kind": "dispatcher", "pos": [0, 0], "params": {{
+                "max_tasks": {max_tasks} }} }},
+            {{ "name": "T1", "kind": "transporter", "pos": [0, 0], "params": {{ "speed": 1.0, "home": "D" }} }},
+            {{ "name": "T2", "kind": "transporter", "pos": [0, 0], "params": {{ "speed": 1.0, "home": "D" }} }}
+          ],
+          "connections": [
+            {{ "from": "S1", "to": "P1" }}, {{ "from": "P1", "to": "K" }},
+            {{ "from": "S2", "to": "P2" }}, {{ "from": "P2", "to": "K" }},
+            {{ "from": "D", "to": "T1" }}, {{ "from": "D", "to": "T2" }}
+          ]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    fn first_operators_loaded(model: &Model) -> Vec<f64> {
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(model, &config, 0).expect("trace run");
+        let mut times: Vec<f64> = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "operator_loaded")
+            .map(|event| event.time)
+            .collect();
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        times
+    }
+
+    /// task-190: `max_tasks == 0` (the default) keeps the unlimited behaviour.
+    #[test]
+    fn max_tasks_zero_is_unlimited() {
+        let model = max_tasks_model(0);
+        let times = first_operators_loaded(&model);
+        assert_eq!(times.len(), 2, "both tasks are served");
+        assert!(
+            (times[1] - times[0]).abs() < 1e-9,
+            "without a cap both operators load at once: {times:?}"
+        );
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(first.replications, second.replications);
+    }
+
+    /// task-190: `max_tasks == 1` queues the second request and serves it after
+    /// the first task finished (the request is not dropped).
+    #[test]
+    fn max_tasks_one_delays_the_second_request() {
+        let model = max_tasks_model(1);
+        let times = first_operators_loaded(&model);
+        assert_eq!(times.len(), 2, "both tasks must still be served");
+        assert!(
+            times[1] > times[0] + 0.5,
+            "the second task must wait for the first to finish: {times:?}"
+        );
+        let report = crate::run_model(&model).expect("run");
+        assert_eq!(report.replications[0].items_completed, 2);
+    }
+
+    /// task-190: changing only `max_tasks` must not change the statistics of a
+    /// model that never reaches the cap.
+    #[test]
+    fn max_tasks_does_not_change_a_single_task_model() {
+        let plain = max_tasks_model(0);
+        let mut capped = max_tasks_model(0);
+        // Same model, cap large enough to never bind.
+        if let ObjectParams::Dispatcher(params) = &mut capped.objects[5].params {
+            params.max_tasks = 5;
+        }
+        let first = crate::run_model(&plain).expect("plain");
+        let second = crate::run_model(&capped).expect("capped");
+        assert_eq!(first.replications, second.replications);
+    }
+
+    fn changeover_model(changeover: f64, alternating: bool) -> Model {
+        let (s0_max, s1_max, s1_first) = if alternating {
+            (3, 2, 1.0)
+        } else {
+            (5, 1, 1000.0)
+        };
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "changeover",
+          "run": {{ "stop_time": 100.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S0", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 2.0 }},
+                "max_arrivals": {s0_max}, "first_arrival": 0.0, "item_type": 0 }} }},
+            {{ "name": "S1", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 2.0 }},
+                "max_arrivals": {s1_max}, "first_arrival": {s1_first}, "item_type": 1 }} }},
+            {{ "name": "P", "kind": "processor", "pos": [0, 0], "params": {{
+                "process_time": {{ "distribution": "constant", "value": 1.0 }},
+                "changeover_time": {{ "distribution": "constant", "value": {changeover} }} }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [
+            {{ "from": "S0", "to": "P" }}, {{ "from": "S1", "to": "P" }},
+            {{ "from": "P", "to": "K" }}
+          ]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    fn processor_busy(model: &Model) -> f64 {
+        let report = crate::run_model(model).expect("run");
+        report.replications[0].objects["P"].state_times.busy
+    }
+
+    fn changeover_count(model: &Model) -> usize {
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(model, &config, 0).expect("trace");
+        let count = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "changeover")
+            .count();
+        eprintln!("changeover events={count} busy={}", processor_busy(model));
+        count
+    }
+
+    /// task-190: alternating item types insert a changeover between every pair.
+    #[test]
+    fn changeover_is_inserted_between_different_types() {
+        let plain = processor_busy(&changeover_model(0.0, true));
+        let swapped = processor_busy(&changeover_model(3.0, true));
+        let count = changeover_count(&changeover_model(3.0, true)) as f64;
+        assert!(count > 0.0, "alternating types must insert changeovers");
+        assert!(
+            (swapped - (plain + count * 3.0)).abs() < 1e-9,
+            "every changeover of 3 must add 3 to busy ({swapped} vs {plain}, {count} changeovers)"
+        );
+    }
+
+    /// task-190: consecutive items of the same type never insert a changeover.
+    #[test]
+    fn changeover_is_not_inserted_for_the_same_type() {
+        let plain = processor_busy(&changeover_model(0.0, false));
+        let swapped = processor_busy(&changeover_model(3.0, false));
+        assert!(
+            (swapped - plain).abs() < 1e-9,
+            "same-type runs must not change busy ({swapped} vs {plain})"
+        );
+    }
+
+    /// task-190: changeover time counts as busy, so utilization moves with it.
+    #[test]
+    fn changeover_enters_the_utilisation() {
+        let plain = crate::run_model(&changeover_model(0.0, true)).expect("plain");
+        let swapped = crate::run_model(&changeover_model(3.0, true)).expect("swapped");
+        let plain_busy = plain.replications[0].objects["P"].state_times.busy;
+        let swapped_busy = swapped.replications[0].objects["P"].state_times.busy;
+        assert!(
+            swapped_busy > plain_busy,
+            "changeover time must be counted as busy ({swapped_busy} vs {plain_busy})"
+        );
+        assert!(
+            (swapped_busy - plain_busy) % 3.0 < 1e-9,
+            "the busy delta must be a whole number of changeovers"
+        );
+    }
+
+    /// task-190: changeover_delay in isolation (first item, same type, switch).
+    #[test]
+    fn changeover_delay_requires_a_type_switch() {
+        let model = changeover_model(3.0, true);
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let processor = sim.by_name["P"];
+        let params = sim.processor_params(processor).expect("processor params");
+        // First item: no previous type -> no changeover.
+        assert_eq!(sim.changeover_delay(processor, &params, Some(0)), 0.0);
+        sim.objects[processor].last_item_type = Some(0);
+        // Same type -> no changeover.
+        assert_eq!(sim.changeover_delay(processor, &params, Some(0)), 0.0);
+        // A different type inserts the configured 3.
+        assert_eq!(sim.changeover_delay(processor, &params, Some(1)), 3.0);
+    }
+
+    /// task-190: `changeover_time == 0` keeps the report bit-identical.
+    #[test]
+    fn changeover_zero_keeps_the_report() {
+        let model = changeover_model(0.0, true);
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(first.replications, second.replications);
     }
 }

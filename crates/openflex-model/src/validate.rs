@@ -72,6 +72,25 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
 
     let mut seen = std::collections::BTreeMap::new();
     for object in &model.objects {
+        if let ObjectParams::Processor(params) = &object.params
+            && let crate::distribution::Distribution::Constant { value } = params.changeover_time
+            && value < 0.0
+        {
+            issues.push(ValidationIssue::new(
+                format!("objects.{}.changeover_time", object.name),
+                "changeover_time must not be negative",
+            ));
+        }
+        // task-190: a negative constant changeover would shorten the setup.
+        if let ObjectParams::Processor(params) = &object.params
+            && let crate::distribution::Distribution::Constant { value } = params.changeover_time
+            && value < 0.0
+        {
+            issues.push(ValidationIssue::new(
+                format!("objects.{}.changeover_time", object.name),
+                "changeover_time must not be negative",
+            ));
+        }
         if let ObjectParams::Sink(params) = &object.params
             && params.recycle == RecycleMode::ByBatch
             && params.recycle_batch == 0
