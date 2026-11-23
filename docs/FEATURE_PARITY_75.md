@@ -127,7 +127,7 @@
 | Load / Unload Time | `load_time`/`unload_time`（分布 + 表达式） | ✅ | 时长精确生效：`load_time=5` → 载货腿在到达后 5.0 出发；`unload_time=3` → `operator_loaded` 在 requester 到达后 3.0 触发（`explicit_load_and_unload_durations_are_exact`，1e-9 内） |
 | Flow Rate / Item Speed（流体/传送带速度） | `conveyor.speed`、流体速率 | 🟡 | 静态或分布；无"每件进入时求值"的 Item Speed picklist |
 | Break To（中断任务序列的接受条件） | 无 | ⛔ | TaskExecuter 无 break 任务与 BreakTo 钩子 |
-| Text Display（VisualTool 的 3D 文字） | `visual_tool` 无文本渲染 | ⛔ | 无 3D 文本 |
+| Text Display（VisualTool 的 3D 文字） | `visual_tool.text`，画布上绘制为标签 | 🟡 | **已修**：`visual_tool` 此前只可编辑、画布上什么都不画（形状/大小/颜色/文字全是空转），现在按自身参数绘制（`visual_tool_size` / `parse_hex_color`，颜色写错回退而不是消失），`text` 画在对象上方；仍是 2D 画布标签，没有 3D 文字渲染。测试 `a_visual_tool_is_drawn_from_its_own_parameters` |
 | Rise Fall Through Mark Triggers（液位穿越） | 无 | ⛔ | 见 Fluid Marks |
 | Entry Exit Trigger（OnEntry/OnExit） | `on_entry`/`on_exit` | ✅ | |
 | Creation Trigger（OnCreation，含 row number） | `on_create` | 🟡 | 有触发器；无 `rownumber` 访问变量（表驱动到达时无法知道来自哪一行） |
@@ -144,7 +144,7 @@
 | OnReceiveTaskSequence | 无 | ⛔ | TaskExecuter 无接收任务序列的钩子 |
 | OnResourceAvailable | 无 | ⛔ | Dispatcher 无"下游可用"回调 |
 | OnDraw Trigger | `on_draw`（schema 层） | 🟡 | 见 ObjectWindows 行 |
-| Start/End of Warmup、Start/End of Run、Start/End of Scenario、Start/End of Experiment | `run.warmup` 有预热但**无时点钩子** | ⛔ | 6 个实验生命周期 picklist 全缺；`Experiment` 只有 overrides/stop_time/warmup |
+| Start/End of Warmup、Start/End of Run、Start/End of Scenario、Start/End of Experiment | `model_triggers`：`on_start`/`on_reset`(预热边界)/`on_stop`/`start_of_scenario`/`end_of_scenario`/`start_of_experiment`/`end_of_experiment`/`start_of_replication`/`end_of_replication` | ✅ | 9 个时点钩子全覆盖，按"实验→场景→复现"分层触发；`replication_lifecycle_hooks_fire_once_per_run`、`experiment_lifecycle_hooks_run_in_order`、`lifecycle_hook_errors_are_reported`、`schema_covers_lifecycle_hooks`（**此行为 2026-11-24 纠正：原先记作 ⛔ 是我漏查**） |
 | Performance Measure（每复现结束时返回指标值） | `model.performance_measures` | ✅ | 模型可自定义 `{name, expression, unit}`，每复现结束求值并进报告/实验/优化（同 §9 的 Experimenter 行）；未定义变量是明确 `SimError`。证据见 [PARITY_EVIDENCE](PARITY_EVIDENCE.md) #42 |
 
 ## 5. TaskSequences（8 页）— 任务序列

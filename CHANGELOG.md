@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### 桌面 GUI
+
+- **`visual_tool` 现在真的会画出来**：此前它只可编辑（形状/大小/颜色/文字都能填），但**画布上什么都不画**——
+  一个纯粹“空转”的对象。现在按自身参数绘制：`size` 折算像素并做上下限（写个离谱值也不会糊满画布）、
+  `color` 解析 `#rrggbb`（**写错回退到种类色而不是消失**）、`text` 画在对象上方；
+  `plane` 用低透明度。测试 `a_visual_tool_is_drawn_from_its_own_parameters`。GUI **141 项**。
+
+### 示例
+
+- **`examples/conveyor-sorting.ofm`**：一条带按 `item_type` 分拣——决策点用 `set_destination` 把 type 1 送到
+  第 1 个出口。实测 300 秒：`created 92.3 / completed 89.7`，`LaneA 51.7 + LaneB 38.0 = 89.7`（守恒），
+  **0.06 s 跑完**（Zeno 修复前这个形状根本跑不完，所以上一版没敢放进来）。
+
+### 文档
+
+- **纠正一处我自己写错的矩阵行**：生命周期钩子（Start/End of Warmup/Run/Scenario/Experiment）
+  原记作 ⛔「6 个 picklist 全缺」，实际 `model_triggers` 有 9 个时点钩子且已有 4 个测试覆盖。
+  已改为 ✅ 并注明「原记 ⛔ 是我漏查」。**缺口数量因此 -1**（⛔ 72 → 71）。
+
+
 ## v1.41.0 — 2026-11-24
 
 **这一版最重要的是修掉一个发布后才发现的崩溃**：Windows 给主线程只有 1 MB 栈，

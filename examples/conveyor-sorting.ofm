@@ -1,0 +1,29 @@
+{
+  "format": "openflex-model",
+  "version": 1,
+  "name": "conveyor-sorting",
+  "description": "One belt sorts by item type: a decision point sets each item's destination port",
+  "time_unit": "seconds",
+  "run": {"stop_time": 300.0, "warmup": 0.0, "seed": 1, "replications": 3},
+  "objects": [
+    {"name": "InfeedA", "kind": "source", "pos": [-14.0, 1.5],
+     "params": {"interarrival": {"distribution": "exponential", "mean": 6.0}, "item_type": 0}},
+    {"name": "InfeedB", "kind": "source", "pos": [-14.0, -1.5],
+     "params": {"interarrival": {"distribution": "exponential", "mean": 6.0}, "item_type": 1}},
+    {"name": "Sorter", "kind": "conveyor", "pos": [0.0, 0.0],
+     "params": {
+       "speed": 1.0, "length": 12.0, "item_spacing": 1.0,
+       "decision_points": [
+         {"position": 6.0, "range": 0.5, "name": "SortByType", "once_per_item": true,
+          "condition": "item.type == 1",
+          "actions": [{"action": "set_destination", "port": 1}]}]}},
+    {"name": "LaneA", "kind": "sink", "pos": [14.0, 2.0], "params": {}},
+    {"name": "LaneB", "kind": "sink", "pos": [14.0, -2.0], "params": {}}
+  ],
+  "connections": [
+    {"from": "InfeedA", "to": "Sorter"},
+    {"from": "InfeedB", "to": "Sorter"},
+    {"from": "Sorter", "to": "LaneA"},
+    {"from": "Sorter", "to": "LaneB"}
+  ]
+}

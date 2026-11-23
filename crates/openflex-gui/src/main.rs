@@ -8037,6 +8037,32 @@ idle,busy,blocked,down\n",
         ])
     }
 
+    /// Footprint (in canvas pixels at zoom 1) of a visual tool, from its
+    /// declared size. The tool has no simulation behaviour; it exists to be
+    /// seen, so it is drawn from its own parameters instead of the generic
+    /// per-kind box.
+    fn visual_tool_size(size: [f64; 3]) -> egui::Vec2 {
+        // World units map to pixels like the other objects (about 12 px/unit),
+        // clamped so a stray size cannot paint over the whole canvas.
+        let px = |value: f64| (value.abs().max(0.05) as f32 * 12.0).clamp(4.0, 240.0);
+        egui::Vec2::new(px(size[0]).max(px(size[2]) * 0.4), px(size[1]).max(6.0))
+    }
+
+    /// `#rrggbb` (what the form writes) to a colour; anything else falls back to
+    /// the kind colour so a typo cannot make the object invisible.
+    fn parse_hex_color(text: &str) -> Option<egui::Color32> {
+        let hex = text.trim().trim_start_matches('#');
+        if hex.len() != 6 {
+            return None;
+        }
+        let channel = |range: std::ops::Range<usize>| u8::from_str_radix(&hex[range], 16).ok();
+        Some(egui::Color32::from_rgb(
+            channel(0..2)?,
+            channel(2..4)?,
+            channel(4..6)?,
+        ))
+    }
+
     fn kind_color(kind: ObjectKind) -> egui::Color32 {
         // A calm, evenly-spaced hue wheel per object family: sources green,
         // storage teal, machines indigo, transport amber, fluid cyan, the rest
@@ -13640,6 +13666,50 @@ impl eframe::App for OpenFlexApp {
                 }
                 let rotation = object.rot.unwrap_or(0.0) as f32;
                 FLAT_FOOTPRINT.with(|slot| *slot.borrow_mut() = None);
+                // A visual tool is decoration: draw its own shape, size and
+                // colour (and its label) instead of the generic per-kind box.
+                if let ObjectParams::VisualTool(tool) = &object.params {
+                    let size = Self::visual_tool_size(tool.size);
+                    let rect = egui::Rect::from_center_size(base, size);
+                    let colour = tool
+                        .color
+                        .as_deref()
+                        .and_then(Self::parse_hex_color)
+                        .unwrap_or(fill);
+                    let alpha = if tool.shape == openflex_model::VisualShape::Plane {
+                        60
+                    } else {
+                        150
+                    };
+                    painter.rect_filled(
+                        rect,
+                        3.0,
+                        egui::Color32::from_rgba_unmultiplied(
+                            colour.r(),
+                            colour.g(),
+                            colour.b(),
+                            alpha,
+                        ),
+                    );
+                    painter.rect_stroke(
+                        rect,
+                        3.0,
+                        egui::Stroke::new(
+                            if selected { 1.8_f32 } else { 1.0_f32 },
+                            egui::Color32::from_rgb(colour.r(), colour.g(), colour.b()),
+                        ),
+                    );
+                    if let Some(text) = tool.text.as_deref().filter(|text| !text.is_empty()) {
+                        painter.text(
+                            rect.center_top() + egui::vec2(0.0, -10.0),
+                            egui::Align2::CENTER_BOTTOM,
+                            text,
+                            egui::FontId::proportional(11.0),
+                            palette::TEXT,
+                        );
+                    }
+                    continue;
+                }
                 let box_rect = Self::draw_object_shape_mode(
                     &painter,
                     object.kind,
@@ -14640,6 +14710,31 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn a_visual_tool_is_drawn_from_its_own_parameters() {
+        // Size maps world units to pixels with sane clamps, so a stray value
+        // cannot paint over the canvas.
+        let small = OpenFlexApp::visual_tool_size([1.0, 2.0, 1.0]);
+        assert_eq!(small, egui::vec2(12.0, 24.0));
+        let huge = OpenFlexApp::visual_tool_size([1000.0, 1000.0, 1000.0]);
+        assert_eq!(huge, egui::vec2(240.0, 240.0), "clamped");
+        let zero = OpenFlexApp::visual_tool_size([0.0, 0.0, 0.0]);
+        assert!(zero.x >= 4.0 && zero.y >= 6.0, "never degenerate: {zero:?}");
+        // Colours parse from what the form writes, and a typo falls back rather
+        // than hiding the object.
+        assert_eq!(
+            OpenFlexApp::parse_hex_color("#8899aa"),
+            Some(egui::Color32::from_rgb(0x88, 0x99, 0xaa))
+        );
+        assert_eq!(
+            OpenFlexApp::parse_hex_color("8899aa"),
+            Some(egui::Color32::from_rgb(0x88, 0x99, 0xaa))
+        );
+        assert_eq!(OpenFlexApp::parse_hex_color("#zzzzzz"), None);
+        assert_eq!(OpenFlexApp::parse_hex_color("red"), None);
+        assert_eq!(OpenFlexApp::parse_hex_color("#abc"), None);
     }
 
     #[test]
