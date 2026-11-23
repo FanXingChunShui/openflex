@@ -283,3 +283,26 @@
 3. **v0.3（功能广度）**：B2、B3、B4、B7、B11、B12。
 4. **v0.4（工程与发布）**：C1、C2、C3、C4、C5、C6、C7。
 5. **长期**：B5、B6、B8、B9、D1–D4。
+
+---
+
+## 已知技术债：声明了但引擎从不读取的参数
+
+`scripts/check-dead-params.sh` 会把这类字段冻结在
+[`docs/dead-params-allowlist.txt`](dead-params-allowlist.txt) 里，新增同类字段会让 CI 失败。
+这些字段**当前不产生任何行为**——用户在界面上改了、模型毫无变化。每一条都需要"接线或删除"的决定：
+
+| 字段 | 现状 | 意向 |
+|---|---|---|
+| `DispatcherParams.max_tasks` | 引擎从不读 | **接线**：限制同时挂起的任务数（超限排队），FlexSim 有对应语义 |
+| `ProcessorParams.changeover_time` | 引擎从不读 | **接线**：换型时间（按 item type 变化时插入 setup），FlexSim 有对应语义 |
+| `TickerParams.tick_length` | 引擎从不读 | **接线**：Ticker 的固定时间步长（流体批处理节奏） |
+| `FailureParams.repair_operator` | 引擎从不读 | **接线**：维修时向 dispatcher 要操作员（与 setup/process operator 同构） |
+| `FluidMixerParams.product_id` | 引擎从不读 | 待定：属于 Initial Product Window 的一部分，与"子组分列表"一起做或一起删 |
+| `FluidProcessorParams.receive_port` / `destination_port` | 引擎从不读 | 待定：流体端口的显式收发，需要先决定流体是否采用端口模型 |
+
+**已处理的先例**：`NetworkNodeParams.max_travelers` 曾是同类死参数（有字段、有 GUI 控件、有 CLI 文案，
+引擎零引用），因为实现节点级限额要重写 network 路由的占用模型，我们**删除了它**而不是留虚标。
+
+**规则**：任何"声明了但没人读"的参数，要么在下一个版本接线并配行为级测试，要么删除；
+不允许长期挂在 allowlist 里当装饰。
