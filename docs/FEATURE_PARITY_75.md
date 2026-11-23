@@ -84,7 +84,7 @@
 | MultiProcessor Page（工序列表，顺序/并行） | `multiprocessor` 多槽 + 每槽 setup/process | 🟡 | 无"工序列表"（多道工序按序执行）概念，只有并行槽 |
 | Combiner Page（Pack/Join/Batch、Components list、Recycle To） | `mode`（pack/join/**batch**）+ `components_per_container` + setup/process + 操作员 | 🟡 | 三种模式与继承的 setup/process 均已实现（`CombinerMode::Batch`、`CombinerParams.setup_time/process_time`）；缺**逐端口 components 表**（单一数字）、Recycle To（join 销毁后回收） |
 | Separator Page（Unpack/Split、Split/Unpack Quantity、Recycle From） | `separate_mode` + `split_count` | 🟡 | 两种模式与 qty+1 / qty 语义已对齐（`SeparateMode::Unpack/Split` 与 `split_count` 注释）；缺 Recycle From（split 复制源的回收） |
-| Sink Page（Recycling Strategy 流项目回收） | 无回收机制 | ⛔ | 无 Flowitem Bin，也无"回收到池"的性能优化路径（对结果无影响，但文档列为页面功能） |
+| Sink Page（Recycling Strategy 流项目回收） | `SinkParams.recycle: none|on_entry|by_batch` + `recycle_batch` | 🟡 | 策略显式化 + 批次 hook + 校验（`by_batch` 且 0 被拒）。**如实说明**：引擎在 Sink 入口本就丢弃件对象，因此这不改变运行时内存行为，只是把既有行为写明；仍无 Flowitem Bin（对象池） |
 | Rack Page（Floor Storage、Shelf Tilt、Pick/Place Y Offset、标记货位） | `rack` 四类 + `aisles`/`bays`/`pick_policy`/`min_dwell` | 🟡 | 无 Floor Storage 模式、无倾斜/Y 偏移视觉量、无"已叫车货位高亮" |
 | Rack SizeTable Page（逐 bay/level 自定义尺寸） | 无 | ⛔ | 只支持均匀网格 |
 | BasicFR Advanced Page（Transport Out Notify/Complete 等专属触发器） | `basic_fr` 通用触发器 | ⛔ | 无运输通知类触发器 |
@@ -137,7 +137,7 @@
 | Collision Trigger | 无 | ⛔ | 无碰撞 |
 | Breakdown/Repair Trigger（OnBreakDown/OnRepair） | `on_breakdown`/`on_repair` | ✅ | |
 | Down/Up Trigger（MTBF 组级） | 无组级触发器 | ⛔ | 只有对象级 `on_breakdown` |
-| Load/Unload Trigger（OnLoad/OnUnload） | 无 | ⛔ | 无装载/卸载时点钩子 |
+| Load/Unload Trigger（OnLoad/OnUnload） | `Triggers.on_load` / `on_unload` | ✅ | OnLoad 落在 `TransportDepart`（`now+dwell+load`）、OnUnload 落在 `OperatorLoaded`，各一次且**不新增事件**（事件序列/统计不变）；`on_load_script_is_precompiled`、`on_load_fires_at_dwell_plus_load`、`on_load_label_is_visible_in_the_unload_hook`。限制：执行器不持件，钩子的 item 是 requester 的件（已写进 Rust 文档注释） |
 | Setup/Process Finish Trigger（OnSetupFinish/OnProcessFinish） | `params.triggers.setup_finish` / `process_finish` | ✅ | `SimTrigger::SetupFinish`/`ProcessFinish`（`action.rs`；JSON 名 `setup_finish`/`process_finish` 由 `as_str`/`parse` 映射）；在两个边界触发且早于 `on_exit`；`setup_time=0` 无独立 setup 阶段故不触发 |
 | OnEmpty / OnFull Trigger（流体满/空） | `fluid_*` 有液位但无此类触发器 | ⛔ | |
 | OnEntryRequest Trigger（TrafficControl 准入裁决） | `traffic_control` 参数（无裁决钩子） | ⛔ | 准入互斥已由引擎内建（名额 + 等待），但**没有可编程的准入裁决钩子**——模型无法自定义"这批车优先放行"之类的规则 |
@@ -330,7 +330,7 @@
 > 并把 3 个纯教程/术语页从 🟡 改判为 📄。**权威总数以第 325 行的 ✅39 / 🟡97 / ⛔73 / 📄3 为准**，
 > 下表用来看**缺口集中在哪个目录**，不必逐格对齐。
 
-矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 39 行、🟡 97 行、⛔ 73 行、📄 3 行（参考页，不计入缺口）。
+矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 41 行、🟡 99 行、⛔ 69 行、📄 3 行（参考页，不计入缺口）。
 其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行。
 
 | 状态 | 行数 | 占比 |
