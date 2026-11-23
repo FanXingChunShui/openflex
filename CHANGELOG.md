@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## v1.40.0 — 2026-11-23
+
+一版**只含安全修复**的发布。v1.39.0 发布后 CI 的 `cargo-deny` 变红，而代码与依赖都没动——
+是新公告进了 RustSec 库。修的是 `url` 在嵌套 `blob:` URL 上 `Url::origin()` 栈溢出，
+经 `webbrowser → egui-winit → eframe` 传进 GUI。
+发布节奏保持**至少 3 小时一版**。
 
 ### 安全
 
@@ -12,6 +17,11 @@
   已被 cargo-deny 判为 `advisory-not-detected`（公告不再匹配我们的依赖图）。留着会**掩盖将来同编号的新问题**，
   故删除；现在 `advisories ok, bans ok, licenses ok, sources ok`。
 
+
+### 验证
+
+- `cargo deny check`：**advisories ok, bans ok, licenses ok, sources ok**。
+- `cargo test --workspace --locked`：**910 passed / 0 failed**；clippy 0 警告、fmt 干净。
 
 ## v1.39.0 — 2026-11-23
 
