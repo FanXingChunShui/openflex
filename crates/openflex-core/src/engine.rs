@@ -285,6 +285,8 @@ pub(crate) enum EventKind {
     TaskStepDone(usize),
     /// task-124: a person moved one grid cell.
     PersonStep(usize),
+    /// task-192: a model-level user event reached its time.
+    UserEvent(usize),
     /// task-133: a low-battery AGV reached its charger.
     ChargeTravel(usize),
     /// A shift window starts or ends.
@@ -2835,6 +2837,16 @@ impl<'m> Simulation<'m> {
             },
         };
         sim.initialize()?;
+        // task-192: user events go into the calendar like any other event, so
+        // they are ordered by (time, seq) and events sharing a time run in
+        // declaration order. Events are model logic: one scheduled before
+        // `warmup` still runs. A checkpoint resume starts at `sim.now`, and
+        // events already in the past are not replayed (task-192 convention).
+        for (index, event) in model.user_events.iter().enumerate() {
+            if event.time.is_finite() && event.time >= 0.0 && event.time > sim.now + EPS {
+                sim.schedule(event.time, EventKind::UserEvent(index));
+            }
+        }
         Ok(sim)
     }
 
@@ -3718,6 +3730,7 @@ impl<'m> Simulation<'m> {
             }
             EventKind::TaskStepDone(transporter) => self.handle_task_step_done(transporter),
             EventKind::PersonStep(transporter) => self.handle_person_step(transporter),
+            EventKind::UserEvent(index) => self.handle_user_event(index),
             EventKind::ChargeTravel(transporter) => self.handle_charge_travel(transporter),
             EventKind::ShiftChange(index) => self.handle_shift_change(index),
             EventKind::TimetableChange(index) => self.handle_timetable_change(index),
@@ -8646,6 +8659,38 @@ impl<'m> Simulation<'m> {
         }
     }
 
+    /// task-192: run one model-level user event.
+    ///
+    /// `script` actions run with model-level scope (no owning object), while
+    /// `send_message` and `set_motor` name their target object. Anything else
+    /// is rejected by validation.
+    fn handle_user_event(&mut self, index: usize) -> Result<(), SimError> {
+        let Some(event) = self.model.user_events.get(index).cloned() else {
+            return Ok(());
+        };
+        let label = if event.name.is_empty() {
+            format!("user_events.{index}")
+        } else {
+            format!("user_events.{}", event.name)
+        };
+        let mut probe = FlowItem::probe(self.now);
+        for action in event.actions {
+            match &action {
+                Action::Script { source } => {
+                    let source = source.clone();
+                    self.run_script_action(&source, &label, &event.name, &mut probe, None)?;
+                }
+                Action::SendMessage { target, .. } | Action::SetMotor { target, .. } => {
+                    if let Some(target_index) = self.by_name.get(target).copied() {
+                        self.apply_actions(target_index, &mut probe, vec![action])?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     fn handle_person_step(&mut self, transporter: usize) -> Result<(), SimError> {
         // task-128: the next cell may be taken by a lower-index person; wait a
         // tick instead of overlapping (the lower index has priority, which also
@@ -11738,6 +11783,7 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
         EventKind::RackPick(index) => (Some(*index), "rack_pick", None),
         EventKind::TaskStepDone(transporter) => (Some(*transporter), "task_step_done", None),
         EventKind::PersonStep(transporter) => (Some(*transporter), "person_step", None),
+        EventKind::UserEvent(index) => (None, "user_event", Some(("event", *index as f64))),
         EventKind::ChargeTravel(transporter) => (Some(*transporter), "charge_travel", None),
         EventKind::PreemptRetry(dispatcher, requester) => (
             Some(*dispatcher),
@@ -12664,6 +12710,18 @@ fn collect_model_scripts(model: &Model) -> Vec<(String, String)> {
         if let Some(flow) = object.params.process_flow() {
             let prefix = format!("objects.{}.process_flow", object.name);
             flow_scripts(flow, &prefix, &mut sources);
+        }
+    }
+    // task-192: user-event scripts must be precompiled like every other hook.
+    for (index, event) in model.user_events.iter().enumerate() {
+        for (action_position, action) in event.actions.iter().enumerate() {
+            if let Action::Script { source } = action {
+                push(
+                    &mut sources,
+                    source,
+                    format!("user_events.{index}.actions.{action_position}"),
+                );
+            }
         }
     }
     sources
@@ -19300,6 +19358,123 @@ mod tests {
         assert!(
             error.to_string().contains("receive_port"),
             "the error must name the removed field: {error}"
+        );
+    }
+
+    fn user_event_model(events: &str, stop_time: f64) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "user-events",
+          "run": {{ "stop_time": {stop_time}, "seed": 1, "replications": 1 }},
+          "user_events": [ {events} ],
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "P", "kind": "processor", "params": {{
+                "process_time": {{ "distribution": "constant", "value": 1.0 }} }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [
+            {{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }}
+          ]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    /// task-192: models without user events are unchanged.
+    #[test]
+    fn user_events_absent_keeps_the_report() {
+        let model = user_event_model("", 50.0);
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(first.replications, second.replications);
+        let text = serde_json::to_string(&model).expect("serialize");
+        assert!(!text.contains("user_events"), "empty list must be omitted");
+    }
+
+    /// task-192: a user event runs exactly once at its time.
+    #[test]
+    fn user_event_runs_once_at_its_time() {
+        let model = user_event_model(
+            r#"{ "time": 10.0, "name": "intervene", "actions": [ { "action": "script", "source": "set_label(\"seen\", 1.0);" } ] }"#,
+            50.0,
+        );
+        let config = SimConfig {
+            stop_time: 50.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("trace");
+        let events: Vec<f64> = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "user_event")
+            .map(|event| event.time)
+            .collect();
+        assert_eq!(events, vec![10.0], "the event must run once at t=10");
+    }
+
+    /// task-192: events sharing a time run in declaration order.
+    #[test]
+    fn user_events_at_the_same_time_keep_declaration_order() {
+        let model = user_event_model(
+            r#"{ "time": 5.0, "name": "first", "actions": [] },
+               { "time": 5.0, "name": "second", "actions": [] }"#,
+            50.0,
+        );
+        let config = SimConfig {
+            stop_time: 50.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("trace");
+        let details: Vec<f64> = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "user_event")
+            .filter_map(|event| event.data.get("event").copied())
+            .collect();
+        assert_eq!(details, vec![0.0, 1.0], "declaration order by index");
+    }
+
+    /// task-192: a negative time is rejected by validation.
+    #[test]
+    fn user_event_negative_time_is_rejected() {
+        let error = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "bad-time",
+          "run": { "stop_time": 10.0, "seed": 1, "replications": 1 },
+          "user_events": [ { "time": -1.0, "actions": [] } ],
+          "objects": [
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+        )
+        .expect_err("a negative time is invalid");
+        let text = error.to_string();
+        assert!(
+            text.contains("time"),
+            "the error must point at the event time: {text}"
+        );
+    }
+
+    /// task-192: an event at or after the stop time is accepted but never runs.
+    #[test]
+    fn user_event_past_the_stop_time_does_not_run() {
+        let model = user_event_model(r#"{ "time": 60.0, "name": "late", "actions": [] }"#, 50.0);
+        let config = SimConfig {
+            stop_time: 50.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("trace");
+        assert!(
+            trace.events.iter().all(|event| event.event != "user_event"),
+            "an event past the stop time must not run"
         );
     }
 }

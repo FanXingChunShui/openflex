@@ -22,6 +22,20 @@
   `deny_unknown_fields` 明确拒绝。GUI 里对应的两个输入框一并移除。
   allowlist 因此从 **5 条降到 1 条**（只剩 `FluidMixerParams.product_id`，需要产品设计决定）。
 
+### 模型与引擎
+
+- **User Events（按时刻执行的模型级动作）**：`Model.user_events: [{ time, name, actions }]`（空不序列化，
+  旧模型 JSON 逐位不变）。事件进入事件日历、按 `(time, seq)` 确定性排序、**同一时刻按声明顺序**执行；
+  早于 warmup 的事件**照常执行**（它是模型逻辑，不是统计）。
+  `user_events` 里的 `action: "script"` **一开始就加进了 `collect_model_scripts` 的手写清单**——
+  这个坑已经踩过两次，这次没再踩。实测：t=10 的两条事件共 2 次、`data["event"]` 顺序 `[0, 1]`、时刻都是 10.0。
+  只支持 `script` / `send_message` / `set_motor`（其余动作在 validate 明确拒绝——user event 没有 item 上下文）。
+  checkpoint 约定：**恢复时不重放已过去的事件**（写在注释里；硬断言需要带 trace 的 resume 入口，暂缺）。
+- **删除最后一个死参数 `FluidMixerParams.product_id`**：整套产品/配方模型不存在，mixer 的 steps 只用 pull 体积与 delay，
+  接上它不会有任何消费者。按先例删除。
+  **至此 `docs/dead-params-allowlist.txt` 清空**：`check-dead-params.sh` → **0 known / 0 stale**，
+  即模型声明的每个参数字段现在都真的能到达引擎。
+
 ### 报告与 CLI
 
 - **新增 `openflex eval`（脚本控制台 / 表达式试算）**：不跑模型就能试算表达式或运行沙箱脚本。

@@ -1,7 +1,18 @@
 # Fields declared in the model that the engine never reads, directly or through
-# an accessor. `NetworkNodeParams.max_travelers` used to be on this list and was
-# deleted: it had a field, a GUI control and a CLI description, and changing it
-# did nothing. Each entry below is the same kind of debt — wire it up or delete
-# it — but deciding which needs a design call, so they are frozen here rather
-# than fixed blind. `bash scripts/check-dead-params.sh` fails on anything new.
-FluidMixerParams.product_id
+# an accessor. `bash scripts/check-dead-params.sh` fails when a new one appears,
+# which is the moment to decide: wire it up, or delete it.
+#
+# The list is EMPTY as of v1.43.0, and that is the point. Every field the model
+# declares now reaches the engine. Three of them were removed rather than left
+# looking functional:
+#   * NetworkNodeParams.max_travelers    (node-level limit needs a routing rewrite)
+#   * FluidProcessorParams.receive_port  (fluid flow is not a port model here)
+#   * FluidProcessorParams.destination_port
+#   * FluidMixerParams.product_id        (the product/recipe model does not exist)
+# and five were wired up:
+#   * DispatcherParams.max_tasks, ProcessorParams.changeover_time,
+#     TickerParams.tick_length, FailureParams.repair_operator, and the
+#     Triggers additions (on_load / on_unload / on_empty / on_full / on_entry_request).
+#
+# Keep this file even while empty: its presence is what makes the check a
+# ratchet instead of a suggestion.

@@ -252,6 +252,7 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
         }
     }
 
+    issues.extend(validate_user_events(model));
     issues.extend(validate_process_flow(
         model,
         model.process_flow.as_ref(),
@@ -1322,12 +1323,6 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
             }
         }
         crate::model::ObjectParams::FluidMixer(params) => {
-            if !params.product_id.is_finite() || params.product_id < 0.0 {
-                issues.push(ValidationIssue::new(
-                    location("product_id"),
-                    "must be non-negative",
-                ));
-            }
             for (index, step) in params.steps.iter().enumerate() {
                 if step
                     .pull
@@ -1951,6 +1946,44 @@ fn validate_conditional_ports(
 }
 
 /// Check `script` trigger actions: non-empty source and compilable syntax.
+/// task-192: timeline actions must be well formed and scripted ones compile.
+fn validate_user_events(model: &Model) -> Vec<ValidationIssue> {
+    let mut issues = Vec::new();
+    for (position, event) in model.user_events.iter().enumerate() {
+        let location = format!("user_events.{position}");
+        if !event.time.is_finite() || event.time < 0.0 {
+            issues.push(ValidationIssue::new(
+                format!("{location}.time"),
+                "user event time must be finite and >= 0",
+            ));
+        }
+        for (action_position, action) in event.actions.iter().enumerate() {
+            let action_location = format!("{location}.actions.{action_position}");
+            match action {
+                crate::action::Action::Script { source } => {
+                    validate_script_source(source, &action_location, &mut issues);
+                }
+                crate::action::Action::SendMessage { target, .. }
+                | crate::action::Action::SetMotor { target, .. } => {
+                    if !model.objects.iter().any(|object| object.name == *target) {
+                        issues.push(ValidationIssue::new(
+                            action_location,
+                            format!("unknown target object '{target}'"),
+                        ));
+                    }
+                }
+                other => issues.push(ValidationIssue::new(
+                    action_location,
+                    format!(
+                        "user events only support `script`, `send_message` and `set_motor`, found {other:?}"
+                    ),
+                )),
+            }
+        }
+    }
+    issues
+}
+
 fn validate_trigger_scripts(object: &Object) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
     let triggers = object.params.triggers();
@@ -2555,6 +2588,7 @@ mod tests {
             format: FORMAT_NAME.into(),
             version: FORMAT_VERSION,
             name: "test".into(),
+            user_events: Vec::new(),
             description: String::new(),
             time_unit: TimeUnit::Seconds,
             run: RunSettings::default(),

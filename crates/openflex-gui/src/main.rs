@@ -2296,13 +2296,8 @@ impl EditForm {
                 );
             }
             ObjectParams::FluidMixer(p) => {
-                changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut p.product_id)
-                            .speed(1.0)
-                            .prefix("product id "),
-                    )
-                    .changed();
+                // task-192: `product_id` was removed from the model (a dead
+                // parameter); the panel no longer offers it.
                 // The step table is a list of (pull volumes, delay) rows; the
                 // JSON editor stays the place for long tables.
                 ui.label(

@@ -63,6 +63,19 @@ fn definitions() -> Value {
         }),
     );
     defs.insert(
+        "user_event".into(),
+        json!({
+            "type": "object",
+            "properties": {
+                "time": { "type": "number", "minimum": 0 },
+                "name": { "type": "string" },
+                "actions": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+            },
+            "required": ["time"],
+            "additionalProperties": false
+        }),
+    );
+    defs.insert(
         "experiment".into(),
         json!({
             "type": "object",
@@ -865,6 +878,10 @@ fn model_schema() -> Value {
             "experiments": {
                 "type": "array",
                 "items": { "$ref": "#/$defs/experiment" }
+            },
+            "user_events": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/user_event" }
             },
             "process_flow": { "$ref": "#/$defs/process_flow" },
             "fluid_step": { "type": ["number", "null"], "exclusiveMinimum": 0 },

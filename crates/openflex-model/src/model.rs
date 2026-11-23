@@ -2975,27 +2975,14 @@ impl Default for TickerParams {
 }
 
 /// Batch mixer (`fluid_mixer`): waits for a full batch before releasing.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FluidMixerParams {
-    /// Product id of the material released by the mixer.
-    #[serde(default = "one_f64")]
-    pub product_id: f64,
     /// Ordered steps; each pulls from its input ports, then waits `delay`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<MixerStep>,
     #[serde(default)]
     pub triggers: Triggers,
-}
-
-impl Default for FluidMixerParams {
-    fn default() -> Self {
-        Self {
-            product_id: 1.0,
-            steps: Vec::new(),
-            triggers: Triggers::default(),
-        }
-    }
 }
 
 /// Continuous blender (`fluid_blender`): mixes inputs at a fixed ratio.
@@ -4234,6 +4221,24 @@ impl ModelTriggers {
     }
 }
 
+/// A model-level action executed at a fixed model time (FlexSim "User Events").
+///
+/// The event enters the event calendar like any other event, so it is ordered
+/// deterministically by `(time, seq)`; events sharing a time run in declaration
+/// order. Events are model logic: one scheduled before `warmup` still runs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserEvent {
+    /// Model time (may be earlier than `warmup`, which still runs it).
+    pub time: f64,
+    /// Free-form label used in trace/script locations.
+    #[serde(default)]
+    pub name: String,
+    /// Actions to run; `script`, `send_message` and `set_motor` are supported.
+    #[serde(default)]
+    pub actions: Vec<Action>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Model {
@@ -4253,6 +4258,9 @@ pub struct Model {
     pub connections: Vec<Connection>,
     #[serde(default)]
     pub experiments: Vec<Experiment>,
+    /// Model-level actions executed at fixed model times (see [`UserEvent`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_events: Vec<UserEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_flow: Option<ProcessFlow>,
     /// Fixed integration step (model time units) for the fluid objects

@@ -106,12 +106,11 @@ fn fluid_mixer_steps_are_validated() {
     let model = model_with(
         "Mix",
         ObjectKind::FluidMixer,
-        r#"{"product_id": 3, "steps": [{"pull": [1.0, 2.0], "delay": 0.5}]}"#,
+        r#"{"steps": [{"pull": [1.0, 2.0], "delay": 0.5}]}"#,
     );
     assert!(model.validate().is_ok());
     match &model.object("Mix").expect("object").params {
         ObjectParams::FluidMixer(params) => {
-            assert_eq!(params.product_id, 3.0);
             assert_eq!(params.steps.len(), 1);
             assert_eq!(params.steps[0].pull, vec![1.0, 2.0]);
             assert_eq!(params.steps[0].delay, 0.5);
@@ -269,7 +268,7 @@ fn new_kinds_survive_a_save_and_load_cycle() {
     let model = model_with(
         "Mix",
         ObjectKind::FluidMixer,
-        r#"{"product_id": 7, "steps": [{"pull": [1.5], "delay": 2}]}"#,
+        r#"{"steps": [{"pull": [1.5], "delay": 2}]}"#,
     );
     let text = model.to_json().expect("serialise");
     let back = Model::from_json(&text).expect("parse");
