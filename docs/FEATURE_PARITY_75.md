@@ -169,7 +169,7 @@
 | MTBF/MTTR（组对象，成员列表，独立/整组故障，只在指定状态计时） | 对象级 `failure {mtbf, mttr, repair_operator, first_failure_time, count_time_in_states}` | 🟡 | 首次故障（负值=忽略，A8）与**只在指定状态累计 Up Time**（`count_time_in_states`）均已实现（`FailureParams` 的 `first_failure_time` 与 `count_time_in_states`）；仍无**组对象**（一个对象不能同时属多个 MTBF 组、无组级 Down/Up 触发器）、无停机请求栈 |
 | Time Tables（计划停机：成员/函数表/状态/日周重复/日期模式/相接合并） | `params.timetable {windows}` + `shifts` | 🟡 | 有窗口与重复；**无 Down/Resume 函数钩子、无相接时段自动合并、无按日期模式** |
 | User Commands（自定义命令，参数类型标注，可被模型调用） | 无 | ⛔ | 模型无法定义新命令；只能复用内置表达式函数 |
-| User Events（按设定时刻执行的函数） | 无 | ⛔ | 无定时用户事件 |
+| User Events（按设定时刻执行的函数） | `Model.user_events: [{ time, name, actions }]` + GUI 面板 | ✅ | 进入事件日历、`(time, seq)` 确定性、**同刻按声明顺序**；早于 warmup 照常执行；支持 `script`/`send_message`/`set_motor`（其余动作 validate 明确拒绝，因无 item 上下文）。`user_event_runs_once_at_its_time`、`user_events_at_the_same_time_keep_declaration_order`、`user_event_negative_time_is_rejected`、`user_event_past_the_stop_time_does_not_run`。限制：checkpoint 恢复**不重放**已过去的事件（语义已实现，硬断言待补） |
 | Model Triggers（模型级触发器：OnReset/OnRunStart 等） | `model.model_triggers` | ✅ | `ModelTriggers` 含 `on_start`/`on_reset`/`on_stop`（Schema 有 `model_triggers`，执行点见 `fire_model_actions` 的四处调用）；执行失败上报 `SimError::Script`。仍无 FlexSim 的实验生命周期钩子（Start/End of Experiment/Scenario/Replication 共 6 个） |
 | Tracked Variables（Work In Progress / Time In System 等可追踪量） | `model.tracked_variables`（`TrackedKind: level/state/staytime/kinetic`）+ `tracked_interval` + `SimReport.tracked_series` | ✅ | 四种 kind 均已实现：level/kinetic 按间隔采样（kinetic 是变化率）、state 给每状态占比、staytime 给停留分布摘要；证据见 [PARITY_EVIDENCE](PARITY_EVIDENCE.md) #43 |
 | Event List（待处理事件列表，可快进到某事件） | `--trace` + trace 回放 + Studio 事件列表 | ✅ | `simulate_traced`、`TraceLog`、Studio 分页 trace |
@@ -330,7 +330,7 @@
 > 并把 3 个纯教程/术语页从 🟡 改判为 📄。**权威总数以第 325 行的 ✅39 / 🟡97 / ⛔73 / 📄3 为准**，
 > 下表用来看**缺口集中在哪个目录**，不必逐格对齐。
 
-矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 43 行、🟡 100 行、⛔ 66 行、📄 3 行（参考页，不计入缺口）。
+矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 44 行、🟡 100 行、⛔ 65 行、📄 3 行（参考页，不计入缺口）。
 其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行。
 
 | 状态 | 行数 | 占比 |
