@@ -230,6 +230,28 @@ pub enum SimTrigger {
     /// **Item context**: same as [`SimTrigger::OnLoad`] — the requester's item,
     /// not an item unloaded from the executer.
     OnUnload,
+    /// A fluid object became empty (task-189): its level crossed from positive
+    /// to zero. The transition is latched, so a level that stays at zero does
+    /// not fire again until it leaves empty and becomes empty once more.
+    OnEmpty,
+    /// A fluid object became full (task-189).
+    ///
+    /// **"Full" is detected through overflow, not `level == capacity`**: a full
+    /// tank keeps its level at `capacity − one inflow step` and sends the rest
+    /// to its overflow counter, so the level alone never reaches the capacity.
+    /// The reliable signal is therefore "this step spilled something" (or the
+    /// level genuinely reached the capacity). Latched the same way as
+    /// [`SimTrigger::OnEmpty`].
+    OnFull,
+    /// An executer asks for permission to enter a traffic-controlled area
+    /// (task-189). Fires before `traffic_try_acquire` decides.
+    ///
+    /// **Protocol**: the hook receives a probe item (no real flow item exists
+    /// for a traffic request). If it leaves `label("admit")` at `0.0` the
+    /// request is refused for now and retried later; a missing label (or any
+    /// other value) keeps the normal acquire path. This is an OpenFlex
+    /// protocol, not a FlexSim public API.
+    OnEntryRequest,
 }
 
 impl SimTrigger {
@@ -253,6 +275,9 @@ impl SimTrigger {
             SimTrigger::OnDraw => "on_draw",
             SimTrigger::OnLoad => "on_load",
             SimTrigger::OnUnload => "on_unload",
+            SimTrigger::OnEmpty => "on_empty",
+            SimTrigger::OnFull => "on_full",
+            SimTrigger::OnEntryRequest => "on_entry_request",
         }
     }
 
@@ -275,6 +300,9 @@ impl SimTrigger {
             "on_draw" => SimTrigger::OnDraw,
             "on_load" => SimTrigger::OnLoad,
             "on_unload" => SimTrigger::OnUnload,
+            "on_empty" => SimTrigger::OnEmpty,
+            "on_full" => SimTrigger::OnFull,
+            "on_entry_request" => SimTrigger::OnEntryRequest,
             "setup_finish" => SimTrigger::SetupFinish,
             "process_finish" => SimTrigger::ProcessFinish,
             _ => return None,
@@ -342,6 +370,20 @@ pub struct Triggers {
     /// context is the requester's item, not an item unloaded from the executer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub on_unload: Vec<Action>,
+    /// A fluid object became empty (see [`SimTrigger::OnEmpty`]). Latched: one
+    /// call per crossing from positive to zero.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_empty: Vec<Action>,
+    /// A fluid object became full (see [`SimTrigger::OnFull`]). Latched: one
+    /// call per crossing. "Full" is detected through overflow (a full tank's
+    /// level stops at `capacity − inflow`), never through `level == capacity`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_full: Vec<Action>,
+    /// An executer requests entry into a traffic-controlled area (see
+    /// [`SimTrigger::OnEntryRequest`]); `label("admit") == 0` refuses this
+    /// attempt, which is retried later.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_entry_request: Vec<Action>,
 }
 
 impl Triggers {
@@ -365,6 +407,9 @@ impl Triggers {
             SimTrigger::ProcessFinish => self.on_process_finish.clone(),
             SimTrigger::OnLoad => self.on_load.clone(),
             SimTrigger::OnUnload => self.on_unload.clone(),
+            SimTrigger::OnEmpty => self.on_empty.clone(),
+            SimTrigger::OnFull => self.on_full.clone(),
+            SimTrigger::OnEntryRequest => self.on_entry_request.clone(),
         }
     }
 
@@ -387,5 +432,8 @@ impl Triggers {
             && self.on_process_finish.is_empty()
             && self.on_load.is_empty()
             && self.on_unload.is_empty()
+            && self.on_empty.is_empty()
+            && self.on_full.is_empty()
+            && self.on_entry_request.is_empty()
     }
 }

@@ -4,6 +4,24 @@
 
 ### 模型与引擎
 
+- **流体 `OnEmpty` / `OnFull` 触发器**：`Triggers.on_empty` / `on_full`（空不序列化，旧模型 JSON 与报告逐位不变）。
+  去抖用**锁存 + 相邻采样对比**，没有引入静默阈值：离开边界即重新武装，所以"持续空/持续满"只触发一次。
+  触发点在每个固定 fluid step 末尾（`fluid_advance` 之后）统一扫描，**不改任何液位数值**。
+  **一个只有跑起来才会发现的事实**：tank 满时液位停在 `capacity − 一个流入步长`（例如 99.5 而不是 100），
+  余量走 `overflow` 计数——所以 `level == capacity` 永远不会触发。可靠的"刚满"信号是**本步有新溢出**，
+  这条已写进 `SimTrigger::OnFull` 与 `Triggers.on_full` 的文档注释（我们也考虑过改引擎让液位 clamp 到容量，
+  那会动数值、与 golden 钉住冲突，因此不做）。
+- **交通准入 `OnEntryRequest` 触发器**：在 `traffic_try_acquire` 的**容量判定之前**触发，
+  `traffic_try_acquire` 因此改为 `Result<bool, SimError>`（脚本错误可传播，5 个调用点已更新）。
+  **裁决协议写进 Rust 文档注释并明确标注是 OpenFlex 协议、不是 FlexSim 公开 API**：
+  钩子结束后 `label("admit") == 0` → 本次拒绝、回退到既有等待重试（`TRAFFIC_RETRY_DELAY`）；
+  标签缺失或非 0 → 走既有放行。实测 `admit=0` 时首次装载明显延后、但**最终仍完成 2 件**（不会卡死）。
+  限制：交通请求没有真实 flow item，上下文是 `FlowItem::probe` 空件，只有 labels 有意义。
+- **两个新触发器都进了 `collect_model_scripts` 的手写清单**——这是 task-188 踩过的坑（`on_load`/`on_unload`
+  漏收导致 `action: "script"` 运行时失败），这次三个钩子各有一个「脚本钩子能跑」的回归测试。
+
+### 模型与引擎
+
 - **`OnLoad` / `OnUnload` 触发器**：运输链路上「装货完成」与「卸货完成」两个时点各触发一次。
   OnLoad 落在既有的 `TransportDepart`（`now + dwell + load`）、OnUnload 落在 `OperatorLoaded`——
   **不需要新增事件，事件序列与统计都不变**（这比我原计划的「新增 `TransportLoaded`」更保守）。

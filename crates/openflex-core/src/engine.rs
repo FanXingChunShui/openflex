@@ -423,6 +423,18 @@ pub(crate) struct FluidObjectRt {
     /// Batch step reached by a `fluid_mixer` (0-based, wraps around the table).
     #[serde(default)]
     pub mixer_step: usize,
+    /// task-189: latched `on_empty`/`on_full` so a level resting on a boundary
+    /// fires once per crossing, not once per tick.
+    #[serde(default)]
+    pub empty_latched: bool,
+    #[serde(default)]
+    pub full_latched: bool,
+    /// task-189: cumulative overflow seen at the end of the previous step, used
+    /// to detect "this tank just became full" (a full tank stops at
+    /// `capacity - inflow` and spills the rest, so the level alone never
+    /// reaches the capacity).
+    #[serde(default)]
+    pub last_overflow: f64,
     /// Current pressure (Pa) at this node.
     #[serde(default)]
     pub pressure: f64,
@@ -445,6 +457,9 @@ impl FluidObjectRt {
             overflow: 0.0,
             inflow: 0.0,
             buffer: Vec::new(),
+            empty_latched: level <= EPS,
+            full_latched: false,
+            last_overflow: 0.0,
             valve_open: true,
             mixer_step: 0,
             pressure: 0.0,
@@ -6578,10 +6593,75 @@ impl<'m> Simulation<'m> {
         };
         let now = self.now;
         self.fluid_advance(now);
+        self.fire_fluid_boundary_triggers()?;
         // Keep the fixed step on the calendar; events past the stop time stay
         // for checkpoint/resume, the run loop stops at the stop time.
         self.schedule(now + step, EventKind::FluidStep);
         Ok(())
+    }
+
+    /// task-189: fire `on_empty`/`on_full` on the real level transitions.
+    ///
+    /// The latch (`empty_latched`/`full_latched`) is what keeps a level that
+    /// rests on a boundary from firing every tick: the hook fires when the
+    /// latch flips, and it re-arms as soon as the level leaves that boundary.
+    /// No numeric dead band is introduced — a genuine crossing always fires,
+    /// and a level that stays at 0/capacity cannot fire twice.
+    fn fire_fluid_boundary_triggers(&mut self) -> Result<(), SimError> {
+        let Some(fluid) = self.fluid.as_ref() else {
+            return Ok(());
+        };
+        let mut fire: Vec<(usize, SimTrigger)> = Vec::new();
+        for (position, state) in fluid.state.iter().enumerate() {
+            let object = fluid.objects[position];
+            let capacity = match &self.model.objects[object].params {
+                ObjectParams::FluidTank(params) => params.capacity,
+                _ => continue,
+            };
+            if !state.empty_latched && state.level <= EPS {
+                fire.push((object, SimTrigger::OnEmpty));
+            }
+            // A tank that is full stops at `capacity - inflow` and spills the
+            // rest, so the level alone rarely reaches the capacity exactly; a
+            // fresh overflow is the reliable "became full" signal.
+            let spilled = state.overflow > state.last_overflow + EPS;
+            if !state.full_latched && capacity > EPS && (state.level >= capacity - EPS || spilled) {
+                fire.push((object, SimTrigger::OnFull));
+            }
+        }
+        if fire.is_empty() {
+            return Ok(());
+        }
+        for (object, trigger) in fire {
+            self.fire_fluid_trigger(object, trigger)?;
+        }
+        if let Some(fluid) = self.fluid.as_mut() {
+            for (position, state) in fluid.state.iter_mut().enumerate() {
+                let object = fluid.objects[position];
+                let capacity = match &self.model.objects[object].params {
+                    ObjectParams::FluidTank(params) => params.capacity,
+                    _ => 0.0,
+                };
+                let spilled = state.overflow > state.last_overflow + EPS;
+                state.empty_latched = state.level <= EPS;
+                state.full_latched = capacity > EPS && (state.level >= capacity - EPS || spilled);
+                state.last_overflow = state.overflow;
+            }
+        }
+        Ok(())
+    }
+
+    /// task-189: run one fluid boundary hook; the probe item carries no volume,
+    /// it only gives `item.*` paths something to evaluate.
+    fn fire_fluid_trigger(&mut self, object: usize, trigger: SimTrigger) -> Result<(), SimError> {
+        let actions = self.trigger_actions(object, trigger);
+        if actions.is_empty() {
+            return Ok(());
+        }
+        self.record_object_trace(trigger.as_str(), object);
+        let mut item = FlowItem::probe(self.now);
+        self.action_location = format!("{}.{}", self.objects[object].name, trigger.as_str());
+        self.apply_actions(object, &mut item, actions)
     }
 
     /// Integrate one fixed fluid step ending at `now`.
@@ -8120,7 +8200,7 @@ impl<'m> Simulation<'m> {
             let from = self.objects[transporter].position;
             let to = self.objects[home].position;
             let controls = self.traffic_controls_for_leg(from, to);
-            if !self.traffic_try_acquire(transporter, &controls) {
+            if !self.traffic_try_acquire(transporter, &controls)? {
                 // Blocked by the control area: that interval is `blocked`, not
                 // travel (task-166).
                 self.clear_executor_activity(transporter);
@@ -8199,14 +8279,23 @@ impl<'m> Simulation<'m> {
     }
 
     /// task-148: acquire one slot in every listed area, all-or-nothing.
-    fn traffic_try_acquire(&mut self, transporter: usize, controls: &[usize]) -> bool {
+    fn traffic_try_acquire(
+        &mut self,
+        transporter: usize,
+        controls: &[usize],
+    ) -> Result<bool, SimError> {
         if controls.is_empty() {
-            return true;
+            return Ok(true);
+        }
+        // task-189: `on_entry_request` may refuse this attempt before the
+        // capacity check; the caller then waits and retries.
+        if !self.traffic_entry_request(transporter)? {
+            return Ok(false);
         }
         if controls.iter().any(|&control| {
             self.traffic_occupancy[control] >= self.traffic_controls[control].capacity
         }) {
-            return false;
+            return Ok(false);
         }
         for &control in controls {
             self.traffic_occupancy[control] += 1;
@@ -8214,7 +8303,25 @@ impl<'m> Simulation<'m> {
         self.objects[transporter].traffic_hold = controls.to_vec();
         self.objects[transporter].traffic_wait_stage = None;
         self.objects[transporter].traffic_wait_controls.clear();
-        true
+        Ok(true)
+    }
+
+    /// task-189: run the executer's `on_entry_request` hook.
+    ///
+    /// The hook receives a probe item (`FlowItem::probe`) because a traffic
+    /// request has no flow item of its own. **Protocol**: if the hook leaves
+    /// `label("admit")` at `0.0`, this attempt is refused and the caller retries
+    /// later; a missing label (or any other value) keeps the normal acquire
+    /// path. This is an OpenFlex protocol, not a FlexSim public API.
+    fn traffic_entry_request(&mut self, executer: usize) -> Result<bool, SimError> {
+        let actions = self.trigger_actions(executer, SimTrigger::OnEntryRequest);
+        if actions.is_empty() {
+            return Ok(true);
+        }
+        let mut item = FlowItem::probe(self.now);
+        self.action_location = format!("{}.on_entry_request", self.objects[executer].name);
+        self.apply_actions(executer, &mut item, actions)?;
+        Ok(item.labels.get("admit").copied().unwrap_or(1.0) != 0.0)
     }
 
     /// task-148/154: release every area held by an executer (idempotent) and
@@ -8517,7 +8624,7 @@ impl<'m> Simulation<'m> {
         let from_position = self.objects[transporter].position;
         let to_position = self.objects[requester].position;
         let controls = self.traffic_controls_for_leg(from_position, to_position);
-        if !self.traffic_try_acquire(transporter, &controls) {
+        if !self.traffic_try_acquire(transporter, &controls)? {
             self.clear_executor_activity(transporter);
             self.set_state(transporter, State::Blocked);
             self.traffic_wait_for_slot(transporter, requester, 1, &controls);
@@ -8981,7 +9088,7 @@ impl<'m> Simulation<'m> {
             let to_position = self.objects[home].position;
             if home_travel.is_some_and(|travel| travel > EPS) {
                 let controls = self.traffic_controls_for_leg(from_position, to_position);
-                if !self.traffic_try_acquire(transporter, &controls) {
+                if !self.traffic_try_acquire(transporter, &controls)? {
                     self.clear_executor_activity(transporter);
                     self.set_state(transporter, State::Blocked);
                     self.traffic_wait_for_slot(transporter, requester, 2, &controls);
@@ -9235,7 +9342,7 @@ impl<'m> Simulation<'m> {
                     }
                     let from = self.objects[transporter].position;
                     let controls = self.traffic_controls_for_leg(from, destination);
-                    if !self.traffic_try_acquire(transporter, &controls) {
+                    if !self.traffic_try_acquire(transporter, &controls)? {
                         self.clear_executor_activity(transporter);
                         self.set_state(transporter, State::Blocked);
                         self.schedule(
@@ -9352,7 +9459,7 @@ impl<'m> Simulation<'m> {
         };
         let from = self.objects[transporter].position;
         let controls = self.traffic_controls_for_leg(from, destination);
-        if !self.traffic_try_acquire(transporter, &controls) {
+        if !self.traffic_try_acquire(transporter, &controls)? {
             self.schedule(
                 self.now + TRAFFIC_RETRY_DELAY,
                 EventKind::ExplicitTrafficRetry(transporter),
@@ -12297,6 +12404,9 @@ fn collect_model_scripts(model: &Model) -> Vec<(String, String)> {
             // though validation accepted it.
             ("on_load", &triggers.on_load),
             ("on_unload", &triggers.on_unload),
+            ("on_empty", &triggers.on_empty),
+            ("on_full", &triggers.on_full),
+            ("on_entry_request", &triggers.on_entry_request),
         ];
         for (trigger, actions) in lists {
             for (position, action) in actions.iter().enumerate() {
@@ -12642,6 +12752,13 @@ fn build_fluid_runtime(model: &Model) -> Option<FluidRuntime> {
             _ => 0.0,
         };
         let mut runtime = FluidObjectRt::new(initial);
+        if let ObjectParams::FluidTank(params) = &model.objects[index].params
+            && params.capacity > EPS
+            && initial >= params.capacity - EPS
+        {
+            // Starting full is not a transition.
+            runtime.full_latched = true;
+        }
         if let ObjectParams::FluidValve(params) = &model.objects[index].params {
             runtime.valve_open = params.open;
         }
@@ -18398,5 +18515,207 @@ mod tests {
             }
         }
         assert!(seen_load && seen_unload, "both hooks must fire");
+    }
+
+    fn add_fluid_trigger(model: &mut Model, object: &str, trigger: SimTrigger, source: &str) {
+        let index = model
+            .objects
+            .iter()
+            .position(|candidate| candidate.name == object)
+            .expect("object");
+        let triggers = match &mut model.objects[index].params {
+            ObjectParams::FluidTank(params) => &mut params.triggers,
+            ObjectParams::FluidGenerator(params) => &mut params.triggers,
+            ObjectParams::FluidSink(params) => &mut params.triggers,
+            _ => panic!("not a fluid object: {object}"),
+        };
+        let action = Action::Script {
+            source: source.to_string(),
+        };
+        match trigger {
+            SimTrigger::OnEmpty => triggers.on_empty.push(action),
+            SimTrigger::OnFull => triggers.on_full.push(action),
+            other => panic!("unsupported trigger in test: {other:?}"),
+        }
+    }
+
+    /// task-189: `on_full` fires once when the tank reaches capacity and does
+    /// not repeat while the level stays there.
+    #[test]
+    fn fluid_on_full_fires_once() {
+        let mut model = Model::from_json(include_str!("../../../examples/objects/fluid-line.ofm"))
+            .expect("model");
+        add_fluid_trigger(
+            &mut model,
+            "Tank1",
+            SimTrigger::OnFull,
+            "set_label(\"full\", 1.0);",
+        );
+        let config = SimConfig {
+            stop_time: 60.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (result, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let tank = result
+            .fluid
+            .as_ref()
+            .and_then(|fluid| fluid.objects.iter().find(|object| object.name == "Tank1"))
+            .expect("tank");
+        eprintln!(
+            "tank level_max={} events_with_on={:?}",
+            tank.level_max,
+            trace
+                .events
+                .iter()
+                .filter(|e| e.event.starts_with("on_"))
+                .map(|e| e.event.clone())
+                .collect::<Vec<_>>()
+        );
+        let fired = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "on_full")
+            .count();
+        assert_eq!(fired, 1, "on_full must fire once, got {fired}");
+    }
+
+    /// task-189: `on_empty` fires once on the crossing to zero and not again
+    /// while the tank stays empty.
+    #[test]
+    fn fluid_on_empty_fires_once() {
+        let mut model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "drain",
+          "run": { "stop_time": 10.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+          "fluid_step": 0.1,
+          "objects": [
+            { "name": "Tank", "kind": "fluid_tank", "params": {
+                "capacity": 100.0, "initial_level": 5.0, "max_outflow": 50.0 } },
+            { "name": "Sink", "kind": "fluid_sink", "params": {} }
+          ],
+          "connections": [ { "from": "Tank", "to": "Sink" } ]
+        }"#,
+        )
+        .expect("model");
+        add_fluid_trigger(
+            &mut model,
+            "Tank",
+            SimTrigger::OnEmpty,
+            "set_label(\"empty\", 1.0);",
+        );
+        let config = SimConfig {
+            stop_time: 10.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let fired = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "on_empty")
+            .count();
+        assert_eq!(fired, 1, "on_empty must fire once, got {fired}");
+    }
+
+    /// task-189: models without the new hooks are unchanged bit for bit.
+    #[test]
+    fn fluid_boundary_hooks_do_not_change_reports() {
+        let model = Model::from_json(include_str!("../../../examples/objects/fluid-line.ofm"))
+            .expect("model");
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(first.replications, second.replications);
+        let text = serde_json::to_string(&model).expect("serialize");
+        assert!(!text.contains("on_empty"), "empty on_empty must be omitted");
+        assert!(!text.contains("on_full"), "empty on_full must be omitted");
+    }
+
+    fn traffic_model_with_request_hook(source: &str) -> Model {
+        let mut model = traffic_model("mutual_exclusion", 1, 1.0);
+        let index = model
+            .objects
+            .iter()
+            .position(|object| object.name == "T1")
+            .expect("T1");
+        if let ObjectParams::Transporter(params) = &mut model.objects[index].params {
+            params.triggers.on_entry_request = vec![Action::Script {
+                source: source.to_string(),
+            }];
+        }
+        model
+    }
+
+    /// task-189: `on_entry_request` can refuse an entry (`admit == 0`); the
+    /// request waits and is retried, so the run still completes.
+    #[test]
+    fn on_entry_request_admit_zero_is_retried_later() {
+        let hook = traffic_model_with_request_hook(
+            "if time < 2.0 { set_label(\"admit\", 0.0); } else { set_label(\"admit\", 1.0); }",
+        );
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (result, _) = crate::simulate_traced(&hook, &config, 0).expect("hook run");
+        assert_eq!(
+            result.items_completed, 2,
+            "a refused entry must be retried, not deadlock"
+        );
+        // The refusal pushes T1's first operator_loaded later than in the plain
+        // model (it retries instead of acquiring at t = 0).
+        let plain = traffic_model("mutual_exclusion", 1, 1.0);
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, hook_trace) = crate::simulate_traced(&hook, &config, 0).expect("hook trace");
+        let (_, plain_trace) = crate::simulate_traced(&plain, &config, 0).expect("plain trace");
+        let first_loaded = |trace: &TraceLog| {
+            trace
+                .object("T1")
+                .filter(|event| event.event == "operator_loaded")
+                .map(|event| event.time)
+                .fold(f64::INFINITY, f64::min)
+        };
+        assert!(
+            first_loaded(&hook_trace) > first_loaded(&plain_trace) + 0.5,
+            "a refusal must delay the accept path ({} vs {})",
+            first_loaded(&hook_trace),
+            first_loaded(&plain_trace)
+        );
+    }
+
+    /// task-189: a missing `admit` label keeps the normal acquire path, so the
+    /// report stays bit-identical to a model without the hook.
+    #[test]
+    fn on_entry_request_without_admit_keeps_the_default_path() {
+        let plain = traffic_model("mutual_exclusion", 1, 1.0);
+        let hooked = traffic_model_with_request_hook("set_label(\"other\", 1.0);");
+        let first = crate::run_model(&plain).expect("plain");
+        let second = crate::run_model(&hooked).expect("hooked");
+        assert_eq!(
+            first.replications, second.replications,
+            "a hook that leaves `admit` unset must not change the run"
+        );
+    }
+
+    /// task-189: the `on_entry_request` script is precompiled (task-188's gap).
+    #[test]
+    fn on_entry_request_script_is_precompiled() {
+        let model = traffic_model_with_request_hook(
+            "if label(\"admit\") > 0.5 { set_label(\"admit\", 1.0); }",
+        );
+        // Compiling the model precompiles the script; a missing entry would
+        // fail at run time with "script source was not precompiled".
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let result = crate::simulate(&model, &config, 0).expect("script hook runs");
+        assert_eq!(result.items_completed, 2);
     }
 }

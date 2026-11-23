@@ -181,7 +181,10 @@ fn definitions() -> Value {
                 "on_setup_finish": { "type": "array", "items": { "$ref": "#/$defs/action" } },
                 "on_process_finish": { "type": "array", "items": { "$ref": "#/$defs/action" } },
                 "on_load": { "type": "array", "items": { "$ref": "#/$defs/action" } },
-                "on_unload": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+                "on_unload": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_empty": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_full": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_entry_request": { "type": "array", "items": { "$ref": "#/$defs/action" } }
             },
             "additionalProperties": false
         }),
