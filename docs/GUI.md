@@ -8,6 +8,20 @@ cargo build -p openflex-gui --release
 ./target/release/openflex-gui examples/mm1.ofm   # 也可以不带参数启动后在窗口内填路径
 ```
 
+## 平台注意：Windows 的主线程栈
+
+Windows 给主线程默认 **1 MB** 栈（macOS/Linux 通常 8 MB）。debug 构建的 CLI 会因为
+`clap` 的命令树与报表代码在**任何子命令执行之前**就超出，表现为
+`thread 'main' has overflowed its stack`——v1.39.0/v1.40.0 的 Windows 二进制曾因此一启动就崩。
+
+两个入口都已经与平台默认解耦：
+- `openflex-cli`：真正的工作跑在**显式 32 MB 栈的线程**上，`main` 只做 spawn 与收集退出码；
+- `openflex-gui`：Windows 上同样把事件循环放到 32 MB 栈的线程；macOS 必须留在主线程（AppKit 要求），
+  其他平台直接调用。
+
+CI 里加了一步「先运行一次 Windows 二进制」（`--version` / `distributions` / `validate`），
+让这类问题显示成一条明确的失败，而不是 111 个测试断言差异。
+
 ## 当前能力（v1.33.0）
 
 | 区域 | 功能 |
