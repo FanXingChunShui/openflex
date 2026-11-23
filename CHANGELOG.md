@@ -36,6 +36,12 @@
   **至此 `docs/dead-params-allowlist.txt` 清空**：`check-dead-params.sh` → **0 known / 0 stale**，
   即模型声明的每个参数字段现在都真的能到达引擎。
 
+### 桌面 GUI
+
+- **User events 面板**：与模型触发器同样的「JSON 缓冲 + Apply」方式编辑 `model.user_events`
+  （文档首次打开时从模型灌入，之后保留用户输入；应用走 `commit_model_edit` 单一入口，因此撤销/校验一致）。
+  测试 `user_events_round_trip_through_the_panel_buffer`。GUI **142 项**。
+
 ### 报告与 CLI
 
 - **新增 `openflex eval`（脚本控制台 / 表达式试算）**：不跑模型就能试算表达式或运行沙箱脚本。

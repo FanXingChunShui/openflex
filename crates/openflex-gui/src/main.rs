@@ -2939,6 +2939,8 @@ struct OpenFlexApp {
     /// JSON buffers for the model-level triggers (on_start/on_reset/on_stop),
     /// committed on focus loss like the object trigger editor.
     model_trigger_text: [String; 3],
+    /// JSON buffer for `model.user_events` (the panel edits them as a list).
+    user_events_text: String,
     /// Row buffers for the performance-measure editor: (name, expression, unit).
     kpi_edit: Vec<(String, String, String)>,
     /// Name buffer for a new global variable / pick list.
@@ -3093,6 +3095,7 @@ impl OpenFlexApp {
             model_name: String::new(),
             model_description: String::new(),
             model_trigger_text: [String::new(), String::new(), String::new()],
+            user_events_text: String::new(),
             kpi_edit: Vec::new(),
             gv_name: String::new(),
             pl_name: String::new(),
@@ -3258,6 +3261,31 @@ impl OpenFlexApp {
 
     /// Applies the three model-trigger JSON buffers through the single edit
     /// funnel, so a malformed action never reaches the model.
+    /// `user_events` is a model-level list, so it gets the same JSON buffer +
+    /// apply treatment as the model triggers.
+    fn apply_user_events(&mut self) {
+        let text = self.user_events_text.trim();
+        let events: Vec<openflex_model::UserEvent> = if text.is_empty() {
+            Vec::new()
+        } else {
+            match serde_json::from_str(text) {
+                Ok(events) => events,
+                Err(error) => {
+                    self.error = Some(format!("invalid user events JSON: {error}"));
+                    return;
+                }
+            }
+        };
+        let count = events.len();
+        let committed = self.commit_model_edit("edit user events", move |model| {
+            model.user_events = events;
+            Ok(())
+        });
+        if committed {
+            self.status = format!("{count} user event(s)");
+        }
+    }
+
     fn apply_model_triggers(&mut self) {
         let parse = |text: &str| -> Result<Vec<openflex_model::Action>, String> {
             if text.trim().is_empty() {
@@ -4020,6 +4048,7 @@ impl OpenFlexApp {
         self.replay_index = None;
         // The model-trigger buffers belong to the previous document too.
         self.model_trigger_text = [String::new(), String::new(), String::new()];
+        self.user_events_text.clear();
         // Table buffers belong to the previous document too.
         self.table_edit.clear();
         self.table_column_edit.clear();
@@ -9196,6 +9225,36 @@ impl eframe::App for OpenFlexApp {
                         }
                         if primary_button(ui, true, "Apply model triggers") {
                             self.apply_model_triggers();
+                        }
+                    });
+                egui::CollapsingHeader::new("User events")
+                    .id_salt("user-events")
+                    .show(ui, |ui| {
+                        let Some(model) = self.model else {
+                            return;
+                        };
+                        // Seed once from the document, then keep the user's text.
+                        if self.user_events_text.is_empty() && !model.user_events.is_empty() {
+                            self.user_events_text =
+                                serde_json::to_string_pretty(&model.user_events)
+                                    .unwrap_or_else(|_| "[]".into());
+                        }
+                        ui.label(
+                            egui::RichText::new(
+                                "actions at a model time; runs once, in declaration order",
+                            )
+                            .size(9.0_f32)
+                            .color(palette::TEXT_DIM),
+                        );
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.user_events_text)
+                                .desired_rows(4)
+                                .desired_width(f32::INFINITY)
+                                .font(egui::TextStyle::Monospace)
+                                .hint_text(r#"[{ "time": 100.0, "actions": [ { "action": "script", "source": "log(1);" } ] }]"#),
+                        );
+                        if primary_button(ui, true, "Apply user events") {
+                            self.apply_user_events();
                         }
                     });
                 ui.separator();
@@ -14727,6 +14786,39 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn user_events_round_trip_through_the_panel_buffer() {
+        // The panel edits `user_events` as JSON text, so the buffer must hold
+        // exactly what the model serialises.
+        use openflex_model::{Action, UserEvent};
+        let events = vec![
+            UserEvent {
+                time: 10.0,
+                name: "stop".into(),
+                actions: vec![Action::SetMotor {
+                    target: "M".into(),
+                    running: false,
+                }],
+            },
+            UserEvent {
+                time: 20.5,
+                name: String::new(),
+                actions: vec![Action::Script {
+                    source: "log(1);".into(),
+                }],
+            },
+        ];
+        let text = serde_json::to_string_pretty(&events).expect("json");
+        let back: Vec<UserEvent> = serde_json::from_str(&text).expect("round trip");
+        assert_eq!(back, events);
+        // An empty list must not appear in the model JSON at all.
+        let empty: Vec<UserEvent> = Vec::new();
+        let text = serde_json::to_string(&empty).expect("json");
+        assert_eq!(text, "[]");
+        let model = builtin_example("mm1").expect("example");
+        assert!(model.user_events.is_empty(), "the example declares none");
     }
 
     #[test]
