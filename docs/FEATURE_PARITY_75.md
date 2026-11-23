@@ -438,6 +438,11 @@ waiting_for_release / release_seen / leg_started_at`。关键同步规则：
 | ConveyorSystemTool（类型作为全局设置） | 每对象参数 | ⛔（有意差异） | FlexSim 用「类型库 + 工具」批量套用；OpenFlex 用每对象参数 + JSON 复用，**不计划实现类型工具** |
 | Behaviors/PickList（AreaRestriction / Condition / ConveyorSpeed / Movement / SendItem / StopResume） | 分散在参数的 trigger/条件里 | 🟡 | 语义大多能用既有机制表达，但不是可点选的 behaviour 列表 |
 
+**已知缺陷（v1.37 起）**：决策点落在**拥堵的非累积皮带**上时，被挡件的「到达感应边界」事件会被
+反复以 10⁻⁶ 级间隔重排（Zeno），最终耗尽事件预算。复现：两源（exponential 6，type 0/1）→
+`speed 1 / length 12 / spacing 1` 皮带 → 两 sink，决策点 `position 6.0`；`stop_time 100` 正常、
+120 起必现，**挪到 `position 2.0` 不复现**。与动作内容无关（空动作同样触发）。
+
 **结论**：conveyor 的**基础行为**（速度/间距/容量/曲线/迭代积分/精确停位）与**两片深水**（slug 组、
 合流释放策略）已一致；剩下的是**独立对象化的那部分**（Decision Point / Transfer / Motor / sorter /
 Power-and-Free）与类型工具。后者我倾向把「类型工具」记为有意差异，其余按需求优先级逐项补。
