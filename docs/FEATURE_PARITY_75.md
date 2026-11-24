@@ -74,7 +74,7 @@
 | General Page：3D Shapes / 旋转 / 尺寸 | `pos` 仅二维坐标 | 🟡 | 无 3D 形状与朝向；Studio 有 2D/透视投影但形状是占位体 |
 | General Page：OnDraw 自定义绘制与"返回 1 抑制默认绘制" | `triggers.on_draw` 可声明 | 🟡 | schema 与校验支持，**渲染端未接线**（`action.rs` 注释明说 "the renderer integration is a follow-up"） |
 | Labels Page（对象标签，自动复位选项） | 对象级标签 | 🟡 | 无"Automatically Reset Labels"开关；标签复位只能靠 `on_reset` 手动写 |
-| Triggers Page（每对象不同触发器集合） | 19 个触发器（含 `on_load`/`on_unload`/`on_empty`/`on_full`/`on_entry_request`） | 🟡 | 见 §7 PickLists 明细；仍缺 `OnArrival`/`OnContinue`/`OnResourceAvailable`/`OnReceiveTaskSequence` 等对象专属触发器 |
+| Triggers Page（每对象不同触发器集合） | 21 个触发器（含 `on_load`/`on_unload`/`on_empty`/`on_full`/`on_entry_request`/`on_receive_task_sequence`/`on_resource_available`） | 🟡 | 见 §7 PickLists 明细；仍缺 `OnArrival`/`OnContinue` 等少数对象专属触发器 |
 | Statistics Window（实时状态与吞吐面板） | CLI 报告 + Studio 面板 + `--timeseries` | ✅ | 时间加权 content、状态占比、停留时间 |
 | Flow Page（Send To Port / Use Transport / Priority / Preempt） | `connections[].strategy`；`Hold` 对应 −1 | 🟡 | `Use Transport`/`Request Transport From` 无对象级开关，运输靠 `transporter`/`dispatcher` 任务；`Priority`/`Preempt` 只在 Dispatcher 侧部分实现 |
 | Source Page（三种到达风格 + 到达表） | 间隔/批量/首件/上限/停止 + `arrival_schedule_from_table` | ✅ | 表驱动到达已接线（`engine.rs` 读全局表） |
@@ -141,8 +141,8 @@
 | Setup/Process Finish Trigger（OnSetupFinish/OnProcessFinish） | `params.triggers.setup_finish` / `process_finish` | ✅ | `SimTrigger::SetupFinish`/`ProcessFinish`（`action.rs`；JSON 名 `setup_finish`/`process_finish` 由 `as_str`/`parse` 映射）；在两个边界触发且早于 `on_exit`；`setup_time=0` 无独立 setup 阶段故不触发 |
 | OnEmpty / OnFull Trigger（流体满/空） | `Triggers.on_empty` / `on_full`（仅 `fluid_tank` 有意义） | ✅ | 锁存去抖，持续空/满只触发一次；**"满"的信号是溢出增量**（tank 满时液位停在 `capacity − 流入步长`，`level == capacity` 永不成立），已写进文档注释。`fluid_on_full_fires_once`、`fluid_on_empty_fires_once`、`fluid_boundary_hooks_do_not_change_reports` |
 | OnEntryRequest Trigger（TrafficControl 准入裁决） | `Triggers.on_entry_request` | ✅ | 在 `traffic_try_acquire` 容量判定**之前**触发；`label("admit")==0` → 拒绝并回退到既有等待重试。**这是 OpenFlex 协议而非 FlexSim 公开 API**，已写进 Rust 文档注释。`on_entry_request_admit_zero_is_retried_later`、`on_entry_request_without_admit_keeps_the_default_path`、`on_entry_request_script_is_precompiled`。限制：上下文是 `FlowItem::probe` 空件，只有 labels 有意义 |
-| OnReceiveTaskSequence | 无 | ⛔ | TaskExecuter 无接收任务序列的钩子 |
-| OnResourceAvailable | 无 | ⛔ | Dispatcher 无"下游可用"回调 |
+| OnReceiveTaskSequence | `Triggers.on_receive_task_sequence` | ✅ | 执行器被分派任务、**开始执行第一腿之前**触发一次（每任务一次，普通与协同分支都触发）。**边界**：序列是模型级声明、运行时只读，故钩子**不能修改序列**，只做副作用——已写进 Rust 文档注释。`receive_task_sequence_fires_once_per_dispatch`、`receive_task_sequence_hook_can_change_the_model`（`send_message` → 下游 `on_message` 真的运行，证明副作用送达模型） |
+| OnResourceAvailable | `Triggers.on_resource_available` | 🟡 | 覆盖两个来源：`resource` 池位释放与 transporter `finish_task`。实测 3 件模型：每次释放各触发一次（t=4/24/44）。**边界**：shift 结束、维修完成等其它可用性变化不触发 |
 | OnDraw Trigger | `on_draw`（schema 层） | 🟡 | 见 ObjectWindows 行 |
 | Start/End of Warmup、Start/End of Run、Start/End of Scenario、Start/End of Experiment | `model_triggers`：`on_start`/`on_reset`(预热边界)/`on_stop`/`start_of_scenario`/`end_of_scenario`/`start_of_experiment`/`end_of_experiment`/`start_of_replication`/`end_of_replication` | ✅ | 9 个时点钩子全覆盖，按"实验→场景→复现"分层触发；`replication_lifecycle_hooks_fire_once_per_run`、`experiment_lifecycle_hooks_run_in_order`、`lifecycle_hook_errors_are_reported`、`schema_covers_lifecycle_hooks`（**此行为 2026-11-24 纠正：原先记作 ⛔ 是我漏查**） |
 | Performance Measure（每复现结束时返回指标值） | `model.performance_measures` | ✅ | 模型可自定义 `{name, expression, unit}`，每复现结束求值并进报告/实验/优化（同 §9 的 Experimenter 行）；未定义变量是明确 `SimError`。证据见 [PARITY_EVIDENCE](PARITY_EVIDENCE.md) #42 |
@@ -330,7 +330,7 @@
 > 并把 3 个纯教程/术语页从 🟡 改判为 📄。**权威总数以第 325 行的 ✅39 / 🟡97 / ⛔73 / 📄3 为准**，
 > 下表用来看**缺口集中在哪个目录**，不必逐格对齐。
 
-矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 48 行、🟡 103 行、⛔ 58 行、📄 3 行（参考页，不计入缺口）。
+矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 49 行、🟡 104 行、⛔ 56 行、📄 3 行（参考页，不计入缺口）。
 其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行。
 
 | 状态 | 行数 | 占比 |
