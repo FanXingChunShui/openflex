@@ -375,6 +375,46 @@ def case_fluid_mark():
     assert len(rises) == 1, f"one rise expected, got {len(rises)}"
 
 
+def case_multiprocessor_steps():
+    """A multiprocessor runs its step list in order before releasing the item."""
+    def build(steps):
+        params = {"slots": 2}
+        if steps is not None:
+            params["steps"] = steps
+        return model(
+            [
+                {"name": "S", "kind": "source", "params": {
+                    "interarrival": {"distribution": "constant", "value": 1000.0},
+                    "max_arrivals": 1}},
+                {"name": "M", "kind": "multiprocessor", "params": params},
+                {"name": "K", "kind": "sink", "params": {}},
+            ],
+            [{"from": "S", "to": "M"}, {"from": "M", "to": "K"}],
+        )
+
+    plain = trace_of(write("mp_plain", build(None)))
+    steps = trace_of(write("mp_steps", build([
+        {"process_time": {"distribution": "constant", "value": 2.0}},
+        {"process_time": {"distribution": "constant", "value": 2.0}},
+    ])))
+    with_setup = trace_of(write("mp_setup", build([
+        {"setup_time": {"distribution": "constant", "value": 1.0},
+         "process_time": {"distribution": "constant", "value": 2.0}},
+        {"setup_time": {"distribution": "constant", "value": 0.5},
+         "process_time": {"distribution": "constant", "value": 1.0}},
+    ])))
+
+    def enter_time(events):
+        for event in events:
+            if event["event"] == "enter" and event["object"] == "K":
+                return round(event["time"], 6)
+        return None
+
+    assert enter_time(plain) == 1.0, f"default process time: {enter_time(plain)}"
+    assert enter_time(steps) == 4.0, f"two 2.0 steps must sum: {enter_time(steps)}"
+    assert enter_time(with_setup) == 4.5, f"setup must count: {enter_time(with_setup)}"
+
+
 def case_queue_use_transport():
     """A queue with `use_transport` waits for a transporter instead of teleporting."""
     def build(use_transport):
@@ -547,6 +587,7 @@ CASES = [
     ("fluid mark", case_fluid_mark),
     ("on change", case_on_change),
     ("queue use transport", case_queue_use_transport),
+    ("multiprocessor steps", case_multiprocessor_steps),
     ("combiner pack", case_combiner_pack),
     ("timetable off shift", case_timetable_off_shift),
     ("checkpoint resume", case_checkpoint_matches_straight_run),
