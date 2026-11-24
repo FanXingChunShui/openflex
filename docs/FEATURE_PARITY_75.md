@@ -136,7 +136,7 @@
 | OnChange Trigger（watchlist 变量变化） | `TrackedVariable.on_change` | ✅ | 复用既有跟踪采样点（`tracked_interval`）与采样器已维护的"上一次值"（随 checkpoint 持久化）；**首次采样不算变化**，变化判定基于采样值（不是连续抖动）。实测 `time` 表达式 interval 5 / stop 30 → 恰好 5 次（`[10,15,20,25,30]`），常量 0 次。`kind != level` 给 `on_change` → validate 明确拒绝。`on_change_fires_once_per_changed_sample`、`on_change_never_fires_for_a_constant`、`on_change_script_runs`、`on_change_on_a_summary_is_rejected` |
 | Collision Trigger | 无 | ⛔ | 无碰撞 |
 | Breakdown/Repair Trigger（OnBreakDown/OnRepair） | `on_breakdown`/`on_repair`；`FailureParams.repair_operator` | ✅ | 故障修复可要求 dispatcher 送操作员到位才开始计时（等待期间保持 `down`、事件驱动、结束只释放该操作员）。`repair_operator_waits_for_the_operator`、`repair_operator_absent_keeps_the_report` |
-| Down/Up Trigger（MTBF 组级） | 无组级触发器 | ⛔ | 只有对象级 `on_breakdown` |
+| Down/Up Trigger（MTBF 组级） | `FailureParams.group` | ✅ | 同组共享**一次**故障周期：组故障时全员 `down` 且各触发 `on_breakdown`，修复后全员恢复且各触发 `on_repair`；组间互不影响。组由 **model order 第一个成员（driver）** 驱动，validate 要求同组 `mtbf`/`mttr` 一致。**决定性验证**：有 `group` 时 P1/P2 都 down 2/30，去掉 `group` 只有 P1 down。checkpoint 恢复逐位相同。`mtbf_group_stops_every_member_once`、`mtbf_group_differs_from_independent_failures`、`mtbf_groups_are_isolated`、`mtbf_group_checkpoint_resumes`、`mtbf_group_is_deterministic` |
 | Load/Unload Trigger（OnLoad/OnUnload） | `Triggers.on_load` / `on_unload` | ✅ | OnLoad 落在 `TransportDepart`（`now+dwell+load`）、OnUnload 落在 `OperatorLoaded`，各一次且**不新增事件**（事件序列/统计不变）；`on_load_script_is_precompiled`、`on_load_fires_at_dwell_plus_load`、`on_load_label_is_visible_in_the_unload_hook`。限制：执行器不持件，钩子的 item 是 requester 的件（已写进 Rust 文档注释） |
 | Setup/Process Finish Trigger（OnSetupFinish/OnProcessFinish） | `params.triggers.setup_finish` / `process_finish` | ✅ | `SimTrigger::SetupFinish`/`ProcessFinish`（`action.rs`；JSON 名 `setup_finish`/`process_finish` 由 `as_str`/`parse` 映射）；在两个边界触发且早于 `on_exit`；`setup_time=0` 无独立 setup 阶段故不触发 |
 | OnEmpty / OnFull Trigger（流体满/空） | `Triggers.on_empty` / `on_full`（仅 `fluid_tank` 有意义） | ✅ | 锁存去抖，持续空/满只触发一次；**"满"的信号是溢出增量**（tank 满时液位停在 `capacity − 流入步长`，`level == capacity` 永不成立），已写进文档注释。`fluid_on_full_fires_once`、`fluid_on_empty_fires_once`、`fluid_boundary_hooks_do_not_change_reports` |
@@ -330,7 +330,7 @@
 > 并把 3 个纯教程/术语页从 🟡 改判为 📄。**权威总数以第 325 行的 ✅39 / 🟡97 / ⛔73 / 📄3 为准**，
 > 下表用来看**缺口集中在哪个目录**，不必逐格对齐。
 
-矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 49 行、🟡 104 行、⛔ 56 行、📄 3 行（参考页，不计入缺口）。
+矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 50 行、🟡 104 行、⛔ 55 行、📄 3 行（参考页，不计入缺口）。
 其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行。
 
 | 状态 | 行数 | 占比 |
