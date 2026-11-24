@@ -4,3 +4,7 @@
 /.research
 **/*.log
 .DS_Store
+
+# Build output: the release pipeline produces these; committing them once made
+# a stale tarball ride along into a later release.
+/dist/
