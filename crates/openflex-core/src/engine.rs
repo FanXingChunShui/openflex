@@ -7466,7 +7466,14 @@ impl<'m> Simulation<'m> {
                     if start_delay {
                         let model_index = model_indices[position];
                         self.schedule(self.now + delay, EventKind::MixerDelayDone(model_index));
-                        self.fire_mixer_step_hook(model_index, position, true)?;
+                        self.fire_mixer_step_hook(model_index, &step, true)?;
+                    } else if ready && !waiting && delay <= EPS && (sent > EPS || needed <= EPS) {
+                        // task-199: no delay phase, but the hooks must not stay
+                        // silent. They fire on the same instant (no extra event,
+                        // so the event sequence and the numbers are unchanged).
+                        let model_index = model_indices[position];
+                        self.fire_mixer_step_hook(model_index, &step, true)?;
+                        self.fire_mixer_step_hook(model_index, &step, false)?;
                     }
                 }
                 // The bridge to the discrete side: whatever fluid arrives is
@@ -8875,7 +8882,10 @@ impl<'m> Simulation<'m> {
         if let Some(fluid) = self.fluid.as_mut() {
             fluid.state[position].mixer_delay_until = 0.0;
         }
-        self.fire_mixer_step_hook(model_index, position, false)
+        let Some(step) = self.mixer_current_step(model_index, position) else {
+            return Ok(());
+        };
+        self.fire_mixer_step_hook(model_index, &step, false)
     }
 
     /// task-199: run one mixer step hook (before/after the step delay) on the
@@ -8883,16 +8893,13 @@ impl<'m> Simulation<'m> {
     fn fire_mixer_step_hook(
         &mut self,
         model_index: usize,
-        position: usize,
+        step: &openflex_model::MixerStep,
         before: bool,
     ) -> Result<(), SimError> {
-        let Some(step) = self.mixer_current_step(model_index, position) else {
-            return Ok(());
-        };
         let (actions, trigger) = if before {
-            (step.on_before_delay, "on_before_delay")
+            (step.on_before_delay.clone(), "on_before_delay")
         } else {
-            (step.on_after_delay, "on_after_delay")
+            (step.on_after_delay.clone(), "on_after_delay")
         };
         if actions.is_empty() {
             return Ok(());
@@ -20834,16 +20841,22 @@ mod tests {
 
     /// task-199: a zero step delay keeps the historical behaviour.
     #[test]
-    fn mixer_delay_zero_keeps_the_report() {
-        let model = mixer_delay_model(r#"{ "pull": [2.0], "delay": 0.0 }"#);
+    fn mixer_delay_zero_fires_the_hooks_and_keeps_the_report() {
+        // Hooks without side effects (a bare `let`) must not change the numbers.
+        let model = mixer_delay_model(
+            r#"{ "pull": [2.0], "delay": 0.0,
+                "on_before_delay": [ { "action": "script", "source": "let a = 1;" } ],
+                "on_after_delay": [ { "action": "script", "source": "let b = 1;" } ] }"#,
+        );
         let first = crate::run_model(&model).expect("first");
         let second = crate::run_model(&model).expect("second");
         assert_eq!(first.replications, second.replications);
-        assert!(
-            mixer_events(&model, "on_before_delay").is_empty()
-                && mixer_events(&model, "on_after_delay").is_empty(),
-            "no delay phase means no delay hooks"
-        );
+        let before = mixer_events(&model, "on_before_delay");
+        let after = mixer_events(&model, "on_after_delay");
+        // task-199: a zero delay must not silence the hooks (silent failure).
+        assert!(!before.is_empty(), "on_before_delay must still fire");
+        assert!(!after.is_empty(), "on_after_delay must still fire");
+        assert_eq!(before.len(), after.len(), "one pair per batch");
     }
 
     /// task-199: the two hooks are real instants, one `delay` apart.
