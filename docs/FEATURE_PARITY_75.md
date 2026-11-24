@@ -155,7 +155,7 @@
 | Task Types（TASKTYPE_TRAVEL/LOAD/UNLOAD/DELAY/UTILIZE/BREAK/TRAVELTOLOC/…) | `TaskStepKind` + `ExtraTaskLegKind` + `TravelTarget` | 🟡 | 已有 travel/load/unload/utilize/break 与目标（home/pickup/requester/object/position）；仍缺 DELAY、TRAVELTOLOC 的 end speed / forcetravel 等逐任务参数 |
 | Custom Built Task Sequences（createemptytasksequence/inserttask/…） | 声明式 `explicit` 路线表 | 🟡 | **声明式**已能表达固定/多段流程；仍无**过程式**构造 API（运行时按条件 inserttask） |
 | Task Sequence Preempting（抢占值、中断后重做/删除） | Dispatcher 有 `preempt_retry_delay`/`preempt_max_retries` | 🟡 | 有抢占重试；无"被中断任务重头再做 vs 删除"的语义选择 |
-| Coordinated Task Sequences（两执行器协同，如双人抬） | 无 | ⛔ | 无协同任务（明确不在本轮范围，未做近似实现） |
+| Coordinated Task Sequences（两执行器协同，如双人抬） | `TaskStep::Detailed.involved: 2` | 🟡 | 声明"该步骤需要两名执行器"：dispatcher 一次派两个并写同一 `task_group`，**两者都到场才同步开始**，结束时各自释放；只够一人时**永久等待且不忙等**（实测整场 4 个事件）。`involved: 1` 与不写 `involved` 报告 sha256 相同。**边界**：仅支持声明式的 1/2 名执行器（FlexSim 的过程式 `insertallocatetask`/`insertsynctask` 未做）；与 `explicit` 模式的组合待 validate 拒绝；抢占与 AGV 充电路径待补专测。`involved_two_needs_both_arrivals`、`involved_two_with_one_executer_waits_without_spinning`、`involved_two_releases_both_executers`、`involved_out_of_range_is_rejected` |
 | Querying Task Sequences（查询/改任务序列字段） | trace 可观察各腿事件 | ⛔ | 无运行期任务序列对象可供读写 |
 | Global Task Sequences（GTS，图形化共享任务序列） | `Model.task_sequences` + `DispatcherParams.task_sequence_ref` | 🟡 | **命名复用**已实现：多个 dispatcher 引用同一份 steps（引用与内联互斥、未知引用/重名/空名均 validate 拒绝；steps 不复制，改 GTS 影响全部引用者）。实测引用式与内联式报告 sha256 相同。**仍无图形化 GTS 编辑器**（用 JSON 声明） |
 | Task Sequences Quick Reference（task type × involved × var1..4 表） | 无 | ⛔ | 同"Task Types" |
@@ -330,7 +330,7 @@
 > 并把 3 个纯教程/术语页从 🟡 改判为 📄。**权威总数以第 325 行的 ✅39 / 🟡97 / ⛔73 / 📄3 为准**，
 > 下表用来看**缺口集中在哪个目录**，不必逐格对齐。
 
-矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 46 行、🟡 102 行、⛔ 61 行、📄 3 行（参考页，不计入缺口）。
+矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 46 行、🟡 103 行、⛔ 60 行、📄 3 行（参考页，不计入缺口）。
 其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行。
 
 | 状态 | 行数 | 占比 |
