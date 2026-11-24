@@ -157,7 +157,7 @@
 | Task Sequence Preempting（抢占值、中断后重做/删除） | Dispatcher 有 `preempt_retry_delay`/`preempt_max_retries` | 🟡 | 有抢占重试；无"被中断任务重头再做 vs 删除"的语义选择 |
 | Coordinated Task Sequences（两执行器协同，如双人抬） | 无 | ⛔ | 无协同任务（明确不在本轮范围，未做近似实现） |
 | Querying Task Sequences（查询/改任务序列字段） | trace 可观察各腿事件 | ⛔ | 无运行期任务序列对象可供读写 |
-| Global Task Sequences（GTS，图形化共享任务序列） | 无 | ⛔ | 无 GTS 工具 |
+| Global Task Sequences（GTS，图形化共享任务序列） | `Model.task_sequences` + `DispatcherParams.task_sequence_ref` | 🟡 | **命名复用**已实现：多个 dispatcher 引用同一份 steps（引用与内联互斥、未知引用/重名/空名均 validate 拒绝；steps 不复制，改 GTS 影响全部引用者）。实测引用式与内联式报告 sha256 相同。**仍无图形化 GTS 编辑器**（用 JSON 声明） |
 | Task Sequences Quick Reference（task type × involved × var1..4 表） | 无 | ⛔ | 同"Task Types" |
 
 ## 6. ModelingTools（31 页）— 建模工具窗口
@@ -330,7 +330,7 @@
 > 并把 3 个纯教程/术语页从 🟡 改判为 📄。**权威总数以第 325 行的 ✅39 / 🟡97 / ⛔73 / 📄3 为准**，
 > 下表用来看**缺口集中在哪个目录**，不必逐格对齐。
 
-矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 44 行、🟡 100 行、⛔ 65 行、📄 3 行（参考页，不计入缺口）。
+矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 44 行、🟡 101 行、⛔ 64 行、📄 3 行（参考页，不计入缺口）。
 其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行。
 
 | 状态 | 行数 | 占比 |
