@@ -1,6 +1,25 @@
 # Changelog
 
-## Unreleased
+## v1.50.0 — 2026-11-25
+
+本轮补上一块**核心建模语义**：物品不再只能"瞬移"到下游。
+
+**`queue.use_transport`** —— 指定 dispatcher 后，物品要**等一台 transporter 来搬**，搬运期间仍计入 queue 内容。
+实测（10 单位距离、速度 2）：下游 `enter` 在 **t=5**，对照的瞬时流模型是 **t=0**；3 件依次在 5/15/25 完成且守恒。
+**运输途中存盘 → resume 与不中断直跑的报告逐位相同**。
+
+实现上刻意**不碰** `Dispatcher.requests`（那会让既有 operator 任务回归），只从 dispatcher 的空闲车直接派；
+因此明确不做多车协同/preemption/多出边，边界写在矩阵与 BACKLOG 里。
+
+**两处"减法"比加法更值得记：**
+- MultiProcessor 的顺序工序列表落地了（两步 2.0 → 4.0，含 setup → 4.5），但**每步的操作员数没有做成字段**：
+  引擎只能按步累加时长，按步申请/释放 crew 需要把 operator 分配从"对象级"改成"对象+槽级"。
+  **与其留一个 validate 接受、引擎忽略的字段，不如先不加**——`MixerStep.delay` 的教训直接应用。
+- 队友两次在动手前停下交成本报告（一次给窄版拆分，一次判定"加个侧表就行"是幻觉），
+  这比交付一个"看起来能用"的假功能有价值。
+
+冒烟套件从 11 项扩到 **17 项**，现在覆盖 `use_transport` 与工序链。
+发布节奏保持**至少 3 小时一版**。
 
 ### 模型与引擎
 
@@ -41,6 +60,16 @@
   修正的是**模型**，不是断言——这个习惯比套件本身更重要。
 
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**1029 passed / 0 failed**；clippy 0 警告、fmt 干净。
+- GUI **150 项**、`openflex-core --lib` **279 项**；`scripts/acceptance.sh` **all golden checks passed**；
+  **`scripts/feature-smoke.py` 17/17**。
+- `check-dead-params.sh` 0 known；`check-doc-evidence.sh` 47 名可解析；`check-changelog.sh` 通过。
+- Windows 交叉编译 0 错误；fuzz 冒烟 PASS；1 万对象基准 validate **0.09 s / 29 MB**、run **0.24 s / 58 MB**。
+- 独立实测：`item_pickup@0 → item_depart@0 → item_dropoff@5 → enter K@5`；运输途中 t=2 存盘 resume 报告
+  sha256 与直跑相同（`991a3f5f…`）；工序链 4.0 / 4.5 两例。
 
 ## v1.49.0 — 2026-11-25
 
