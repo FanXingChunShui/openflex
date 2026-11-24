@@ -287,6 +287,8 @@ pub(crate) enum EventKind {
     PersonStep(usize),
     /// task-192: a model-level user event reached its time.
     UserEvent(usize),
+    /// task-199: a mixer step's delay is over (model object index).
+    MixerDelayDone(usize),
     /// task-133: a low-battery AGV reached its charger.
     ChargeTravel(usize),
     /// A shift window starts or ends.
@@ -425,6 +427,10 @@ pub(crate) struct FluidObjectRt {
     /// Batch step reached by a `fluid_mixer` (0-based, wraps around the table).
     #[serde(default)]
     pub mixer_step: usize,
+    /// task-199: while > 0 the mixer is waiting out its step delay and releases
+    /// nothing.
+    #[serde(default)]
+    pub mixer_delay_until: f64,
     /// task-195: level at the end of the previous step (mark crossings compare
     /// consecutive tick samples; several crossings inside one step count once).
     #[serde(default)]
@@ -463,6 +469,7 @@ impl FluidObjectRt {
             overflow: 0.0,
             inflow: 0.0,
             buffer: Vec::new(),
+            mixer_delay_until: 0.0,
             last_level: level,
             empty_latched: level <= EPS,
             full_latched: false,
@@ -3784,6 +3791,7 @@ impl<'m> Simulation<'m> {
             EventKind::TaskStepDone(transporter) => self.handle_task_step_done(transporter),
             EventKind::PersonStep(transporter) => self.handle_person_step(transporter),
             EventKind::UserEvent(index) => self.handle_user_event(index),
+            EventKind::MixerDelayDone(index) => self.handle_mixer_delay_done(index),
             EventKind::ChargeTravel(transporter) => self.handle_charge_travel(transporter),
             EventKind::ShiftChange(index) => self.handle_shift_change(index),
             EventKind::TimetableChange(index) => self.handle_timetable_change(index),
@@ -6707,7 +6715,7 @@ impl<'m> Simulation<'m> {
             return Ok(());
         };
         let now = self.now;
-        self.fluid_advance(now);
+        self.fluid_advance(now)?;
         self.fire_fluid_boundary_triggers()?;
         // Keep the fixed step on the calendar; events past the stop time stay
         // for checkpoint/resume, the run loop stops at the stop time.
@@ -6847,12 +6855,12 @@ impl<'m> Simulation<'m> {
     }
 
     /// Integrate one fixed fluid step ending at `now`.
-    fn fluid_advance(&mut self, now: f64) {
+    fn fluid_advance(&mut self, now: f64) -> Result<(), SimError> {
         // Everything the step needs is cloned inside this block so the shared
         // borrow ends before the (mutating) bridge injection below.
         let (dt, count, order, links, outgoing, model_indices) = {
             let Some(fluid) = self.fluid.as_ref() else {
-                return;
+                return Ok(());
             };
             let dt = (now - fluid.last_time).max(0.0);
             (
@@ -6865,7 +6873,7 @@ impl<'m> Simulation<'m> {
             )
         };
         if dt <= 0.0 {
-            return;
+            return Ok(());
         }
         let kinds: Vec<ObjectKind> = model_indices
             .iter()
@@ -7415,7 +7423,16 @@ impl<'m> Simulation<'m> {
                         .unwrap_or_default();
                     let needed: f64 = step.pull.iter().sum();
                     let ready = needed <= EPS || held >= needed - EPS;
-                    let offered = if ready {
+                    // task-199: after the batch is collected the mixer waits out
+                    // the step delay before releasing it; a zero delay keeps the
+                    // historical "release on the same tick" behaviour (no extra
+                    // event, no hook).
+                    let delay = step.delay.max(0.0);
+                    let waiting = self.fluid.as_ref().is_some_and(|fluid| {
+                        fluid.state[position].mixer_delay_until > self.now + EPS
+                    });
+                    let start_delay = ready && !waiting && delay > EPS;
+                    let offered = if ready && !waiting && !start_delay {
                         if needed <= EPS {
                             held
                         } else {
@@ -7442,6 +7459,14 @@ impl<'m> Simulation<'m> {
                         if sent > EPS {
                             state.mixer_step = state.mixer_step.saturating_add(1);
                         }
+                        if start_delay {
+                            state.mixer_delay_until = self.now + delay;
+                        }
+                    }
+                    if start_delay {
+                        let model_index = model_indices[position];
+                        self.schedule(self.now + delay, EventKind::MixerDelayDone(model_index));
+                        self.fire_mixer_step_hook(model_index, position, true)?;
                     }
                 }
                 // The bridge to the discrete side: whatever fluid arrives is
@@ -7515,6 +7540,7 @@ impl<'m> Simulation<'m> {
         if let Some(fluid) = self.fluid.as_mut() {
             fluid.last_time = now;
         }
+        Ok(())
     }
 
     /// Integrate the level from the last step to the stop time.
@@ -8835,6 +8861,73 @@ impl<'m> Simulation<'m> {
     /// `script` actions run with model-level scope (no owning object), while
     /// `send_message` and `set_motor` name their target object. Anything else
     /// is rejected by validation.
+    /// task-199: the mixer step delay is over; release the batch on the next
+    /// fluid step and run the after-delay hook now.
+    fn handle_mixer_delay_done(&mut self, model_index: usize) -> Result<(), SimError> {
+        let Some(position) = self.fluid.as_ref().and_then(|fluid| {
+            fluid
+                .objects
+                .iter()
+                .position(|&object| object == model_index)
+        }) else {
+            return Ok(());
+        };
+        if let Some(fluid) = self.fluid.as_mut() {
+            fluid.state[position].mixer_delay_until = 0.0;
+        }
+        self.fire_mixer_step_hook(model_index, position, false)
+    }
+
+    /// task-199: run one mixer step hook (before/after the step delay) on the
+    /// mixer object with a probe item (the mixer has no flow item of its own).
+    fn fire_mixer_step_hook(
+        &mut self,
+        model_index: usize,
+        position: usize,
+        before: bool,
+    ) -> Result<(), SimError> {
+        let Some(step) = self.mixer_current_step(model_index, position) else {
+            return Ok(());
+        };
+        let (actions, trigger) = if before {
+            (step.on_before_delay, "on_before_delay")
+        } else {
+            (step.on_after_delay, "on_after_delay")
+        };
+        if actions.is_empty() {
+            return Ok(());
+        }
+        self.record_object_trace(trigger, model_index);
+        let mut item = FlowItem::probe(self.now);
+        self.action_location = format!("{}.{}", self.objects[model_index].name, trigger);
+        self.apply_actions(model_index, &mut item, actions)
+            .map_err(|error| {
+                SimError::Config(format!(
+                    "mixer '{}' {trigger} at t={}: {error}",
+                    self.objects[model_index].name, self.now
+                ))
+            })
+    }
+
+    fn mixer_current_step(
+        &self,
+        model_index: usize,
+        position: usize,
+    ) -> Option<openflex_model::MixerStep> {
+        let params = match &self.model.objects[model_index].params {
+            ObjectParams::FluidMixer(params) => params,
+            _ => return None,
+        };
+        let cursor = self
+            .fluid
+            .as_ref()
+            .map_or(0, |fluid| fluid.state[position].mixer_step);
+        params
+            .steps
+            .get(cursor % params.steps.len().max(1))
+            .cloned()
+    }
+
     /// task-198: run model-level actions (no owning object): scripts evaluate in
     /// model scope, `send_message`/`set_motor` name their target object.
     fn run_model_actions(&mut self, location: &str, actions: Vec<Action>) -> Result<(), SimError> {
@@ -12098,6 +12191,11 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
         EventKind::TaskStepDone(transporter) => (Some(*transporter), "task_step_done", None),
         EventKind::PersonStep(transporter) => (Some(*transporter), "person_step", None),
         EventKind::UserEvent(index) => (None, "user_event", Some(("event", *index as f64))),
+        EventKind::MixerDelayDone(index) => (
+            Some(*index),
+            "mixer_delay_done",
+            Some(("step", *index as f64)),
+        ),
         EventKind::ChargeTravel(transporter) => (Some(*transporter), "charge_travel", None),
         EventKind::PreemptRetry(dispatcher, requester) => (
             Some(*dispatcher),
@@ -13024,6 +13122,30 @@ fn collect_model_scripts(model: &Model) -> Vec<(String, String)> {
         if let Some(flow) = object.params.process_flow() {
             let prefix = format!("objects.{}.process_flow", object.name);
             flow_scripts(flow, &prefix, &mut sources);
+        }
+    }
+    // task-199: mixer step delay hooks are real instants now, so precompile them.
+    for object in &model.objects {
+        if let ObjectParams::FluidMixer(params) = &object.params {
+            for (step_index, step) in params.steps.iter().enumerate() {
+                for (trigger, actions) in [
+                    ("on_before_delay", &step.on_before_delay),
+                    ("on_after_delay", &step.on_after_delay),
+                ] {
+                    for (action_position, action) in actions.iter().enumerate() {
+                        if let Action::Script { source } = action {
+                            push(
+                                &mut sources,
+                                source,
+                                format!(
+                                    "objects.{}.steps.{step_index}.{trigger}.{action_position}",
+                                    object.name
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
     // task-198: tracked-variable `on_change` hooks are precompiled too.
@@ -20676,5 +20798,105 @@ mod tests {
             text.contains("only `level` variables have a previous sample value"),
             "expected a clear reason: {text}"
         );
+    }
+
+    fn mixer_delay_model(steps: &str) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "mixer-delay",
+          "run": {{ "stop_time": 60.0, "seed": 1, "replications": 1 }},
+          "fluid_step": 0.5,
+          "objects": [
+            {{ "name": "Gen", "kind": "fluid_generator", "pos": [0.0, 0.0], "params": {{ "flow_rate": 10.0 }} }},
+            {{ "name": "Mix", "kind": "fluid_mixer", "pos": [5.0, 0.0], "params": {{ "steps": [ {steps} ] }} }},
+            {{ "name": "Sink", "kind": "fluid_sink", "pos": [10.0, 0.0], "params": {{}} }}
+          ],
+          "connections": [ {{ "from": "Gen", "to": "Mix" }}, {{ "from": "Mix", "to": "Sink" }} ]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    fn mixer_events(model: &Model, name: &str) -> Vec<f64> {
+        let config = SimConfig {
+            stop_time: 60.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(model, &config, 0).expect("trace");
+        trace
+            .events
+            .iter()
+            .filter(|event| event.event == name)
+            .map(|event| event.time)
+            .collect()
+    }
+
+    /// task-199: a zero step delay keeps the historical behaviour.
+    #[test]
+    fn mixer_delay_zero_keeps_the_report() {
+        let model = mixer_delay_model(r#"{ "pull": [2.0], "delay": 0.0 }"#);
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(first.replications, second.replications);
+        assert!(
+            mixer_events(&model, "on_before_delay").is_empty()
+                && mixer_events(&model, "on_after_delay").is_empty(),
+            "no delay phase means no delay hooks"
+        );
+    }
+
+    /// task-199: the two hooks are real instants, one `delay` apart.
+    #[test]
+    fn mixer_delay_hooks_are_one_delay_apart() {
+        let model = mixer_delay_model(
+            r#"{ "pull": [2.0], "delay": 5.0,
+                "on_before_delay": [ { "action": "script", "source": "log(\"b\");" } ],
+                "on_after_delay": [ { "action": "script", "source": "log(\"a\");" } ] }"#,
+        );
+        let before = mixer_events(&model, "on_before_delay");
+        let after = mixer_events(&model, "on_after_delay");
+        // The last batch's delay may run past the stop time, so at most one
+        // before-hook has no after-hook yet.
+        assert!(
+            before.len() >= after.len() && before.len() - after.len() <= 1,
+            "one after-hook per completed delay: {before:?} {after:?}"
+        );
+        assert!(!before.is_empty(), "the mixer runs batches");
+        for (before_at, after_at) in before.iter().zip(&after) {
+            assert!(
+                (after_at - before_at - 5.0).abs() < 1e-9,
+                "every pair must be exactly the delay apart: {before:?} {after:?}"
+            );
+        }
+    }
+
+    /// task-199: every step of a two-step mixer fires its own pair.
+    #[test]
+    fn mixer_delay_hooks_fire_per_step() {
+        let model = mixer_delay_model(
+            r#"{ "pull": [2.0], "delay": 5.0,
+                "on_before_delay": [ { "action": "script", "source": "log(\"b\");" } ],
+                "on_after_delay": [ { "action": "script", "source": "log(\"a\");" } ] },
+               { "pull": [2.0], "delay": 5.0,
+                "on_before_delay": [ { "action": "script", "source": "log(\"b\");" } ],
+                "on_after_delay": [ { "action": "script", "source": "log(\"a\");" } ] }"#,
+        );
+        let before = mixer_events(&model, "on_before_delay");
+        let after = mixer_events(&model, "on_after_delay");
+        assert!(
+            before.len() >= after.len() && before.len() - after.len() <= 1,
+            "each completed delay has its after-hook"
+        );
+        assert!(
+            before.len() >= 2,
+            "both steps run at least once: {before:?}"
+        );
+        for (before_at, after_at) in before.iter().zip(&after) {
+            assert!(
+                (after_at - before_at - 5.0).abs() < 1e-9,
+                "each pair is one delay apart"
+            );
+        }
     }
 }

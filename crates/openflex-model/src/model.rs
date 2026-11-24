@@ -3080,9 +3080,18 @@ pub struct MixerStep {
     /// Volume pulled from each input port (index = port).
     #[serde(default)]
     pub pull: Vec<f64>,
-    /// Delay after all the material for this step has been collected.
+    /// Delay after all the material for this step has been collected (task-199:
+    /// the mixer now really waits it out before releasing the batch).
     #[serde(default)]
     pub delay: f64,
+    /// task-199: fires when the step's material is collected but before the
+    /// delay starts. With `delay == 0` there is no delay phase, so neither hook
+    /// fires (the two instants would coincide).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_before_delay: Vec<Action>,
+    /// task-199: fires when the step's delay is complete.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_after_delay: Vec<Action>,
 }
 
 /// The fluid clock (`ticker`). FlexSim requires exactly one per fluid model.

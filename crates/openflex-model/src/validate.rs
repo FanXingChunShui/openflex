@@ -256,6 +256,7 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
     issues.extend(validate_task_sequences(model));
     issues.extend(validate_user_commands(model));
     issues.extend(validate_fluid_marks(model));
+    issues.extend(validate_mixer_step_hooks(model));
     issues.extend(validate_tracked_on_change(model));
     issues.extend(validate_process_flow(
         model,
@@ -1981,6 +1982,36 @@ fn validate_tracked_on_change(model: &Model) -> Vec<ValidationIssue> {
                     &format!("{location}.{action_position}"),
                     &mut issues,
                 );
+            }
+        }
+    }
+    issues
+}
+
+/// task-199: mixer step delay hooks must compile.
+fn validate_mixer_step_hooks(model: &Model) -> Vec<ValidationIssue> {
+    let mut issues = Vec::new();
+    for object in &model.objects {
+        let ObjectParams::FluidMixer(params) = &object.params else {
+            continue;
+        };
+        for (step_position, step) in params.steps.iter().enumerate() {
+            for (trigger, actions) in [
+                ("on_before_delay", &step.on_before_delay),
+                ("on_after_delay", &step.on_after_delay),
+            ] {
+                for (action_position, action) in actions.iter().enumerate() {
+                    if let crate::action::Action::Script { source } = action {
+                        validate_script_source(
+                            source,
+                            &format!(
+                                "objects.{}.steps.{step_position}.{trigger}.{action_position}",
+                                object.name
+                            ),
+                            &mut issues,
+                        );
+                    }
+                }
             }
         }
     }

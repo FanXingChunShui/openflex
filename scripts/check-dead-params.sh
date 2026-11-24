@@ -3,6 +3,12 @@
 # engine. `max_travelers` was one of these: a field, a GUI control and a CLI
 # description, with nobody reading the value — the model simply never changed.
 #
+# Known blind spot: a field whose *name* is a common word (`delay`, `size`,
+# `count`) appears all over the engine for other structs, so a purely textual
+# check cannot prove it is unused. `MixerStep.delay` hid behind exactly that
+# until a human read the mixer branch. Treat a green run as "nothing obviously
+# dead", not as proof.
+#
 # The allowlist freezes the fields we know about today. A new field that the
 # engine never names fails this check, which is the moment to decide whether to
 # wire it up or delete it.
@@ -23,11 +29,28 @@ import sys
 allow_path, mode = sys.argv[1], sys.argv[2]
 
 model = open("crates/openflex-model/src/model.rs", encoding="utf-8").read()
+
+# Check the top-level `*Params` structs **and** the structs they nest (MixerStep,
+# PhotoEye, DecisionPoint, …): a nested field can be just as dead, and those
+# structs were not covered at all before.
+top_level = re.findall(r"pub struct (\w*Params) \{", model)
+defined = set(re.findall(r"pub struct (\w+) \{", model))
+nested = set()
+for struct in re.finditer(r"pub struct \w*Params \{(.*?)\n\}", model, re.S):
+    for field in re.finditer(r"pub \w+: (?:Option<)?(?:Vec<)?([A-Z]\w+)", struct.group(1)):
+        nested.add(field.group(1))
+nested = sorted(nested & defined - set(top_level))
+
+checked_structs = top_level + nested
 fields = []
-for struct in re.finditer(r"pub struct (\w*Params) \{(.*?)\n\}", model, re.S):
-    name, body = struct.group(1), struct.group(2)
-    for field in re.finditer(r"\n\s*pub (\w+):", body):
-        fields.append((name, field.group(1)))
+for struct_name in checked_structs:
+    struct = re.search(
+        r"pub struct " + struct_name + r" \{(.*?)\n\}", model, re.S
+    )
+    if struct is None:
+        continue
+    for field in re.finditer(r"\n\s*pub (\w+):", struct.group(1)):
+        fields.append((struct_name, field.group(1)))
 
 core = "".join(open(p, encoding="utf-8").read() for p in glob.glob("crates/openflex-core/src/*.rs"))
 named = set(re.findall(r"\b([a-z_][a-z0-9_]*)\b", core))
