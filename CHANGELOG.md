@@ -13,7 +13,11 @@
   **逐位不变的钉住方式值得记**：不是"同 seed 跑两遍"，而是**改动前先记录 3 个随机生成 queue 模型的报告 SHA-256 常量**，
   字段缺省时报告必须与那些常量一致——把"95% 有把握"变成可验证。
   validate 拒绝：空串、指向非 dispatcher、无可用执行器、**非唯一出边**（`exactly one output connection`）。
-  **未完成（下一刀）**：无车唤醒细化、checkpoint 保存/恢复运输状态、trace 全链路断言、同 seed 逐位相同。
+  **第二刀也已完成**：运输途中（t=2、物品在车上）存盘 → resume 到 t=20，与不中断直跑的报告**逐位相同**；
+  trace 链路断言 `item_pickup@0 → item_depart@0 → item_dropoff@5 → enter K@5`（装载段间隔 == 距离/速度，1e-6）；
+  同 seed 两次运行逐位相同。**明确未做**：无车唤醒精细化、下游 blocked 更强语义、多车/多出边/preemption。
+- **GUI**：Queue 表单新增 `use transport` 选择器（指向 dispatcher）。测试
+  `a_queue_can_name_a_dispatcher_to_carry_its_items`（含"清空选择必须写 `None` 而不是空串"）。GUI **150 项**。
 
 
 ### 工具与 CI

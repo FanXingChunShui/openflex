@@ -375,6 +375,49 @@ def case_fluid_mark():
     assert len(rises) == 1, f"one rise expected, got {len(rises)}"
 
 
+def case_queue_use_transport():
+    """A queue with `use_transport` waits for a transporter instead of teleporting."""
+    def build(use_transport):
+        queue = {"max_content": 4}
+        if use_transport:
+            queue["use_transport"] = "D"
+        dispatcher = {"params": {}}
+        objects = [
+            {"name": "S", "kind": "source", "params": {
+                "interarrival": {"distribution": "constant", "value": 10.0},
+                "max_arrivals": 2}},
+            {"name": "Q", "kind": "queue", "params": queue, "pos": [0.0, 0.0]},
+            {"name": "K", "kind": "sink", "params": {}, "pos": [10.0, 0.0]},
+        ]
+        if use_transport:
+            objects += [
+                {"name": "D", "kind": "dispatcher", **dispatcher},
+                {"name": "T", "kind": "transporter", "params": {
+                    "speed": 2.0, "home": "D"}, "pos": [0.0, 0.0]},
+            ]
+        connections = [{"from": "S", "to": "Q"}, {"from": "Q", "to": "K"}]
+        if use_transport:
+            connections.append({"from": "D", "to": "T"})
+        return model(objects, connections, run={
+            "stop_time": 120.0, "seed": 1, "replications": 1})
+
+    instant = trace_of(write("ut_off", build(False)))
+    carried = trace_of(write("ut_on", build(True)))
+    def first_enter(events):
+        for event in events:
+            if event["event"] == "enter" and event["object"] == "K":
+                return round(event["time"], 6)
+        return None
+
+    assert first_enter(instant) == 0.0, f"instant flow: {first_enter(instant)}"
+    # 10 model units at speed 2 → the item arrives five time units later.
+    assert first_enter(carried) == 5.0, f"carried flow: {first_enter(carried)}"
+    chain = [event["event"] for event in carried if event["event"].startswith("item_")]
+    assert chain[:3] == ["item_pickup", "item_depart", "item_dropoff"], chain
+    # Nothing is lost: both items finish.
+    assert len([e for e in carried if e["event"] == "enter" and e["object"] == "K"]) == 2
+
+
 def case_on_change():
     """A tracked variable with `on_change` fires once per *changed* sample."""
     path = write(
@@ -503,6 +546,7 @@ CASES = [
     ("trace log text", case_trace_keeps_log_text),
     ("fluid mark", case_fluid_mark),
     ("on change", case_on_change),
+    ("queue use transport", case_queue_use_transport),
     ("combiner pack", case_combiner_pack),
     ("timetable off shift", case_timetable_off_shift),
     ("checkpoint resume", case_checkpoint_matches_straight_run),

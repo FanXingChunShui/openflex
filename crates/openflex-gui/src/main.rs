@@ -1450,6 +1450,10 @@ impl EditForm {
                     )
                     .changed();
                 changed |= optional_u32(ui, "batch size", &mut p.batch_size);
+                // Items can leave instantly, or wait for a transporter from a
+                // dispatcher (`use_transport`). The engine requires a single
+                // output connection for the latter, which validate enforces.
+                changed |= object_picker(ui, "use transport", &mut p.use_transport, &names.any);
                 changed |= ui
                     .add(
                         egui::DragValue::new(&mut p.batch_max_wait)
@@ -15196,6 +15200,28 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn a_queue_can_name_a_dispatcher_to_carry_its_items() {
+        // The picker writes `use_transport`; the engine needs a dispatcher that
+        // owns at least one executer, and a single output connection.
+        let params = openflex_model::QueueParams {
+            use_transport: Some("Cart".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&params).expect("json");
+        assert!(json.contains("\"use_transport\":\"Cart\""), "{json}");
+        let plain = openflex_model::QueueParams::default();
+        let json = serde_json::to_string(&plain).expect("json");
+        assert!(!json.contains("use_transport"), "absent by default: {json}");
+        // Clearing the picker must write `None`, not an empty string.
+        let cleared = openflex_model::QueueParams {
+            use_transport: None,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cleared).expect("json");
+        assert!(!json.contains("use_transport"), "{json}");
     }
 
     #[test]

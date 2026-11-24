@@ -21748,6 +21748,116 @@ mod tests {
         );
     }
 
+    fn queue_transport_timing_model() -> Model {
+        let mut model = queue_transport_model(true);
+        // Put the transporter at the queue and the sink 10 units away, so the
+        // loaded leg is exactly 10 / speed = 5 at speed 2.
+        model.objects[2].pos = [10.0, 0.0];
+        model.objects[4].pos = [0.0, 0.0];
+        if let ObjectParams::Transporter(params) = &mut model.objects[4].params {
+            params.speed = 2.0;
+        }
+        model
+    }
+
+    /// task-202 second slice: the trace shows pickup -> depart -> dropoff ->
+    /// downstream entry, with the loaded leg equal to distance / speed.
+    #[test]
+    fn queue_use_transport_trace_chain_is_ordered() {
+        let model = queue_transport_timing_model();
+        let config = SimConfig {
+            stop_time: 20.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let times = |name: &str| {
+            trace
+                .events
+                .iter()
+                .filter(|event| event.event == name && event.object == "T")
+                .map(|event| event.time)
+                .collect::<Vec<_>>()
+        };
+        let pickups = times("item_pickup");
+        let departs = times("item_depart");
+        let dropoffs = times("item_dropoff");
+        let enters = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "enter" && event.object == "K")
+            .map(|event| event.time)
+            .collect::<Vec<_>>();
+        assert_eq!(pickups.len(), 1, "{pickups:?}");
+        assert_eq!(departs.len(), 1, "{departs:?}");
+        assert_eq!(dropoffs.len(), 1, "{dropoffs:?}");
+        assert_eq!(enters.len(), 1, "{enters:?}");
+        assert!(pickups[0] <= departs[0] && departs[0] <= dropoffs[0]);
+        assert!(
+            (dropoffs[0] - departs[0] - 5.0).abs() < 1e-6,
+            "{pickups:?} {departs:?} {dropoffs:?}"
+        );
+        assert!((enters[0] - dropoffs[0]).abs() < 1e-6);
+        let order: Vec<(&str, f64)> = trace
+            .events
+            .iter()
+            .filter(|event| {
+                event.object == "T"
+                    && matches!(
+                        event.event.as_str(),
+                        "item_pickup" | "item_depart" | "item_dropoff"
+                    )
+            })
+            .map(|event| (event.event.as_str(), event.time))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                ("item_pickup", 0.0),
+                ("item_depart", 0.0),
+                ("item_dropoff", 5.0),
+            ]
+        );
+    }
+
+    /// task-202 second slice: a checkpoint taken while the item is on the
+    /// transporter resumes with the same report as an uninterrupted run.
+    #[test]
+    fn queue_use_transport_checkpoint_resumes() {
+        let model = queue_transport_timing_model();
+        let save = SimConfig {
+            stop_time: 2.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, checkpoint) =
+            crate::simulate_with_checkpoint(&model, &save, 0, None).expect("checkpoint");
+        let resume = SimConfig {
+            stop_time: 20.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let resumed =
+            crate::resume_from_checkpoint(&model, &resume, 0, &checkpoint, 20.0).expect("resume");
+        let direct = crate::simulate(&model, &resume, 0).expect("direct");
+        assert_eq!(
+            serde_json::to_string(&direct).expect("json"),
+            serde_json::to_string(&resumed).expect("json")
+        );
+    }
+
+    /// task-202 second slice: use_transport models are deterministic per seed.
+    #[test]
+    fn queue_use_transport_same_seed_is_deterministic() {
+        let model = queue_transport_model(true);
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
+    }
+
     /// task-202: report SHA-256 for three generated queue models without
     /// `use_transport`, recorded before the engine branch was added. This is
     /// the bit-identical pin for the "field absent" path (not just golden).
