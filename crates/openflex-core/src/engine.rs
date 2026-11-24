@@ -36,7 +36,7 @@
 //!
 //! * Conveyors transfer an item to the downstream object at the exact instant
 //!   it reaches the end of the belt; there is no separate transfer delay.
-//! * Task executers travel in a straight line at constant speed unless a
+//! * Task executors travel in a straight line at constant speed unless a
 //!   `network` distance table is supplied (then object-to-object legs use the
 //!   shortest path); there is no acceleration or collision model.
 //! * A conveyor station dwells only the item at the station; the belt itself
@@ -769,7 +769,7 @@ fn true_bool() -> bool {
     true
 }
 
-/// task-196: two executers working on the same request (coordinated task).
+/// task-196: two executors working on the same request (coordinated task).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct TaskGroup {
     requester: usize,
@@ -2595,7 +2595,7 @@ struct Simulation<'m> {
     scripts: HashMap<String, CompiledScript>,
     /// Trigger location of the actions currently being applied (script errors).
     action_location: String,
-    /// task-196: coordinated task groups (two executers on one request).
+    /// task-196: coordinated task groups (two executors on one request).
     task_groups: HashMap<u64, TaskGroup>,
     next_task_group: u64,
     /// task-106: AGVs currently occupying each charger.
@@ -7724,7 +7724,7 @@ impl<'m> Simulation<'m> {
         while let Some(position) = self.pick_request(dispatcher) {
             let requester = self.objects[dispatcher].requests[position];
             // task-196: a coordinated step hands the same request to two
-            // executers; with fewer than two free executers the request stays
+            // executors; with fewer than two free executors the request stays
             // queued and a later finish_task re-dispatches it (no busy waiting).
             let involved = self.dispatcher_task_involved(dispatcher);
             if involved >= 2 {
@@ -9496,7 +9496,7 @@ impl<'m> Simulation<'m> {
     ///
     /// Travel targets are resolved once here; `pickup` is the executer's home
     /// (its pickup point), `requester` is the current task's requester.
-    /// task-196: executers required by a dispatcher's task sequence (max over
+    /// task-196: executors required by a dispatcher's task sequence (max over
     /// its steps, clamped to the supported 1..=2).
     fn dispatcher_task_involved(&self, dispatcher: usize) -> u32 {
         let (steps, _) = self.dispatcher_task_sequence(dispatcher);
@@ -11622,7 +11622,7 @@ impl<'m> Simulation<'m> {
     /// task-188: run an executer load/unload trigger against the requester's
     /// current item.
     ///
-    /// OpenFlex transport executers are operators/dispatchers, not carriers of
+    /// OpenFlex transport executors are operators/dispatchers, not carriers of
     /// FlowItems, so there is no "item loaded onto the executer" to hand to the
     /// hook. The context item is the requester's `processing_item`, or else the
     /// first waiting item in its content. It is taken out and put back so the
@@ -15933,10 +15933,10 @@ mod tests {
         );
     }
 
-    /// task-166: a model without task executers serializes exactly like before:
+    /// task-166: a model without task executors serializes exactly like before:
     /// the new detail keys are absent from the JSON.
     #[test]
-    fn models_without_executers_keep_the_report_json_unchanged() {
+    fn models_without_executors_keep_the_report_json_unchanged() {
         let model = Model::from_json(
             r#"{
           "format": "openflex-model", "version": 1, "name": "no-executer",
@@ -20292,7 +20292,7 @@ mod tests {
         assert!(!text.contains("involved"), "involved 1 must be omitted");
     }
 
-    /// task-196: with `involved: 2` both executers participate and the task
+    /// task-196: with `involved: 2` both executors participate and the task
     /// still completes.
     #[test]
     fn involved_two_needs_both_arrivals() {
@@ -20312,7 +20312,7 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>();
         assert!(
             arrivals.contains("T0") && arrivals.contains("T1"),
-            "both executers must take part: {arrivals:?}"
+            "both executors must take part: {arrivals:?}"
         );
     }
 
@@ -20338,9 +20338,9 @@ mod tests {
         );
     }
 
-    /// task-196: both executers are released, so later tasks can be dispatched.
+    /// task-196: both executors are released, so later tasks can be dispatched.
     #[test]
-    fn involved_two_releases_both_executers() {
+    fn involved_two_releases_both_executors() {
         let model = coordinated_model(2, 2, 1);
         let report = crate::run_model(&model).expect("run");
         let objects = &report.replications[0].objects;
@@ -20367,5 +20367,143 @@ mod tests {
                 "involved={involved} must be rejected: {text}"
             );
         }
+    }
+
+    /// task-197: one coordinated member is preempted; the other must not wait
+    /// forever, the group must be cleaned up, and the run must finish.
+    #[test]
+    fn coordinated_group_survives_a_preemption() {
+        let model = Model::parse_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "coordinated-preempt",
+          "run": { "stop_time": 100.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S1", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1000.0 },
+                "max_arrivals": 1, "first_arrival": 0.0 } },
+            { "name": "S2", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1000.0 },
+                "max_arrivals": 1, "first_arrival": 5.0 } },
+            { "name": "P1", "kind": "processor", "pos": [100.0, 0.0], "params": {
+                "process_time": { "distribution": "constant", "value": 1.0 },
+                "process_operator": "D", "operator_priority": 10,
+                "operator_preempt": true } },
+            { "name": "P2", "kind": "processor", "pos": [100.0, 0.0], "params": {
+                "process_time": { "distribution": "constant", "value": 1.0 },
+                "process_operator": "D", "operator_priority": 0 } },
+            { "name": "K1", "kind": "sink", "params": {} },
+            { "name": "K2", "kind": "sink", "params": {} },
+            { "name": "D", "kind": "dispatcher", "pos": [0.0, 0.0], "params": {
+                "task_sequence": [ { "kind": "travel", "involved": 2 } ] } },
+            { "name": "T1", "kind": "transporter", "pos": [0.0, 0.0], "params": {
+                "speed": 10.0, "home": "D" } },
+            { "name": "T2", "kind": "transporter", "pos": [0.0, 0.0], "params": {
+                "speed": 10.0, "home": "D" } }
+          ],
+          "connections": [
+            { "from": "S1", "to": "P2" }, { "from": "P2", "to": "K2" },
+            { "from": "S2", "to": "P1" }, { "from": "P1", "to": "K1" },
+            { "from": "D", "to": "T1" }, { "from": "D", "to": "T2" }
+          ]
+        }"#,
+        )
+        .expect("model");
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config.clone(), false).expect("simulation");
+        let mut events = 0usize;
+        while let Some(Reverse(event)) = sim.events.pop() {
+            if event.time > 100.0 {
+                break;
+            }
+            events += 1;
+            sim.now = event.time;
+            sim.handle(event.kind).expect("handle");
+        }
+        assert!(
+            sim.task_groups.is_empty(),
+            "the preempted group must be cleaned up, {} left",
+            sim.task_groups.len()
+        );
+        assert!(events < 5000, "no busy waiting: {events} events");
+        let report = crate::run_model(&model).expect("run");
+        assert!(
+            report.replications[0].items_completed >= 1,
+            "the run must still complete work"
+        );
+    }
+
+    /// task-197: the barrier only counts real arrivals. This is the same
+    /// guarantee an AGV that is still charging needs — a member that has not
+    /// arrived (charging, travelling, preempted) must not let the group start.
+    #[test]
+    fn coordinated_barrier_waits_for_every_member() {
+        let model = coordinated_model(2, 2, 1);
+        let config = SimConfig {
+            stop_time: 50.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, false).expect("simulation");
+        let first = sim.by_name["T0"];
+        let second = sim.by_name["T1"];
+        let requester = sim.by_name["P"];
+        // Register the group exactly like dispatch does, then arrive with one
+        // member only: the barrier must hold it back.
+        let group = sim.allocate_task_group(requester, &[first, second]);
+        sim.objects[first].task_group = Some(group);
+        sim.objects[second].task_group = Some(group);
+        sim.objects[first].serving_requester = Some(requester);
+        sim.objects[second].serving_requester = Some(requester);
+        let events_before = sim.events.len();
+        sim.handle_transport_arrive(first, requester)
+            .expect("first arrival");
+        let group_state = sim.task_groups.get(&group).expect("group");
+        assert_eq!(group_state.arrived, vec![first], "only real arrivals count");
+        assert!(
+            group_state.waiting.contains(&first),
+            "the first member waits"
+        );
+        assert_eq!(
+            sim.events.len(),
+            events_before,
+            "waiting must not schedule a poll"
+        );
+        // The second member arrives: both continue in the same instant.
+        sim.handle_transport_arrive(second, requester)
+            .expect("second arrival");
+        assert!(
+            !sim.events.is_empty(),
+            "the second arrival must wake the first member"
+        );
+    }
+
+    /// task-197: `involved: 2` with the explicit mode must fail to load.
+    #[test]
+    fn involved_two_with_explicit_is_rejected() {
+        let model = Model::parse_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "bad-combo",
+          "run": { "stop_time": 10.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} },
+            { "name": "D", "kind": "dispatcher", "params": {
+                "task_sequence_mode": "explicit",
+                "task_sequence": [ { "kind": "travel", "involved": 2 } ] } }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+        )
+        .expect("model");
+        let issues = openflex_model::validate::validate_collect(&model);
+        let text = format!("{issues:?}");
+        assert!(
+            text.contains("incompatible") && text.contains("involved: 2"),
+            "the combination must be rejected: {text}"
+        );
     }
 }

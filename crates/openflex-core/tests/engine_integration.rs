@@ -2,7 +2,7 @@
 //!
 //! * **S connections** (`Connection.kind = "s"`) are center-port resource
 //!   links: they never become an output/input port and never carry a flow
-//!   item, but they still connect task executers to their dispatcher.
+//!   item, but they still connect task executors to their dispatcher.
 //! * **Global tables** are readable from expressions (step 2).
 //! * **New triggers** (`OnContentChange`, `OnStateChange`, `OnReset`, …) run
 //!   their actions (step 3).

@@ -220,7 +220,7 @@ pub enum SimTrigger {
     /// The executer finished loading (task-188). Fires at `now + dwell + load`
     /// of the transport task.
     ///
-    /// **Item context**: OpenFlex transport executers are operators/dispatchers
+    /// **Item context**: OpenFlex transport executors are operators/dispatchers
     /// and do not carry a [`FlowItem`]; the hook sees the *requester's*
     /// processing or waiting item, not an item loaded onto the executer.
     OnLoad,
@@ -361,7 +361,7 @@ pub struct Triggers {
     /// statistics and the total task duration do not.
     ///
     /// The hook's item context is the **requester's** processing or waiting
-    /// item: OpenFlex transport executers are operators and never hold a
+    /// item: OpenFlex transport executors are operators and never hold a
     /// `FlowItem` of their own.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub on_load: Vec<Action>,

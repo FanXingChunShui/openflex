@@ -363,7 +363,7 @@ fn validate_connection(
         if !is_center_port_object(from.kind) || !is_center_port_object(to.kind) {
             issues.push(ValidationIssue::new(
                 &location,
-                "an S connection links fixed resources or task executers; sources and sinks cannot be endpoints",
+                "an S connection links fixed resources or task executors; sources and sinks cannot be endpoints",
             ));
         }
         // S connections must not consume an A output port number.
@@ -2062,7 +2062,7 @@ fn validate_user_commands(model: &Model) -> Vec<ValidationIssue> {
 /// resolve; a dispatcher cannot set both the inline sequence and a reference.
 fn validate_task_sequences(model: &Model) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
-    // task-196: only 1 or 2 executers per step are supported.
+    // task-196: only 1 or 2 executors per step are supported.
     let check_steps = |steps: &[crate::model::TaskStep], location: &str| -> Vec<ValidationIssue> {
         let mut issues = Vec::new();
         for (position, step) in steps.iter().enumerate() {
@@ -2074,18 +2074,32 @@ fn validate_task_sequences(model: &Model) -> Vec<ValidationIssue> {
                 issues.push(ValidationIssue::new(
                     format!("{location}.{position}.involved"),
                     format!(
-                        "`involved` must be 1 or 2 (only 1 or 2 executers are supported), found {involved}"
+                        "`involved` must be 1 or 2 (only 1 or 2 executors are supported), found {involved}"
                     ),
                 ));
             }
         }
         issues
     };
+    // task-197: `involved: 2` drives the normal dispatch path while `explicit`
+    // uses a different one; combining them is undefined, so it must fail to
+    // load (a documentation note is not enough).
+    let has_two = |steps: &[crate::model::TaskStep]| {
+        steps
+            .iter()
+            .any(|step| matches!(step, crate::model::TaskStep::Detailed { involved, .. } if *involved == 2))
+    };
     for (position, sequence) in model.task_sequences.iter().enumerate() {
         issues.extend(check_steps(
             &sequence.steps,
             &format!("task_sequences.{position}.steps"),
         ));
+        if sequence.mode == crate::model::TaskSequenceMode::Explicit && has_two(&sequence.steps) {
+            issues.push(ValidationIssue::new(
+                format!("task_sequences.{position}"),
+                "`involved: 2` is incompatible with the explicit task-sequence mode; use append mode or involved: 1",
+            ));
+        }
     }
     for object in &model.objects {
         if let ObjectParams::Dispatcher(params) = &object.params {
@@ -2093,6 +2107,28 @@ fn validate_task_sequences(model: &Model) -> Vec<ValidationIssue> {
                 &params.task_sequence,
                 &format!("objects.{}.task_sequence", object.name),
             ));
+            if params.task_sequence_mode == crate::model::TaskSequenceMode::Explicit {
+                let inline_two = has_two(&params.task_sequence);
+                let referenced_two = params
+                    .task_sequence_ref
+                    .as_ref()
+                    .and_then(|name| {
+                        model
+                            .task_sequences
+                            .iter()
+                            .find(|sequence| sequence.name == *name)
+                    })
+                    .is_some_and(|sequence| has_two(&sequence.steps));
+                if inline_two || referenced_two {
+                    issues.push(ValidationIssue::new(
+                        format!("objects.{}.task_sequence", object.name),
+                        format!(
+                            "dispatcher '{}' combines the explicit mode with `involved: 2`; that combination is incompatible and unsupported, use append mode or involved: 1",
+                            object.name
+                        ),
+                    ));
+                }
+            }
         }
     }
     let mut seen = std::collections::BTreeMap::new();

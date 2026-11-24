@@ -2240,14 +2240,20 @@ pub enum TaskStep {
         /// task-173: destination for explicit-route `travel` legs.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<TravelTarget>,
-        /// task-196: how many executers must be present before the transport
+        /// task-196: how many executors must be present before the transport
         /// task runs (default 1). Only 1 and 2 are supported.
         ///
         /// With `involved == 2` the dispatcher hands the same request to two
-        /// executers and the task only starts once **both** have arrived (the
+        /// executors and the task only starts once **both** have arrived (the
         /// later `TransportArrive` is the start instant). When fewer than two
-        /// executers are available the task waits — that is a model that lacks
+        /// executors are available the task waits — that is a model that lacks
         /// an executer, not a deadlock.
+        ///
+        /// The requester only needs **one** operator: the first group member
+        /// grants it and keeps serving the task, while the second member takes
+        /// part in the move and releases itself as soon as the group starts
+        /// (it does not grant a second operator). `involved: 2` is incompatible
+        /// with the explicit task-sequence mode (validation rejects it).
         #[serde(default = "one_u32", skip_serializing_if = "is_one")]
         involved: u32,
     },
@@ -2264,7 +2270,7 @@ pub enum TaskStep {
 }
 
 impl TaskStep {
-    /// task-196: executers required before this step runs (Simple = 1).
+    /// task-196: executors required before this step runs (Simple = 1).
     pub fn involved(&self) -> u32 {
         match self {
             TaskStep::Detailed { involved, .. } => (*involved).max(1),
