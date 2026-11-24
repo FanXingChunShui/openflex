@@ -63,6 +63,22 @@ fn definitions() -> Value {
         }),
     );
     defs.insert(
+        "named_task_sequence".into(),
+        json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "steps": {
+                    "type": "array",
+                    "description": "Task steps; each element is validated by the deserializer (same shape as DispatcherParams.task_sequence)."
+                },
+                "mode": { "enum": ["append", "explicit"], "default": "append" }
+            },
+            "required": ["name"],
+            "additionalProperties": false
+        }),
+    );
+    defs.insert(
         "user_event".into(),
         json!({
             "type": "object",
@@ -549,6 +565,7 @@ fn definitions() -> Value {
                 "enum": ["append", "explicit"],
                 "default": "append"
             },
+            "task_sequence_ref": { "type": "string", "minLength": 1 },
             "task_sequence": {
                 "type": "array",
                 "items": {
@@ -882,6 +899,10 @@ fn model_schema() -> Value {
             "user_events": {
                 "type": "array",
                 "items": { "$ref": "#/$defs/user_event" }
+            },
+            "task_sequences": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/named_task_sequence" }
             },
             "process_flow": { "$ref": "#/$defs/process_flow" },
             "fluid_step": { "type": ["number", "null"], "exclusiveMinimum": 0 },

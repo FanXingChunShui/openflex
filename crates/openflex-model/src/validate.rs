@@ -253,6 +253,7 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
     }
 
     issues.extend(validate_user_events(model));
+    issues.extend(validate_task_sequences(model));
     issues.extend(validate_process_flow(
         model,
         model.process_flow.as_ref(),
@@ -1946,6 +1947,71 @@ fn validate_conditional_ports(
 }
 
 /// Check `script` trigger actions: non-empty source and compilable syntax.
+/// task-193: named task sequences must be unique and every reference must
+/// resolve; a dispatcher cannot set both the inline sequence and a reference.
+fn validate_task_sequences(model: &Model) -> Vec<ValidationIssue> {
+    let mut issues = Vec::new();
+    let mut seen = std::collections::BTreeMap::new();
+    for (position, sequence) in model.task_sequences.iter().enumerate() {
+        let location = format!("task_sequences.{position}");
+        if sequence.name.trim().is_empty() {
+            issues.push(ValidationIssue::new(
+                format!("{location}.name"),
+                "task sequence name cannot be empty",
+            ));
+        }
+        if seen.insert(sequence.name.clone(), ()).is_some() {
+            issues.push(ValidationIssue::new(
+                format!("{location}.name"),
+                format!("duplicate task sequence name '{}'", sequence.name),
+            ));
+        }
+    }
+    let available: Vec<&str> = model
+        .task_sequences
+        .iter()
+        .map(|sequence| sequence.name.as_str())
+        .collect();
+    for object in &model.objects {
+        let ObjectParams::Dispatcher(params) = &object.params else {
+            continue;
+        };
+        let Some(reference) = params.task_sequence_ref.as_ref() else {
+            continue;
+        };
+        let location = format!("objects.{}.task_sequence_ref", object.name);
+        if !params.task_sequence.is_empty() {
+            issues.push(ValidationIssue::new(
+                &location,
+                format!(
+                    "dispatcher '{}' sets both `task_sequence` and `task_sequence_ref` ('{reference}'); use exactly one",
+                    object.name
+                ),
+            ));
+        }
+        if !model
+            .task_sequences
+            .iter()
+            .any(|sequence| sequence.name == *reference)
+        {
+            issues.push(ValidationIssue::new(
+                &location,
+                format!(
+                    "dispatcher '{}' references unknown task sequence '{}' (available: {})",
+                    object.name,
+                    reference,
+                    if available.is_empty() {
+                        "none".to_string()
+                    } else {
+                        available.join(", ")
+                    }
+                ),
+            ));
+        }
+    }
+    issues
+}
+
 /// task-192: timeline actions must be well formed and scripted ones compile.
 fn validate_user_events(model: &Model) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
@@ -2589,6 +2655,7 @@ mod tests {
             version: FORMAT_VERSION,
             name: "test".into(),
             user_events: Vec::new(),
+            task_sequences: Vec::new(),
             description: String::new(),
             time_unit: TimeUnit::Seconds,
             run: RunSettings::default(),

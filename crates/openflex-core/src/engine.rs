@@ -7648,9 +7648,8 @@ impl<'m> Simulation<'m> {
                 self.transport_estimate_distance(transporter, requester);
             self.objects[transporter].acc.input += 1;
             self.claim_shaft(transporter);
-            let explicit = self
-                .dispatcher_params(dispatcher)
-                .is_some_and(|params| params.task_sequence_mode == TaskSequenceMode::Explicit);
+            let explicit =
+                self.dispatcher_task_sequence(dispatcher).1 == TaskSequenceMode::Explicit;
             if explicit {
                 // task-173: no operator transfer happens in this slice; the
                 // route is the whole task. Do not count an in-transit operator.
@@ -9316,17 +9315,43 @@ impl<'m> Simulation<'m> {
     ///
     /// Travel targets are resolved once here; `pickup` is the executer's home
     /// (its pickup point), `requester` is the current task's requester.
+    /// task-193: the task sequence a dispatcher runs, resolving a
+    /// `task_sequence_ref` through `Model::task_sequences`.
+    ///
+    /// The steps are looked up on every dispatch instead of being copied into
+    /// the object, so editing the named sequence changes every referencing
+    /// dispatcher (the lookup is a linear scan over a handful of entries).
+    fn dispatcher_task_sequence(
+        &self,
+        dispatcher: usize,
+    ) -> (Vec<openflex_model::TaskStep>, TaskSequenceMode) {
+        let Some(params) = self.dispatcher_params(dispatcher) else {
+            return (Vec::new(), TaskSequenceMode::Append);
+        };
+        if let Some(name) = params.task_sequence_ref.as_ref()
+            && let Some(named) = self
+                .model
+                .task_sequences
+                .iter()
+                .find(|sequence| sequence.name == *name)
+        {
+            return (named.steps.clone(), named.mode);
+        }
+        (params.task_sequence.clone(), params.task_sequence_mode)
+    }
+
     fn explicit_route_legs(
         &mut self,
         dispatcher: usize,
         transporter: usize,
         requester: usize,
     ) -> Result<VecDeque<ExplicitLeg>, SimError> {
-        let Some(params) = self.dispatcher_params(dispatcher) else {
+        if self.dispatcher_params(dispatcher).is_none() {
             return Ok(VecDeque::new());
-        };
+        }
+        let (steps, _) = self.dispatcher_task_sequence(dispatcher);
         let mut legs = VecDeque::new();
-        for (position, step) in params.task_sequence.iter().enumerate() {
+        for (position, step) in steps.iter().enumerate() {
             if let Some(condition) = step.condition() {
                 let context = ExprContext::new(self, None);
                 let matched = condition
@@ -9724,10 +9749,7 @@ impl<'m> Simulation<'m> {
         let Some(dispatcher) = self.objects[transporter].assigned_dispatcher else {
             return Vec::new();
         };
-        let sequence = match &self.model.objects[dispatcher].params {
-            ObjectParams::Dispatcher(params) => params.task_sequence.clone(),
-            _ => Vec::new(),
-        };
+        let (sequence, _) = self.dispatcher_task_sequence(dispatcher);
         if sequence.is_empty() {
             return Vec::new();
         }
@@ -19475,6 +19497,125 @@ mod tests {
         assert!(
             trace.events.iter().all(|event| event.event != "user_event"),
             "an event past the stop time must not run"
+        );
+    }
+
+    fn gts_model(sequences: &str, dispatcher_params: &str) -> Model {
+        // `parse_json` skips validation so the deliberate error cases below can
+        // be built and then inspected with `validate_collect`.
+        Model::parse_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "gts",
+          "run": {{ "stop_time": 100.0, "seed": 1, "replications": 1 }},
+          "task_sequences": [ {sequences} ],
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "P", "kind": "processor", "pos": [100.0, 0.0], "params": {{
+                "process_time": {{ "distribution": "constant", "value": 1.0 }},
+                "process_operator": "D" }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }},
+            {{ "name": "D", "kind": "dispatcher", "pos": [0.0, 0.0], "params": {{ {dispatcher_params} }} }},
+            {{ "name": "T", "kind": "transporter", "pos": [0.0, 0.0], "params": {{
+                "speed": 10.0, "load_time": {{ "distribution": "constant", "value": 2.0 }},
+                "unload_time": {{ "distribution": "constant", "value": 3.0 }},
+                "home": "D" }} }}
+          ],
+          "connections": [
+            {{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }},
+            {{ "from": "D", "to": "T" }}
+          ]
+        }}"#
+        ))
+        .unwrap_or_else(|error| panic!("gts model: {error:?}"))
+    }
+
+    const INLINE_SEQUENCE: &str =
+        r#""task_sequence": ["travel", "travel", "load", "unload", "unload", "load"]"#;
+    const GTS_SEQUENCE: &str = r#"{ "name": "Standard", "steps": ["travel", "travel", "load", "unload", "unload", "load"] }"#;
+
+    /// task-193: models without named sequences are unchanged.
+    #[test]
+    fn gts_absent_keeps_the_report() {
+        let model = gts_model("", INLINE_SEQUENCE);
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(first.replications, second.replications);
+        let text = serde_json::to_string(&model).expect("serialize");
+        assert!(!text.contains("task_sequences"), "empty list omitted");
+    }
+
+    /// task-193: referencing a named sequence matches inlining the same steps.
+    #[test]
+    fn gts_reference_matches_an_inline_sequence() {
+        let inline = gts_model("", INLINE_SEQUENCE);
+        let referenced = gts_model(GTS_SEQUENCE, r#""task_sequence_ref": "Standard""#);
+        let first = crate::run_model(&inline).expect("inline");
+        let second = crate::run_model(&referenced).expect("referenced");
+        assert_eq!(
+            first.replications, second.replications,
+            "a GTS reference must behave exactly like the inlined steps"
+        );
+    }
+
+    /// task-193: the named sequence's `explicit` mode is honoured.
+    #[test]
+    fn gts_explicit_mode_is_honoured() {
+        // An explicit route needs a travel step with a concrete target.
+        let explicit_steps = r#"[{ "kind": "travel", "target": { "position": [100.0, 0.0] } }]"#;
+        let inline = gts_model(
+            "",
+            &format!(r#""task_sequence": {explicit_steps}, "task_sequence_mode": "explicit""#),
+        );
+        let named = gts_model(
+            &format!(r#"{{ "name": "Route", "steps": {explicit_steps}, "mode": "explicit" }}"#),
+            r#""task_sequence_ref": "Route""#,
+        );
+        let first = crate::run_model(&inline).expect("inline");
+        let second = crate::run_model(&named).expect("named");
+        assert_eq!(first.replications, second.replications);
+    }
+
+    /// task-193: an unknown reference names the dispatcher and the sequence.
+    #[test]
+    fn gts_unknown_reference_is_rejected() {
+        let model = gts_model("", r#""task_sequence_ref": "Missing""#);
+        let issues = openflex_model::validate::validate_collect(&model);
+        let text = format!("{issues:?}");
+        assert!(
+            text.contains("Missing") && text.contains("dispatcher 'D'"),
+            "the issue must name the dispatcher and the missing sequence: {text}"
+        );
+    }
+
+    /// task-193: inline steps and a reference cannot be combined.
+    #[test]
+    fn gts_inline_and_reference_are_rejected() {
+        let model = gts_model(
+            GTS_SEQUENCE,
+            r#""task_sequence": ["travel"], "task_sequence_ref": "Standard""#,
+        );
+        let issues = openflex_model::validate::validate_collect(&model);
+        let text = format!("{issues:?}");
+        assert!(
+            text.contains("use exactly one"),
+            "the issue must explain they are exclusive: {text}"
+        );
+    }
+
+    /// task-193: duplicate names are rejected.
+    #[test]
+    fn gts_duplicate_names_are_rejected() {
+        let model = gts_model(
+            r#"{ "name": "Dup", "steps": ["travel"] }, { "name": "Dup", "steps": ["load"] }"#,
+            "",
+        );
+        let issues = openflex_model::validate::validate_collect(&model);
+        let text = format!("{issues:?}");
+        assert!(
+            text.contains("duplicate task sequence name"),
+            "the issue must mention the duplicate: {text}"
         );
     }
 }

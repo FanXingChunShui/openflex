@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### 模型与引擎
+
+- **全局任务序列（GTS）**：`Model.task_sequences: [{ name, steps, mode }]` + `DispatcherParams.task_sequence_ref`，
+  把任务序列命名后给多个 dispatcher 复用（此前只能各写一份、改漏一处就漂移）。
+  引用与内联 `task_sequence` **同时给出会被 validate 拒绝**（"use exactly one"，不静默取其一）；
+  未知引用报错含 dispatcher 名、缺失名字与可用列表；重名/空名同样拒绝。
+  **steps 不复制进引用者**（每次派发查表），所以"改 GTS 影响所有引用者"的语义是可预测的。
+  实测：引用式与内联式的报告 **sha256 完全相同**（`completed 3.0`）。
+  边界：绕过 validate（`parse_json` 后直接跑）时引擎优先用 ref，行为确定但不推荐；未来 GTS 数量大时可加 HashMap 索引（仍不复制 steps）。
+
+
 ## v1.43.0 — 2026-11-24
 
 > **发布事故（已修正，记录在此以免重演）**：v1.43.0 首次上传时多出一个
