@@ -16,6 +16,14 @@
 - 两个钩子都进了 `collect_model_scripts` 的手写清单（第 7 次提，这次一开始就加）。
   验收里特意加了一条 **"钩子里 `send_message` 能改变下游行为"**——证明副作用真的送达模型，而不只是写了一条 trace。
 
+### 桌面 GUI
+
+- **跟踪变量面板**：GUI 此前**完全不能编辑** `tracked_variables`（只能改 JSON），而这些变量正是报告里
+  series / state 占比 / staytime 分布的数据来源。新增 `Tracked variables (n)` 面板：JSON 缓冲 + Apply，
+  外加 `sample every`（`tracked_interval`）数字框；提示写明四种 `kind` 与"`on_change` 只在 level 采样变化时执行"。
+  测试 `tracked_variables_round_trip_through_the_panel_buffer`（含"summary 类变量带 `on_change` 被 validate 拒绝"）。
+  GUI **147 项**。
+
 
 ## v1.46.0 — 2026-11-24
 
@@ -71,12 +79,6 @@
   绿色运行只代表"没有明显死字段"，不是证明。
 
 ### 桌面 GUI
-
-- **跟踪变量面板**：GUI 此前**完全不能编辑** `tracked_variables`（只能改 JSON），而这些变量正是报告里
-  series / state 占比 / staytime 分布的数据来源。新增 `Tracked variables (n)` 面板：JSON 缓冲 + Apply，
-  外加 `sample every`（`tracked_interval`）数字框；提示写明四种 `kind` 与"`on_change` 只在 level 采样变化时执行"。
-  测试 `tracked_variables_round_trip_through_the_panel_buffer`（含"summary 类变量带 `on_change` 被 validate 拒绝"）。
-  GUI **147 项**。
 
 ### 报告与 CLI
 
