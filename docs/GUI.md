@@ -60,6 +60,7 @@ CI 里加了一步「先运行一次 Windows 二进制」（`--version` / `distr
 | 全局变量 | 左侧 `Global variables (n)`：输入名字 `+ variable` 新建（默认 number 型、初值 0、重名被拒）， 逐条改值（失焦提交，保持声明的 `kind`），`x` 删除；表达式用 `$Name` 读取 |
 | 取列表 | 左侧 `Pick lists (n)`：输入名字 `+ pick list` 新建（自动带一个起始条目）， 列表内可增删改条目（`name` / `value` 逐格编辑，条目名重复被拒），`x` 删整表； **每个列表至少保留一个条目**（删最后一条被拒并给出原因）；表达式用 `picklist("list","entry")` 取值 |
 | 性能指标 | 左侧 `Performance measures (n)`：逐行编辑 `name` / `expression` / `unit` 三列， `+ measure` 加一行、`-` 删该行、`Apply measures` 提交； 提交前先做本地检查——**有名字没表达式**（或反之）直接报错且模型不动， 整行全空则**自动忽略**（可留空行不影响提交），`unit` 留空时**不写进 JSON**； 最终经 `commit_model_edit` 走校验→快照→清结果。编辑器下方提示表达式可读 `time` / `created` / `completed` / `$globals` |
+| 跟踪变量 | `Tracked variables (n)`：JSON 缓冲 + Apply 编辑 `model.tracked_variables`，另有 `sample every`（`tracked_interval`）数字框；提示写明四种 kind 与"`on_change` 只在 level 采样变化时执行" |
 | User events | 报告/模型面板里的 `User events`：与模型触发器同样的「JSON 缓冲 + Apply」，用于按时刻执行的模型级动作（文档首次打开时从模型灌入，之后保留用户输入） |
 | 共享任务序列 | dispatcher 表单的 `task sequence name` 输入框：填名字后灰化内联步骤编辑区并提示"被引用时内联步骤会被忽略"（二者互斥，validate 会拒绝） |
 | 视觉工具 | `visual_tool` 按自身 `shape`/`size`/`color`/`text` 绘制（颜色写错回退到种类色而不是消失）；`plane` 用低透明度 |
