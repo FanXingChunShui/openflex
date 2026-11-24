@@ -1538,6 +1538,70 @@ impl EditForm {
                     &mut p.process_operator,
                     &names.operators,
                 );
+                // Breakdowns: a processor without a `failure` block never fails,
+                // so "add one" has to be explicit rather than a zeroed block.
+                ui.horizontal(|ui| {
+                    let mut has_failure = p.failure.is_some();
+                    if ui.checkbox(&mut has_failure, "breakdowns").changed() {
+                        p.failure = has_failure.then(|| openflex_model::FailureParams {
+                            mtbf: openflex_model::Distribution::Constant { value: 100.0 },
+                            mttr: openflex_model::Distribution::Constant { value: 10.0 },
+                            repair_operator: None,
+                            first_failure_time: None,
+                            count_time_in_states: Vec::new(),
+                        });
+                        changed = true;
+                    }
+                    if p.failure.is_some() {
+                        ui.label(
+                            egui::RichText::new("mtbf / mttr below")
+                                .size(9.0_f32)
+                                .color(palette::TEXT_DIM),
+                        );
+                    }
+                });
+                if let Some(failure) = p.failure.as_mut() {
+                    changed |= distribution_editor(ui, "mtbf", &mut failure.mtbf);
+                    changed |= distribution_editor(ui, "mttr", &mut failure.mttr);
+                    changed |= object_picker(
+                        ui,
+                        "repair operator",
+                        &mut failure.repair_operator,
+                        &names.operators,
+                    );
+                    let mut first = failure.first_failure_time.unwrap_or(-1.0);
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut first)
+                                .speed(1.0)
+                                .prefix("first failure "),
+                        )
+                        .on_hover_text("-1 means 'sample the first from mtbf'")
+                        .changed()
+                    {
+                        failure.first_failure_time = (first >= 0.0).then_some(first);
+                        changed = true;
+                    }
+                    let mut states = failure.count_time_in_states.join(", ");
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut states)
+                                .hint_text(
+                                    "count time in states (comma separated, empty = wall clock)",
+                                )
+                                .desired_width(f32::INFINITY)
+                                .font(egui::TextStyle::Small),
+                        )
+                        .changed()
+                    {
+                        failure.count_time_in_states = states
+                            .split(',')
+                            .map(|name| name.trim().to_string())
+                            .filter(|name| !name.is_empty())
+                            .collect();
+                        changed = true;
+                    }
+                }
             }
             ObjectParams::Conveyor(p) | ObjectParams::Escalator(p) => {
                 changed |= ui
@@ -15073,6 +15137,45 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn a_breakdown_block_round_trips_and_state_scoping_parses() {
+        // The form adds a whole `failure` block on demand; the state list is a
+        // comma-separated field, so trimming and dropping empties matters.
+        use openflex_model::{Distribution, FailureParams};
+        let failure = FailureParams {
+            mtbf: Distribution::Constant { value: 100.0 },
+            mttr: Distribution::Constant { value: 10.0 },
+            repair_operator: None,
+            first_failure_time: None,
+            count_time_in_states: Vec::new(),
+        };
+        let json = serde_json::to_string(&failure).expect("json");
+        let back: FailureParams = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back, failure);
+
+        let typed = "processing, , blocked ";
+        let parsed: Vec<String> = typed
+            .split(',')
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect();
+        assert_eq!(
+            parsed,
+            vec!["processing".to_string(), "blocked".to_string()]
+        );
+
+        // `first_failure_time` is optional; -1 in the box means "not set".
+        let mut field = failure.clone();
+        let first = -1.0_f64;
+        field.first_failure_time = (first >= 0.0).then_some(first);
+        assert!(field.first_failure_time.is_none());
+        let json = serde_json::to_string(&field).expect("json");
+        assert!(
+            json.contains("\"first_failure_time\":null"),
+            "an unset first failure serialises as null: {json}"
+        );
     }
 
     #[test]

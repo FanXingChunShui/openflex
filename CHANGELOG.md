@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### 桌面 GUI
+
+- **故障（breakdowns）编辑器**：GUI 此前**完全没有**故障参数编辑入口——`mtbf`/`mttr`/`repair_operator`/
+  `first_failure_time`/`count_time_in_states` 全都只能改 JSON，而这是核心建模能力。
+  processor 表单新增 `breakdowns` 勾选框（**不给套一个全零块**，要用户显式开启），勾上后出现
+  mtbf/mttr 分布编辑器、维修操作员选择、`first failure`（-1 = 从 mtbf 抽样）与「状态白名单」文本框
+  （逗号分隔、去空、空 = 墙钟时间）。测试 `a_breakdown_block_round_trips_and_state_scoping_parses`。GUI **148 项**。
+
+
+
 ## v1.47.0 — 2026-11-24
 
 本轮补了两组触发器（任务交接与资源释放），并把 GUI 里**完全无法编辑**的跟踪变量补上编辑面板。
