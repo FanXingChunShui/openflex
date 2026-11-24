@@ -190,6 +190,11 @@ cargo run --release -p openflex-cli --example bench_mm1 -- --model examples/mm1.
 | 对象触发器 | `params.triggers` | 结构化动作 + `action: "script"`（**rhai 沙箱**，无文件/网络/时钟 API） |
 | Send To Port | `connections[].strategy` | 与 FlexSim 的路由规则对应 |
 | Experimenter | `experiments[]` + `openflex experiment` + GUI `Declared experiments` 面板 | 场景 × 复现、置信区间、逐场景失败隔离 |
+| Task Sequence | `dispatcher.task_sequence` / `task_sequence_mode` | 标准两段/三段链、`explicit` 整链、`utilize`/`break` 额外段 |
+| Global Task Sequence | `task_sequences[]` + `dispatcher.task_sequence_ref` | 命名后多个 dispatcher 复用同一份步骤（与内联互斥） |
+| User Commands | `user_commands[]` | 脚本里直接 `<name>()` / `<name>(1.0)` 调用（0/1 个数值参数） |
+| User Events | `user_events[]` + GUI 面板 | 按模型时刻执行动作，同刻按声明顺序 |
+| Fluid Marks | `fluid_tank.marks[]` | 任意具名液位标记的上穿/下穿触发（另有 `on_empty`/`on_full`） |
 | 3D 视图 / 树视图 / GUI | ✅ 桌面 GUI（`openflex-gui`，egui）+ Studio（`openflex studio`） | 桌面安装包覆盖 Windows/macOS/Linux；3D 为投影式透视，非原生 3D 渲染管线 |
 
 ## 项目结构
