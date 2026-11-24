@@ -32,10 +32,11 @@
 
 ### 工具与 CI
 
-- **冒烟套件从 11 项扩到 15 项**：新增 `OnChange`（`time` 变量 interval 5 → 恰好在 10/15/20/25/30 触发）、
+- **冒烟套件从 11 项扩到 17 项**：新增 `OnChange`（`time` 变量 interval 5 → 恰好在 10/15/20/25/30 触发）、
   **Combiner pack**（端口 0 是容器、端口 1 是组件；10s 一个容器 → 恰好 10 件）、
   **Timetable/off-shift**（窗口外不加工）、**checkpoint 续跑**（t=15 存盘 → t=30 resume，与直跑的
-  `completed`/`created` 完全相同）。
+  `completed`/`created` 完全相同）、**Queue use_transport**（瞬时流 vs 等车：t=0 vs t=5，且 `item_*` 链路有序）、
+  **MultiProcessor 工序链**（两步 2.0 → 4.0，含 setup → 4.5）。
   两条新用例**第一次写都是错的**：combiner 端口顺序反了（恒 0 件），checkpoint 最初想比整份报告（噪声大）。
   修正的是**模型**，不是断言——这个习惯比套件本身更重要。
 
