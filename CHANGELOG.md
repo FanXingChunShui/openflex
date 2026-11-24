@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### 桌面 GUI
+
+- **运行日志面板**：`Log (n)` —— 上一次 **Trace run** 里所有 `log()` 消息，按「时间 / 对象 / 文本」列出
+  （可滚动）。此前 GUI 完全不显示脚本与钩子的日志，用户只能去 grep 导出的 JSONL；现在
+  `TraceEvent.message`（本轮上一版刚让它进 trace）直接上屏。测试 `script_logs_become_panel_rows`。GUI **149 项**。
+
+
 ### 工具与 CI
 
 - **新增 `scripts/feature-smoke.py`（11 项端到端冒烟，已接入 CI）**：每个用例都建一个小模型、跑一次 CLI、

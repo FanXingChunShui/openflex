@@ -3168,6 +3168,8 @@ struct OpenFlexApp {
     model_trigger_text: [String; 3],
     /// JSON buffer for `model.user_events` (the panel edits them as a list).
     user_events_text: String,
+    /// Script `log()` lines from the last trace run: (time, object, message).
+    run_logs: Vec<(f64, String, String)>,
     /// JSON buffer for `model.user_commands`.
     user_commands_text: String,
     /// JSON buffer for `model.tracked_variables`.
@@ -3327,6 +3329,7 @@ impl OpenFlexApp {
             model_description: String::new(),
             model_trigger_text: [String::new(), String::new(), String::new()],
             user_events_text: String::new(),
+            run_logs: Vec::new(),
             user_commands_text: String::new(),
             tracked_variables_text: String::new(),
             kpi_edit: Vec::new(),
@@ -4298,6 +4301,7 @@ impl OpenFlexApp {
         self.opt_best = None;
         self.series.clear();
         self.trace = None;
+        self.run_logs.clear();
         // The baseline is a result too: comparing a new model against the old
         // one would produce meaningless deltas.
         self.baseline = None;
@@ -7098,6 +7102,15 @@ idle,busy,blocked,down\n",
                     Ok((result, trace)) => {
                         let truncated = trace.truncated;
                         let events = trace.events.len();
+                        // Hooks and scripts log through `log()`; the trace keeps
+                        // the text, so the editor can show it instead of asking
+                        // the user to grep the JSONL.
+                        self.run_logs = trace
+                            .events
+                            .iter()
+                            .filter(|event| event.event == "script_log")
+                            .map(|event| (event.time, event.object.clone(), event.message.clone()))
+                            .collect();
                         self.trace = Some(trace);
                         self.status = format!(
                             "Traced {events} event(s) in {:.2}s{}{}",
@@ -12734,6 +12747,33 @@ impl eframe::App for OpenFlexApp {
                 }
                 // Tracked variables: one row per declared series with the shape
                 // of the samples, so the run can be read at a glance.
+                if !self.run_logs.is_empty() {
+                    egui::CollapsingHeader::new(format!("Log ({})", self.run_logs.len()))
+                        .id_salt("run-logs")
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt("run-logs-scroll")
+                                .max_height(160.0)
+                                .show(ui, |ui| {
+                                    for (time, object, message) in &self.run_logs {
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{time:>8.2}  {object}  {message}"
+                                            ))
+                                            .size(9.0_f32)
+                                            .monospace()
+                                            .color(palette::TEXT_DIM),
+                                        );
+                                    }
+                                });
+                            ui.label(
+                                egui::RichText::new("from the last trace run · log() messages")
+                                    .size(9.0_f32)
+                                    .color(palette::TEXT_DIM),
+                            );
+                        });
+                    ui.separator();
+                }
                 // `state` / `staytime` tracked variables do not produce a time
                 // series: they summarise the run, so they get their own block.
                 if !report.tracked_summaries.is_empty() {
@@ -15156,6 +15196,32 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn script_logs_become_panel_rows() {
+        // The panel shows every `log()` line with its time and object, so the
+        // mapping must keep only `script_log` events and preserve the text.
+        use openflex_core::{TraceEvent, TraceLog};
+        let mut trace = TraceLog::default();
+        trace.push(TraceEvent::new(0.0, 1, "enter", "C").with_message("ignored"));
+        trace.push(TraceEvent::new(9.5, 2, "script_log", "C").with_message("BLOCKED"));
+        trace.push(TraceEvent::new(10.5, 3, "script_log", "C").with_message("CLEARED"));
+        trace.push(TraceEvent::new(20.0, 4, "exit", "C"));
+        let rows: Vec<(f64, String, String)> = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "script_log")
+            .map(|event| (event.time, event.object.clone(), event.message.clone()))
+            .collect();
+        assert_eq!(rows.len(), 2, "only script_log events: {rows:?}");
+        assert_eq!(rows[0].0, 9.5);
+        assert_eq!(rows[0].2, "BLOCKED");
+        assert_eq!(rows[1].2, "CLEARED");
+        // An empty message still yields a row; the panel shows the time/object.
+        let mut quiet = TraceLog::default();
+        quiet.push(TraceEvent::new(1.0, 1, "script_log", "P"));
+        assert_eq!(quiet.events[0].message, "");
     }
 
     #[test]
