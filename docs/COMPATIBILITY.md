@@ -83,7 +83,7 @@
 | Merge | `merge` | ✅ | 多输入合流；可选等待全部输入 |
 | Split | `split` | ✅ | 轮询或按 item type 分流 |
 | Transporter / TaskExecuter | `transporter` | 🟡 | 速度、装载/卸载时间、`network` 最短路、`home` 取货、两段任务；`capacity`=并发任务数（不搬运 flow item）；自定义任务序列为**腿级**扩展（见 Dispatcher 行） |
-| Dispatcher | `dispatcher` | 🟡 | 派发/优先级/抢占（`preempt_retry_delay`/`preempt_max_retries`）、电梯召唤；`task_sequence` 可在标准两段之间插入额外的 `travel`/`load`/`unload` 腿（可带 `duration` 与 `condition`），但腿类型仅此三种，无 FlexSim 的 UTILIZE/BREAK/协同任务 |
+| Dispatcher | `dispatcher` | 🟡 | 派发/优先级/抢占（`preempt_retry_delay`/`preempt_max_retries`/`max_tasks` 挂起任务上限）、电梯召唤；`task_sequence` 支持 `travel`/`load`/`unload`，额外 `utilize`/`break` 腿（带 `duration`、`condition`），`explicit` 整链模式，以及 `involved: 2` 的**两执行器协同步骤**（两者都到场才同步开始）；序列可命名后经 `task_sequences[]` + `task_sequence_ref` 复用（GTS）。仍无过程式任务序列构造 API（`createcoordinatedtasksequence` 等） |
 | Operator / Resource | `resource` | ✅ | 资源池容量与停机窗口 |
 | Rack | `rack` | 🟡 | 四类 + `min_dwell` + `aisles`/`bays`/`pick_policy` 货位分配与取货行走时间；无空位查表/并发取货 |
 | 班次 / 计划停机 | `params.shifts` | ✅ | `[{start, duration, repeat_every}]`，停机进入 off_shift、暂停处理、恢复后继续 |
@@ -164,9 +164,10 @@
 3. **运输模型部分实现**：TaskExecuter 支持“Processor 请求操作员”这条序列（travel → load → 加工 →
    unload → 回 home）；抢占与优先级**已部分接线**（`dispatcher.preempt_retry_delay` /
    `preempt_max_retries`、`processor.operator_priority` / `operator_preempt`）；
-   任务序列可通过 `dispatcher.task_sequence` 在标准腿之间**插入额外的 travel/load/unload 腿**
-   （每腿可带 `duration` 分布与 `condition` 表达式，逐腿独立调度），但**腿类型只有这三种**，
-   没有 FlexSim 的 UTILIZE / BREAK / 协同任务 / 自定义任务序列构造 API；
+   任务序列可通过 `dispatcher.task_sequence` 在标准腿之间**插入额外的 `travel`/`load`/`unload` 腿**
+   （每腿可带 `duration` 分布与 `condition` 表达式，逐腿独立调度），并支持 `utilize`/`break` 额外段、
+   `explicit` 整链模式、`involved: 2` 的两执行器协同步骤，以及命名复用（GTS）；
+   但**没有过程式任务序列构造 API**（FlexSim 的 `createcoordinatedtasksequence` / `insertallocatetask` 等）；
    `capacity` 表示可并发任务数而非载货量。
 4. **统计口径**：`utilization` 定义为忙碌时间/统计时长；与 FlexSim 的“利用率”定义一致，但对象自身
    没有“状态”的对象（如 Sink）不计算利用率。
