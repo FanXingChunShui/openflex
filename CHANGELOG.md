@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## v1.48.0 — 2026-11-25
+
+本轮的主题是「**共享**」与「**别丢数据**」。
+
+- **MTBF 组**：同组对象共享一次故障/维修周期——组故障时全员 `down`、修复后全员恢复。
+  决定性验证是"有组 vs 无组"的对照：同一模型有 `group` 时 P1 与 P2 **都** down 2/30，
+  去掉 `group` 只有 P1 down（P2 从 mtbf=100 抽样，30 秒内不会坏）。
+- **trace 不再丢日志文本**：CLI 自己有一份 `write_trace`，与 report 里的实现重复，
+  它把 `TraceEvent.message` 丢掉了，于是保存下来的 trace 里所有 `script_log` 都看不到内容。
+  已删掉 CLI 的副本、统一委托给 report（单一实现），并新增 `openflex trace --logs`。
+
+顺带补上 GUI 里**完全缺失**的故障编辑器（`mtbf`/`mttr`/维修操作员/状态白名单/`failure group`）——
+而这是核心建模能力，此前只能改 JSON。
+发布节奏保持**至少 3 小时一版**。
 
 ### 模型与引擎
 
@@ -31,6 +44,14 @@
   （逗号分隔、去空、空 = 墙钟时间）。测试 `a_breakdown_block_round_trips_and_state_scoping_parses`。GUI **148 项**。
 
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**1012 passed / 0 failed**；clippy 0 警告、fmt 干净。
+- GUI **148 项**、`openflex-core --lib` **265 项**；`scripts/acceptance.sh` **all golden checks passed**。
+- `check-dead-params.sh` **0 known**；`check-doc-evidence.sh` 47 名可解析；`check-changelog.sh` 通过。
+- 独立实测：有组 → P1/P2 都 down 2/30；无组 → 只有 P1 down；trace 文件里 `"message":"RTS"` 可读，
+  `trace --logs` 按时间列出。
 
 ## v1.47.0 — 2026-11-24
 
