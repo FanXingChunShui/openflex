@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## v1.45.0 — 2026-11-24
+
+本轮的看点是**协同任务序列**（FlexSim 的"双人抬"）：一个任务步骤可以声明需要**两名执行器**，
+两者都到场才同步开始、结束时各自释放。
+
+这个功能差点被做成假的。第一轮队友只交了一份**成本报告**——它先证明了"同一 requester 可以有多个请求，
+`serving_requester` 是每执行器的单值"，所以不需要重写请求结构，确认后才动手。
+如果当时直接写，很可能做出一个"看起来协同、实际串行"的东西；我们上一轮刚把虚标参数清干净，不能同一天再造一个。
+
+补漏也补齐了：不支持的组合**加载即被 validate 拒绝**（不是文档里写一句"不支持"）、抢占**整组取消不卡死**、
+屏障判据有专测。顺带修了 4 处用户可见拼写。
+发布节奏保持**至少 3 小时一版**。
 
 ### 模型与引擎
 
@@ -27,6 +38,15 @@
 - **任务步骤的"×2 执行器"开关**：dispatcher 的步骤编辑器每行加一个 `×2` 复选框（悬停说明"需要两个执行器同时到场才开始，仅 append 模式"）。
   勾选会把 `Simple` 步骤自动升级成 `Detailed`（保留原 kind），取消勾选写回 `involved: 1`——后者**不序列化**，所以与旧模型逐字节一致。
   测试 `a_step_can_be_made_coordinated_from_the_editor`。GUI **145 项**。
+
+### 验证
+
+- `cargo test --workspace --locked`：**986 passed / 0 failed**；clippy 0 警告、fmt 干净。
+- GUI **145 项**、`openflex-core --lib` **241 项**；`scripts/acceptance.sh` **all golden checks passed**。
+- `check-dead-params.sh` **0 known**；`check-doc-evidence.sh` 47 名可解析；fuzz 冒烟 PASS。
+- Windows 交叉编译 `cargo check --target x86_64-pc-windows-msvc --workspace --all-targets` **0 错误**。
+- 独立实测：两名执行器同刻 `transport_arrive`；`involved: 1` 与不写 `involved` 的报告 **sha256 相同**；
+  只有一名执行器时 `completed 0` 且**整场仅 4 个事件**（永久等待且不忙等）。
 
 ## v1.44.0 — 2026-11-24
 
