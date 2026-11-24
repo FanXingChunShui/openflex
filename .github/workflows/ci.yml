@@ -489,6 +489,9 @@ jobs:
           files=(scripts/*.sh packaging/*.sh packaging/*/*.sh)
           shellcheck -S warning "${files[@]}"
 
+      - name: changelog keeps its shape
+        run: bash scripts/check-changelog.sh
+
       - name: no new parameters the engine ignores
         run: bash scripts/check-dead-params.sh
 

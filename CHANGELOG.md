@@ -78,7 +78,6 @@
   同时把它真正的盲区写进脚本注释：**通用词字段名（`delay`/`size`/`count`）靠文本匹配证明不了"未被使用"**，
   绿色运行只代表"没有明显死字段"，不是证明。
 
-### 桌面 GUI
 
 ### 报告与 CLI
 
@@ -215,7 +214,6 @@
   `deny_unknown_fields` 明确拒绝。GUI 里对应的两个输入框一并移除。
   allowlist 因此从 **5 条降到 1 条**（只剩 `FluidMixerParams.product_id`，需要产品设计决定）。
 
-### 模型与引擎
 
 - **User Events（按时刻执行的模型级动作）**：`Model.user_events: [{ time, name, actions }]`（空不序列化，
   旧模型 JSON 逐位不变）。事件进入事件日历、按 `(time, seq)` 确定性排序、**同一时刻按声明顺序**执行；
@@ -229,7 +227,6 @@
   **至此 `docs/dead-params-allowlist.txt` 清空**：`check-dead-params.sh` → **0 known / 0 stale**，
   即模型声明的每个参数字段现在都真的能到达引擎。
 
-### 模型与引擎
 
 - **用户自定义命令（User Commands）**：`Model.user_commands: [{ name, parameters, body }]`（空不序列化，旧 JSON 不变），
   脚本里可以直接 `<name>()` / `<name>(1.0)` 调用。实现上**没有**去改造 `ScriptEngine`/`register_api`——
@@ -244,7 +241,6 @@
   于是最自然的写法 `set_item_type(t)` 会报 `Function not found`。已为 `set_item_type` 与 `create_item`
   补 `f64` 重载（截断取整、双向 clamp），并加回归测试 `a_float_parameter_flows_into_integer_script_apis`。
 
-### 模型与引擎
 
 - **流体液位标记（Fluid Marks）**：`FluidTankParams.marks: [{ name, level, on_rise, on_fall }]`（空不序列化，旧 JSON 不变），
   液位**上穿/下穿**标记时各触发一次；`level` 必须落在 `[0, capacity]`，重名/空名被拒。
@@ -264,7 +260,6 @@
   （文档首次打开时从模型灌入，之后保留用户输入；应用走 `commit_model_edit` 单一入口，因此撤销/校验一致）。
   测试 `user_events_round_trip_through_the_panel_buffer`。GUI **142 项**。
 
-### 桌面 GUI
 
 - **dispatcher 表单支持全局任务序列引用**：新增 `task sequence name` 输入框，填了名字就灰化下面的内联步骤编辑区，
   并提示"内联步骤在被引用时会被忽略"——因为二者互斥（validate 会拒绝），界面上先说清楚，而不是等用户保存后才报错。
@@ -329,7 +324,6 @@
 - **两个新触发器都进了 `collect_model_scripts` 的手写清单**——这是 task-188 踩过的坑（`on_load`/`on_unload`
   漏收导致 `action: "script"` 运行时失败），这次三个钩子各有一个「脚本钩子能跑」的回归测试。
 
-### 模型与引擎
 
 - **`OnLoad` / `OnUnload` 触发器**：运输链路上「装货完成」与「卸货完成」两个时点各触发一次。
   OnLoad 落在既有的 `TransportDepart`（`now + dwell + load`）、OnUnload 落在 `OperatorLoaded`——
@@ -688,7 +682,6 @@
   执行器细分 `travel_empty 10 / travel_loaded 10 / loading 2 / unloading 3 / utilize 7`，
   其中 7 秒正是等待释放的时间。抢占在 explicit 链内禁用（MVP，注释已说明）。
 
-### 桌面 GUI
 
 - **`explicit` 路线编辑器**：任务序列编辑区新增 `append` / `explicit` 模式切换；
   explicit 下每个 travel 腿显示目标选择器（`home` / `object` / `position` / 无），
