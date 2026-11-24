@@ -76,7 +76,7 @@
 | Labels Page（对象标签，自动复位选项） | 对象级标签 | 🟡 | 无"Automatically Reset Labels"开关；标签复位只能靠 `on_reset` 手动写 |
 | Triggers Page（每对象不同触发器集合） | 21 个触发器（含 `on_load`/`on_unload`/`on_empty`/`on_full`/`on_entry_request`/`on_receive_task_sequence`/`on_resource_available`） | 🟡 | 见 §7 PickLists 明细。**`OnArrival`/`OnContinue` 挂不上**：它们是 **NetworkNode 级**触发器，而引擎的旅行者只按**起终点腿**移动、**没有逐节点转移事件**——与已删除的 `max_travelers` 是同一个结构限制（要支持需先实现逐节点遍历，那是路由模型重写） |
 | Statistics Window（实时状态与吞吐面板） | CLI 报告 + Studio 面板 + `--timeseries` | ✅ | 时间加权 content、状态占比、停留时间 |
-| Flow Page（Send To Port / Use Transport / Priority / Preempt） | `connections[].strategy`；`Hold` 对应 −1 | 🟡 | `Use Transport`/`Request Transport From` 无对象级开关，运输靠 `transporter`/`dispatcher` 任务；`Priority`/`Preempt` 只在 Dispatcher 侧部分实现 |
+| Flow Page（Send To Port / Use Transport / Priority / Preempt） | `connections[].strategy`；`Hold` 对应 −1；**`queue.use_transport`** | 🟡 | `Use Transport` 已对 **Queue 单出边**实现：物品等 transporter 搬运（`item_pickup → item_depart → item_dropoff`），搬运期间仍计入 queue 内容；实测 10 单位/速度 2 → 下游 `enter` 晚 5 个时间单位。`Priority`/`Preempt` 仍只在 Dispatcher 侧部分实现；其它对象上的 `Use Transport` 未做 |
 | Source Page（三种到达风格 + 到达表） | 间隔/批量/首件/上限/停止 + `arrival_schedule_from_table` | ✅ | 表驱动到达已接线（`engine.rs` 读全局表） |
 | Queue Page（容量/LIFO/攒批/视觉摆放） | 容量、`order`（fifo/lifo/priority/by_label）、`batch_size`/`batch_max_wait` | 🟡 | 无 Item Placement/Stack Base Z 这类视觉参数（可接受，无 3D）；`FlushContent` 未实现 |
 | Processor Page（setup/process/操作员/交叉传送） | setup/process/容量/操作员请求（`setup_operator`/`process_operator`）/优先级/抢占 | ✅ | `ProcessorParams` 含 `operator_priority`、`operator_preempt` |
@@ -115,7 +115,7 @@
 | Send To Port | `connections[].strategy`（7 种 + Hold） | ✅ | 含 −1 语义 `Hold` + `release_item` |
 | Pull Strategy | `params.pull.strategy` | ✅ | `engine.rs` 有 `pull_requirement_met` |
 | Pull Requirement | `params.pull.requirement` | ✅ | 同上；有 `p0_semantics.rs::a03_pull_requirement_skips_items` 测试 |
-| Request Transport From | 无字段；运输由 transporter 任务表达 | 🟡 | 缺"由固定资源发起运输请求并指定承运方"的对象级入口（`transport_ref` 仅在部分对象上） |
+| Request Transport From | `queue.use_transport`（指向 dispatcher） | 🟡 | 固定资源发起运输请求的对象级入口**已对 Queue 落地**：指定 dispatcher 后由其空闲 transporter 直接承运（**不经过 `Dispatcher.requests`**，因此不影响既有 operator 任务）。**边界**：仅 Queue、仅单出边、不做多车协同/preemption；其余对象与完整语义需要先把 `Dispatcher.requests` 抽象成带 kind 的请求（已记入 `docs/BACKLOG.md`） |
 | Inter Arrivaltime | `source.interarrival`（分布） | 🟡 | 只有统计分布，**不接受任意表达式/查表**；无"按行号查到达表"的 per-row 表达式 |
 | Process Time / Setup Time | `process_time` / `setup_time`（分布或表达式） | ✅ | `Expr` 支持 `item.label.*`、`time` 等 |
 | Split Unpack Quantity | `separate_qty` 静态数字 | 🟡 | 无"按件动态决定拆几个"的字段（FlexSim 是 picklist） |
