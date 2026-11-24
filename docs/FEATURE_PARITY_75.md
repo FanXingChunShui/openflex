@@ -486,3 +486,13 @@ Recent 文件列表、多停止时间列表、`Groups` 持久化命名分组、
    换取可校验性与跨平台确定性。
 4. **无许可证体系**：`License Activation` 三页不适用。
 5. **随机数生成器不同**：同 seed 可复现，但不与 FlexSim 逐位一致（已在 `docs/spec/runtime.md` 声明）。
+6. **Visio 导入器不实现**：FlexSim 从 `.vsdx` 图元重建对象与连线；OpenFlex 的模型是严格 JSON，
+   没有"图即模型"的双向绑定。用 `openflex layout` 从模型出 SVG 是**单向导出**，方向相反。
+7. **碰撞检测不实现**：`Collision Page`/`Collision Trigger` 是 3D 包围球检测，服务的是动画与视觉真实感；
+   无 3D 渲染管线时它没有可观察的效果（第 1 条的推论），故不做一个空壳开关。
+8. **Robot 关节几何不实现**：`Robot Geometry Page`（逐关节速度/复位/手动定位）与 3D 姿态强绑定，
+   与第 1 条同因。
+9. **媒体文件预加载不实现**：`Media Files` 服务的是 3D 形状与贴图缓存，同第 1 条。
+10. **FlexScript 语法不兼容**：OpenFlex 用 rhai 沙箱（`action: script`）与表达式 DSL。
+    这不是"功能缺失"，而是**净室与可校验性**的取舍：脚本能静态编译校验、错误可定位、运行确定性可重放。
+    迁移成本是真实存在的（已有 `openflex migrate` 做能自动化的部分），文档不掩饰这一点。
