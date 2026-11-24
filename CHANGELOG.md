@@ -65,6 +65,21 @@
   **至此 `docs/dead-params-allowlist.txt` 清空**：`check-dead-params.sh` → **0 known / 0 stale**，
   即模型声明的每个参数字段现在都真的能到达引擎。
 
+### 模型与引擎
+
+- **用户自定义命令（User Commands）**：`Model.user_commands: [{ name, parameters, body }]`（空不序列化，旧 JSON 不变），
+  脚本里可以直接 `<name>()` / `<name>(1.0)` 调用。实现上**没有**去改造 `ScriptEngine`/`register_api`——
+  rhai 会「同一 AST 内定义的函数对同 AST 代码可见」，所以只需把命令包装成 `fn <name>(<param>) { <body> }`
+  并**前置**到脚本源码再编译（`ScriptEngine::with_commands(model)`）。风险因此比预想小得多。
+  **包装只有一个来源**（`openflex_model::user_command_source`），`validate` / `check-scripts` / 运行时预编译三条路径逐字相同，
+  所以同一个坏 body 在三处会给出一致的判定（有测试钉住）。
+  `validate` 现在也报命令体的编译错误（`user_commands.<i>.body`），并拒绝空名/重名/参数 >1
+  （文案明确："only 0 or 1 numeric parameter is supported"）与**与 12 个内置脚本函数重名**。
+  实测：命令 `mark()` 设 `set_item_type(1)` → 3 件全部改道到另一出口（不调用时全部走默认出口）。
+- **修掉一个只有真跑才会发现的缺陷**：命令参数是 `f64`（rhai 数字都是浮点），而 `set_item_type` 只注册了 `i64` 重载，
+  于是最自然的写法 `set_item_type(t)` 会报 `Function not found`。已为 `set_item_type` 与 `create_item`
+  补 `f64` 重载（截断取整、双向 clamp），并加回归测试 `a_float_parameter_flows_into_integer_script_apis`。
+
 ### 桌面 GUI
 
 - **User events 面板**：与模型触发器同样的「JSON 缓冲 + Apply」方式编辑 `model.user_events`

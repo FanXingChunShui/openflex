@@ -2362,6 +2362,65 @@ impl TaskSequenceMode {
     }
 }
 
+/// Script functions registered by the sandbox; a user command may not shadow
+/// one of them (task-194).
+pub const BUILTIN_SCRIPT_NAMES: &[&str] = &[
+    "create_item",
+    "label",
+    "log",
+    "move_item",
+    "object_content",
+    "object_state",
+    "object_utilization",
+    "release_item",
+    "send_message",
+    "set_item_type",
+    "set_label",
+    "set_state",
+];
+
+/// task-194: the exact source used to compile a command body.
+///
+/// Validation, `check-scripts` and the runtime precompile all call this one
+/// wrapper, so the three paths agree on what "compiles" means. The body is
+/// wrapped in a function so a `return` is legal and the declared parameter name
+/// is in scope.
+pub fn user_command_source(command: &UserCommand) -> String {
+    let parameter = command
+        .parameters
+        .first()
+        .map(|parameter| parameter.name.as_str())
+        .unwrap_or("");
+    // The wrapper is named after the command, so every script can call it
+    // directly (`name()` / `name(3.0)`); validation rejects names that would
+    // shadow a built-in.
+    format!("fn {}({parameter}) {{ {} }}", command.name, command.body)
+}
+
+/// One parameter of a [`UserCommand`] (task-194); only the name is used.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserCommandParameter {
+    pub name: String,
+}
+
+/// A named, script-callable command defined by the model (FlexSim "User
+/// Commands").
+///
+/// The bounded version supports **0 or 1 numeric parameter**: scripts call it as
+/// `name()` or `name(3.0)`. Validation rejects more than one parameter instead
+/// of silently not registering the command.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserCommand {
+    pub name: String,
+    /// Zero or one entry; kept as a list so the shape can grow later.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameters: Vec<UserCommandParameter>,
+    /// Script body (rhai); it may `return` a value used by the caller.
+    pub body: String,
+}
+
 /// A named task sequence shared by dispatchers (FlexSim "Global Task Sequences").
 ///
 /// Dispatchers reference it through [`DispatcherParams::task_sequence_ref`]; the
@@ -4293,6 +4352,9 @@ pub struct Model {
     /// Named task sequences dispatchers can reference (task-193).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub task_sequences: Vec<NamedTaskSequence>,
+    /// Script-callable commands defined by the model (task-194).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_commands: Vec<UserCommand>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_flow: Option<ProcessFlow>,
     /// Fixed integration step (model time units) for the fluid objects

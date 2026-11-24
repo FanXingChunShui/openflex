@@ -254,6 +254,7 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
 
     issues.extend(validate_user_events(model));
     issues.extend(validate_task_sequences(model));
+    issues.extend(validate_user_commands(model));
     issues.extend(validate_process_flow(
         model,
         model.process_flow.as_ref(),
@@ -1947,6 +1948,68 @@ fn validate_conditional_ports(
 }
 
 /// Check `script` trigger actions: non-empty source and compilable syntax.
+/// task-194: user commands must have unique, resolvable shapes and compile.
+fn validate_user_commands(model: &Model) -> Vec<ValidationIssue> {
+    let mut issues = Vec::new();
+    let mut seen = std::collections::BTreeMap::new();
+    for (position, command) in model.user_commands.iter().enumerate() {
+        let location = format!("user_commands.{position}");
+        if command.name.trim().is_empty() {
+            issues.push(ValidationIssue::new(
+                format!("{location}.name"),
+                "command name cannot be empty",
+            ));
+        }
+        if crate::model::BUILTIN_SCRIPT_NAMES.contains(&command.name.as_str()) {
+            issues.push(ValidationIssue::new(
+                format!("{location}.name"),
+                format!(
+                    "command name '{}' shadows a built-in script function",
+                    command.name
+                ),
+            ));
+        }
+        if seen.insert(command.name.clone(), ()).is_some() {
+            issues.push(ValidationIssue::new(
+                format!("{location}.name"),
+                format!("duplicate command name '{}'", command.name),
+            ));
+        }
+        if command.parameters.len() > 1 {
+            issues.push(ValidationIssue::new(
+                format!("{location}.parameters"),
+                format!(
+                    "command '{}' declares {} parameters; only 0 or 1 numeric parameter is supported",
+                    command.name,
+                    command.parameters.len()
+                ),
+            ));
+        }
+        validate_script_source(
+            &crate::model::user_command_source(command),
+            &format!("{location}.body"),
+            &mut issues,
+        );
+        let mut parameter_names = std::collections::BTreeMap::new();
+        for (parameter_position, parameter) in command.parameters.iter().enumerate() {
+            let parameter_location = format!("{location}.parameters.{parameter_position}.name");
+            if parameter.name.trim().is_empty() {
+                issues.push(ValidationIssue::new(
+                    &parameter_location,
+                    "parameter name cannot be empty",
+                ));
+            }
+            if parameter_names.insert(parameter.name.clone(), ()).is_some() {
+                issues.push(ValidationIssue::new(
+                    &parameter_location,
+                    format!("duplicate parameter name '{}'", parameter.name),
+                ));
+            }
+        }
+    }
+    issues
+}
+
 /// task-193: named task sequences must be unique and every reference must
 /// resolve; a dispatcher cannot set both the inline sequence and a reference.
 fn validate_task_sequences(model: &Model) -> Vec<ValidationIssue> {
@@ -2656,6 +2719,7 @@ mod tests {
             name: "test".into(),
             user_events: Vec::new(),
             task_sequences: Vec::new(),
+            user_commands: Vec::new(),
             description: String::new(),
             time_unit: TimeUnit::Seconds,
             run: RunSettings::default(),

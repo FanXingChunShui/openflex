@@ -12734,6 +12734,24 @@ fn collect_model_scripts(model: &Model) -> Vec<(String, String)> {
             flow_scripts(flow, &prefix, &mut sources);
         }
     }
+    // task-194: command bodies are wrapped in a function declaration so they
+    // compile with their declared parameter in scope (a bare body may contain
+    // `return`). `check-scripts` therefore sees every command body.
+    for (index, command) in model.user_commands.iter().enumerate() {
+        let parameter = command
+            .parameters
+            .first()
+            .map(|parameter| parameter.name.as_str())
+            .unwrap_or("");
+        push(
+            &mut sources,
+            &format!(
+                "fn user_command_{index}({parameter}) {{ {} }}",
+                command.body
+            ),
+            format!("user_commands.{index}.body"),
+        );
+    }
     // task-192: user-event scripts must be precompiled like every other hook.
     for (index, event) in model.user_events.iter().enumerate() {
         for (action_position, action) in event.actions.iter().enumerate() {
@@ -12761,7 +12779,7 @@ pub struct ScriptCheck {
 
 /// task-177: compile every model script without running the simulation.
 pub fn check_scripts(model: &Model) -> Vec<ScriptCheck> {
-    let engine = ScriptEngine::new();
+    let engine = ScriptEngine::with_commands(model);
     collect_model_scripts(model)
         .into_iter()
         .map(|(source, location)| ScriptCheck {
@@ -12824,7 +12842,7 @@ fn enrich_script_error(error: ScriptError, source: &str, location: &str, time: f
 
 /// Precompile every script source of the model once (D2).
 fn compile_model_scripts(model: &Model) -> Result<HashMap<String, CompiledScript>, SimError> {
-    let engine = ScriptEngine::new();
+    let engine = ScriptEngine::with_commands(model);
     let mut scripts = HashMap::new();
     for (source, location) in collect_model_scripts(model) {
         if scripts.contains_key(&source) {
@@ -19616,6 +19634,178 @@ mod tests {
         assert!(
             text.contains("duplicate task sequence name"),
             "the issue must mention the duplicate: {text}"
+        );
+    }
+
+    fn user_command_model(commands: &str, script: &str) -> Model {
+        let script = serde_json::to_string(script).expect("escape the script");
+        Model::parse_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "user-commands",
+          "run": {{ "stop_time": 50.0, "seed": 1, "replications": 1 }},
+          "user_commands": [ {commands} ],
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "P", "kind": "processor", "pos": [0.0, 0.0], "params": {{
+                "process_time": {{ "distribution": "constant", "value": 1.0 }},
+                "triggers": {{ "on_exit": [ {{ "action": "script", "source": {script} }} ] }} }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [
+            {{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }}
+          ]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    fn script_logs(model: &Model) -> Vec<String> {
+        let config = SimConfig {
+            stop_time: 50.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(model, &config, 0).expect("trace");
+        trace
+            .events
+            .iter()
+            .filter(|event| event.event == "script_log")
+            .map(|event| event.message.clone())
+            .collect()
+    }
+
+    /// task-194: models without user commands are unchanged.
+    #[test]
+    fn user_commands_absent_keeps_the_report() {
+        let model = user_command_model("", "let x = 1;");
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(first.replications, second.replications);
+        let text = serde_json::to_string(&model).expect("serialize");
+        assert!(!text.contains("user_commands"), "empty list omitted");
+    }
+
+    /// task-194: a zero-parameter command runs from a script hook.
+    #[test]
+    fn user_command_without_parameters_runs() {
+        let model =
+            user_command_model(r#"{ "name": "ping", "body": "log(\"pong\");" }"#, "ping();");
+        assert_eq!(script_logs(&model), vec!["pong".to_string()]);
+    }
+
+    /// task-194: a one-parameter command receives the argument.
+    #[test]
+    fn user_command_with_one_parameter_uses_the_value() {
+        let model = user_command_model(
+            r#"{ "name": "setx", "parameters": [ { "name": "v" } ], "body": "set_label(\"x\", v);" }"#,
+            "setx(3.0); if label(\"x\") == 3.0 { log(\"ok\"); }",
+        );
+        assert_eq!(script_logs(&model), vec!["ok".to_string()]);
+    }
+
+    /// A command parameter is an `f64` (rhai numbers are floats), so a body that
+    /// passes it straight to an integer API must still work. Without the float
+    /// overloads this failed at run time with "Function not found".
+    ///
+    /// The effect is observed on the model, not by reading the caller's scope:
+    /// a command is a separate function, so it cannot write the caller's
+    /// local `item_type` (documented boundary), but the item it marks is what
+    /// the routing sees.
+    #[test]
+    fn a_float_parameter_flows_into_integer_script_apis() {
+        let model = Model::parse_json(
+            r#"{
+              "format": "openflex-model", "version": 1, "name": "float-param",
+              "run": { "stop_time": 60.0, "seed": 1, "replications": 1 },
+              "user_commands": [
+                { "name": "markto", "parameters": [ { "name": "t" } ],
+                  "body": "set_item_type(t);" }
+              ],
+              "objects": [
+                { "name": "S", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 10.0 },
+                    "max_arrivals": 3, "first_arrival": 0.0,
+                    "triggers": { "on_create": [ { "action": "script", "source": "markto(1.0);" } ] } } },
+                { "name": "Q", "kind": "queue", "params": {} },
+                { "name": "D", "kind": "split", "params": { "by_item_type": true } },
+                { "name": "A", "kind": "sink", "params": {} },
+                { "name": "B", "kind": "sink", "params": {} }
+              ],
+              "connections": [
+                { "from": "S", "to": "Q" }, { "from": "Q", "to": "D" },
+                { "from": "D", "to": "A" }, { "from": "D", "to": "B" }
+              ]
+            }"#,
+        )
+        .expect("model");
+        let report = crate::run_model(&model).expect("run");
+        assert_eq!(
+            report.objects["A"].input_count.mean, 0.0,
+            "the command retyped every item, so none goes to port 0"
+        );
+        assert_eq!(report.objects["B"].input_count.mean, 3.0);
+    }
+
+    /// task-194: the command's `return` value is usable by the caller.
+    #[test]
+    fn user_command_return_value_is_usable() {
+        let model = user_command_model(
+            r#"{ "name": "check", "body": "return true;" }"#,
+            "if check() { log(\"yes\"); } else { log(\"no\"); }",
+        );
+        assert_eq!(script_logs(&model), vec!["yes".to_string()]);
+    }
+
+    /// task-194: command names may not shadow a built-in script function.
+    #[test]
+    fn user_command_builtin_name_is_rejected() {
+        let model = user_command_model(
+            r#"{ "name": "label", "body": "return 1.0;" }"#,
+            "let x = 1;",
+        );
+        let issues = openflex_model::validate::validate_collect(&model);
+        let text = format!("{issues:?}");
+        assert!(
+            text.contains("shadows a built-in") && text.contains("label"),
+            "expected a shadowing issue: {text}"
+        );
+    }
+
+    /// task-194: more than one parameter is rejected with an explicit limit.
+    #[test]
+    fn user_command_two_parameters_are_rejected() {
+        let model = user_command_model(
+            r#"{ "name": "two", "parameters": [ { "name": "a" }, { "name": "b" } ], "body": "return a + b;" }"#,
+            "let x = 1;",
+        );
+        let issues = openflex_model::validate::validate_collect(&model);
+        let text = format!("{issues:?}");
+        assert!(
+            text.contains("only 0 or 1 numeric parameter is supported"),
+            "expected the explicit limit: {text}"
+        );
+    }
+
+    /// task-194: `validate` and `check-scripts` agree on a broken body.
+    #[test]
+    fn user_command_body_errors_are_reported_by_both_paths() {
+        let model = user_command_model(r#"{ "name": "bad", "body": "let x = ;" }"#, "let y = 1;");
+        let issues = openflex_model::validate::validate_collect(&model);
+        let text = format!("{issues:?}");
+        assert!(
+            text.contains("user_commands.0.body"),
+            "validate must point at the body: {text}"
+        );
+        let checks = crate::check_scripts(&model);
+        let body_check = checks
+            .iter()
+            .find(|check| check.location == "user_commands.0.body")
+            .expect("check-scripts must see the body");
+        assert!(
+            body_check.error.is_some(),
+            "check-scripts must report the same body error"
         );
     }
 }

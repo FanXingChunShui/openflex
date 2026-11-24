@@ -252,6 +252,10 @@ impl CompiledScript {
 pub struct ScriptEngine {
     engine: Engine,
     max_operations: u64,
+    /// task-194: user-command definitions prepended to every compiled script, so
+    /// a script can call `<name>()` / `<name>(3.0)` in the same AST (rhai keeps
+    /// functions defined in an AST visible to the code in that AST).
+    definitions: String,
 }
 
 impl Default for ScriptEngine {
@@ -267,7 +271,20 @@ impl ScriptEngine {
         Self {
             engine,
             max_operations: DEFAULT_MAX_OPERATIONS,
+            definitions: String::new(),
         }
+    }
+
+    /// task-194: an engine that also knows the model's user commands.
+    pub fn with_commands(model: &openflex_model::Model) -> Self {
+        let mut engine = Self::new();
+        let mut definitions = String::new();
+        for command in &model.user_commands {
+            definitions.push_str(&openflex_model::user_command_source(command));
+            definitions.push('\n');
+        }
+        engine.definitions = definitions;
+        engine
     }
 
     /// Override the instruction budget (builder style).
@@ -279,9 +296,14 @@ impl ScriptEngine {
     /// Compile a script; the syntax is checked here, the API is resolved when
     /// the script runs.
     pub fn compile(&self, source: &str) -> Result<CompiledScript, ScriptError> {
+        let combined = if self.definitions.is_empty() {
+            source.to_string()
+        } else {
+            format!("{}\n{}", self.definitions, source)
+        };
         let ast = self
             .engine
-            .compile(source)
+            .compile(&combined)
             .map_err(|error| ScriptError::Compile(error.to_string()))?;
         Ok(CompiledScript {
             ast,
@@ -373,6 +395,19 @@ fn register_api(engine: &mut Engine, state: Arc<Mutex<RunState>>) {
         lock(&shared).item_type = Some(clamp_u32(value));
     });
 
+    // A user command's parameter is an `f64` (rhai numbers are floats), so the
+    // natural body `set_item_type(t)` would fail with "Function not found"
+    // unless the float overload exists. Truncate toward zero, same clamp.
+    let shared = state.clone();
+    engine.register_fn("set_item_type", move |value: f64| {
+        let clamped = if value.is_finite() {
+            value.trunc().clamp(0.0, f64::from(u32::MAX)) as i64
+        } else {
+            0
+        };
+        lock(&shared).item_type = Some(clamp_u32(clamped));
+    });
+
     let shared = state.clone();
     engine.register_fn("send_message", move |target: &str, delay: f64| {
         lock(&shared).messages.push(ScriptMessage {
@@ -423,6 +458,20 @@ fn register_api(engine: &mut Engine, state: Arc<Mutex<RunState>>) {
 
     let shared = state.clone();
     engine.register_fn("create_item", move |object: &str, count: i64| {
+        lock(&shared).create_items.push((
+            object.to_string(),
+            u32::try_from(count.max(0)).unwrap_or(u32::MAX),
+        ));
+    });
+
+    // Same reason as `set_item_type`: a computed count arrives as a float.
+    let shared = state.clone();
+    engine.register_fn("create_item", move |object: &str, count: f64| {
+        let count = if count.is_finite() {
+            count.trunc().clamp(0.0, f64::from(u32::MAX)) as i64
+        } else {
+            0
+        };
         lock(&shared).create_items.push((
             object.to_string(),
             u32::try_from(count.max(0)).unwrap_or(u32::MAX),

@@ -63,6 +63,28 @@ fn definitions() -> Value {
         }),
     );
     defs.insert(
+        "user_command".into(),
+        json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "parameters": {
+                    "type": "array",
+                    "maxItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": { "name": { "type": "string", "minLength": 1 } },
+                        "required": ["name"],
+                        "additionalProperties": false
+                    }
+                },
+                "body": { "type": "string" }
+            },
+            "required": ["name", "body"],
+            "additionalProperties": false
+        }),
+    );
+    defs.insert(
         "named_task_sequence".into(),
         json!({
             "type": "object",
@@ -903,6 +925,10 @@ fn model_schema() -> Value {
             "task_sequences": {
                 "type": "array",
                 "items": { "$ref": "#/$defs/named_task_sequence" }
+            },
+            "user_commands": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/user_command" }
             },
             "process_flow": { "$ref": "#/$defs/process_flow" },
             "fluid_step": { "type": ["number", "null"], "exclusiveMinimum": 0 },
