@@ -3085,6 +3085,8 @@ struct OpenFlexApp {
     model_trigger_text: [String; 3],
     /// JSON buffer for `model.user_events` (the panel edits them as a list).
     user_events_text: String,
+    /// JSON buffer for `model.user_commands`.
+    user_commands_text: String,
     /// Row buffers for the performance-measure editor: (name, expression, unit).
     kpi_edit: Vec<(String, String, String)>,
     /// Name buffer for a new global variable / pick list.
@@ -3240,6 +3242,7 @@ impl OpenFlexApp {
             model_description: String::new(),
             model_trigger_text: [String::new(), String::new(), String::new()],
             user_events_text: String::new(),
+            user_commands_text: String::new(),
             kpi_edit: Vec::new(),
             gv_name: String::new(),
             pl_name: String::new(),
@@ -3405,6 +3408,31 @@ impl OpenFlexApp {
 
     /// Applies the three model-trigger JSON buffers through the single edit
     /// funnel, so a malformed action never reaches the model.
+    /// `user_commands` is a model-level list of named script functions; the
+    /// panel edits it as JSON, and the model validates names and bodies.
+    fn apply_user_commands(&mut self) {
+        let text = self.user_commands_text.trim();
+        let commands: Vec<openflex_model::UserCommand> = if text.is_empty() {
+            Vec::new()
+        } else {
+            match serde_json::from_str(text) {
+                Ok(commands) => commands,
+                Err(error) => {
+                    self.error = Some(format!("invalid user commands JSON: {error}"));
+                    return;
+                }
+            }
+        };
+        let count = commands.len();
+        let committed = self.commit_model_edit("edit user commands", move |model| {
+            model.user_commands = commands;
+            Ok(())
+        });
+        if committed {
+            self.status = format!("{count} user command(s)");
+        }
+    }
+
     /// `user_events` is a model-level list, so it gets the same JSON buffer +
     /// apply treatment as the model triggers.
     fn apply_user_events(&mut self) {
@@ -4193,6 +4221,7 @@ impl OpenFlexApp {
         // The model-trigger buffers belong to the previous document too.
         self.model_trigger_text = [String::new(), String::new(), String::new()];
         self.user_events_text.clear();
+        self.user_commands_text.clear();
         // Table buffers belong to the previous document too.
         self.table_edit.clear();
         self.table_column_edit.clear();
@@ -9401,6 +9430,40 @@ impl eframe::App for OpenFlexApp {
                             self.apply_user_events();
                         }
                     });
+                egui::CollapsingHeader::new(format!(
+                    "User commands ({})",
+                    self.model
+                        .map(|model| model.user_commands.len())
+                        .unwrap_or(0)
+                ))
+                .id_salt("user-commands")
+                .show(ui, |ui| {
+                    let Some(model) = self.model else {
+                        return;
+                    };
+                    if self.user_commands_text.is_empty() && !model.user_commands.is_empty() {
+                        self.user_commands_text =
+                            serde_json::to_string_pretty(&model.user_commands)
+                                .unwrap_or_else(|_| "[]".into());
+                    }
+                    ui.label(
+                        egui::RichText::new(
+                            "named script functions; call them as name() or name(3.0) from any script",
+                        )
+                        .size(9.0_f32)
+                        .color(palette::TEXT_DIM),
+                    );
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.user_commands_text)
+                            .desired_rows(4)
+                            .desired_width(f32::INFINITY)
+                            .font(egui::TextStyle::Monospace)
+                            .hint_text(r#"[ { "name": "ping", "body": "log(1);" } ]"#),
+                    );
+                    if primary_button(ui, true, "Apply user commands") {
+                        self.apply_user_commands();
+                    }
+                });
                 ui.separator();
                 egui::CollapsingHeader::new(format!(
                     "Global variables ({})",
@@ -14930,6 +14993,35 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn user_commands_round_trip_through_the_panel_buffer() {
+        // The panel holds the command list as JSON; the model validates names
+        // and bodies, so the buffer only has to round-trip faithfully.
+        use openflex_model::{UserCommand, UserCommandParameter};
+        let commands = vec![
+            UserCommand {
+                name: "ping".into(),
+                parameters: Vec::new(),
+                body: "log(1);".into(),
+            },
+            UserCommand {
+                name: "setx".into(),
+                parameters: vec![UserCommandParameter { name: "v".into() }],
+                body: "set_label(\"x\", v);".into(),
+            },
+        ];
+        let text = serde_json::to_string_pretty(&commands).expect("json");
+        let back: Vec<UserCommand> = serde_json::from_str(&text).expect("round trip");
+        assert_eq!(back, commands);
+        // The body the model compiles is the wrapped function, and it is the
+        // same text the panel shows.
+        let wrapped = openflex_model::user_command_source(&commands[1]);
+        assert!(wrapped.starts_with("fn setx(v)"), "{wrapped}");
+        assert!(wrapped.contains("set_label"), "{wrapped}");
+        let model = builtin_example("mm1").expect("example");
+        assert!(model.user_commands.is_empty(), "the example declares none");
     }
 
     #[test]

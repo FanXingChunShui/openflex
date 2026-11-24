@@ -14,6 +14,13 @@
   "only `level` variables have a previous sample value (summaries have none)"——静默忽略比报错更糟。
   动作是**模型级**的（与 user events 共用同一个 `run_model_actions`），脚本错误带变量名与模型时间。
 
+### 桌面 GUI
+
+- **用户命令面板**：模型级 `User commands (n)` —— 与 user events / 模型触发器同款「JSON 缓冲 + Apply」，
+  首次打开从模型灌入、之后保留用户输入，应用走 `commit_model_edit` 单一入口。提示写明"任脚本里可当
+  `name()` / `name(3.0)` 调用"。测试 `user_commands_round_trip_through_the_panel_buffer`
+  （含"包装后的函数体以 `fn setx(v)` 开头"的断言）。GUI **146 项**。
+
 ### 报告与 CLI
 
 - **`openflex eval` 现在能看到模型里定义的用户命令**：它此前用 `ScriptEngine::new()`，而模型内的脚本用
