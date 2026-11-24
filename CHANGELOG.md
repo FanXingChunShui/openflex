@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### 模型与引擎
+
+- **`queue.use_transport`（物品要等 transporter 来搬，而不是瞬时流走）**：FlexSim 里最常见的建模形态之一。
+  窄切片：**单出边 Queue** + 指定 dispatcher；物品在搬运完成前**仍计入 queue 内容**，
+  由 dispatcher 的空闲 transporter 直接取车（**不碰 `Dispatcher.requests`**，避免回归既有 operator 任务），
+  事件链 `item_pickup → item_depart → item_dropoff`，距离/速度/装载时间全部复用既有实现。
+  实测（10 单位距离、速度 2）：`item_dropoff` 在 **t=5**，下游 `enter` 同刻；对照的瞬时流模型是 t=0。
+  3 件物品依次在 5 / 15 / 25 完成，`created 3 = completed 3`（守恒）。
+  **逐位不变的钉住方式值得记**：不是"同 seed 跑两遍"，而是**改动前先记录 3 个随机生成 queue 模型的报告 SHA-256 常量**，
+  字段缺省时报告必须与那些常量一致——把"95% 有把握"变成可验证。
+  validate 拒绝：空串、指向非 dispatcher、无可用执行器、**非唯一出边**（`exactly one output connection`）。
+  **未完成（下一刀）**：无车唤醒细化、checkpoint 保存/恢复运输状态、trace 全链路断言、同 seed 逐位相同。
+
+
 ### 工具与 CI
 
 - **冒烟套件从 11 项扩到 15 项**：新增 `OnChange`（`time` 变量 interval 5 → 恰好在 10/15/20/25/30 触发）、

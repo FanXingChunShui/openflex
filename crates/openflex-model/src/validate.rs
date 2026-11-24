@@ -481,6 +481,20 @@ fn validate_connection(
     issues
 }
 
+/// task-202: kinds a dispatcher can assign to item transports.
+fn is_task_executer_kind(kind: ObjectKind) -> bool {
+    matches!(
+        kind,
+        ObjectKind::Transporter
+            | ObjectKind::Person
+            | ObjectKind::Agv
+            | ObjectKind::Elevator
+            | ObjectKind::Robot
+            | ObjectKind::Crane
+            | ObjectKind::AsrsVehicle
+    )
+}
+
 fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
     let location = |field: &str| format!("objects.{}.{}", object.name, field);
     let mut issues = Vec::new();
@@ -690,6 +704,71 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                     location("batch_max_wait"),
                     "cannot be negative",
                 ));
+            }
+            if let Some(dispatcher) = &params.use_transport {
+                if dispatcher.trim().is_empty() {
+                    issues.push(ValidationIssue::new(
+                        location("use_transport"),
+                        "must not be empty when given",
+                    ));
+                } else {
+                    let outputs: Vec<&crate::model::Connection> = model
+                        .connections
+                        .iter()
+                        .filter(|connection| {
+                            connection.from == object.name
+                                && connection.kind.unwrap_or_default()
+                                    != crate::model::ConnectionKind::S
+                        })
+                        .collect();
+                    if outputs.len() != 1 {
+                        issues.push(ValidationIssue::new(
+                            location("use_transport"),
+                            format!(
+                                "a queue using transport needs exactly one output connection (found {})",
+                                outputs.len()
+                            ),
+                        ));
+                    }
+                    match model.object(dispatcher) {
+                        None => issues.push(ValidationIssue::new(
+                            location("use_transport"),
+                            format!("unknown dispatcher object '{dispatcher}'"),
+                        )),
+                        Some(target) if target.kind != ObjectKind::Dispatcher => {
+                            issues.push(ValidationIssue::new(
+                                location("use_transport"),
+                                format!("'{dispatcher}' is not a dispatcher"),
+                            ));
+                        }
+                        Some(_) => {
+                            let transporters = model
+                                .connections
+                                .iter()
+                                .filter(|connection| {
+                                    let from = model.object(&connection.from);
+                                    let to = model.object(&connection.to);
+                                    from.is_some_and(|object| object.name == *dispatcher)
+                                        && to.is_some_and(|object| {
+                                            is_task_executer_kind(object.kind)
+                                        })
+                                        || to.is_some_and(|object| object.name == *dispatcher)
+                                            && from.is_some_and(|object| {
+                                                is_task_executer_kind(object.kind)
+                                            })
+                                })
+                                .count();
+                            if transporters == 0 {
+                                issues.push(ValidationIssue::new(
+                                    location("use_transport"),
+                                    format!(
+                                        "dispatcher '{dispatcher}' has no connected transporter"
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
             }
         }
         crate::model::ObjectParams::Processor(params) => {

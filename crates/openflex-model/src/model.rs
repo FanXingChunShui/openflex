@@ -1254,6 +1254,7 @@ impl Default for QueueParams {
             timetable: None,
             pull: None,
             triggers: Triggers::default(),
+            use_transport: None,
         }
     }
 }
@@ -1388,6 +1389,11 @@ pub struct QueueParams {
     /// Optional shift plan; outside every window the object is off shift.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shifts: Vec<Shift>,
+
+    /// task-202: items leaving this queue must be carried by a transporter from
+    /// this dispatcher instead of flowing instantly to its single output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub use_transport: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

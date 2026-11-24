@@ -329,6 +329,12 @@ pub(crate) enum EventKind {
     TrackedSample,
     /// task-166: a task executer starts the loaded delivery leg.
     TransportDepart(usize, usize),
+    /// task-202: a transporter reached the queue to pick up an item.
+    ItemPickup(usize, usize),
+    /// task-202: loading finished and the item is on the loaded leg.
+    ItemDepart(usize, usize),
+    /// task-202: the transporter reached the destination queue output.
+    ItemDropoff(usize, usize),
     /// task-173: one explicit-route travel leg reached its target.
     ExplicitLegDone(usize),
     /// task-173: retry an explicit-route leg blocked by traffic control.
@@ -587,6 +593,16 @@ pub(crate) struct ExplicitLeg {
     pub(crate) kind: PendingLeg,
     pub(crate) target: Option<([f64; 2], f64)>,
     pub(crate) duration: Option<f64>,
+}
+
+/// task-202: one queue item handed to a transporter. The item stays in the
+/// queue's `content` until drop-off, so queue accounting never double counts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ItemTransportRt {
+    pub(crate) queue: usize,
+    pub(crate) item_id: u64,
+    pub(crate) destination: usize,
+    pub(crate) connection: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -935,6 +951,14 @@ pub(crate) struct ObjectRt {
     /// task-184: motor power flag (true for non-motors).
     #[serde(default = "true_bool")]
     motor_running: bool,
+    /// task-202: item currently carried by this transporter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    item_transport: Option<ItemTransportRt>,
+    /// task-202: queue-side view of the same in-flight item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    queue_transport: Option<ItemTransportRt>,
+    #[serde(default)]
+    transport_waiting: bool,
     /// task-181: sensing half-width and per-item once flags for decision points.
     #[serde(default)]
     decision_point_ranges: Vec<f64>,
@@ -1096,6 +1120,9 @@ impl ObjectRt {
             photo_eye_states: Vec::new(),
             photo_eye_ranges: Vec::new(),
             motor_running: true,
+            item_transport: None,
+            queue_transport: None,
+            transport_waiting: false,
             decision_point_ranges: Vec::new(),
             decision_handled: Vec::new(),
             join_inputs: 0,
@@ -3860,6 +3887,15 @@ impl<'m> Simulation<'m> {
             EventKind::TransportArrive(transporter, requester) => {
                 self.handle_transport_arrive(transporter, requester)
             }
+            EventKind::ItemPickup(transporter, queue) => {
+                self.handle_item_pickup(transporter, queue)
+            }
+            EventKind::ItemDepart(transporter, queue) => {
+                self.handle_item_depart(transporter, queue)
+            }
+            EventKind::ItemDropoff(transporter, queue) => {
+                self.handle_item_dropoff(transporter, queue)
+            }
             EventKind::OperatorLoaded(transporter, requester) => {
                 self.handle_operator_loaded(transporter, requester)
             }
@@ -5561,6 +5597,11 @@ impl<'m> Simulation<'m> {
             ObjectParams::Rack(params) => params.min_dwell.max(0.0),
             _ => 0.0,
         };
+        // task-202: Queue Use Transport is a narrow, queue-only branch. It
+        // bypasses Dispatcher.requests entirely (see task-202 report).
+        if let Some(dispatcher) = params.use_transport.as_ref() {
+            return self.flow_queue_transport(index, dispatcher, &params);
+        }
         loop {
             if self.objects[index].content.is_empty() {
                 self.objects[index].force_release = false;
@@ -5647,6 +5688,166 @@ impl<'m> Simulation<'m> {
                 self.objects[index].last_picked_level = Some(level.max(0.0) as u32);
             }
         }
+    }
+
+    /// task-202: queue release path for `use_transport`. It keeps the item in
+    /// `content` until drop-off and only assigns a free transporter; no
+    /// `Dispatcher.requests` entry and no operator/task-sequence semantics.
+    fn flow_queue_transport(
+        &mut self,
+        index: usize,
+        dispatcher: &str,
+        params: &openflex_model::QueueParams,
+    ) -> Result<(), SimError> {
+        if self.objects[index].queue_transport.is_some() {
+            self.set_state(index, State::Busy);
+            return Ok(());
+        }
+        let Some(&dispatcher_index) = self.by_name.get(dispatcher) else {
+            self.set_state(index, State::Blocked);
+            return Ok(());
+        };
+        if self.objects[index].content.is_empty() {
+            self.set_state(index, State::Idle);
+            return Ok(());
+        }
+        let position = self.pick_queue_position(index, &params.order);
+        let Some(item) = self.objects[index].content.get(position).cloned() else {
+            return Ok(());
+        };
+        // The destination is the unique output connection; validation pins
+        // that down, so `route` cannot silently choose another port.
+        let Some(connection) = self.route(index, &item)? else {
+            self.set_state(index, State::Blocked);
+            return Ok(());
+        };
+        if !self.conn_accepts(connection) {
+            self.set_state(index, State::Blocked);
+            return Ok(());
+        }
+        let destination = self.conns[connection].to;
+        let Some(transporter) = self.pick_item_transporter(dispatcher_index, index) else {
+            // The second slice adds the wake-up; the happy path only needs a
+            // free transporter at request time.
+            self.objects[index].transport_waiting = true;
+            self.set_state(index, State::Blocked);
+            return Ok(());
+        };
+        let job = ItemTransportRt {
+            queue: index,
+            item_id: item.id,
+            destination,
+            connection,
+        };
+        self.objects[index].queue_transport = Some(job.clone());
+        self.objects[index].transport_waiting = false;
+        self.objects[transporter].item_transport = Some(job);
+        self.objects[transporter].tasks += 1;
+        self.objects[transporter].serving_requester = Some(index);
+        self.objects[transporter].acc.input += 1;
+        self.objects[transporter].task_distance =
+            self.transport_estimate_distance(transporter, index);
+        self.set_state(transporter, State::Busy);
+        self.set_executor_activity(transporter, ExecutorActivity::TravelEmpty);
+        let distance = self.transport_object_distance(transporter, transporter, index);
+        let travel = distance / self.transport_speed(transporter);
+        self.schedule(self.now + travel, EventKind::ItemPickup(transporter, index));
+        Ok(())
+    }
+
+    /// Select an idle transporter without touching `Dispatcher.requests`.
+    fn pick_item_transporter(&self, dispatcher: usize, queue: usize) -> Option<usize> {
+        self.transporters[dispatcher]
+            .iter()
+            .copied()
+            .filter(|&transporter| {
+                self.objects[transporter].on_shift
+                    && self.objects[transporter].tasks == 0
+                    && self.objects[transporter].item_transport.is_none()
+                    && self.objects[transporter].serving_requester.is_none()
+                    && !self.objects[transporter].charging
+                    && self.shaft_available(transporter)
+            })
+            .min_by(|&left, &right| {
+                self.transport_estimate_travel(left, queue)
+                    .partial_cmp(&self.transport_estimate_travel(right, queue))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    }
+
+    fn handle_item_pickup(&mut self, transporter: usize, queue: usize) -> Result<(), SimError> {
+        let Some(job) = self.objects[transporter].item_transport.clone() else {
+            return Ok(());
+        };
+        if job.queue != queue {
+            return Ok(());
+        }
+        self.set_executor_activity(transporter, ExecutorActivity::Loading);
+        let load = self.transport_load_time(transporter);
+        self.schedule(self.now + load, EventKind::ItemDepart(transporter, queue));
+        Ok(())
+    }
+
+    fn handle_item_depart(&mut self, transporter: usize, queue: usize) -> Result<(), SimError> {
+        let Some(job) = self.objects[transporter].item_transport.clone() else {
+            return Ok(());
+        };
+        if job.queue != queue {
+            return Ok(());
+        }
+        self.set_executor_activity(transporter, ExecutorActivity::TravelLoaded);
+        let distance = self.transport_object_distance(transporter, queue, job.destination);
+        let travel = distance / self.transport_speed(transporter);
+        self.schedule(
+            self.now + travel,
+            EventKind::ItemDropoff(transporter, queue),
+        );
+        Ok(())
+    }
+
+    fn handle_item_dropoff(&mut self, transporter: usize, queue: usize) -> Result<(), SimError> {
+        let Some(job) = self.objects[transporter].item_transport.clone() else {
+            return Ok(());
+        };
+        if job.queue != queue {
+            return Ok(());
+        }
+        let Some(position) = self.objects[queue]
+            .content
+            .iter()
+            .position(|item| item.id == job.item_id)
+        else {
+            return Ok(());
+        };
+        let item = self.objects[queue].content[position].clone();
+        if !self.deliver(queue, job.connection, item.clone())? {
+            // Downstream is still busy: keep the item in the queue and retry
+            // with a real delay (the full wake-up policy is the next slice).
+            self.set_state(transporter, State::Blocked);
+            self.set_state(queue, State::Blocked);
+            self.schedule(
+                self.now + TRAFFIC_RETRY_DELAY,
+                EventKind::ItemDropoff(transporter, queue),
+            );
+            return Ok(());
+        }
+        self.objects[queue].content.remove(position);
+        self.objects[queue].note_content(self.now);
+        self.objects[queue].acc.output += 1;
+        self.objects[queue].acc.stay_sum += self.now - item.entry_time;
+        self.objects[queue].acc.stay_count += 1;
+        self.objects[queue].touch();
+        self.objects[queue].queue_transport = None;
+        self.objects[queue].transport_waiting = false;
+        self.objects[transporter].item_transport = None;
+        self.objects[transporter].serving_requester = None;
+        self.objects[transporter].tasks = self.objects[transporter].tasks.saturating_sub(1);
+        self.objects[transporter].acc.output += 1;
+        self.clear_executor_activity(transporter);
+        self.set_state(transporter, State::Idle);
+        self.set_state(queue, State::Idle);
+        self.flow(queue)?;
+        Ok(())
     }
 
     /// task-44: the rack position the pick policy wants next (`None` = use the
@@ -12403,6 +12604,21 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
             Some(*transporter),
             "transport_depart",
             Some(("requester", *requester as f64)),
+        ),
+        EventKind::ItemPickup(transporter, queue) => (
+            Some(*transporter),
+            "item_pickup",
+            Some(("queue", *queue as f64)),
+        ),
+        EventKind::ItemDepart(transporter, queue) => (
+            Some(*transporter),
+            "item_depart",
+            Some(("queue", *queue as f64)),
+        ),
+        EventKind::ItemDropoff(transporter, queue) => (
+            Some(*transporter),
+            "item_dropoff",
+            Some(("queue", *queue as f64)),
         ),
         EventKind::ExplicitLegDone(transporter) => (Some(*transporter), "explicit_leg_done", None),
         EventKind::ExplicitTrafficRetry(transporter) => {
@@ -21420,5 +21636,142 @@ mod tests {
             serde_json::to_string(&b).expect("json")
         );
         assert_eq!(a.replications, b.replications);
+    }
+
+    fn queue_transport_model(use_transport: bool) -> Model {
+        let field = if use_transport {
+            r#", "use_transport": "D""#
+        } else {
+            ""
+        };
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "queue-transport",
+          "run": {{ "stop_time": 50.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "Q", "kind": "queue", "pos": [0.0, 0.0],
+                "params": {{ "max_content": 10{field} }} }},
+            {{ "name": "K", "kind": "sink", "pos": [0.0, 0.0], "params": {{}} }},
+            {{ "name": "D", "kind": "dispatcher", "pos": [0.0, 0.0], "params": {{}} }},
+            {{ "name": "T", "kind": "transporter", "pos": [10.0, 0.0],
+                "params": {{ "speed": 1.0, "home": "D" }} }}
+          ],
+          "connections": [
+            {{ "from": "S", "to": "Q" }}, {{ "from": "Q", "to": "K" }},
+            {{ "from": "D", "to": "T" }}
+          ]
+        }}"#
+        ))
+        .expect("queue transport model")
+    }
+
+    /// task-202: use_transport delays the downstream arrival by the transporter
+    /// travel time instead of the instant queue hand-off.
+    #[test]
+    fn queue_use_transport_is_slower_than_instant_flow() {
+        let instant = crate::simulate_traced(
+            &queue_transport_model(false),
+            &SimConfig {
+                stop_time: 50.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect("instant");
+        let transported = crate::simulate_traced(
+            &queue_transport_model(true),
+            &SimConfig {
+                stop_time: 50.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect("transported");
+        let enter = |trace: &crate::trace::TraceLog| {
+            trace
+                .events
+                .iter()
+                .find(|event| event.event == "enter" && event.object == "K")
+                .map(|event| event.time)
+                .expect("sink entry")
+        };
+        let instant_time = enter(&instant.1);
+        let transported_time = enter(&transported.1);
+        assert!(
+            transported_time - instant_time >= 10.0 - 1e-6,
+            "expected the 10-unit transporter leg, got {instant_time} -> {transported_time}"
+        );
+    }
+
+    /// task-202: the item remains counted in the queue during transport and is
+    /// completed exactly once (no double count / disappearance).
+    #[test]
+    fn queue_use_transport_conserves_items() {
+        let report = crate::run_model(&queue_transport_model(true)).expect("run");
+        let replication = &report.replications[0];
+        assert_eq!(replication.items_created, 1);
+        assert_eq!(replication.items_completed, 1);
+        assert_eq!(replication.items_in_system, 0);
+    }
+
+    /// task-202: use_transport requires a unique output edge.
+    #[test]
+    fn queue_use_transport_requires_one_output() {
+        let json = r#"{
+          "format": "openflex-model", "version": 1, "name": "queue-multi-out",
+          "run": { "stop_time": 10.0, "seed": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1000.0 },
+                "max_arrivals": 1 } },
+            { "name": "Q", "kind": "queue", "params": { "use_transport": "D" } },
+            { "name": "K1", "kind": "sink", "params": {} },
+            { "name": "K2", "kind": "sink", "params": {} },
+            { "name": "D", "kind": "dispatcher", "params": {} },
+            { "name": "T", "kind": "transporter", "params": { "speed": 1.0 } }
+          ],
+          "connections": [
+            { "from": "S", "to": "Q" },
+            { "from": "Q", "to": "K1" }, { "from": "Q", "to": "K2" },
+            { "from": "D", "to": "T" }
+          ]
+        }"#;
+        let error = Model::from_json(json).expect_err("multiple outputs");
+        assert!(
+            error.to_string().contains("exactly one output connection"),
+            "{error}"
+        );
+    }
+
+    /// task-202: report SHA-256 for three generated queue models without
+    /// `use_transport`, recorded before the engine branch was added. This is
+    /// the bit-identical pin for the "field absent" path (not just golden).
+    #[test]
+    fn queue_report_hashes_without_use_transport_are_unchanged() {
+        let models = [
+            r#"{"format":"openflex-model","version":1,"name":"queue-baseline-0","run":{"stop_time":55.0,"seed":786,"replications":1},"objects":[{"name":"S","kind":"source","params":{"interarrival":{"distribution":"exponential","mean":3.0},"max_arrivals":50,"first_arrival":0.0}},{"name":"Q","kind":"queue","params":{"max_content":5,"order":"fifo"}},{"name":"P","kind":"processor","params":{"process_time":{"distribution":"constant","value":2.0}}},{"name":"K","kind":"sink","params":{}}],"connections":[{"from":"S","to":"Q"},{"from":"Q","to":"P"},{"from":"P","to":"K"}]}"#,
+            r#"{"format":"openflex-model","version":1,"name":"queue-baseline-1","run":{"stop_time":40.0,"seed":133,"replications":1},"objects":[{"name":"S","kind":"source","params":{"interarrival":{"distribution":"exponential","mean":3.0},"max_arrivals":50,"first_arrival":0.0}},{"name":"Q","kind":"queue","params":{"max_content":5,"order":"lifo","batch_size":3,"batch_max_wait":0.0}},{"name":"P","kind":"processor","params":{"process_time":{"distribution":"constant","value":1.0}}},{"name":"K","kind":"sink","params":{}}],"connections":[{"from":"S","to":"Q"},{"from":"Q","to":"P"},{"from":"P","to":"K"}]}"#,
+            r#"{"format":"openflex-model","version":1,"name":"queue-baseline-2","run":{"stop_time":40.0,"seed":264,"replications":1},"objects":[{"name":"S","kind":"source","params":{"interarrival":{"distribution":"exponential","mean":1.0},"max_arrivals":50,"first_arrival":0.0}},{"name":"Q","kind":"queue","params":{"max_content":20,"order":"fifo","batch_size":3,"batch_max_wait":1.5}},{"name":"P","kind":"processor","params":{"process_time":{"distribution":"constant","value":0.5}}},{"name":"K","kind":"sink","params":{}}],"connections":[{"from":"S","to":"Q"},{"from":"Q","to":"P"},{"from":"P","to":"K"}]}"#,
+        ];
+        let expected = [
+            "ea68d31e6ab59e04952d2f1282d5045856edb055068040b7b7720d8a640e3177",
+            "683c9fb8d27e22c0d7a46fc357e0a327a009bebfcab6d10ac0bfc45dc07d140d",
+            "c578fc5abacb4b73c5e449c61b70c420333c2793c7e766ed9f006cbbdf77894d",
+        ];
+        for (index, json) in models.iter().enumerate() {
+            let model = Model::from_json(json).expect("model");
+            let report = crate::run_model(&model).expect("report");
+            let text = serde_json::to_string(&report).expect("json");
+            assert_eq!(
+                crate::sha256::hex(text.as_bytes()),
+                expected[index],
+                "queue baseline {index} changed"
+            );
+        }
     }
 }

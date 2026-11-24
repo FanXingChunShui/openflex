@@ -386,7 +386,8 @@ fn definitions() -> Value {
             "max_content": { "type": "integer", "minimum": 1, "default": 1000 },
             "order": { "$ref": "#/$defs/queue_order" },
             "batch_size": { "type": ["integer", "null"], "minimum": 1 },
-            "batch_max_wait": { "type": "number", "minimum": 0, "default": 0.0 }
+            "batch_max_wait": { "type": "number", "minimum": 0, "default": 0.0 },
+            "use_transport": { "type": ["string", "null"], "minLength": 1 }
         })),
     );
     defs.insert(
