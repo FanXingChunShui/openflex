@@ -1490,6 +1490,21 @@ pub struct FailureParams {
     pub group: Option<String>,
 }
 
+/// task-203: one sequential setup/process step of a MultiProcessor item.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessStep {
+    /// This step's processing time; `None` inherits the object process_time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_time: Option<Distribution>,
+    /// Setup time before this step; `None` means no setup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_time: Option<Distribution>,
+    // Per-step operator counts are deliberately absent until the engine can
+    // request and release them per step: a field that validate accepts and the
+    // engine ignores is worse than no field at all.
+}
+
 /// Multi-slot parallel processor (`MultiProcessor` in FlexSim, B1).
 ///
 /// Every slot runs its own setup/process cycle, so up to `slots` items are
@@ -1538,6 +1553,9 @@ pub struct MultiProcessorParams {
     /// Optional shift plan; outside every window the object is off shift.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shifts: Vec<Shift>,
+    /// task-203: sequential process steps; empty keeps the old one-step path.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<ProcessStep>,
 }
 
 impl Default for MultiProcessorParams {
@@ -1553,6 +1571,7 @@ impl Default for MultiProcessorParams {
             pull: None,
             shifts: Vec::new(),
             triggers: Triggers::default(),
+            steps: Vec::new(),
         }
     }
 }

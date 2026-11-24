@@ -414,7 +414,18 @@ fn definitions() -> Value {
             "setup_time": { "$ref": "#/$defs/distribution" },
             "process_time": { "$ref": "#/$defs/distribution" },
             "setup_operator": { "type": ["string", "null"] },
-            "process_operator": { "type": ["string", "null"] }
+            "process_operator": { "type": ["string", "null"] },
+            "steps": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "process_time": { "$ref": "#/$defs/distribution" },
+                        "setup_time": { "$ref": "#/$defs/distribution" }
+                    },
+                    "additionalProperties": false
+                }
+            }
         })),
     );
     defs.insert(

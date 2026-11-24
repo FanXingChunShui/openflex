@@ -664,6 +664,9 @@ pub enum Phase {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Lane {
     item: Option<FlowItem>,
+    /// task-203: current process-step index (0 when no step list is used).
+    #[serde(default)]
+    step: usize,
     phase: Phase,
     token: u64,
     /// Scheduled end of the current setup/process step.
@@ -10638,23 +10641,64 @@ impl<'m> Simulation<'m> {
             let Some(item) = self.take_content(index, 0) else {
                 break;
             };
-            let setup = self.sample(&params.setup_time).max(0.0);
             self.objects[index].lanes[lane].item = Some(item);
             self.objects[index].lanes[lane].busy_since = self.now;
-            self.objects[index].lanes[lane].token += 1;
-            let token = self.objects[index].lanes[lane].token;
-            if setup > 0.0 {
-                self.objects[index].lanes[lane].phase = Phase::Setup;
-                self.objects[index].lanes[lane].end = self.now + setup;
-                self.schedule(self.now + setup, EventKind::MpDone(index, lane, token));
+            if params.steps.is_empty() {
+                let setup = self.sample(&params.setup_time).max(0.0);
+                self.objects[index].lanes[lane].token += 1;
+                let token = self.objects[index].lanes[lane].token;
+                if setup > 0.0 {
+                    self.objects[index].lanes[lane].phase = Phase::Setup;
+                    self.objects[index].lanes[lane].end = self.now + setup;
+                    self.schedule(self.now + setup, EventKind::MpDone(index, lane, token));
+                } else {
+                    let process = self.sample(&params.process_time).max(0.0);
+                    self.objects[index].lanes[lane].phase = Phase::Processing;
+                    self.objects[index].lanes[lane].end = self.now + process;
+                    self.schedule(self.now + process, EventKind::MpDone(index, lane, token));
+                }
             } else {
-                let process = self.sample(&params.process_time).max(0.0);
-                self.objects[index].lanes[lane].phase = Phase::Processing;
-                self.objects[index].lanes[lane].end = self.now + process;
-                self.schedule(self.now + process, EventKind::MpDone(index, lane, token));
+                self.begin_mp_step(index, lane, 0, &params)?;
             }
         }
         self.refresh_multiprocessor(index)?;
+        Ok(())
+    }
+
+    /// task-203: start the setup (or processing when setup is zero) of one
+    /// sequential step for a slot.
+    fn begin_mp_step(
+        &mut self,
+        index: usize,
+        lane: usize,
+        step_index: usize,
+        params: &openflex_model::MultiProcessorParams,
+    ) -> Result<(), SimError> {
+        let Some(step) = params.steps.get(step_index).cloned() else {
+            return Ok(());
+        };
+        let setup = step
+            .setup_time
+            .as_ref()
+            .map(|distribution| self.sample(distribution).max(0.0))
+            .unwrap_or(0.0);
+        let process_distribution = step
+            .process_time
+            .clone()
+            .unwrap_or(params.process_time.clone());
+        self.objects[index].lanes[lane].step = step_index;
+        self.objects[index].lanes[lane].token += 1;
+        let token = self.objects[index].lanes[lane].token;
+        if setup > 0.0 {
+            self.objects[index].lanes[lane].phase = Phase::Setup;
+            self.objects[index].lanes[lane].end = self.now + setup;
+            self.schedule(self.now + setup, EventKind::MpDone(index, lane, token));
+        } else {
+            let process = self.sample(&process_distribution).max(0.0);
+            self.objects[index].lanes[lane].phase = Phase::Processing;
+            self.objects[index].lanes[lane].end = self.now + process;
+            self.schedule(self.now + process, EventKind::MpDone(index, lane, token));
+        }
         Ok(())
     }
 
@@ -10697,11 +10741,42 @@ impl<'m> Simulation<'m> {
         let Some(params) = self.multiprocessor_params(index) else {
             return Ok(());
         };
-        let Some(current) = self.objects[index].lanes.get(lane) else {
+        let Some(current) = self.objects[index].lanes.get(lane).cloned() else {
             return Ok(());
         };
         if current.token != token || current.item.is_none() {
             return Ok(());
+        }
+        if !params.steps.is_empty() {
+            let step_index = self.objects[index].lanes[lane].step;
+            let step = params.steps.get(step_index).cloned();
+            if current.phase == Phase::Setup {
+                let process_distribution = step
+                    .as_ref()
+                    .and_then(|step| step.process_time.clone())
+                    .unwrap_or(params.process_time.clone());
+                let process = self.sample(&process_distribution).max(0.0);
+                let lane_rt = &mut self.objects[index].lanes[lane];
+                lane_rt.phase = Phase::Processing;
+                lane_rt.token += 1;
+                lane_rt.end = self.now + process;
+                let next_token = lane_rt.token;
+                self.schedule(
+                    self.now + process,
+                    EventKind::MpDone(index, lane, next_token),
+                );
+                self.fire_lifecycle_trigger(index, SimTrigger::SetupFinish);
+                self.refresh_multiprocessor(index)?;
+                return Ok(());
+            }
+            // A process step finished: either move to the next step or release
+            // the item exactly like the old one-step path.
+            self.fire_lifecycle_trigger(index, SimTrigger::ProcessFinish);
+            if step_index + 1 < params.steps.len() {
+                self.begin_mp_step(index, lane, step_index + 1, &params)?;
+                self.refresh_multiprocessor(index)?;
+                return Ok(());
+            }
         }
         if current.phase == Phase::Setup {
             let process = self.sample(&params.process_time).max(0.0);
@@ -21881,6 +21956,260 @@ mod tests {
                 crate::sha256::hex(text.as_bytes()),
                 expected[index],
                 "queue baseline {index} changed"
+            );
+        }
+    }
+
+    fn mp_steps_model(steps: &str) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "mp-steps",
+          "run": {{ "stop_time": 30.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "M", "kind": "multiprocessor", "params": {{
+                "slots": 1, "steps": [{steps}] }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [{{ "from": "S", "to": "M" }}, {{ "from": "M", "to": "K" }}]
+        }}"#
+        ))
+        .expect("mp steps model")
+    }
+
+    /// task-203: two sequential 2.0 process steps complete in 4.0.
+    #[test]
+    fn multiprocessor_steps_sum_process_time() {
+        let model = mp_steps_model(
+            r#"{ "process_time": { "distribution": "constant", "value": 2.0 } },
+               { "process_time": { "distribution": "constant", "value": 2.0 } }"#,
+        );
+        let (_, trace) = crate::simulate_traced(
+            &model,
+            &SimConfig {
+                stop_time: 30.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect("run");
+        let enter = trace
+            .events
+            .iter()
+            .find(|event| event.event == "enter" && event.object == "K")
+            .map(|event| event.time)
+            .expect("enter");
+        assert!((enter - 4.0).abs() < 1e-6, "enter at {enter}");
+    }
+
+    /// task-203: per-step setup times are included in the total.
+    #[test]
+    fn multiprocessor_steps_include_setup_time() {
+        let model = mp_steps_model(
+            r#"{ "setup_time": { "distribution": "constant", "value": 1.0 },
+                  "process_time": { "distribution": "constant", "value": 2.0 } },
+               { "setup_time": { "distribution": "constant", "value": 0.5 },
+                  "process_time": { "distribution": "constant", "value": 1.0 } }"#,
+        );
+        let (_, trace) = crate::simulate_traced(
+            &model,
+            &SimConfig {
+                stop_time: 30.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect("run");
+        let enter = trace
+            .events
+            .iter()
+            .find(|event| event.event == "enter" && event.object == "K")
+            .map(|event| event.time)
+            .expect("enter");
+        assert!((enter - 4.5).abs() < 1e-6, "enter at {enter}");
+    }
+
+    /// task-203: two slots run their step chains in parallel, not serially.
+    #[test]
+    fn multiprocessor_steps_keep_slots_parallel() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "mp-steps-parallel",
+          "run": { "stop_time": 30.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1.0 },
+                "max_arrivals": 2, "first_arrival": 0.0 } },
+            { "name": "M", "kind": "multiprocessor", "params": {
+                "slots": 2, "steps": [
+                  { "process_time": { "distribution": "constant", "value": 2.0 } },
+                  { "process_time": { "distribution": "constant", "value": 2.0 } } ] } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "M" }, { "from": "M", "to": "K" } ]
+        }"#,
+        )
+        .expect("model");
+        let (_, trace) = crate::simulate_traced(
+            &model,
+            &SimConfig {
+                stop_time: 30.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect("run");
+        let lane1 = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "mp_done" && event.object == "M")
+            .filter(|event| event.data.get("lane") == Some(&1.0))
+            .map(|event| event.time)
+            .collect::<Vec<_>>();
+        let enters = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "enter" && event.object == "K")
+            .map(|event| event.time)
+            .collect::<Vec<_>>();
+        assert_eq!(enters.len(), 2, "{enters:?}");
+        assert!(
+            !lane1.is_empty() && lane1[0] < enters[0],
+            "lane1 {lane1:?}, enters {enters:?}"
+        );
+    }
+
+    /// task-203: steps models are deterministic per seed; an explicitly empty
+    /// step list keeps the old report.
+    #[test]
+    fn multiprocessor_steps_are_deterministic() {
+        let model =
+            mp_steps_model(r#"{ "process_time": { "distribution": "constant", "value": 1.0 } }"#);
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
+        let plain = Model::from_json(
+            r#"{
+              "format": "openflex-model", "version": 1, "name": "mp-plain",
+              "run": { "stop_time": 30.0, "seed": 1 },
+              "objects": [
+                { "name": "S", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 1000.0 },
+                    "max_arrivals": 1 } },
+                { "name": "M", "kind": "multiprocessor", "params": {
+                    "steps": [] } },
+                { "name": "K", "kind": "sink", "params": {} }
+              ],
+              "connections": [ { "from": "S", "to": "M" }, { "from": "M", "to": "K" } ]
+            }"#,
+        )
+        .expect("plain");
+        assert!(
+            serde_json::to_string(&plain)
+                .expect("json")
+                .contains("\"multiprocessor\"")
+        );
+    }
+
+    /// task-203: an explicitly empty step list is the same as the absent field.
+    #[test]
+    fn multiprocessor_empty_steps_matches_absent_field() {
+        let with_empty = Model::from_json(
+            r#"{
+              "format": "openflex-model", "version": 1, "name": "mp-empty",
+              "run": { "stop_time": 20.0, "seed": 1 },
+              "objects": [
+                { "name": "S", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 1000.0 },
+                    "max_arrivals": 1 } },
+                { "name": "M", "kind": "multiprocessor", "params": {
+                    "slots": 2, "steps": [] } },
+                { "name": "K", "kind": "sink", "params": {} }
+              ],
+              "connections": [ { "from": "S", "to": "M" }, { "from": "M", "to": "K" } ]
+            }"#,
+        )
+        .expect("empty");
+        let absent = Model::from_json(
+            r#"{
+              "format": "openflex-model", "version": 1, "name": "mp-empty",
+              "run": { "stop_time": 20.0, "seed": 1 },
+              "objects": [
+                { "name": "S", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 1000.0 },
+                    "max_arrivals": 1 } },
+                { "name": "M", "kind": "multiprocessor", "params": { "slots": 2 } },
+                { "name": "K", "kind": "sink", "params": {} }
+              ],
+              "connections": [ { "from": "S", "to": "M" }, { "from": "M", "to": "K" } ]
+            }"#,
+        )
+        .expect("absent");
+        assert_eq!(
+            serde_json::to_string(&crate::run_model(&with_empty).expect("empty report"))
+                .expect("json"),
+            serde_json::to_string(&crate::run_model(&absent).expect("absent report"))
+                .expect("json")
+        );
+    }
+
+    /// task-203: invalid step times/operator counts are rejected by validate.
+    #[test]
+    fn multiprocessor_step_validation_rejects_bad_values() {
+        for step in [
+            r#"{ "process_time": { "distribution": "constant", "value": 0.0 } }"#,
+            r#"{ "setup_time": { "distribution": "constant", "value": -1.0 } }"#,
+            r#"{ "process_time": { "distribution": "constant", "value": -2.0 } }"#,
+        ] {
+            let json = format!(
+                r#"{{
+                  "format": "openflex-model", "version": 1, "name": "mp-bad-step",
+                  "objects": [
+                    {{ "name": "S", "kind": "source", "params": {{}} }},
+                    {{ "name": "M", "kind": "multiprocessor",
+                       "params": {{ "steps": [{step}] }} }},
+                    {{ "name": "K", "kind": "sink", "params": {{}} }}
+                  ],
+                  "connections": [ {{ "from": "S", "to": "M" }}, {{ "from": "M", "to": "K" }} ]
+                }}"#
+            );
+            assert!(
+                Model::from_json(&json).is_err(),
+                "step should be rejected: {step}"
+            );
+        }
+    }
+
+    /// task-203: report SHA-256 for three generated multiprocessor models
+    /// without `steps`, recorded before the engine branch was added.
+    #[test]
+    fn multiprocessor_report_hashes_without_steps_are_unchanged() {
+        let models = [
+            r#"{"format":"openflex-model","version":1,"name":"mp-baseline-0","run":{"stop_time":50.0,"seed":781,"replications":1},"objects":[{"name":"S","kind":"source","params":{"interarrival":{"distribution":"exponential","mean":2.0},"max_arrivals":50,"first_arrival":0.0}},{"name":"M","kind":"multiprocessor","params":{"slots":3,"setup_time":{"distribution":"constant","value":0.5},"process_time":{"distribution":"constant","value":2.0}}},{"name":"K","kind":"sink","params":{}}],"connections":[{"from":"S","to":"M"},{"from":"M","to":"K"}]}"#,
+            r#"{"format":"openflex-model","version":1,"name":"mp-baseline-1","run":{"stop_time":50.0,"seed":685,"replications":1},"objects":[{"name":"S","kind":"source","params":{"interarrival":{"distribution":"exponential","mean":2.0},"max_arrivals":50,"first_arrival":0.0}},{"name":"M","kind":"multiprocessor","params":{"slots":2,"setup_time":{"distribution":"constant","value":0.5},"process_time":{"distribution":"constant","value":1.0}}},{"name":"K","kind":"sink","params":{}}],"connections":[{"from":"S","to":"M"},{"from":"M","to":"K"}]}"#,
+            r#"{"format":"openflex-model","version":1,"name":"mp-baseline-2","run":{"stop_time":50.0,"seed":766,"replications":1},"objects":[{"name":"S","kind":"source","params":{"interarrival":{"distribution":"exponential","mean":2.0},"max_arrivals":50,"first_arrival":0.0}},{"name":"M","kind":"multiprocessor","params":{"slots":3,"setup_time":{"distribution":"constant","value":1.0},"process_time":{"distribution":"constant","value":1.0}}},{"name":"K","kind":"sink","params":{}}],"connections":[{"from":"S","to":"M"},{"from":"M","to":"K"}]}"#,
+        ];
+        let expected = [
+            "14acda280d3311d7a07a6c0125782e0b501ef4efb7c6ea41a9d67e421ed20b4e",
+            "4028c3076270afc7c084dc4311ee316ce9b0478e04c214bb984d7f1f67578a83",
+            "b409190a0fa32b05853800363c549f9974af55cbb195f2c5736bcf967dc60180",
+        ];
+        for (index, json) in models.iter().enumerate() {
+            let model = Model::from_json(json).expect("model");
+            let report = crate::run_model(&model).expect("report");
+            let text = serde_json::to_string(&report).expect("json");
+            assert_eq!(
+                crate::sha256::hex(text.as_bytes()),
+                expected[index],
+                "multiprocessor baseline {index} changed"
             );
         }
     }

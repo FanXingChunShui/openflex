@@ -4,6 +4,16 @@
 
 ### 模型与引擎
 
+- **MultiProcessor 的顺序工序列表**：`MultiProcessorParams.steps`（空不序列化）——物品占一个槽位后
+  **按顺序**跑完每道工序（每步 setup → process），全部完成后才释放；多槽并行不受影响。
+  实测：两步各 2.0 → 下游 `enter` 在 **t=4.0**；setup 1 + process 2 + setup 0.5 + process 1 → **t=4.5**；
+  不写 `steps` 仍是 1.0（原行为）。逐位不变仍用**改动前记录的报告 SHA-256 常量**钉住。
+  **一个刻意的减法**：原计划给每步加 `num_operators`，但引擎本轮只实现到"按步累加时长"，
+  按步申请/释放操作员需要动 MP 的 crew 状态。**与其留一个 validate 接受、引擎忽略的字段，不如先不加**——
+  所以 `ProcessStep` 里干脆没有这个字段，注释写明原因。这正是 `MixerStep.delay` 教训的直接应用。
+
+
+
 - **`queue.use_transport`（物品要等 transporter 来搬，而不是瞬时流走）**：FlexSim 里最常见的建模形态之一。
   窄切片：**单出边 Queue** + 指定 dispatcher；物品在搬运完成前**仍计入 queue 内容**，
   由 dispatcher 的空闲 transporter 直接取车（**不碰 `Dispatcher.requests`**，避免回归既有 operator 任务），

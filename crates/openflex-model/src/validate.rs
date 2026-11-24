@@ -840,6 +840,22 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                     "must be at least 1",
                 ));
             }
+            for (step_index, step) in params.steps.iter().enumerate() {
+                for (field, time) in [
+                    ("process_time", &step.process_time),
+                    ("setup_time", &step.setup_time),
+                ] {
+                    if let Some(distribution) = time {
+                        let field = format!("steps[{step_index}].{field}");
+                        distribution!(field.as_str(), distribution);
+                        if let crate::distribution::Distribution::Constant { value } = distribution
+                            && *value <= 0.0
+                        {
+                            issues.push(ValidationIssue::new(location(&field), "must be positive"));
+                        }
+                    }
+                }
+            }
         }
         crate::model::ObjectParams::Conveyor(params) => {
             if params.speed <= 0.0 {
