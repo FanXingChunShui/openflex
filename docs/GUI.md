@@ -60,6 +60,7 @@ CI 里加了一步「先运行一次 Windows 二进制」（`--version` / `distr
 | 全局变量 | 左侧 `Global variables (n)`：输入名字 `+ variable` 新建（默认 number 型、初值 0、重名被拒）， 逐条改值（失焦提交，保持声明的 `kind`），`x` 删除；表达式用 `$Name` 读取 |
 | 取列表 | 左侧 `Pick lists (n)`：输入名字 `+ pick list` 新建（自动带一个起始条目）， 列表内可增删改条目（`name` / `value` 逐格编辑，条目名重复被拒），`x` 删整表； **每个列表至少保留一个条目**（删最后一条被拒并给出原因）；表达式用 `picklist("list","entry")` 取值 |
 | 性能指标 | 左侧 `Performance measures (n)`：逐行编辑 `name` / `expression` / `unit` 三列， `+ measure` 加一行、`-` 删该行、`Apply measures` 提交； 提交前先做本地检查——**有名字没表达式**（或反之）直接报错且模型不动， 整行全空则**自动忽略**（可留空行不影响提交），`unit` 留空时**不写进 JSON**； 最终经 `commit_model_edit` 走校验→快照→清结果。编辑器下方提示表达式可读 `time` / `created` / `completed` / `$globals` |
+| 运行日志 | `Log (n)`：上一次 **Trace run** 的 `log()` 消息，按「时间 / 对象 / 文本」列出（可滚动）；与 CLI 的 `run --logs`、`trace --logs` 同源 |
 | 故障（breakdowns） | processor 表单的 `breakdowns` 勾选框（不默认套全零块）：勾上后出现 mtbf/mttr 分布编辑器、维修操作员、`first failure`（-1 = 从 mtbf 抽样）、状态白名单文本框、`failure group`（同组共享故障/维修） |
 | 跟踪变量 | `Tracked variables (n)`：JSON 缓冲 + Apply 编辑 `model.tracked_variables`，另有 `sample every`（`tracked_interval`）数字框；提示写明四种 kind 与"`on_change` 只在 level 采样变化时执行" |
 | User events | 报告/模型面板里的 `User events`：与模型触发器同样的「JSON 缓冲 + Apply」，用于按时刻执行的模型级动作（文档首次打开时从模型灌入，之后保留用户输入） |
