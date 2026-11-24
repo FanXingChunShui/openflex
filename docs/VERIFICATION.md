@@ -457,3 +457,37 @@ wasm-bindgen 导出层（cdylib）是 D3 的剩余部分。
 | breakdown | Sink 输入 / down 占比 | 5455 / 0.0909 | 5455 / 0.0908 |
 | combiner-pack | Sink 输入 | 10 | 10 |
 | separator-unpack | Sink 输入 | 40 | 40 |
+
+## 3b. macOS 资产的本地兜底（发布后补件）
+
+CI 的 macOS runner 已经**两次**在发布途中被取消（v1.42.0 与 v1.48.0），症状是
+`Build universal-apple-darwin` / `gui (macos-latest)` 变成 `cancelled`，于是发布少了
+`openflex-<ver>-universal-apple-darwin.tar.gz` 和/或 `OpenFlex-<ver>-universal-apple-darwin.app.zip`。
+
+本机（macOS，已装 `aarch64-apple-darwin` + `x86_64-apple-darwin` 两个 target）可以按 CI 完全相同的方式补齐：
+
+```sh
+# CLI：双架构合并 → 用发布脚本打包
+cargo build --release --locked -p openflex-cli --target aarch64-apple-darwin
+cargo build --release --locked -p openflex-cli --target x86_64-apple-darwin
+mkdir -p dist && lipo -create \
+  target/aarch64-apple-darwin/release/openflex \
+  target/x86_64-apple-darwin/release/openflex -output dist/openflex
+bash scripts/package-release.sh --version <ver> --platform universal-apple-darwin \
+  --binary dist/openflex --out-dir dist
+
+# GUI：同样 lipo 后走 app 打包脚本
+cargo build --release --locked -p openflex-gui --target aarch64-apple-darwin
+cargo build --release --locked -p openflex-gui --target x86_64-apple-darwin
+lipo -create target/{aarch64,x86_64}-apple-darwin/release/openflex-gui -output dist/openflex-gui
+bash scripts/package-gui-app.sh --binary dist/openflex-gui --out dist/gui \
+  --target universal-apple-darwin
+```
+
+补件后**必须重建 `SHA256SUMS.txt`**：下载该 release 的**全部** 14 个资产、逐个 `shasum -a 256`、
+替换那个资产（不要手写追加一行——实测有一次追加时漏了另一个并发上传的文件）。
+
+两个注意：
+- `openflex-gui` **没有 `--version`**，直接执行会开窗并挂住；验证时用 `lipo -info` 或 `codesign -dv`，别运行它。
+- `dist/` 已在 `.gitignore` 里且**不能**再纳入版本库：曾经因为提交过 `dist/`，一个旧的 1.42 包被流水线
+  `打包 dist/*` 带进了 1.43 的发布里（那次事故也记在 CHANGELOG）。
