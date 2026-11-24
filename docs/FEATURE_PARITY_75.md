@@ -133,7 +133,7 @@
 | Creation Trigger（OnCreation，含 row number） | `on_create` | 🟡 | 有触发器；无 `rownumber` 访问变量（表驱动到达时无法知道来自哪一行） |
 | Message Trigger（OnMessage，三个参数） | `on_message` | 🟡 | 有触发器；`SendMessage` 动作**只带 target+delay，无三个用户参数**（`action.rs`） |
 | Reset Trigger | `on_reset` | ✅ | |
-| OnChange Trigger（watchlist 变量变化） | 无 | ⛔ | 无 watchlist 机制 |
+| OnChange Trigger（watchlist 变量变化） | `TrackedVariable.on_change` | ✅ | 复用既有跟踪采样点（`tracked_interval`）与采样器已维护的"上一次值"（随 checkpoint 持久化）；**首次采样不算变化**，变化判定基于采样值（不是连续抖动）。实测 `time` 表达式 interval 5 / stop 30 → 恰好 5 次（`[10,15,20,25,30]`），常量 0 次。`kind != level` 给 `on_change` → validate 明确拒绝。`on_change_fires_once_per_changed_sample`、`on_change_never_fires_for_a_constant`、`on_change_script_runs`、`on_change_on_a_summary_is_rejected` |
 | Collision Trigger | 无 | ⛔ | 无碰撞 |
 | Breakdown/Repair Trigger（OnBreakDown/OnRepair） | `on_breakdown`/`on_repair`；`FailureParams.repair_operator` | ✅ | 故障修复可要求 dispatcher 送操作员到位才开始计时（等待期间保持 `down`、事件驱动、结束只释放该操作员）。`repair_operator_waits_for_the_operator`、`repair_operator_absent_keeps_the_report` |
 | Down/Up Trigger（MTBF 组级） | 无组级触发器 | ⛔ | 只有对象级 `on_breakdown` |
@@ -330,7 +330,7 @@
 > 并把 3 个纯教程/术语页从 🟡 改判为 📄。**权威总数以第 325 行的 ✅39 / 🟡97 / ⛔73 / 📄3 为准**，
 > 下表用来看**缺口集中在哪个目录**，不必逐格对齐。
 
-矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 46 行、🟡 103 行、⛔ 60 行、📄 3 行（参考页，不计入缺口）。
+矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 47 行、🟡 103 行、⛔ 59 行、📄 3 行（参考页，不计入缺口）。
 其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行。
 
 | 状态 | 行数 | 占比 |
