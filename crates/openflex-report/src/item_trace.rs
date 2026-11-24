@@ -454,6 +454,8 @@ pub fn item_event_count(log: &TraceLog) -> usize {
 /// One line of a JSONL trace file.
 ///
 /// The shape is a contract: five keys on every line, `data` included even when
+/// empty, plus an optional sixth `message` key for log-style events (a new key
+/// is additive: readers that ignore it still parse every line).
 /// empty, so a consumer can read the file as a table without special-casing
 /// the first line.
 #[derive(serde::Serialize)]
@@ -463,6 +465,10 @@ struct TraceLine<'a> {
     event: &'a str,
     object: &'a str,
     data: &'a BTreeMap<String, f64>,
+    /// Text payload for log-style events. Written only when present, so files
+    /// without logs keep the original five-key shape and old readers are fine.
+    #[serde(skip_serializing_if = "str::is_empty")]
+    message: &'a str,
 }
 
 /// Write a [`TraceLog`] as JSON Lines, one event per line.
@@ -487,6 +493,7 @@ pub fn write_trace_jsonl(path: &Path, trace: &TraceLog) -> Result<(), crate::Rep
             event: &event.event,
             object: &event.object,
             data: &event.data,
+            message: &event.message,
         };
         serde_json::to_writer(&mut writer, &line).map_err(crate::ReportError::Json)?;
         writer

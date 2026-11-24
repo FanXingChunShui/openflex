@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### 模型与引擎
+
+- **MTBF 组（共享故障/维修）**：`FailureParams.group` —— 同名对象共享**一次**故障周期：
+  组故障时全员 `down` 且各自触发 `on_breakdown`，修复完成时全员恢复且各自 `on_repair`；组间互不影响。
+  实现上组由 **model order 第一个成员（driver）** 持有并调度一次共享时钟，非 driver 不再各自 arm，
+  所以"到底用谁的 mtbf/mttr"是可预测的（validate 还要求同组 `mtbf`/`mttr` 一致，避免隐式歧义）。
+  **决定性验证**：同一模型下，有 `group` 时 **P1 与 P2 都 down 2/30**；去掉 `group`（P2 从 mtbf=100 抽样）时**只有 P1 down**——
+  证明组真的改变了行为，而不是被忽略。
+  checkpoint：组状态不另建易漂移的 map，driver 的 `FailureRt`、全员 `downtime`/`repair_waiting` 都在 `ObjectRt`，
+  deadline 在事件日历；t=6 存盘 resume 与直跑逐位相同。无 `group` 的既有单对象路径逐位不变。
+
+### 报告与 CLI
+
+- **保存的 trace 现在带 `log()` 文本**：CLI 自己有一份 `write_trace`（与 report 里的 `write_trace_jsonl` 重复），
+  它把 `TraceEvent.message` 丢掉了，于是 `run --trace` 存下的 trace 里所有 `script_log` 的 `data` 都是 `{}`、
+  **日志内容根本看不到**。已把 CLI 的写入器**删掉、统一委托给 report 的那一份**（单一实现，避免再漂移），
+  并给 JSONL 增加**可选第六键 `message`**（仅当日志非空时出现，旧文件与旧读者都不受影响）。
+  新命令 `openflex trace <file> --logs`：按时间列出 `script_log` 的消息。测试 `trace_files_carry_script_log_messages`。
+
+
 ### 桌面 GUI
 
 - **故障（breakdowns）编辑器**：GUI 此前**完全没有**故障参数编辑入口——`mtbf`/`mttr`/`repair_operator`/

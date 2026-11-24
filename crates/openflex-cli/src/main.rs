@@ -283,6 +283,9 @@ enum Command {
         /// Group all items by the (compressed) path they took, with counts.
         #[arg(long, conflicts_with_all = ["item", "items"])]
         paths: bool,
+        /// Print the `log()` messages recorded as `script_log` events.
+        #[arg(long, conflicts_with_all = ["item", "items", "paths"])]
+        logs: bool,
         /// Output format.
         #[arg(long, value_enum, default_value_t = Format::Table)]
         format: Format,
@@ -1228,12 +1231,29 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             item,
             items,
             paths,
+            logs,
             format,
             output,
         } => {
             let log = report::read_trace_file(&file)
                 .map_err(|error| Failure::from(error).with_path(&file))?;
-            let text = if paths {
+            let text = if logs {
+                let messages: Vec<String> = log
+                    .events
+                    .iter()
+                    .filter(|event| event.event == "script_log")
+                    .map(|event| {
+                        format!("{:>10.3}  {}  {}", event.time, event.object, event.message)
+                    })
+                    .collect();
+                if messages.is_empty() {
+                    "no script log messages in this trace".to_string()
+                } else {
+                    let mut text = messages.join("\n");
+                    text.push('\n');
+                    text
+                }
+            } else if paths {
                 report::render_path_groups(&log, format.into())?
             } else if items {
                 report::render_item_list(&log, format.into())?
@@ -2055,54 +2075,17 @@ fn replication_trace_path(base: &Path, index: u32) -> PathBuf {
 }
 
 /// One JSONL trace line.
-///
-/// `TraceEvent` skips `data` when it is empty, but a trace file is a data feed:
-/// every line keeps the same five keys so downstream tools can rely on the
-/// schema without special-casing the first event.
-#[derive(serde::Serialize)]
-struct TraceLine<'a> {
-    time: f64,
-    seq: u64,
-    event: &'a str,
-    object: &'a str,
-    data: &'a std::collections::BTreeMap<String, f64>,
-}
-
 /// Write a [`openflex_core::TraceLog`] as JSON Lines, one event per line.
+///
+/// The format is owned by `openflex_report::write_trace_jsonl`; this is only the
+/// CLI's error-mapping wrapper.
 fn write_trace(path: &Path, trace: &openflex_core::TraceLog) -> Result<(), Failure> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent).map_err(|error| {
-            Failure::runtime(anyhow!("could not create {}: {error}", parent.display()))
-        })?;
-    }
-    let file = fs::File::create(path).map_err(|error| {
+    // One writer, in the report crate: the CLI used to carry its own copy and
+    // the two drifted (the copy silently dropped `message`, so `log()` output
+    // never reached a saved trace).
+    report::write_trace_jsonl(path, trace).map_err(|error| {
         Failure::runtime(anyhow!("could not write trace {}: {error}", path.display()))
-    })?;
-    let mut writer = BufWriter::new(file);
-    for event in &trace.events {
-        let line = TraceLine {
-            time: event.time,
-            seq: event.seq,
-            event: &event.event,
-            object: &event.object,
-            data: &event.data,
-        };
-        serde_json::to_writer(&mut writer, &line).map_err(|error| {
-            Failure::runtime(anyhow!(
-                "could not serialise trace event in {}: {error}",
-                path.display()
-            ))
-        })?;
-        writer.write_all(b"\n").map_err(|error| {
-            Failure::runtime(anyhow!("could not write trace {}: {error}", path.display()))
-        })?;
-    }
-    writer.flush().map_err(|error| {
-        Failure::runtime(anyhow!("could not write trace {}: {error}", path.display()))
-    })?;
-    Ok(())
+    })
 }
 
 fn run_experiments(

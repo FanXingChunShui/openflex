@@ -1549,6 +1549,7 @@ impl EditForm {
                             repair_operator: None,
                             first_failure_time: None,
                             count_time_in_states: Vec::new(),
+                            group: None,
                         });
                         changed = true;
                     }
@@ -1599,6 +1600,24 @@ impl EditForm {
                             .map(|name| name.trim().to_string())
                             .filter(|name| !name.is_empty())
                             .collect();
+                        changed = true;
+                    }
+                    // Objects sharing a group fail and repair together.
+                    let mut group = failure.group.clone().unwrap_or_default();
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut group)
+                                .hint_text("failure group (optional)")
+                                .desired_width(f32::INFINITY)
+                                .font(egui::TextStyle::Small),
+                        )
+                        .changed()
+                    {
+                        failure.group = if group.trim().is_empty() {
+                            None
+                        } else {
+                            Some(group.trim().to_string())
+                        };
                         changed = true;
                     }
                 }
@@ -15150,6 +15169,7 @@ mod tests {
             repair_operator: None,
             first_failure_time: None,
             count_time_in_states: Vec::new(),
+            group: None,
         };
         let json = serde_json::to_string(&failure).expect("json");
         let back: FailureParams = serde_json::from_str(&json).expect("round trip");

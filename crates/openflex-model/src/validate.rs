@@ -144,6 +144,45 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
         }
     }
 
+    // A8/task-201: members of one MTBF group must agree on the sampled
+    // distributions; otherwise "whose mtbf/mttr drives the group?" would be
+    // ambiguous. The first member in model order is the documented driver.
+    let mut failure_groups: std::collections::BTreeMap<
+        String,
+        (
+            String,
+            crate::distribution::Distribution,
+            crate::distribution::Distribution,
+        ),
+    > = std::collections::BTreeMap::new();
+    for object in &model.objects {
+        if let crate::model::ObjectParams::Processor(params) = &object.params
+            && let Some(failure) = &params.failure
+            && let Some(group) = &failure.group
+            && !group.trim().is_empty()
+        {
+            if let Some((first, mtbf, mttr)) = failure_groups.get(group) {
+                if *mtbf != failure.mtbf || *mttr != failure.mttr {
+                    issues.push(ValidationIssue::new(
+                        format!("objects.{}.failure.group", object.name),
+                        format!(
+                            "mtbf/mttr must match the other members of MTBF group '{group}' (first member '{first}')"
+                        ),
+                    ));
+                }
+            } else {
+                failure_groups.insert(
+                    group.clone(),
+                    (
+                        object.name.clone(),
+                        failure.mtbf.clone(),
+                        failure.mttr.clone(),
+                    ),
+                );
+            }
+        }
+    }
+
     // B3: a join conveyor declares how many upstream belts it merges.
     for object in &model.objects {
         if let crate::model::ObjectParams::Conveyor(params) = &object.params
@@ -702,6 +741,14 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                             format!("unknown runtime state '{state}'"),
                         ));
                     }
+                }
+                if let Some(group) = &failure.group
+                    && group.trim().is_empty()
+                {
+                    issues.push(ValidationIssue::new(
+                        location("failure.group"),
+                        "must not be empty when given",
+                    ));
                 }
             }
         }
@@ -3070,5 +3117,107 @@ mod tests {
             unit: Some("items".into()),
         }];
         assert!(validate_collect(&model).is_empty());
+    }
+
+    fn grouped_failure_model(group1: &str, group2: &str, mtbf1: &str, mtbf2: &str) -> String {
+        format!(
+            r#"{{
+              "format": "openflex-model", "version": 1, "name": "groups",
+              "run": {{ "stop_time": 10.0, "seed": 1 }},
+              "objects": [
+                {{ "name": "S", "kind": "source", "params": {{
+                    "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                    "max_arrivals": 1 }} }},
+                {{ "name": "P1", "kind": "processor", "params": {{
+                    "failure": {{ "mtbf": {mtbf1}, "mttr": {{ "distribution": "constant", "value": 1.0 }},
+                       "group": "{group1}" }} }} }},
+                {{ "name": "P2", "kind": "processor", "params": {{
+                    "failure": {{ "mtbf": {mtbf2}, "mttr": {{ "distribution": "constant", "value": 1.0 }},
+                       "group": "{group2}" }} }} }},
+                {{ "name": "K", "kind": "sink", "params": {{}} }}
+              ],
+              "connections": [
+                {{ "from": "S", "to": "P1" }}, {{ "from": "P1", "to": "P2" }},
+                {{ "from": "P2", "to": "K" }}
+              ]
+            }}"#
+        )
+    }
+
+    #[test]
+    fn failure_group_accepts_matching_members_and_omits_none() {
+        let model = Model::from_json(&grouped_failure_model(
+            "Line",
+            "Line",
+            r#"{ "distribution": "constant", "value": 4.0 }"#,
+            r#"{ "distribution": "constant", "value": 4.0 }"#,
+        ))
+        .expect("matching group");
+        let value = serde_json::to_value(&model).expect("json");
+        assert_eq!(value["objects"][1]["params"]["failure"]["group"], "Line");
+        assert_eq!(value["objects"][2]["params"]["failure"]["group"], "Line");
+
+        let no_group = Model::from_json(&grouped_failure_model(
+            "",
+            "",
+            r#"{ "distribution": "constant", "value": 4.0 }"#,
+            r#"{ "distribution": "constant", "value": 4.0 }"#,
+        ));
+        // Empty groups are rejected, not silently serialized.
+        assert!(no_group.is_err());
+    }
+
+    #[test]
+    fn failure_group_rejects_empty_name() {
+        let error = Model::from_json(&grouped_failure_model(
+            "",
+            "",
+            r#"{ "distribution": "constant", "value": 4.0 }"#,
+            r#"{ "distribution": "constant", "value": 4.0 }"#,
+        ))
+        .expect_err("empty group");
+        let text = error.to_string();
+        assert!(text.contains("failure.group"), "{text}");
+        assert!(text.contains("empty"), "{text}");
+    }
+
+    #[test]
+    fn failure_group_rejects_mismatched_mtbf_or_mttr() {
+        let error = Model::from_json(&grouped_failure_model(
+            "Line",
+            "Line",
+            r#"{ "distribution": "constant", "value": 4.0 }"#,
+            r#"{ "distribution": "constant", "value": 5.0 }"#,
+        ))
+        .expect_err("mismatched group");
+        let text = error.to_string();
+        assert!(text.contains("MTBF group 'Line'"), "{text}");
+    }
+
+    #[test]
+    fn failure_without_group_serializes_without_a_group_key() {
+        let json = r#"{
+          "format": "openflex-model", "version": 1, "name": "single",
+          "run": { "stop_time": 10.0, "seed": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1000.0 },
+                "max_arrivals": 1 } },
+            { "name": "P", "kind": "processor", "params": {
+                "failure": { "mtbf": { "distribution": "constant", "value": 4.0 },
+                             "mttr": { "distribution": "constant", "value": 1.0 } } } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [
+            { "from": "S", "to": "P" }, { "from": "P", "to": "K" }
+          ]
+        }"#;
+        let model = Model::from_json(json).expect("single failure");
+        let value = serde_json::to_value(&model).expect("json");
+        assert!(
+            value["objects"][1]["params"]["failure"]
+                .get("group")
+                .is_none()
+        );
     }
 }

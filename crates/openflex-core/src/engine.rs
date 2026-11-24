@@ -2632,6 +2632,11 @@ struct Simulation<'m> {
     /// task-184: motor -> controlled conveyors and reverse map.
     motor_conveyors: Vec<Vec<usize>>,
     conveyor_motors: Vec<Vec<usize>>,
+    /// task-201: MTBF group of each object (processors only) and the
+    /// model-order driver / member list of each group.
+    failure_group_of: Vec<Option<String>>,
+    failure_group_drivers: HashMap<String, usize>,
+    failure_groups: HashMap<String, Vec<usize>>,
     /// task-173/175: active explicit task chain per executer.
     explicit_routes: HashMap<usize, ExplicitState>,
     /// task-173: target being approached by an active explicit travel leg.
@@ -2786,6 +2791,29 @@ impl<'m> Simulation<'m> {
                 conveyor_motors[connection.to].push(connection.from);
             }
         }
+        // task-201: group membership is model-derived. The first member in
+        // model order drives the shared MTBF/MTTR draws; the runtime clock
+        // lives on that driver's ObjectRt and its event, so checkpoints keep it
+        // without a separate group-state map.
+        let mut failure_group_of = vec![None; model.objects.len()];
+        let mut failure_group_drivers = HashMap::new();
+        let mut failure_groups: HashMap<String, Vec<usize>> = HashMap::new();
+        for (index, object) in model.objects.iter().enumerate() {
+            let ObjectParams::Processor(params) = &object.params else {
+                continue;
+            };
+            let Some(group) = params
+                .failure
+                .as_ref()
+                .and_then(|failure| failure.group.as_ref())
+                .filter(|group| !group.trim().is_empty())
+            else {
+                continue;
+            };
+            failure_group_of[index] = Some(group.clone());
+            failure_group_drivers.entry(group.clone()).or_insert(index);
+            failure_groups.entry(group.clone()).or_default().push(index);
+        }
         let scripts = compile_model_scripts(model)?;
 
         // B7: resolve model-level and object-level process flows into one
@@ -2846,6 +2874,9 @@ impl<'m> Simulation<'m> {
             traffic_controls,
             motor_conveyors,
             conveyor_motors,
+            failure_group_of,
+            failure_group_drivers,
+            failure_groups,
             tracked_exprs,
             tracked_interval,
             tracked_series: BTreeMap::new(),
@@ -4148,6 +4179,13 @@ impl<'m> Simulation<'m> {
         else {
             return;
         };
+        // task-201: a group has one shared clock on its model-order driver.
+        // Non-driver members never arm their own Breakdown event.
+        if let Some(group) = self.failure_group_of.get(index).and_then(Option::as_ref)
+            && self.failure_group_drivers.get(group) != Some(&index)
+        {
+            return;
+        }
         let threshold = match first_failure_time {
             Some(time) if time >= 0.0 => time,
             _ => self.sample(&failure.mtbf).max(EPS),
@@ -11606,6 +11644,19 @@ impl<'m> Simulation<'m> {
 
     fn handle_breakdown(&mut self, index: usize, generation: u64) -> Result<(), SimError> {
         self.settle_failure_clock(index);
+        if self
+            .failure_group_of
+            .get(index)
+            .and_then(Option::as_ref)
+            .is_some()
+            && self
+                .failure_group_of
+                .get(index)
+                .and_then(Option::as_ref)
+                .is_some_and(|group| self.failure_group_drivers.get(group) == Some(&index))
+        {
+            return self.handle_group_breakdown(index, generation);
+        }
         let Some(params) = self.processor_params(index) else {
             return Ok(());
         };
@@ -11660,8 +11711,86 @@ impl<'m> Simulation<'m> {
         Ok(())
     }
 
+    /// task-201: one Breakdown event stops every member of the driver's MTBF
+    /// group, firing each member's own `on_breakdown` exactly once.
+    fn handle_group_breakdown(&mut self, driver: usize, generation: u64) -> Result<(), SimError> {
+        let Some(group) = self.failure_group_of.get(driver).and_then(Option::clone) else {
+            return Ok(());
+        };
+        let members = self.failure_groups.get(&group).cloned().unwrap_or_default();
+        if members.is_empty() {
+            return Ok(());
+        }
+        let Some(failure) = self
+            .processor_params(driver)
+            .and_then(|params| params.failure)
+        else {
+            return Ok(());
+        };
+        // A stale event for a group that is already down must not fire the
+        // member triggers twice; this mirrors the single-object guard.
+        if self.objects[driver].state == State::Down {
+            return Ok(());
+        }
+        // The shared clock is the driver's; stale or early events are retried
+        // exactly like the single-object path.
+        if let Some(clock) = self.objects[driver].failure.clone()
+            && !clock.count_states.is_empty()
+        {
+            if clock.generation != generation {
+                return Ok(());
+            }
+            if clock.up_time + EPS < clock.threshold {
+                let remaining = (clock.threshold - clock.up_time).max(EPS);
+                self.schedule(
+                    self.now + remaining,
+                    EventKind::Breakdown(driver, generation),
+                );
+                return Ok(());
+            }
+        }
+        for &member in &members {
+            self.fire_trigger(member, SimTrigger::OnBreakdown)?;
+            self.add_downtime(member, DowntimeSource::Breakdown);
+        }
+        // The driver's repair operator/MTTR semantics decide the group repair.
+        if let Some(name) = failure.repair_operator.as_ref()
+            && let Some(dispatcher) = self.by_name.get(name).copied()
+            && self.objects[dispatcher].kind == ObjectKind::Dispatcher
+        {
+            self.objects[driver].repair_waiting = true;
+            self.objects[driver].operators_pending =
+                self.objects[driver].operators_pending.saturating_add(1);
+            self.objects[driver].requesting_operator = true;
+            self.objects[dispatcher].requests.push_back(driver);
+            self.dispatch(dispatcher)?;
+            return Ok(());
+        }
+        let repair = self.sample(&failure.mttr).max(0.0);
+        self.schedule(self.now + repair, EventKind::RepairDone(driver));
+        Ok(())
+    }
+
     fn handle_repair(&mut self, index: usize) -> Result<(), SimError> {
         if self.processor_params(index).is_none() {
+            return Ok(());
+        }
+        if let Some(group) = self.failure_group_of.get(index).and_then(Option::clone)
+            && self.failure_group_drivers.get(&group) == Some(&index)
+        {
+            let members = self.failure_groups.get(&group).cloned().unwrap_or_default();
+            for &member in &members {
+                self.fire_trigger(member, SimTrigger::OnRepair)?;
+            }
+            // Re-arm the shared clock on the driver before the group recovers.
+            self.schedule_next_failure(index, None);
+            for &member in &members {
+                self.clear_downtime(member, DowntimeSource::Breakdown);
+            }
+            self.release_repair_operator(index)?;
+            for &member in &members {
+                self.settle_downtime(member)?;
+            }
             return Ok(());
         }
         self.fire_trigger(index, SimTrigger::OnRepair)?;
@@ -21096,5 +21225,200 @@ mod tests {
             messages.contains(&"got"),
             "the message from the hook triggered the processor's handler: {messages:?}"
         );
+    }
+
+    fn mtbf_group_model(
+        processors: &[(String, Option<String>, f64, f64)],
+        triggers: bool,
+    ) -> Model {
+        let trigger_json = if triggers {
+            r#", "triggers": {
+                "on_breakdown": [{ "action": "script", "source": "log(\"down\");" }],
+                "on_repair": [{ "action": "script", "source": "log(\"up\");" }] }"#
+        } else {
+            ""
+        };
+        let mut objects = String::from(
+            r#"          { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1000.0 },
+                "max_arrivals": 1, "first_arrival": 0.0 } }"#,
+        );
+        for (index, (name, group, mtbf, first)) in processors.iter().enumerate() {
+            let group_json = group
+                .as_ref()
+                .map(|group| format!(r#", "group": "{group}""#))
+                .unwrap_or_default();
+            objects.push_str(&format!(
+                r#",
+              {{ "name": "{name}", "kind": "processor", "params": {{
+                "process_time": {{ "distribution": "constant", "value": 1000.0 }},
+                "failure": {{
+                  "mtbf": {{ "distribution": "constant", "value": {mtbf} }},
+                  "mttr": {{ "distribution": "constant", "value": 2.0 }},
+                  "first_failure_time": {first}{group_json} }}{trigger_json} }} }}"#
+            ));
+            let _ = index;
+        }
+        objects.push_str(
+            r#",
+              { "name": "K", "kind": "sink", "params": {} }"#,
+        );
+        let mut connections = String::new();
+        connections.push_str(r#"{ "from": "S", "to": "P1" }"#);
+        for index in 1..processors.len() {
+            connections.push_str(&format!(
+                r#", {{ "from": "P{index}", "to": "P{}" }}"#,
+                index + 1
+            ));
+        }
+        connections.push_str(&format!(
+            r#", {{ "from": "P{}", "to": "K" }}"#,
+            processors.len()
+        ));
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "mtbf-groups",
+          "run": {{ "stop_time": 20.0, "seed": 1, "replications": 1 }},
+          "objects": [
+{objects}
+          ],
+          "connections": [{connections}]
+        }}"#
+        ))
+        .expect("mtbf group model")
+    }
+
+    fn group_processors() -> Vec<(String, Option<String>, f64, f64)> {
+        vec![
+            ("P1".into(), Some("G".into()), 5.0, 5.0),
+            ("P2".into(), Some("G".into()), 5.0, 5.0),
+        ]
+    }
+
+    fn trigger_times(trace: &crate::trace::TraceLog, message: &str) -> Vec<(String, f64)> {
+        trace
+            .events
+            .iter()
+            .filter(|event| event.event == "script_log" && event.message == message)
+            .map(|event| (event.object.clone(), event.time))
+            .collect()
+    }
+
+    /// task-201: one shared group failure drives every member down and fires
+    /// each member's own on_breakdown exactly once; repair fires on_repair once.
+    #[test]
+    fn mtbf_group_stops_every_member_once() {
+        let model = mtbf_group_model(&group_processors(), true);
+        let config = SimConfig {
+            stop_time: 8.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let downs = trigger_times(&trace, "down");
+        let ups = trigger_times(&trace, "up");
+        assert_eq!(downs.len(), 2, "{downs:?}");
+        assert_eq!(ups.len(), 2, "{ups:?}");
+        for member in ["P1", "P2"] {
+            let down: Vec<_> = downs.iter().filter(|(name, _)| name == member).collect();
+            let up: Vec<_> = ups.iter().filter(|(name, _)| name == member).collect();
+            assert_eq!(down.len(), 1, "{member} down {downs:?}");
+            assert_eq!(up.len(), 1, "{member} up {ups:?}");
+            assert!((down[0].1 - 5.0).abs() < 1e-9, "{downs:?}");
+            assert!((up[0].1 - 7.0).abs() < 1e-9, "{ups:?}");
+        }
+    }
+
+    /// task-201: the group is not just independent failures happening at the
+    /// same time; removing it changes the report.
+    #[test]
+    fn mtbf_group_differs_from_independent_failures() {
+        let grouped =
+            crate::run_model(&mtbf_group_model(&group_processors(), false)).expect("group");
+        let independent = crate::run_model(&mtbf_group_model(
+            &[("P1".into(), None, 5.0, 5.0), ("P2".into(), None, 5.0, 6.0)],
+            false,
+        ))
+        .expect("independent");
+        assert_ne!(
+            serde_json::to_string(&grouped).expect("json"),
+            serde_json::to_string(&independent).expect("json")
+        );
+    }
+
+    /// task-201: two groups keep independent clocks.
+    #[test]
+    fn mtbf_groups_are_isolated() {
+        let model = mtbf_group_model(
+            &[
+                ("P1".into(), Some("A".into()), 5.0, 5.0),
+                ("P2".into(), Some("A".into()), 5.0, 5.0),
+                ("P3".into(), Some("B".into()), 7.0, 7.0),
+                ("P4".into(), Some("B".into()), 7.0, 7.0),
+            ],
+            true,
+        );
+        let config = SimConfig {
+            stop_time: 8.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let downs = trigger_times(&trace, "down");
+        for member in ["P1", "P2"] {
+            assert!(
+                downs
+                    .iter()
+                    .any(|(name, time)| name == member && (time - 5.0).abs() < 1e-9),
+                "group A {member}: {downs:?}"
+            );
+        }
+        for member in ["P3", "P4"] {
+            assert!(
+                downs
+                    .iter()
+                    .any(|(name, time)| name == member && (time - 7.0).abs() < 1e-9),
+                "group B {member}: {downs:?}"
+            );
+        }
+    }
+
+    /// task-201: group clock/down state survives a checkpoint and resume.
+    #[test]
+    fn mtbf_group_checkpoint_resumes() {
+        let model = mtbf_group_model(&group_processors(), false);
+        let save = SimConfig {
+            stop_time: 6.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, checkpoint) =
+            crate::simulate_with_checkpoint(&model, &save, 0, None).expect("checkpoint");
+        let resume = SimConfig {
+            stop_time: 20.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let resumed =
+            crate::resume_from_checkpoint(&model, &resume, 0, &checkpoint, 20.0).expect("resume");
+        let direct = crate::simulate(&model, &resume, 0).expect("direct");
+        assert_eq!(
+            serde_json::to_string(&direct).expect("json"),
+            serde_json::to_string(&resumed).expect("json")
+        );
+    }
+
+    /// task-201: group failure is deterministic for the same seed, and the
+    /// no-group failure path is untouched.
+    #[test]
+    fn mtbf_group_is_deterministic() {
+        let model = mtbf_group_model(&group_processors(), false);
+        let a = crate::run_model(&model).expect("first");
+        let b = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&a).expect("json"),
+            serde_json::to_string(&b).expect("json")
+        );
+        assert_eq!(a.replications, b.replications);
     }
 }

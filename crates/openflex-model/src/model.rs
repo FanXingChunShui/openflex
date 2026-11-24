@@ -1472,6 +1472,16 @@ pub struct FailureParams {
     /// `off_shift`.
     #[serde(default)]
     pub count_time_in_states: Vec<String>,
+    /// Objects with the same non-empty group name share one failure/repair
+    /// cycle (FlexSim's MTBF group).
+    ///
+    /// The group is driven by its first member in model order: `mtbf` is
+    /// sampled once there, and its `mttr` / `repair_operator` time the group
+    /// repair. All members must declare the same `mtbf` and `mttr` (validate
+    /// rejects a mismatch); `first_failure_time` and `count_time_in_states`
+    /// remain per-object inputs to the shared clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 /// Multi-slot parallel processor (`MultiProcessor` in FlexSim, B1).

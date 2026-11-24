@@ -5417,6 +5417,46 @@ fn chart_without_measures_says_no_data() {
     assert!(stdout(&output).contains("(no data)"), "{}", stdout(&output));
 }
 
+/// A saved trace must carry the `log()` text: the CLI used to have its own
+/// writer that dropped it, so `openflex trace --logs` printed empty messages.
+#[test]
+fn trace_files_carry_script_log_messages() {
+    let dir = TempDir::new("trace-logs");
+    let model = dir.write(
+        "logs.ofm",
+        r#"{
+          "format": "openflex-model", "version": 1, "name": "logs",
+          "run": { "stop_time": 20.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 5.0 },
+                "max_arrivals": 1, "first_arrival": 0.0,
+                "triggers": { "on_create": [ { "action": "script",
+                  "source": "log(\"hello from trace\");" } ] } } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+    );
+    let trace = dir.join("events.jsonl");
+    let output = openflex(&["run", &path_str(&model), "--trace", &path_str(&trace)]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+
+    let text = std::fs::read_to_string(&trace).expect("trace file");
+    assert!(
+        text.contains("hello from trace"),
+        "the message must reach the trace file: {text}"
+    );
+
+    let output = openflex(&["trace", &path_str(&trace), "--logs"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(
+        stdout(&output).contains("hello from trace"),
+        "--logs must print it: {}",
+        stdout(&output)
+    );
+}
+
 /// `eval` is the scratchpad: it answers model questions without running the
 /// model, and says so plainly when a path needs a run.
 #[test]

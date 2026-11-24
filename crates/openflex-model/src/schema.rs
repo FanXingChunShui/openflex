@@ -186,6 +186,7 @@ fn definitions() -> Value {
                 "mttr": { "$ref": "#/$defs/distribution" },
                 "repair_operator": { "type": ["string", "null"] },
                 "first_failure_time": { "type": ["number", "null"] },
+                "group": { "type": ["string", "null"], "minLength": 1 },
                 "count_time_in_states": {
                     "type": "array",
                     "items": {
