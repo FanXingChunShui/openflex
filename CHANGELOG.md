@@ -9,6 +9,14 @@
   `TraceEvent.message`（本轮上一版刚让它进 trace）直接上屏。测试 `script_logs_become_panel_rows`。GUI **149 项**。
 
 
+### 报告与 CLI
+
+- **`openflex run --logs`**：把脚本与钩子里 `log()` 的消息打到 **stderr**（`--format json` 的 stdout 保持可解析，
+  测试里显式断言了这一点），没有日志时明确说 `no script log messages` 而不是静默。隐含开启 tracing。
+  测试 `run_logs_prints_messages_without_corrupting_stdout`。
+  与 GUI 的 `Log (n)` 面板、`trace --logs`、以及 JSONL 第六键 `message` 是同一条链：
+  **日志一路可读到最后一公里**，而不是只存在某个内部结构里。
+
 ### 工具与 CI
 
 - **新增 `scripts/feature-smoke.py`（11 项端到端冒烟，已接入 CI）**：每个用例都建一个小模型、跑一次 CLI、

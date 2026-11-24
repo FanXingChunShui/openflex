@@ -151,6 +151,10 @@ enum Command {
         /// Write a JSONL event trace; with several replications the files are `FILE.rep0.jsonl`, `FILE.rep1.jsonl`, … (cannot be combined with --parallel > 1 or --resume).
         #[arg(long, value_name = "FILE")]
         trace: Option<PathBuf>,
+        /// Print the `log()` messages from scripts and hooks (to stderr, so
+        /// `--format json` on stdout stays machine-readable). Implies tracing.
+        #[arg(long)]
+        logs: bool,
         /// Write an interval-average object-content time series CSV.
         #[arg(long, value_name = "FILE")]
         timeseries: Option<PathBuf>,
@@ -960,6 +964,7 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             parallel,
             xlsx,
             trace,
+            logs,
             timeseries,
             interval,
             batch_means,
@@ -1067,9 +1072,10 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                     progress,
                 );
             }
-            let report = match trace.as_deref() {
-                Some(trace_path) => execute_traced(&model, &seed, trace_path, progress, quiet)?,
-                None => execute(&model, &seed, parallel, progress)?,
+            let report = if trace.is_some() || logs {
+                execute_traced(&model, &seed, trace.as_deref(), logs, progress, quiet)?
+            } else {
+                execute(&model, &seed, parallel, progress)?
             };
             if let Some(path) = timeseries.as_deref() {
                 write_timeseries(&model, &seed, path, interval, quiet)?;
@@ -2019,7 +2025,8 @@ fn run_configs(model: &Model, seeds: &[u64]) -> Vec<(u32, SimConfig)> {
 fn execute_traced(
     model: &Model,
     seeds: &[u64],
-    path: &Path,
+    path: Option<&Path>,
+    print_logs: bool,
     progress: bool,
     quiet: bool,
 ) -> Result<SimReport, Failure> {
@@ -2027,29 +2034,42 @@ fn execute_traced(
     let several = configs.len() > 1;
     let reporter = Progress::new(progress, configs.len());
     let mut results = Vec::with_capacity(configs.len());
+    let mut logs: Vec<String> = Vec::new();
 
     for (index, config) in &configs {
         let (result, trace) = simulate_traced(model, config, *index)?;
-        let file = if several {
-            replication_trace_path(path, *index)
-        } else {
-            path.to_path_buf()
-        };
-        write_trace(&file, &trace)?;
-        note(
-            quiet,
-            &format!(
-                "{} {} ({} events{})",
-                i18n::t("wrote"),
-                file.display(),
-                trace.len(),
-                if trace.truncated {
-                    ", truncated at the event limit"
-                } else {
-                    ""
+        if let Some(path) = path {
+            let file = if several {
+                replication_trace_path(path, *index)
+            } else {
+                path.to_path_buf()
+            };
+            write_trace(&file, &trace)?;
+            note(
+                quiet,
+                &format!(
+                    "{} {} ({} events{})",
+                    i18n::t("wrote"),
+                    file.display(),
+                    trace.len(),
+                    if trace.truncated {
+                        ", truncated at the event limit"
+                    } else {
+                        ""
+                    }
+                ),
+            );
+        }
+        if print_logs {
+            for event in &trace.events {
+                if event.event == "script_log" {
+                    logs.push(format!(
+                        "{:>10.3}  {}  {}",
+                        event.time, event.object, event.message
+                    ));
                 }
-            ),
-        );
+            }
+        }
         results.push(result);
         reporter.tick();
     }
@@ -2057,6 +2077,16 @@ fn execute_traced(
     let mut report = SimReport::from_replications(model, results);
     if seeds.len() > 1 {
         report.base_seed = seeds[0];
+    }
+    if print_logs {
+        // stderr keeps stdout valid for --format json/csv consumers.
+        if logs.is_empty() {
+            eprintln!("no script log messages");
+        } else {
+            for line in &logs {
+                eprintln!("{line}");
+            }
+        }
     }
     Ok(report)
 }

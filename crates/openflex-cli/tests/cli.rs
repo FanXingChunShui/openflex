@@ -5417,6 +5417,62 @@ fn chart_without_measures_says_no_data() {
     assert!(stdout(&output).contains("(no data)"), "{}", stdout(&output));
 }
 
+/// `run --logs` prints script log messages to stderr, so `--format json` on
+/// stdout stays parseable.
+#[test]
+fn run_logs_prints_messages_without_corrupting_stdout() {
+    let dir = TempDir::new("run-logs");
+    let model = dir.write(
+        "logs.ofm",
+        r#"{
+          "format": "openflex-model", "version": 1, "name": "run-logs",
+          "run": { "stop_time": 20.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 5.0 },
+                "max_arrivals": 1, "first_arrival": 0.0,
+                "triggers": { "on_create": [ { "action": "script",
+                  "source": "log(\"visible in stderr\");" } ] } } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+    );
+    let output = openflex(&["run", &path_str(&model), "--logs", "--format", "json"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(
+        stderr(&output).contains("visible in stderr"),
+        "logs go to stderr: {}",
+        stderr(&output)
+    );
+    // stdout must still be valid JSON after the logs are printed.
+    let report = json(&stdout(&output));
+    assert_eq!(report["completed"]["mean"].as_f64(), Some(1.0));
+
+    // A model with no log() calls says so instead of printing nothing.
+    let quiet = dir.write(
+        "quiet.ofm",
+        r#"{
+          "format": "openflex-model", "version": 1, "name": "quiet",
+          "run": { "stop_time": 10.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 5.0 },
+                "max_arrivals": 1, "first_arrival": 0.0 } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+    );
+    let output = openflex(&["run", &path_str(&quiet), "--logs"]);
+    assert!(output.status.success());
+    assert!(
+        stderr(&output).contains("no script log messages"),
+        "stderr: {}",
+        stderr(&output)
+    );
+}
+
 /// A saved trace must carry the `log()` text: the CLI used to have its own
 /// writer that dropped it, so `openflex trace --logs` printed empty messages.
 #[test]
