@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## v1.47.0 — 2026-11-24
+
+本轮补了两组触发器（任务交接与资源释放），并把 GUI 里**完全无法编辑**的跟踪变量补上编辑面板。
+
+两处值得记的处理方式：
+- `on_receive_task_sequence` 在 FlexSim 里可以**修改**任务序列；我们的序列是模型级声明、运行时只读，
+  所以这个钩子只承诺"触发 + 副作用"，并把这条边界**写进 Rust 文档注释**——不是含糊地做个半成品。
+- `on_resource_available` 覆盖了 **resource 池位释放**与 **transporter `finish_task`** 两个来源；
+  shift 结束、维修完成等其它可用性变化明确记为未覆盖。
+
+另外把「改动 CHANGELOG 时条目插错区块」这个我犯了三次的错误变成了 CI 检查：
+它当场在**已发布的历史区块**里找出 **7 处重复的 `###` 标题**（都是那几次错误替换留下的），已全部合并。
+发布节奏保持**至少 3 小时一版**。
 
 ### 模型与引擎
 
@@ -24,6 +36,14 @@
   测试 `tracked_variables_round_trip_through_the_panel_buffer`（含"summary 类变量带 `on_change` 被 validate 拒绝"）。
   GUI **147 项**。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**1001 passed / 0 failed**；clippy 0 警告、fmt 干净。
+- GUI **147 项**、`openflex-core --lib` **253 项**；`scripts/acceptance.sh` **all golden checks passed**。
+- `check-dead-params.sh` **0 known**；`check-doc-evidence.sh` 47 名可解析；**新增 `check-changelog.sh`** 已接入 CI。
+- Windows 交叉编译 0 错误；fuzz 冒烟 PASS；大模型基准（1 万对象）validate **0.08 s / 24 MB**、run **0.23 s / 58 MB**。
+- 独立实测：3 件模型下 `on_receive_task_sequence` 在 t=0/20/40 各一次、`on_resource_available` 在 t=4/24/44 各一次。
 
 ## v1.46.0 — 2026-11-24
 

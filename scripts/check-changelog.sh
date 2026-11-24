@@ -24,8 +24,17 @@ headings = [(i, line) for i, line in enumerate(lines) if line.startswith("## ")]
 if not headings:
     sys.exit("CHANGELOG.md has no `## ` sections")
 first = headings[0][1]
-if not first.startswith("## Unreleased"):
-    sys.exit(f"the first section must be `## Unreleased`, found {first!r}")
+# Right after a release there is no `## Unreleased` section yet, and the newest
+# version becomes the first section — both shapes are valid. What is never
+# valid is an older version sitting above a newer one (checked below), or
+# `## Unreleased` somewhere in the middle.
+if first.startswith("## Unreleased"):
+    pass
+elif not re.match(r"## v\d+\.\d+\.\d+", first):
+    sys.exit(f"the first section must be `## Unreleased` or a version, found {first!r}")
+for index, (_, line) in enumerate(headings):
+    if line.startswith("## Unreleased") and index != 0:
+        sys.exit(f"`## Unreleased` must be the first section, found at position {index + 1}")
 
 # 2. Version sections must appear newest-first.
 versions = []
