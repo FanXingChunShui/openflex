@@ -18,7 +18,7 @@
 #   * InstallerSha256 必须是 *签名之后* 的 MSI 的哈希：release.yml 在签名步骤
 #     之后才计算 SHA256SUMS-msi.txt，直接取那一行即可。
 PackageIdentifier: FanXingChunShui.OpenFlex
-PackageVersion: 1.49.0
+PackageVersion: 1.50.0
 InstallerLocale: en-US
 Platform:
   - Windows.Desktop
@@ -35,7 +35,7 @@ Commands:
 ReleaseDate: 2026-11-24
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/FanXingChunShui/openflex/releases/download/v1.49.0/openflex-1.49.0-windows-x64.msi
-    InstallerSha256: d4aade174e01fb08ad9b129f3c16f427671849baf55ed33624c344fcd2cdb852
+    InstallerUrl: https://github.com/FanXingChunShui/openflex/releases/download/v1.50.0/openflex-1.50.0-windows-x64.msi
+    InstallerSha256: e26dbbc571ad88c474ab26bb38a050c87fd20fecd2c0621dcae205138b6407b2
 ManifestType: installer
 ManifestVersion: 1.6.0
