@@ -345,3 +345,21 @@ transporter 的任务模型里**没有"搬 item"这个类型**。
    （`DispatcherRequestKind` / item-task），那是一次**零行为变化**的重构，之后才能安全接入任意对象与多车协同。
 
 为什么先做重构再上功能：在共用主循环里加分支开关，是这几轮里最容易留下"看起来能用、边缘处错"的做法。
+
+## MultiProcessor 的按步操作员（需要先做请求抽象）
+
+`ProcessStep` 目前**故意没有** `num_operators` 字段。原因不是懒，而是**按步申请/释放操作员**要求把
+operator 分配从**对象级**改成**对象 + 槽/步骤级**：
+
+- `Dispatcher.requests: VecDeque<usize>` 的元素只有 requester 对象索引，**没有 lane/step 身份**；
+- `ensure_operator` / `operator_held` / `operator_sources` 都是对象级；
+- `grant_operator(index, source)` 只知道对象，无法定向到某个槽；
+- `release_operator(index)` 一次释放该对象的**全部** operator。
+
+在 `grant_operator` 里挂"对象 → 等待 lane"的侧表看似省事，但要同时重新验证释放顺序、resource/dispatcher
+两种来源、preemption、repair operator，以及同一 MP 多槽同时等不同数量 operator 的情形——
+估计 300–500 行、2–3 天，且现有 100+ operator 相关测试全是回归面。
+
+**先做零行为变化的前置重构**：把请求抽象成 `OperatorRequest { requester, lane/step, id, phase }`
+（只改内部结构，钉住 3 个 MP 模型的报告 SHA-256），再在这个基础上加按步操作员。
+这和 `Use Transport` 完整语义的结论一致：**共享主循环上的语义扩展，先抽象、后加功能**。
