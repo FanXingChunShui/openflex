@@ -3087,6 +3087,8 @@ struct OpenFlexApp {
     user_events_text: String,
     /// JSON buffer for `model.user_commands`.
     user_commands_text: String,
+    /// JSON buffer for `model.tracked_variables`.
+    tracked_variables_text: String,
     /// Row buffers for the performance-measure editor: (name, expression, unit).
     kpi_edit: Vec<(String, String, String)>,
     /// Name buffer for a new global variable / pick list.
@@ -3243,6 +3245,7 @@ impl OpenFlexApp {
             model_trigger_text: [String::new(), String::new(), String::new()],
             user_events_text: String::new(),
             user_commands_text: String::new(),
+            tracked_variables_text: String::new(),
             kpi_edit: Vec::new(),
             gv_name: String::new(),
             pl_name: String::new(),
@@ -3408,6 +3411,32 @@ impl OpenFlexApp {
 
     /// Applies the three model-trigger JSON buffers through the single edit
     /// funnel, so a malformed action never reaches the model.
+    /// Tracked variables drive the report's series and summaries; the panel
+    /// edits the list as JSON (the `on_change` action arrays make a per-field
+    /// form more confusing than helpful).
+    fn apply_tracked_variables(&mut self) {
+        let text = self.tracked_variables_text.trim();
+        let variables: Vec<openflex_model::TrackedVariable> = if text.is_empty() {
+            Vec::new()
+        } else {
+            match serde_json::from_str(text) {
+                Ok(variables) => variables,
+                Err(error) => {
+                    self.error = Some(format!("invalid tracked variables JSON: {error}"));
+                    return;
+                }
+            }
+        };
+        let count = variables.len();
+        let committed = self.commit_model_edit("edit tracked variables", move |model| {
+            model.tracked_variables = variables;
+            Ok(())
+        });
+        if committed {
+            self.status = format!("{count} tracked variable(s)");
+        }
+    }
+
     /// `user_commands` is a model-level list of named script functions; the
     /// panel edits it as JSON, and the model validates names and bodies.
     fn apply_user_commands(&mut self) {
@@ -4222,6 +4251,7 @@ impl OpenFlexApp {
         self.model_trigger_text = [String::new(), String::new(), String::new()];
         self.user_events_text.clear();
         self.user_commands_text.clear();
+        self.tracked_variables_text.clear();
         // Table buffers belong to the previous document too.
         self.table_edit.clear();
         self.table_column_edit.clear();
@@ -9462,6 +9492,56 @@ impl eframe::App for OpenFlexApp {
                     );
                     if primary_button(ui, true, "Apply user commands") {
                         self.apply_user_commands();
+                    }
+                });
+                egui::CollapsingHeader::new(format!(
+                    "Tracked variables ({})",
+                    self.model
+                        .map(|model| model.tracked_variables.len())
+                        .unwrap_or(0)
+                ))
+                .id_salt("tracked-variables")
+                .show(ui, |ui| {
+                    let Some(model) = self.model else {
+                        return;
+                    };
+                    if self.tracked_variables_text.is_empty() && !model.tracked_variables.is_empty()
+                    {
+                        self.tracked_variables_text =
+                            serde_json::to_string_pretty(&model.tracked_variables)
+                                .unwrap_or_else(|_| "[]".into());
+                    }
+                    let mut interval = model.tracked_interval.unwrap_or(1.0);
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut interval)
+                                .speed(0.5)
+                                .range(0.01..=1_000_000.0)
+                                .prefix("sample every "),
+                        )
+                        .changed()
+                    {
+                        self.commit_model_edit("edit tracked interval", move |model| {
+                            model.tracked_interval = Some(interval);
+                            Ok(())
+                        });
+                    }
+                    ui.label(
+                        egui::RichText::new(
+                            "kind: level / state / staytime / kinetic; on_change runs when a level sample changes",
+                        )
+                        .size(9.0_f32)
+                        .color(palette::TEXT_DIM),
+                    );
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.tracked_variables_text)
+                            .desired_rows(4)
+                            .desired_width(f32::INFINITY)
+                            .font(egui::TextStyle::Monospace)
+                            .hint_text(r#"[ { "name": "W", "expression": "time" } ]"#),
+                    );
+                    if primary_button(ui, true, "Apply tracked variables") {
+                        self.apply_tracked_variables();
                     }
                 });
                 ui.separator();
@@ -14993,6 +15073,52 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn tracked_variables_round_trip_through_the_panel_buffer() {
+        // The panel edits the list as JSON, including the `on_change` actions
+        // that a per-field form could not express.
+        use openflex_model::{Action, TrackedKind, TrackedVariable};
+        let variables = vec![
+            TrackedVariable {
+                name: "W".into(),
+                expression: "time".into(),
+                kind: TrackedKind::Level,
+                on_change: vec![Action::Script {
+                    source: "log(1);".into(),
+                }],
+            },
+            TrackedVariable {
+                name: "States".into(),
+                expression: "time".into(),
+                kind: TrackedKind::State,
+                on_change: Vec::new(),
+            },
+        ];
+        let text = serde_json::to_string_pretty(&variables).expect("json");
+        let back: Vec<TrackedVariable> = serde_json::from_str(&text).expect("round trip");
+        assert_eq!(back, variables);
+        assert!(text.contains("on_change"), "{text}");
+        // A summary kind cannot carry `on_change`; validate rejects it.
+        let model = Model::from_json(
+            r#"{
+              "format": "openflex-model", "version": 1, "name": "tv",
+              "run": { "stop_time": 10.0, "replications": 1 },
+              "tracked_variables": [ { "name": "S", "expression": "time",
+                "kind": "staytime", "on_change": [ { "action": "script", "source": "log(1);" } ] } ],
+              "objects": [
+                { "name": "Src", "kind": "source", "params": {} },
+                { "name": "K", "kind": "sink", "params": {} }
+              ],
+              "connections": [ { "from": "Src", "to": "K" } ]
+            }"#,
+        );
+        let error = model.expect_err("staytime with on_change must be rejected");
+        assert!(
+            format!("{error}").contains("only `level` variables"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
