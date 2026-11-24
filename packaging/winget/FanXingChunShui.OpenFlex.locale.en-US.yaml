@@ -5,7 +5,7 @@
 # 只有 PackageVersion 需要随版本更新；其余字段是产品元数据。
 # 发布到 winget-pkgs 前请确认 URL 可访问、License 与仓库一致。
 PackageIdentifier: FanXingChunShui.OpenFlex
-PackageVersion: 1.46.0
+PackageVersion: 1.47.0
 PackageLocale: en-US
 Publisher: OpenFlex contributors
 PublisherUrl: https://github.com/FanXingChunShui/openflex
