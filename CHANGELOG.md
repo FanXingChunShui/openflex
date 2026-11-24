@@ -127,6 +127,10 @@
 
 ### 桌面 GUI
 
+- **任务步骤的"×2 执行器"开关**：dispatcher 的步骤编辑器每行加一个 `×2` 复选框（悬停说明"需要两个执行器同时到场才开始，仅 append 模式"）。
+  勾选会把 `Simple` 步骤自动升级成 `Detailed`（保留原 kind），取消勾选写回 `involved: 1`——后者**不序列化**，所以与旧模型逐字节一致。
+  测试 `a_step_can_be_made_coordinated_from_the_editor`。GUI **145 项**。
+
 - **流体罐液位标记表单**：`level marks (n)` 列表可增删，行内编辑名字与阈值（阈值输入框**按容量夹取**，
   越界也写不进去）；带 `on_rise`/`on_fall` 钩子的标记会显示 `hooks` 提示，动作列表仍在 JSON 编辑区。
   测试 `fluid_marks_round_trip_and_stay_within_capacity`（含"标记高于容量被 model 拒绝"）。GUI **144 项**。

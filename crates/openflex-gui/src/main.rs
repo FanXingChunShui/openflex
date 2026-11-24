@@ -2014,6 +2014,44 @@ impl EditForm {
                                     }
                                 }
                             });
+                        // A coordinated step needs two executors: both must
+                        // arrive before it starts. Toggling a simple step makes
+                        // it detailed so the flag has somewhere to live.
+                        let mut needs_two = step.involved() == 2;
+                        if ui
+                            .checkbox(&mut needs_two, "\u{00d7}2")
+                            .on_hover_text(
+                                "two executors must arrive before this step starts (append mode only)",
+                            )
+                            .changed()
+                        {
+                            *step = match step {
+                                TaskStep::Simple(kind) | TaskStep::Detailed { kind, .. } => {
+                                    TaskStep::Detailed {
+                                        kind: *kind,
+                                        duration: match step {
+                                            TaskStep::Detailed { duration, .. } => {
+                                                duration.clone()
+                                            }
+                                            _ => None,
+                                        },
+                                        condition: match step {
+                                            TaskStep::Detailed { condition, .. } => {
+                                                condition.clone()
+                                            }
+                                            _ => None,
+                                        },
+                                        target: match step {
+                                            TaskStep::Detailed { target, .. } => target.clone(),
+                                            _ => None,
+                                        },
+                                        involved: if needs_two { 2 } else { 1 },
+                                    }
+                                }
+                                TaskStep::Extra { .. } => step.clone(),
+                            };
+                            changed = true;
+                        }
                         if index > 0 && ui.small_button("up").clicked() {
                             swap = Some((index - 1, index));
                         }
@@ -14892,6 +14930,48 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn a_step_can_be_made_coordinated_from_the_editor() {
+        // The editor toggles `involved`; a simple step must become detailed so
+        // the flag can live somewhere, and switching back must not lose the
+        // step's kind.
+        use openflex_model::{TaskStep, TaskStepKind};
+        let simple = TaskStep::Simple(TaskStepKind::Load);
+        assert_eq!(simple.involved(), 1);
+        // What the editor writes when the box is ticked.
+        let coordinated = TaskStep::Detailed {
+            kind: TaskStepKind::Load,
+            duration: None,
+            condition: None,
+            target: None,
+            involved: 2,
+        };
+        assert_eq!(coordinated.involved(), 2);
+        assert_eq!(coordinated.kind(), TaskStepKind::Load, "kind survives");
+        // And `involved: 1` serialises exactly like the old shape.
+        let TaskStep::Detailed {
+            kind,
+            duration,
+            condition,
+            target,
+            ..
+        } = coordinated.clone()
+        else {
+            panic!("expected a detailed step");
+        };
+        let plain = TaskStep::Detailed {
+            kind,
+            duration,
+            condition,
+            target,
+            involved: 1,
+        };
+        let json = serde_json::to_string(&plain).expect("json");
+        assert!(!json.contains("involved"), "{json}");
+        let json = serde_json::to_string(&coordinated).expect("json");
+        assert!(json.contains("\"involved\":2"), "{json}");
     }
 
     #[test]
