@@ -375,6 +375,121 @@ def case_fluid_mark():
     assert len(rises) == 1, f"one rise expected, got {len(rises)}"
 
 
+def case_on_change():
+    """A tracked variable with `on_change` fires once per *changed* sample."""
+    path = write(
+        "on_change",
+        model(
+            [
+                {"name": "S", "kind": "source", "params": {
+                    "interarrival": {"distribution": "constant", "value": 1000.0}}},
+                {"name": "K", "kind": "sink", "params": {}},
+            ],
+            [{"from": "S", "to": "K"}],
+            run={"stop_time": 30.0, "seed": 1, "replications": 1},
+            tracked_interval=5.0,
+            tracked_variables=[{
+                "name": "W", "expression": "time",
+                "on_change": [{"action": "script", "source": 'log("CHANGED");'}]}],
+        ),
+    )
+    events = trace_of(path)
+    logs = [round(e["time"], 1) for e in events if e["event"] == "script_log"]
+    # Samples land on 5,10,15,20,25,30; the first has nothing to compare to.
+    assert logs == [10.0, 15.0, 20.0, 25.0, 30.0], f"on_change fired at {logs}"
+
+
+def case_combiner_pack():
+    """A combiner packs `components_per_container` components into a container.
+
+    Port 0 is the container input and port 1 the components, so the container
+    source is listed first.
+    """
+    path = write(
+        "combiner",
+        model(
+            [
+                {"name": "Cont", "kind": "source", "params": {
+                    "interarrival": {"distribution": "constant", "value": 10.0},
+                    "first_arrival": 0.0}},
+                {"name": "Comp", "kind": "source", "params": {
+                    "interarrival": {"distribution": "constant", "value": 3.0},
+                    "first_arrival": 0.0}},
+                {"name": "C", "kind": "combiner", "params": {
+                    "mode": "pack", "components_per_container": 2}},
+                {"name": "K", "kind": "sink", "params": {}},
+            ],
+            [{"from": "Cont", "to": "C"}, {"from": "Comp", "to": "C"},
+             {"from": "C", "to": "K"}],
+            run={"stop_time": 100.0, "seed": 1, "replications": 1},
+        ),
+    )
+    rep = report(path)
+    # One container every 10 s up to t=100 → ten packs of two components each.
+    assert out_count(rep, "K") == 10.0, rep["objects"]["K"]
+
+
+def case_timetable_off_shift():
+    """A processor inside a timetable window does not process outside it."""
+    def build(timetable):
+        params = {"process_time": {"distribution": "constant", "value": 1.0}}
+        if timetable:
+            params["timetable"] = timetable
+        return model(
+            [
+                {"name": "S", "kind": "source", "params": {
+                    "interarrival": {"distribution": "constant", "value": 2.0},
+                    "max_arrivals": 6}},
+                {"name": "P", "kind": "processor", "params": params},
+                {"name": "K", "kind": "sink", "params": {}},
+            ],
+            [{"from": "S", "to": "P"}, {"from": "P", "to": "K"}],
+            run={"stop_time": 30.0, "seed": 1, "replications": 1},
+        )
+
+    open_all = out_count(report(write("tt_open", build(None))), "K")
+    closed_late = out_count(
+        report(write("tt_window", build({"windows": [{"start": 0.0, "end": 5.0}]}))), "K"
+    )
+    assert open_all == 6.0, f"all six should finish with no timetable: {open_all}"
+    assert closed_late < open_all, (
+        f"the window must stop work after t=5: {closed_late} vs {open_all}"
+    )
+
+
+def case_checkpoint_matches_straight_run():
+    """Saving at t=15 and resuming to t=30 equals one straight run."""
+    path = write(
+        "ckpt",
+        model(
+            [
+                {"name": "S", "kind": "source", "params": {
+                    "interarrival": {"distribution": "uniform", "min": 1.0, "max": 3.0}}},
+                {"name": "P", "kind": "processor", "params": {
+                    "process_time": {"distribution": "uniform", "min": 1.0, "max": 4.0}}},
+                {"name": "K", "kind": "sink", "params": {}},
+            ],
+            [{"from": "S", "to": "P"}, {"from": "P", "to": "K"}],
+            run={"stop_time": 30.0, "seed": 7, "replications": 1},
+        ),
+    )
+    straight = run("run", path, "--format", "json")
+    assert straight.returncode == 0, straight.stderr
+    checkpoint = os.path.join(WORK, "ckpt.json")
+    first = run("run", path, "--until", "15", "--save-checkpoint", checkpoint)
+    assert first.returncode == 0, first.stderr
+    resumed = run(
+        "run", path, "--until", "30", "--resume", checkpoint, "--format", "json"
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    whole = json.loads(straight.stdout)
+    part = json.loads(resumed.stdout)
+    for key in ("completed", "created"):
+        assert whole[key] == part[key], (
+            f"{key} differs after resume: {whole[key]} vs {part[key]}"
+        )
+
+
 CASES = [
     ("slug groups", case_slug_groups),
     ("merge controller", case_merge_controller),
@@ -387,6 +502,10 @@ CASES = [
     ("coordinated step", case_involved_two),
     ("trace log text", case_trace_keeps_log_text),
     ("fluid mark", case_fluid_mark),
+    ("on change", case_on_change),
+    ("combiner pack", case_combiner_pack),
+    ("timetable off shift", case_timetable_off_shift),
+    ("checkpoint resume", case_checkpoint_matches_straight_run),
 ]
 
 
