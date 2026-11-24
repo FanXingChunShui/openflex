@@ -74,7 +74,7 @@
 | General Page：3D Shapes / 旋转 / 尺寸 | `pos` 仅二维坐标 | 🟡 | 无 3D 形状与朝向；Studio 有 2D/透视投影但形状是占位体 |
 | General Page：OnDraw 自定义绘制与"返回 1 抑制默认绘制" | `triggers.on_draw` 可声明 | 🟡 | schema 与校验支持，**渲染端未接线**（`action.rs` 注释明说 "the renderer integration is a follow-up"） |
 | Labels Page（对象标签，自动复位选项） | 对象级标签 | 🟡 | 无"Automatically Reset Labels"开关；标签复位只能靠 `on_reset` 手动写 |
-| Triggers Page（每对象不同触发器集合） | 21 个触发器（含 `on_load`/`on_unload`/`on_empty`/`on_full`/`on_entry_request`/`on_receive_task_sequence`/`on_resource_available`） | 🟡 | 见 §7 PickLists 明细；仍缺 `OnArrival`/`OnContinue` 等少数对象专属触发器 |
+| Triggers Page（每对象不同触发器集合） | 21 个触发器（含 `on_load`/`on_unload`/`on_empty`/`on_full`/`on_entry_request`/`on_receive_task_sequence`/`on_resource_available`） | 🟡 | 见 §7 PickLists 明细。**`OnArrival`/`OnContinue` 挂不上**：它们是 **NetworkNode 级**触发器，而引擎的旅行者只按**起终点腿**移动、**没有逐节点转移事件**——与已删除的 `max_travelers` 是同一个结构限制（要支持需先实现逐节点遍历，那是路由模型重写） |
 | Statistics Window（实时状态与吞吐面板） | CLI 报告 + Studio 面板 + `--timeseries` | ✅ | 时间加权 content、状态占比、停留时间 |
 | Flow Page（Send To Port / Use Transport / Priority / Preempt） | `connections[].strategy`；`Hold` 对应 −1 | 🟡 | `Use Transport`/`Request Transport From` 无对象级开关，运输靠 `transporter`/`dispatcher` 任务；`Priority`/`Preempt` 只在 Dispatcher 侧部分实现 |
 | Source Page（三种到达风格 + 到达表） | 间隔/批量/首件/上限/停止 + `arrival_schedule_from_table` | ✅ | 表驱动到达已接线（`engine.rs` 读全局表） |
