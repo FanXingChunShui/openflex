@@ -1870,6 +1870,33 @@ impl EditForm {
                 changed |= object_picker(ui, "shaft", &mut p.shaft, &names.any);
             }
             ObjectParams::Dispatcher(p) => {
+                // Global task sequences: reference a named sequence instead of
+                // writing the steps inline. The two are mutually exclusive
+                // (validate rejects both), so setting a name greys the editor.
+                let mut reference = p.task_sequence_ref.clone().unwrap_or_default();
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut reference)
+                            .hint_text("task sequence name (optional)")
+                            .desired_width(220.0)
+                            .font(egui::TextStyle::Small),
+                    );
+                    if reference != p.task_sequence_ref.clone().unwrap_or_default() {
+                        p.task_sequence_ref = if reference.trim().is_empty() {
+                            None
+                        } else {
+                            Some(reference.trim().to_string())
+                        };
+                        changed = true;
+                    }
+                    if p.task_sequence_ref.is_some() {
+                        ui.label(
+                            egui::RichText::new("uses the named sequence")
+                                .size(9.0_f32)
+                                .color(palette::TEXT_DIM),
+                        );
+                    }
+                });
                 changed |= ui
                     .add(
                         egui::DragValue::new(&mut p.max_tasks)
@@ -1894,10 +1921,23 @@ impl EditForm {
                 // Task sequence editor: each step picks its kind and can be
                 // reordered or removed; an empty list keeps the default
                 // travel → load → unload behaviour.
+                let referencing = p.task_sequence_ref.is_some();
                 ui.label(
-                    egui::RichText::new(format!("task steps ({})", p.task_sequence.len()))
-                        .size(9.0_f32)
-                        .color(palette::TEXT_DIM),
+                    egui::RichText::new(if referencing {
+                        format!(
+                            "task steps ({}) — inline steps are ignored while a name is set",
+                            p.task_sequence.len()
+                        )
+                        .to_string()
+                    } else {
+                        format!("task steps ({})", p.task_sequence.len())
+                    })
+                    .size(9.0_f32)
+                    .color(if referencing {
+                        palette::AMBER
+                    } else {
+                        palette::TEXT_DIM
+                    }),
                 );
                 let mut remove: Option<usize> = None;
                 let mut swap: Option<(usize, usize)> = None;
@@ -14786,6 +14826,61 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn a_dispatcher_reference_and_inline_steps_are_mutually_exclusive() {
+        // The form writes `task_sequence_ref` from a text box; an empty box must
+        // clear it rather than leave an empty name, and validate rejects having
+        // both a name and inline steps.
+        use openflex_model::{DispatcherParams, NamedTaskSequence, TaskStep};
+        let json = r#"{
+          "format": "openflex-model", "version": 1, "name": "gts",
+          "run": { "stop_time": 10.0, "replications": 1 },
+          "task_sequences": [ { "name": "Standard", "steps": ["travel", "load"] } ],
+          "objects": [
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} },
+            { "name": "D", "kind": "dispatcher", "params": { "task_sequence_ref": "Standard" } },
+            { "name": "T", "kind": "transporter", "params": {} }
+          ],
+          "connections": [
+            { "from": "S", "to": "K" }, { "from": "D", "to": "T" }
+          ]
+        }"#;
+        let model = Model::from_json(json).expect("model");
+        let dispatcher = model.object("D").expect("dispatcher");
+        let openflex_model::ObjectParams::Dispatcher(params) = &dispatcher.params else {
+            panic!("expected a dispatcher");
+        };
+        assert_eq!(params.task_sequence_ref.as_deref(), Some("Standard"));
+        assert!(params.task_sequence.is_empty(), "inline steps stay empty");
+
+        // The named sequence carries the steps, not the dispatcher.
+        let named: &NamedTaskSequence = &model.task_sequences[0];
+        assert_eq!(named.steps.len(), 2);
+        assert_eq!(
+            named.steps[0],
+            TaskStep::Simple(openflex_model::TaskStepKind::Travel)
+        );
+
+        // Setting both is a validation error, which is what the greyed-out
+        // editor warns about.
+        let both = json.replace(
+            r#""params": { "task_sequence_ref": "Standard" }"#,
+            r#""params": { "task_sequence_ref": "Standard", "task_sequence": ["travel"] }"#,
+        );
+        let error = Model::from_json(&both).expect_err("both must be rejected");
+        assert!(
+            format!("{error}").contains("use exactly one"),
+            "unexpected error: {error}"
+        );
+        // An empty box clears the reference.
+        let cleared = DispatcherParams {
+            task_sequence_ref: None,
+            ..params.clone()
+        };
+        assert!(cleared.task_sequence_ref.is_none());
     }
 
     #[test]

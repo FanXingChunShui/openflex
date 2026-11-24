@@ -71,6 +71,12 @@
   （文档首次打开时从模型灌入，之后保留用户输入；应用走 `commit_model_edit` 单一入口，因此撤销/校验一致）。
   测试 `user_events_round_trip_through_the_panel_buffer`。GUI **142 项**。
 
+### 桌面 GUI
+
+- **dispatcher 表单支持全局任务序列引用**：新增 `task sequence name` 输入框，填了名字就灰化下面的内联步骤编辑区，
+  并提示"内联步骤在被引用时会被忽略"——因为二者互斥（validate 会拒绝），界面上先说清楚，而不是等用户保存后才报错。
+  测试 `a_dispatcher_reference_and_inline_steps_are_mutually_exclusive`（含"同时给两者被拒"与"清空输入即清除引用"）。GUI **143 项**。
+
 ### 报告与 CLI
 
 - **新增 `openflex eval`（脚本控制台 / 表达式试算）**：不跑模型就能试算表达式或运行沙箱脚本。
