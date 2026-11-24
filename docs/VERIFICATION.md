@@ -17,6 +17,18 @@ make check          # fmt + clippy -D warnings + cargo test --workspace + releas
 | 报告 | `crates/openflex-report` 单测 | table/json/csv/markdown、实验、对比 |
 | CLI | `crates/openflex-cli/tests/cli.rs` | 真实二进制：validate/run/report/compare/experiment/退出码 |
 
+## 1b. 本地预检（发布前跑，几十秒）
+
+CI 覆盖不到的几件事，本地有便宜的手段；这几条都是**踩过坑之后加的**：
+
+| 检查 | 命令 | 它防的是什么 |
+|---|---|---|
+| Windows 交叉编译 | `cargo check --target x86_64-pc-windows-msvc --workspace --all-targets` | Windows 独有的编译断裂（本机 macOS/Linux 发现不了）。**注意**：交叉 check 不能替代真实运行——v1.39/v1.40 的 Windows 二进制是因为 1 MB 主线程栈在**运行时**抛栈溢出，check 查不出来，所以 CI 里另外加了"先运行一次 Windows 二进制"的冒烟步骤 |
+| 死参数棘轮 | `bash scripts/check-dead-params.sh` | 模型声明了、引擎从不读的字段（`max_travelers` 那类"设了没反应"）。新增即失败 |
+| 取证台账 | `bash scripts/check-doc-evidence.sh` | 文档里引用的测试名必须真实存在，否则"取证"本身变成新的虚标 |
+| 模糊冒烟 | `bash scripts/fuzz-smoke.sh --mode fallback --iterations 300` | 变异模型不得让二进制 panic/abort；畸形输入只允许"接受"或"以退出码 2 拒绝" |
+| 大模型基准 | `bash scripts/bench-large-model.sh` | 1 万对象下的 validate/run 时间与峰值内存（当前 0.10 s / 0.22 s、48 MB） |
+
 ## 2. 黄金案例（公开规格 → 数值）
 
 `docs/spec/golden-cases.md` 给出 6 个可用公开材料验证的案例；模型在 `examples/golden/`。
