@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased
+## v1.49.0 — 2026-11-25
+
+本轮做的是**完整性与最后一公里**，不是新对象。
+
+**1. 11 项端到端冒烟（已接入 CI）。** 每个用例都建一个小模型、跑一次 CLI、断言**外部可观察的结果**。
+它防的是「单测通过但功能从外面根本用不到」——死参数、被接受却忽略的动作、永不触发的钩子。
+写脚本时第一条液位标记用例**自己就是错的**（罐子排空太快、液位不涨），修正模型后才通过；
+这恰好说明这类冒烟的价值：**默认怀疑模型，而不是怀疑功能**。
+
+**2. 日志一路可读到最后一公里。** 上一轮发现 CLI 自己那份 `write_trace` 丢掉了日志文本；
+本轮把剩下两个缺口也补上：GUI 的 `Log (n)` 面板与 `openflex run --logs`（日志走 stderr，
+所以 `--format json` 的 stdout 仍可解析——测试里显式断言了这一点）。
+现在同一条链是：`log()` → `TraceEvent.message` → JSONL 第六键 → `trace --logs` / `run --logs` / GUI 面板。
+
+发布节奏保持**至少 3 小时一版**。
 
 ### 桌面 GUI
 
@@ -30,6 +44,14 @@
   这恰好说明这类冒烟的价值：默认怀疑模型，而不是怀疑功能。
 
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**1014 passed / 0 failed**；clippy 0 警告、fmt 干净。
+- GUI **149 项**；`scripts/acceptance.sh` **all golden checks passed**；
+  **`scripts/feature-smoke.py` 11/11 通过**（新，已进 CI）。
+- `check-dead-params.sh` 0 known；`check-doc-evidence.sh` 47 名可解析；`check-changelog.sh` 通过。
+- 独立实测：`run --logs` 把 4 条钩子日志打到 stderr，同次 `--format json` 的 stdout 仍是合法 JSON（completed=3.0）。
 
 ## v1.48.0 — 2026-11-25
 
