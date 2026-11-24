@@ -92,7 +92,7 @@
 | Robot / Crane / ASRS | `robot` / `crane` / `asrs_vehicle` | 🟡 | 执行器变体：robot grid 8 邻接绕障、crane max(垂直,水平)、ASRS/AGV network 最短路；共用 TransporterParams |
 | Escalator | `escalator` | 🟡 | 复用 conveyor 皮带语义（人员输送）；无独立密度/碰撞 |
 | MultiProcessor | `multiprocessor` | ✅ | 多槽并行加工，每槽 setup/process，操作员按忙碌期申请 |
-| Fluid（流体） | `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_pipe` / `fluid_sink` / `ticker` / `fluid_processor` / `fluid_blender` / `fluid_mixer` / `fluid_splitter` / `item_to_fluid` / `fluid_to_item` | ✅ | 固定步长、液位/溢出、pipe 延迟/背压/压力场、valve 滞回；**Darcy 参数已接线**（pressure-mode pipe `Q=√(Δp/R)` + ρ(T)），缺参数回退线性标定；processor 速率/容量/损耗、splitter 百分比（按比例缩放）、blender 速率/配比/损耗、mixer 批步、两个桥接方向的离散↔流体换算均已接线；仍无多相/可压缩 |
+| Fluid（流体） | `fluid_generator` / `fluid_tank` / `fluid_valve` / `fluid_pipe` / `fluid_sink` / `ticker` / `fluid_processor` / `fluid_blender` / `fluid_mixer` / `fluid_splitter` / `item_to_fluid` / `fluid_to_item` | ✅ | 固定步长（`ticker.tick_length` 可覆盖，多 ticker 取最小）、液位/溢出、pipe 延迟/背压/压力场、valve 滞回；**Darcy 参数已接线**（pressure-mode pipe `Q=√(Δp/R)` + ρ(T)），缺参数回退线性标定；processor 速率/容量/损耗、splitter 百分比（按比例缩放）、blender 速率/配比/损耗、**mixer 批步含真实 `delay`**（收齐→等 delay→分发）与步前/步后钩子、tank 的 `on_empty`/`on_full` 与任意具名 `marks` 液位穿越、两个桥接方向的离散↔流体换算均已接线；仍无多相/可压缩 |
 | People / A* 行走 | `person` | 🟡 | `grid` 8 邻接 A* + 密度折减；无真正避让/重规划 |
 | AGV / 交通控制 | `agv` | 🟡 | transporter alias + 电池（容量/耗电/充电/多充电桩候选）；运输腿受 `traffic_control` 准入互斥与 `speed_factor` 约束；无途中耗尽 |
 | Elevator / 电梯 | `elevator` | 🟡 | 垂直运输、停靠、召唤/方向优先；无门控/超载/井道冲突 |
