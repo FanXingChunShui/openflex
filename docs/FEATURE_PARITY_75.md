@@ -100,7 +100,7 @@
 | NetworkNodes / Speeds Page（TrafficControl 关联节点、按含量调速度表） | `traffic_control`（capacity/mode/speed_factor） | 🟡 | 准入互斥已生效；**"按含量分档调速度"表**仍只有单一 `speed_factor`，无逐档曲线 |
 | Traffic Control Page（互斥 / 非定时两种模式） | `traffic_control`（`mode: mutual_exclusion` / `un_timed`） | ✅ | 两种模式均生效：互斥按 `capacity` 限名额，`un_timed` 不限名额只缩放 `speed_factor` |
 | Fluid 各类页（Generator/Tank/Mixer/Blender/Splitter/Pipe/Processor/Conveyor/Terminator/ItemToFluid/FluidToItem/Ticker） | 同名 `fluid_*` | 🟡 | 见对象库表；流体页的 Marks（低/中/高液位触发）、Steps（分批延迟）、Sensors（传送带传感器）、Recipe/Percents 表可配置但语义简化 |
-| Fluid Marks Page（低/中/高液位升降触发） | `on_port`/`on_factor` 等 | ⛔ | 无液位穿越触发器 |
+| Fluid Marks Page（低/中/高液位升降触发） | `FluidTankParams.marks: [{ name, level, on_rise, on_fall }]` | ✅ | 任意数量的具名液位标记，上穿/下穿各触发一次；`level ∈ [0, capacity]`，重名/空名被拒。约定：穿越判定以 **tick 采样**为准（步内多次穿越算一次），已写进 `FluidMark` 文档。`fluid_mark_rise_fires_once`、`fluid_mark_fall_fires_once`、`fluid_mark_jitter_counts_each_crossing`、`fluid_mark_and_full_hook_coexist` |
 | Fluid Sensors Page（FluidConveyor 传感器表） | 无 | ⛔ | 无离散传感器 |
 | Fluid Steps Page（分批收集 + 步前/步后延迟触发器） | 无 | ⛔ | 无"步进投料"概念 |
 | Initial Product Window（ProductID + 子组分列表） | 无产物/组分（Product ID）概念 | ⛔ | 流体无组分追踪 |
@@ -128,7 +128,7 @@
 | Flow Rate / Item Speed（流体/传送带速度） | `conveyor.speed`、流体速率 | 🟡 | 静态或分布；无"每件进入时求值"的 Item Speed picklist |
 | Break To（中断任务序列的接受条件） | 无 | ⛔ | TaskExecuter 无 break 任务与 BreakTo 钩子 |
 | Text Display（VisualTool 的 3D 文字） | `visual_tool.text`，画布上绘制为标签 | 🟡 | **已修**：`visual_tool` 此前只可编辑、画布上什么都不画（形状/大小/颜色/文字全是空转），现在按自身参数绘制（`visual_tool_size` / `parse_hex_color`，颜色写错回退而不是消失），`text` 画在对象上方；仍是 2D 画布标签，没有 3D 文字渲染。测试 `a_visual_tool_is_drawn_from_its_own_parameters` |
-| Rise Fall Through Mark Triggers（液位穿越） | 无 | ⛔ | 见 Fluid Marks |
+| Rise Fall Through Mark Triggers（液位穿越） | 同 `FluidTankParams.marks` 的 `on_rise`/`on_fall` | ✅ | 穿越事件即使钩子为空也写 trace（`fluid_mark_rise`/`fluid_mark_fall`）；与内置 `on_empty`/`on_full` 各自独立判定、互不吞没 |
 | Entry Exit Trigger（OnEntry/OnExit） | `on_entry`/`on_exit` | ✅ | |
 | Creation Trigger（OnCreation，含 row number） | `on_create` | 🟡 | 有触发器；无 `rownumber` 访问变量（表驱动到达时无法知道来自哪一行） |
 | Message Trigger（OnMessage，三个参数） | `on_message` | 🟡 | 有触发器；`SendMessage` 动作**只带 target+delay，无三个用户参数**（`action.rs`） |
@@ -330,7 +330,7 @@
 > 并把 3 个纯教程/术语页从 🟡 改判为 📄。**权威总数以第 325 行的 ✅39 / 🟡97 / ⛔73 / 📄3 为准**，
 > 下表用来看**缺口集中在哪个目录**，不必逐格对齐。
 
-矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 44 行、🟡 102 行、⛔ 63 行、📄 3 行（参考页，不计入缺口）。
+矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 46 行、🟡 102 行、⛔ 61 行、📄 3 行（参考页，不计入缺口）。
 其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行。
 
 | 状态 | 行数 | 占比 |
