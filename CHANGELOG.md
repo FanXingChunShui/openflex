@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## v1.44.0 — 2026-11-24
+
+本轮的共同点是「**把写在文档里的东西变成真的**」：
+
+- **共享任务序列（GTS）**：任务序列可以命名后给多个 dispatcher 复用，引用式与内联式的报告 **sha256 完全相同**；
+- **用户自定义命令**：脚本里能直接调 `<name>(1.0)`。实现上没去啃"改造 ScriptEngine"的硬骨头——
+  发现 rhai 同一 AST 内函数可见，只加一个 `definitions` 字段就完成了，风险远小于原估；
+- **流体液位标记**：任意具名液位的上穿/下穿触发，`on_empty`/`on_full` 成了它的特例；
+- 三者都配了 GUI 编辑入口，并各自补了 `script` 动作的预编译回归测试。
+
+**又一次"只有真跑才会发现"的缺陷**：命令参数是 `f64`，而 `set_item_type` 只注册了 `i64` 重载，
+于是最自然的写法 `set_item_type(t)` 在运行时报 `Function not found`。已补 `f64` 重载并加回归测试。
+发布节奏保持**至少 3 小时一版**。
 
 ### 模型与引擎
 
@@ -12,6 +24,14 @@
   实测：引用式与内联式的报告 **sha256 完全相同**（`completed 3.0`）。
   边界：绕过 validate（`parse_json` 后直接跑）时引擎优先用 ref，行为确定但不推荐；未来 GTS 数量大时可加 HashMap 索引（仍不复制 steps）。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**977 passed / 0 failed**；clippy 0 警告、fmt 干净。
+- GUI **144 项**、`openflex-core --lib` **233 项**。
+- `scripts/acceptance.sh`：**all golden checks passed**；`check-dead-params.sh` **0 known**；`check-doc-evidence.sh` 47 名可解析。
+- 独立实测：GTS 引用 vs 内联报告 sha256 相同（`62f1d5fa…`）；命令 `mark()` 改道 3 件到另一出口；
+  流体 Buffer 下落穿过两个标记各触发一次 `fluid_mark_fall` 且脚本钩子执行。
 
 ## v1.43.0 — 2026-11-24
 
@@ -91,6 +111,10 @@
   范围：只有 `fluid_tank`（其它流体对象没有液位容量语义）。
 
 ### 桌面 GUI
+
+- **流体罐液位标记表单**：`level marks (n)` 列表可增删，行内编辑名字与阈值（阈值输入框**按容量夹取**，
+  越界也写不进去）；带 `on_rise`/`on_fall` 钩子的标记会显示 `hooks` 提示，动作列表仍在 JSON 编辑区。
+  测试 `fluid_marks_round_trip_and_stay_within_capacity`（含"标记高于容量被 model 拒绝"）。GUI **144 项**。
 
 - **User events 面板**：与模型触发器同样的「JSON 缓冲 + Apply」方式编辑 `model.user_events`
   （文档首次打开时从模型灌入，之后保留用户输入；应用走 `commit_model_edit` 单一入口，因此撤销/校验一致）。
