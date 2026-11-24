@@ -425,6 +425,10 @@ pub(crate) struct FluidObjectRt {
     /// Batch step reached by a `fluid_mixer` (0-based, wraps around the table).
     #[serde(default)]
     pub mixer_step: usize,
+    /// task-195: level at the end of the previous step (mark crossings compare
+    /// consecutive tick samples; several crossings inside one step count once).
+    #[serde(default)]
+    pub last_level: f64,
     /// task-189: latched `on_empty`/`on_full` so a level resting on a boundary
     /// fires once per crossing, not once per tick.
     #[serde(default)]
@@ -459,6 +463,7 @@ impl FluidObjectRt {
             overflow: 0.0,
             inflow: 0.0,
             buffer: Vec::new(),
+            last_level: level,
             empty_latched: level <= EPS,
             full_latched: false,
             last_overflow: 0.0,
@@ -6674,6 +6679,7 @@ impl<'m> Simulation<'m> {
             return Ok(());
         };
         let mut fire: Vec<(usize, SimTrigger)> = Vec::new();
+        let mut marks_fire: Vec<(usize, usize, bool)> = Vec::new();
         for (position, state) in fluid.state.iter().enumerate() {
             let object = fluid.objects[position];
             let capacity = match &self.model.objects[object].params {
@@ -6690,12 +6696,27 @@ impl<'m> Simulation<'m> {
             if !state.full_latched && capacity > EPS && (state.level >= capacity - EPS || spilled) {
                 fire.push((object, SimTrigger::OnFull));
             }
-        }
-        if fire.is_empty() {
-            return Ok(());
+            // task-195: named level marks, judged on consecutive tick samples.
+            if let ObjectParams::FluidTank(params) = &self.model.objects[object].params {
+                for (mark_index, mark) in params.marks.iter().enumerate() {
+                    let rose =
+                        state.last_level < mark.level - EPS && state.level >= mark.level - EPS;
+                    let fell =
+                        state.last_level >= mark.level - EPS && state.level < mark.level - EPS;
+                    if rose {
+                        marks_fire.push((object, mark_index, true));
+                    }
+                    if fell {
+                        marks_fire.push((object, mark_index, false));
+                    }
+                }
+            }
         }
         for (object, trigger) in fire {
             self.fire_fluid_trigger(object, trigger)?;
+        }
+        for (object, mark_index, rise) in marks_fire {
+            self.fire_fluid_mark(object, mark_index, rise)?;
         }
         if let Some(fluid) = self.fluid.as_mut() {
             for (position, state) in fluid.state.iter_mut().enumerate() {
@@ -6708,9 +6729,60 @@ impl<'m> Simulation<'m> {
                 state.empty_latched = state.level <= EPS;
                 state.full_latched = capacity > EPS && (state.level >= capacity - EPS || spilled);
                 state.last_overflow = state.overflow;
+                state.last_level = state.level;
             }
         }
         Ok(())
+    }
+
+    /// task-195: run one mark hook (`on_rise` or `on_fall`).
+    fn fire_fluid_mark(
+        &mut self,
+        object: usize,
+        mark_index: usize,
+        rise: bool,
+    ) -> Result<(), SimError> {
+        let (name, actions) = match &self.model.objects[object].params {
+            ObjectParams::FluidTank(params) => {
+                let Some(mark) = params.marks.get(mark_index) else {
+                    return Ok(());
+                };
+                (
+                    format!("mark '{}'", mark.name),
+                    if rise {
+                        mark.on_rise.clone()
+                    } else {
+                        mark.on_fall.clone()
+                    },
+                )
+            }
+            _ => return Ok(()),
+        };
+        // The crossing itself is observable even without hooks.
+        self.record_object_trace(
+            if rise {
+                "fluid_mark_rise"
+            } else {
+                "fluid_mark_fall"
+            },
+            object,
+        );
+        if actions.is_empty() {
+            return Ok(());
+        }
+        let mut item = FlowItem::probe(self.now);
+        self.action_location = format!(
+            "{}.{}",
+            self.objects[object].name,
+            if rise { "on_rise" } else { "on_fall" }
+        );
+        self.apply_actions(object, &mut item, actions)
+            .map_err(|error| {
+                SimError::Config(format!(
+                    "mark {name} hook failed on '{}': {error}",
+                    self.objects[object].name
+                ))
+            })
     }
 
     /// task-189: run one fluid boundary hook; the probe item carries no volume,
@@ -12732,6 +12804,25 @@ fn collect_model_scripts(model: &Model) -> Vec<(String, String)> {
         if let Some(flow) = object.params.process_flow() {
             let prefix = format!("objects.{}.process_flow", object.name);
             flow_scripts(flow, &prefix, &mut sources);
+        }
+    }
+    // task-195: mark rise/fall hooks are precompiled like every other hook.
+    for object in &model.objects {
+        if let ObjectParams::FluidTank(params) = &object.params {
+            for (mark_index, mark) in params.marks.iter().enumerate() {
+                let prefix = format!("objects.{}.marks.{mark_index}", object.name);
+                for (trigger, actions) in [("on_rise", &mark.on_rise), ("on_fall", &mark.on_fall)] {
+                    for (action_position, action) in actions.iter().enumerate() {
+                        if let Action::Script { source } = action {
+                            push(
+                                &mut sources,
+                                source,
+                                format!("{prefix}.{trigger}.{action_position}"),
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
     // task-194: command bodies are wrapped in a function declaration so they
@@ -19806,6 +19897,171 @@ mod tests {
         assert!(
             body_check.error.is_some(),
             "check-scripts must report the same body error"
+        );
+    }
+
+    fn mark_tank_model(marks: &str) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "fluid-marks",
+          "run": {{ "stop_time": 20.0, "seed": 1, "replications": 1 }},
+          "fluid_step": 0.5,
+          "objects": [
+            {{ "name": "Gen", "kind": "fluid_generator", "pos": [0.0, 0.0], "params": {{ "flow_rate": 1.0 }} }},
+            {{ "name": "Tank", "kind": "fluid_tank", "pos": [5.0, 0.0], "params": {{
+                "capacity": 10.0, "initial_level": 0.0, "max_outflow": 0.0,
+                "marks": [ {marks} ] }} }},
+            {{ "name": "Sink", "kind": "fluid_sink", "pos": [10.0, 0.0], "params": {{}} }}
+          ],
+          "connections": [ {{ "from": "Gen", "to": "Tank" }}, {{ "from": "Tank", "to": "Sink" }} ]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    /// task-195: models without marks are unchanged.
+    #[test]
+    fn fluid_marks_absent_keeps_the_report() {
+        let model = mark_tank_model("");
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(first.replications, second.replications);
+        let text = serde_json::to_string(&model).expect("serialize");
+        if let Some(position) = text.find("marks") {
+            eprintln!(
+                "marks at {}: {}",
+                position,
+                &text[position.saturating_sub(80)..(position + 80).min(text.len())]
+            );
+        }
+        assert!(!text.contains("\"marks\":"), "empty marks must be omitted");
+    }
+
+    fn mark_fire_events(model: &Model, levels: &[f64]) -> Vec<String> {
+        let config = SimConfig {
+            stop_time: 30.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(model, config, true).expect("simulation");
+        let position = sim
+            .fluid
+            .as_ref()
+            .and_then(|fluid| {
+                fluid
+                    .objects
+                    .iter()
+                    .position(|&object| sim.objects[object].name == "Tank")
+            })
+            .expect("tank position");
+        let mut fired = Vec::new();
+        for &level in levels {
+            if let Some(fluid) = sim.fluid.as_mut() {
+                fluid.state[position].level = level;
+            }
+            sim.fire_fluid_boundary_triggers().expect("fire");
+            if let Some(trace) = sim.trace.as_ref() {
+                for event in &trace.events {
+                    if event.event == "fluid_mark_rise" || event.event == "fluid_mark_fall" {
+                        fired.push(event.event.clone());
+                    }
+                }
+            }
+            if let Some(trace) = sim.trace.as_mut() {
+                trace.events.clear();
+            }
+        }
+        fired
+    }
+
+    /// task-195: a rising level crosses a mark once and does not repeat.
+    #[test]
+    fn fluid_mark_rise_fires_once() {
+        let model = mark_tank_model(r#"{ "name": "low", "level": 2.0 }"#);
+        let fired = mark_fire_events(&model, &[1.0, 3.0, 5.0]);
+        assert_eq!(
+            fired,
+            vec!["fluid_mark_rise".to_string()],
+            "one rise, no repeat: {fired:?}"
+        );
+    }
+
+    /// task-195: a falling level fires `on_fall` once.
+    #[test]
+    fn fluid_mark_fall_fires_once() {
+        let model = mark_tank_model(r#"{ "name": "low", "level": 2.0 }"#);
+        let fired = mark_fire_events(&model, &[3.0, 1.0, 0.0]);
+        assert_eq!(
+            fired,
+            vec!["fluid_mark_rise".to_string(), "fluid_mark_fall".to_string()],
+            "crossing up then down: {fired:?}"
+        );
+    }
+
+    /// task-195: jitter across a mark counts every real crossing.
+    #[test]
+    fn fluid_mark_jitter_counts_each_crossing() {
+        let model = mark_tank_model(r#"{ "name": "low", "level": 2.0 }"#);
+        let fired = mark_fire_events(&model, &[1.0, 3.0, 1.0, 3.0]);
+        assert_eq!(
+            fired,
+            vec![
+                "fluid_mark_rise".to_string(),
+                "fluid_mark_fall".to_string(),
+                "fluid_mark_rise".to_string()
+            ],
+            "each real crossing counts: {fired:?}"
+        );
+    }
+
+    /// task-195: marks and the built-in full hook do not swallow each other.
+    #[test]
+    fn fluid_mark_and_full_hook_coexist() {
+        let model = mark_tank_model(
+            r#"{ "name": "high", "level": 10.0, "on_rise": [ { "action": "script", "source": "log(\"mark\");" } ] }"#,
+        );
+        let config = SimConfig {
+            stop_time: 30.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let rises = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "fluid_mark_rise")
+            .count();
+        assert_eq!(rises, 1, "the mark rise fires once (script hook)");
+        let logs: Vec<&str> = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "script_log")
+            .map(|event| event.message.as_str())
+            .collect();
+        assert!(logs.contains(&"mark"), "the mark script ran: {logs:?}");
+    }
+
+    /// task-195: a mark level outside [0, capacity] is rejected.
+    #[test]
+    fn fluid_mark_level_out_of_range_is_rejected() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "bad-mark",
+          "run": { "stop_time": 10.0, "seed": 1, "replications": 1 },
+          "fluid_step": 0.5,
+          "objects": [
+            { "name": "Tank", "kind": "fluid_tank", "params": {
+                "capacity": 5.0, "marks": [ { "name": "high", "level": 9.0 } ] } },
+            { "name": "Sink", "kind": "fluid_sink", "params": {} }
+          ],
+          "connections": [ { "from": "Tank", "to": "Sink" } ]
+        }"#,
+        )
+        .expect_err("level above capacity is invalid");
+        let text = model.to_string();
+        assert!(
+            text.contains("within [0, capacity"),
+            "the error must explain the range: {text}"
         );
     }
 }

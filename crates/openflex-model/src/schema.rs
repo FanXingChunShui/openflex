@@ -674,13 +674,31 @@ fn definitions() -> Value {
         })),
     );
     defs.insert(
+        "fluid_mark".into(),
+        json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "level": { "type": "number", "minimum": 0 },
+                "on_rise": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_fall": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+            },
+            "required": ["name", "level"],
+            "additionalProperties": false
+        }),
+    );
+    defs.insert(
         "fluid_tank_params".into(),
         params_schema(json!({
             "capacity": { "type": "number", "exclusiveMinimum": 0, "default": 100.0 },
             "initial_level": { "type": "number", "minimum": 0, "default": 0.0 },
             "max_outflow": { "type": ["number", "null"], "minimum": 0 },
             "density": { "type": ["number", "null"], "exclusiveMinimum": 0 },
-            "gravity": { "type": ["number", "null"], "exclusiveMinimum": 0 }
+            "gravity": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+            "marks": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/fluid_mark" }
+            }
         })),
     );
     defs.insert(

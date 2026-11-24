@@ -255,6 +255,7 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
     issues.extend(validate_user_events(model));
     issues.extend(validate_task_sequences(model));
     issues.extend(validate_user_commands(model));
+    issues.extend(validate_fluid_marks(model));
     issues.extend(validate_process_flow(
         model,
         model.process_flow.as_ref(),
@@ -1948,6 +1949,53 @@ fn validate_conditional_ports(
 }
 
 /// Check `script` trigger actions: non-empty source and compilable syntax.
+/// task-195: fluid level marks must be in range, unique and compile.
+fn validate_fluid_marks(model: &Model) -> Vec<ValidationIssue> {
+    let mut issues = Vec::new();
+    for object in &model.objects {
+        let ObjectParams::FluidTank(params) = &object.params else {
+            continue;
+        };
+        let mut names = std::collections::BTreeMap::new();
+        for (position, mark) in params.marks.iter().enumerate() {
+            let location = format!("objects.{}.marks.{position}", object.name);
+            if mark.name.trim().is_empty() {
+                issues.push(ValidationIssue::new(
+                    format!("{location}.name"),
+                    "mark name cannot be empty",
+                ));
+            }
+            if names.insert(mark.name.clone(), ()).is_some() {
+                issues.push(ValidationIssue::new(
+                    format!("{location}.name"),
+                    format!("duplicate mark name '{}'", mark.name),
+                ));
+            }
+            if !mark.level.is_finite() || mark.level < 0.0 || mark.level > params.capacity {
+                issues.push(ValidationIssue::new(
+                    format!("{location}.level"),
+                    format!(
+                        "mark level must be finite and within [0, capacity = {}]",
+                        params.capacity
+                    ),
+                ));
+            }
+            for (trigger, actions) in [("on_rise", &mark.on_rise), ("on_fall", &mark.on_fall)] {
+                for (action_position, action) in actions.iter().enumerate() {
+                    if let crate::action::Action::Script { source } = action {
+                        validate_script_source(
+                            source,
+                            &format!("{location}.{trigger}.{action_position}"),
+                            &mut issues,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    issues
+}
+
 /// task-194: user commands must have unique, resolvable shapes and compile.
 fn validate_user_commands(model: &Model) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();

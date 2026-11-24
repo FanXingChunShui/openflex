@@ -80,6 +80,16 @@
   于是最自然的写法 `set_item_type(t)` 会报 `Function not found`。已为 `set_item_type` 与 `create_item`
   补 `f64` 重载（截断取整、双向 clamp），并加回归测试 `a_float_parameter_flows_into_integer_script_apis`。
 
+### 模型与引擎
+
+- **流体液位标记（Fluid Marks）**：`FluidTankParams.marks: [{ name, level, on_rise, on_fall }]`（空不序列化，旧 JSON 不变），
+  液位**上穿/下穿**标记时各触发一次；`level` 必须落在 `[0, capacity]`，重名/空名被拒。
+  `on_empty`/`on_full` 是它的特例，两者**各自独立判定、互不吞没**。
+  **约定写进文档**：穿越判定以 **tick 采样**为准（相邻两步比较），步内多次穿越只算一次——这是可判定且诚实的选择。
+  穿越本身即使没有钩子也写 trace（`fluid_mark_rise` / `fluid_mark_fall`），建模期就能观察。
+  实测：Buffer 从初始液位下落，依次穿过 high(5.0) 与 low(1.0) 两个标记，各产生一次 `fluid_mark_fall` 且脚本钩子执行。
+  范围：只有 `fluid_tank`（其它流体对象没有液位容量语义）。
+
 ### 桌面 GUI
 
 - **User events 面板**：与模型触发器同样的「JSON 缓冲 + Apply」方式编辑 `model.user_events`

@@ -2859,6 +2859,25 @@ impl Default for FluidGeneratorParams {
     }
 }
 
+/// A named fluid level mark (task-195): `on_rise` fires when the level crosses
+/// the mark upwards, `on_fall` when it crosses downwards.
+///
+/// Crossings are detected by comparing the level at the end of two consecutive
+/// fluid steps, so several crossings inside one step count once (the documented
+/// convention); marks and the built-in empty/full hooks are judged
+/// independently.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FluidMark {
+    pub name: String,
+    /// Absolute level (not a fraction of the capacity).
+    pub level: f64,
+    #[serde(default)]
+    pub on_rise: Vec<Action>,
+    #[serde(default)]
+    pub on_fall: Vec<Action>,
+}
+
 /// A fluid tank (`fluid_tank`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2878,6 +2897,9 @@ pub struct FluidTankParams {
     /// Gravity used for the pressure-height relation (default 9.81).
     #[serde(default)]
     pub gravity: Option<f64>,
+    /// Named level marks with rise/fall hooks (task-195).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marks: Vec<FluidMark>,
     #[serde(default)]
     pub triggers: Triggers,
 }
@@ -2890,6 +2912,7 @@ impl Default for FluidTankParams {
             max_outflow: None,
             density: None,
             gravity: None,
+            marks: Vec::new(),
             triggers: Triggers::default(),
         }
     }
