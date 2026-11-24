@@ -4307,6 +4307,13 @@ pub struct TrackedVariable {
     /// Variable kind; absent means `level`, so old models are unchanged.
     #[serde(default, skip_serializing_if = "TrackedKind::is_level")]
     pub kind: TrackedKind,
+    /// Actions run when the sampled value differs from the previous sample
+    /// (task-198). Only meaningful for `kind = level`; validation rejects it on
+    /// summaries, which have no "previous sample". The first sample never counts
+    /// as a change. Changes are judged on the *sampled* values (one per
+    /// `tracked_interval`), not on every continuous jitter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_change: Vec<Action>,
 }
 
 /// Model-level triggers (FlexSim model start / reset / stop).

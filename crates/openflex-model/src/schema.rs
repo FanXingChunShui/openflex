@@ -764,7 +764,8 @@ fn definitions() -> Value {
                     "type": "string",
                     "enum": ["level", "state", "staytime", "kinetic"],
                     "default": "level"
-                }
+                },
+                "on_change": { "type": "array", "items": { "$ref": "#/$defs/action" } }
             },
             "required": ["name", "expression"],
             "additionalProperties": false

@@ -256,6 +256,7 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
     issues.extend(validate_task_sequences(model));
     issues.extend(validate_user_commands(model));
     issues.extend(validate_fluid_marks(model));
+    issues.extend(validate_tracked_on_change(model));
     issues.extend(validate_process_flow(
         model,
         model.process_flow.as_ref(),
@@ -1949,6 +1950,43 @@ fn validate_conditional_ports(
 }
 
 /// Check `script` trigger actions: non-empty source and compilable syntax.
+/// task-198: `on_change` needs a per-sample "previous value", which only
+/// `level` variables have; scripts must compile.
+fn validate_tracked_on_change(model: &Model) -> Vec<ValidationIssue> {
+    let mut issues = Vec::new();
+    for (position, variable) in model.tracked_variables.iter().enumerate() {
+        if variable.on_change.is_empty() {
+            continue;
+        }
+        let location = format!("tracked_variables.{position}.on_change");
+        if variable.kind != crate::model::TrackedKind::Level {
+            issues.push(ValidationIssue::new(
+                &location,
+                format!(
+                    "tracked variable '{}' sets `on_change` but its kind is `{}`; only `level` variables have a previous sample value (summaries have none)",
+                    variable.name,
+                    match variable.kind {
+                        crate::model::TrackedKind::State => "state",
+                        crate::model::TrackedKind::Staytime => "staytime",
+                        crate::model::TrackedKind::Kinetic => "kinetic",
+                        crate::model::TrackedKind::Level => "level",
+                    }
+                ),
+            ));
+        }
+        for (action_position, action) in variable.on_change.iter().enumerate() {
+            if let crate::action::Action::Script { source } = action {
+                validate_script_source(
+                    source,
+                    &format!("{location}.{action_position}"),
+                    &mut issues,
+                );
+            }
+        }
+    }
+    issues
+}
+
 /// task-195: fluid level marks must be in range, unique and compile.
 fn validate_fluid_marks(model: &Model) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();

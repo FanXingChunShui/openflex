@@ -5512,3 +5512,50 @@ fn eval_reports_paths_that_need_a_run() {
     let output = openflex(&["eval", &path_str(&model), "--expr", "1", "--script", "1;"]);
     assert!(!output.status.success());
 }
+
+/// A scratchpad run must see the model's user commands, exactly like a script
+/// inside the model would — otherwise `eval` rejects scripts that work in the
+/// real thing.
+#[test]
+fn eval_can_call_the_models_user_commands() {
+    let dir = TempDir::new("eval-commands");
+    let model = dir.write(
+        "eval.ofm",
+        r#"{
+          "format": "openflex-model", "version": 1, "name": "eval-commands",
+          "run": { "stop_time": 10.0, "replications": 1 },
+          "user_commands": [
+            { "name": "ping", "body": "log(\"pong\");" },
+            { "name": "setx", "parameters": [ { "name": "v" } ], "body": "set_label(\"x\", v);" }
+          ],
+          "objects": [
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+    );
+    let output = openflex(&[
+        "eval",
+        &path_str(&model),
+        "--script",
+        r#"ping(); setx(3.0); log("x=" + label("x"));"#,
+    ]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.contains("pong"), "the command ran: {text}");
+    assert!(
+        text.contains("x=3.0"),
+        "its argument reached the label: {text}"
+    );
+    // A command that does not exist still fails, and the line-number caveat is
+    // printed instead of a number we cannot compute.
+    let output = openflex(&["eval", &path_str(&model), "--script", "nope();"]);
+    assert!(!output.status.success());
+    let text = stderr(&output);
+    assert!(text.contains("Function not found"), "stderr: {text}");
+    assert!(
+        text.contains("shifted by the model's user-command definitions"),
+        "stderr: {text}"
+    );
+}

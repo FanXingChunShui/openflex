@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### 模型与引擎
+
+- **`OnChange` 触发器（跟踪变量值变化时执行动作）**：`TrackedVariable.on_change`（空不序列化，旧模型 JSON 与报告逐位不变）。
+  复用**既有的跟踪采样点**（`tracked_interval`），不另造轮询；"上一次采样值"用的是采样器本来就在维护的
+  `tracked_prev`（kinetic 用它，且**随 checkpoint 持久化**）——所以不存在"把变化定义成和 0 不同"的假语义。
+  三条约定写进文档：变化判定基于**采样值**（不是连续抖动）、**首次采样不算变化**、高频变量（如 `time`）
+  每次采样都会触发一次（事件量 = 采样次数，作者应自行控制 `tracked_interval`）。
+  实测：`expression: "time"`、interval 5、stop 30 → 恰好 **5 次**，时刻 `[10, 15, 20, 25, 30]`；常量变量 **0 次**。
+  `kind != level`（summary/kinetic）却给 `on_change` → validate 明确拒绝：
+  "only `level` variables have a previous sample value (summaries have none)"——静默忽略比报错更糟。
+  动作是**模型级**的（与 user events 共用同一个 `run_model_actions`），脚本错误带变量名与模型时间。
+
+### 报告与 CLI
+
+- **`openflex eval` 现在能看到模型里定义的用户命令**：它此前用 `ScriptEngine::new()`，而模型内的脚本用
+  `with_commands(model)`——于是 `eval --script 'mycommand();'` 会报 "Function not found"，而同一段脚本在模型里却正常。
+  已改为同一个引擎。另外：命令定义会前置到源码，导致 rhai 的**行号偏移**，`eval` 出错时会打一行说明
+  （不打印我算不准的具体偏移量——宁可说"有偏移"也不给错数字）。测试 `eval_can_call_the_models_user_commands`。
+
+
 ## v1.45.0 — 2026-11-24
 
 本轮的看点是**协同任务序列**（FlexSim 的"双人抬"）：一个任务步骤可以声明需要**两名执行器**，

@@ -2613,6 +2613,8 @@ struct Simulation<'m> {
     tracked_series: BTreeMap<String, Vec<(f64, f64)>>,
     /// task-168: previous raw value for `kinetic` (time, value).
     tracked_prev: BTreeMap<String, (f64, f64)>,
+    /// task-198: `on_change` hooks per tracked variable name.
+    tracked_hooks: BTreeMap<String, Vec<Action>>,
     /// task-168: completed-item stay times for `staytime` summaries.
     stay_samples: Vec<f64>,
     track_staytime: bool,
@@ -2841,6 +2843,12 @@ impl<'m> Simulation<'m> {
             tracked_interval,
             tracked_series: BTreeMap::new(),
             tracked_prev: BTreeMap::new(),
+            tracked_hooks: model
+                .tracked_variables
+                .iter()
+                .filter(|variable| !variable.on_change.is_empty())
+                .map(|variable| (variable.name.clone(), variable.on_change.clone()))
+                .collect(),
             stay_samples: Vec::new(),
             track_staytime,
             flow_item_hints: HashMap::new(),
@@ -3525,27 +3533,45 @@ impl<'m> Simulation<'m> {
                     "tracked variable '{name}' must evaluate to a number, got {value:?}"
                 ),
             })?;
-            let samples = self.tracked_series.entry(name.clone()).or_default();
-            if samples
-                .last()
-                .is_some_and(|(time, _)| (at - *time).abs() <= EPS)
+            let previous = self.tracked_prev.get(&name).copied();
             {
-                continue;
+                let samples = self.tracked_series.entry(name.clone()).or_default();
+                if samples
+                    .last()
+                    .is_some_and(|(time, _)| (at - *time).abs() <= EPS)
+                {
+                    continue;
+                }
+                let sampled = match kind {
+                    TrackedKind::Level => number,
+                    TrackedKind::Kinetic => match previous {
+                        // First kinetic sample has no previous point: record 0.
+                        None => 0.0,
+                        Some((previous_time, previous_value)) => {
+                            let interval = (at - previous_time).max(EPS);
+                            (number - previous_value) / interval
+                        }
+                    },
+                    TrackedKind::State | TrackedKind::Staytime => unreachable!(),
+                };
+                samples.push((at, sampled));
             }
-            let sampled = match kind {
-                TrackedKind::Level => number,
-                TrackedKind::Kinetic => match self.tracked_prev.get(&name).copied() {
-                    // First kinetic sample has no previous point: record 0.
-                    None => 0.0,
-                    Some((previous_time, previous_value)) => {
-                        let interval = (at - previous_time).max(EPS);
-                        (number - previous_value) / interval
-                    }
-                },
-                TrackedKind::State | TrackedKind::Staytime => unreachable!(),
-            };
-            self.tracked_prev.insert(name, (at, number));
-            samples.push((at, sampled));
+            // task-198: `on_change` fires when the sampled value differs from the
+            // previous sample; the first sample never counts (no previous value).
+            if kind == TrackedKind::Level
+                && let Some((_, previous_value)) = previous
+                && (number - previous_value).abs() > EPS
+                && let Some(actions) = self.tracked_hooks.get(&name).cloned()
+            {
+                let location = format!("tracked_variables.{name}.on_change");
+                self.run_model_actions(&location, actions)
+                    .map_err(|error| {
+                        SimError::Config(format!(
+                            "tracked variable '{name}' on_change at t={at}: {error}"
+                        ))
+                    })?;
+            }
+            self.tracked_prev.insert(name.clone(), (at, number));
         }
         Ok(())
     }
@@ -8809,6 +8835,27 @@ impl<'m> Simulation<'m> {
     /// `script` actions run with model-level scope (no owning object), while
     /// `send_message` and `set_motor` name their target object. Anything else
     /// is rejected by validation.
+    /// task-198: run model-level actions (no owning object): scripts evaluate in
+    /// model scope, `send_message`/`set_motor` name their target object.
+    fn run_model_actions(&mut self, location: &str, actions: Vec<Action>) -> Result<(), SimError> {
+        let mut probe = FlowItem::probe(self.now);
+        for action in actions {
+            match &action {
+                Action::Script { source } => {
+                    let source = source.clone();
+                    self.run_script_action(&source, location, "", &mut probe, None)?;
+                }
+                Action::SendMessage { target, .. } | Action::SetMotor { target, .. } => {
+                    if let Some(target_index) = self.by_name.get(target).copied() {
+                        self.apply_actions(target_index, &mut probe, vec![action])?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     fn handle_user_event(&mut self, index: usize) -> Result<(), SimError> {
         let Some(event) = self.model.user_events.get(index).cloned() else {
             return Ok(());
@@ -12977,6 +13024,18 @@ fn collect_model_scripts(model: &Model) -> Vec<(String, String)> {
         if let Some(flow) = object.params.process_flow() {
             let prefix = format!("objects.{}.process_flow", object.name);
             flow_scripts(flow, &prefix, &mut sources);
+        }
+    }
+    // task-198: tracked-variable `on_change` hooks are precompiled too.
+    for (index, variable) in model.tracked_variables.iter().enumerate() {
+        for (action_position, action) in variable.on_change.iter().enumerate() {
+            if let Action::Script { source } = action {
+                push(
+                    &mut sources,
+                    source,
+                    format!("tracked_variables.{index}.on_change.{action_position}"),
+                );
+            }
         }
     }
     // task-195: mark rise/fall hooks are precompiled like every other hook.
@@ -20504,6 +20563,118 @@ mod tests {
         assert!(
             text.contains("incompatible") && text.contains("involved: 2"),
             "the combination must be rejected: {text}"
+        );
+    }
+
+    fn on_change_tracked_model(expression: &str, hooks: &str) -> Model {
+        Model::parse_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "on-change",
+          "run": {{ "stop_time": 30.0, "seed": 1, "replications": 1 }},
+          "tracked_interval": 5.0,
+          "tracked_variables": [
+            {{ "name": "W", "expression": "{expression}", "on_change": [ {hooks} ] }}
+          ],
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [ {{ "from": "S", "to": "K" }} ]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    fn change_logs(model: &Model) -> Vec<f64> {
+        let config = SimConfig {
+            stop_time: 30.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(model, &config, 0).expect("trace");
+        trace
+            .events
+            .iter()
+            .filter(|event| event.event == "script_log" && event.message == "changed")
+            .map(|event| event.time)
+            .collect()
+    }
+
+    /// task-198: models without `on_change` are unchanged.
+    #[test]
+    fn on_change_absent_keeps_the_report() {
+        let model = on_change_tracked_model("time", "");
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(first.replications, second.replications);
+        let text = serde_json::to_string(&model).expect("serialize");
+        assert!(!text.contains("on_change"), "empty hooks must be omitted");
+    }
+
+    /// task-198: a changing expression fires once per sample after the first.
+    #[test]
+    fn on_change_fires_once_per_changed_sample() {
+        let model = on_change_tracked_model(
+            "time",
+            r#"{ "action": "script", "source": "log(\"changed\");" }"#,
+        );
+        let logs = change_logs(&model);
+        // Samples at t = 5,10,15,20,25,30 -> 6 samples; the first has no
+        // previous value, so a changing expression fires the other 5 times.
+        assert_eq!(
+            logs.len(),
+            5,
+            "one change per sample after the first: {logs:?}"
+        );
+    }
+
+    /// task-198: a constant expression never fires.
+    #[test]
+    fn on_change_never_fires_for_a_constant() {
+        let model = on_change_tracked_model(
+            "42",
+            r#"{ "action": "script", "source": "log(\"changed\");" }"#,
+        );
+        assert!(change_logs(&model).is_empty());
+    }
+
+    /// task-198: a `script` hook runs and its errors would surface.
+    #[test]
+    fn on_change_script_runs() {
+        let model = on_change_tracked_model(
+            "time",
+            r#"{ "action": "script", "source": "log(\"changed\");" }"#,
+        );
+        assert!(!change_logs(&model).is_empty());
+    }
+
+    /// task-198: summaries have no previous sample, so `on_change` is rejected.
+    #[test]
+    fn on_change_on_a_summary_is_rejected() {
+        let model = Model::parse_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "bad-hook",
+          "run": { "stop_time": 30.0, "seed": 1, "replications": 1 },
+          "tracked_interval": 5.0,
+          "tracked_variables": [
+            { "name": "W", "expression": "time", "kind": "staytime",
+              "on_change": [ { "action": "script", "source": "log(\"x\");" } ] }
+          ],
+          "objects": [
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+        )
+        .expect("model");
+        let issues = openflex_model::validate::validate_collect(&model);
+        let text = format!("{issues:?}");
+        assert!(
+            text.contains("only `level` variables have a previous sample value"),
+            "expected a clear reason: {text}"
         );
     }
 }

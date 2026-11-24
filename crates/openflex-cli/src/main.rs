@@ -887,7 +887,10 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                     println!("{value}");
                 }
                 (None, Some(source)) => {
-                    let engine = openflex_core::script::ScriptEngine::new();
+                    // Same engine the model's own scripts get: a scratchpad run
+                    // must be able to call the model's user commands, otherwise
+                    // `eval` rejects scripts that would run fine in the model.
+                    let engine = openflex_core::script::ScriptEngine::with_commands(&model);
                     let compiled = engine.compile(&source).map_err(|error| {
                         Failure::usage(anyhow!("script does not compile: {error}"))
                     })?;
@@ -907,7 +910,16 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
                         } else {
                             String::new()
                         };
-                        Failure::usage(anyhow!("script failed: {error}{hint}"))
+                        // The model's user commands are prepended to the source,
+                        // so rhai's line numbers are shifted. Do not print a
+                        // number we cannot compute exactly — just say it.
+                        let shift = if model.user_commands.is_empty() {
+                            String::new()
+                        } else {
+                            "\n  note: line numbers are shifted by the model's user-command definitions"
+                                .to_string()
+                        };
+                        Failure::usage(anyhow!("script failed: {error}{hint}{shift}"))
                     })?;
                     for line in &outcome.logs {
                         println!("{line}");
