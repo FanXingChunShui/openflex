@@ -26,7 +26,7 @@
 | FlexSim 7.5 对象 | OpenFlex 对应 | 状态 |
 |---|---|---|
 | Source | `source` | ✅ |
-| Queue | `queue` | ✅ |
+| Queue | `queue` | 🟡 | 容量、`order`（fifo/lifo/priority/by_label）、攒批（`batch_size`/`batch_max_wait`）、**`use_transport`**（物品等 transporter 搬运，搬运期间计入内容；仅单出边）；无 Item Placement/Stack Base Z 这类 3D 视觉参数 |
 | Processor | `processor` | ✅ |
 | Sink | `sink` | ✅ |
 | Combiner | `combiner` | ✅ |
