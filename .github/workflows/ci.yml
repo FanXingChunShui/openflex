@@ -59,6 +59,15 @@ jobs:
       - name: Tests
         run: cargo test --workspace --locked --exclude openflex-gui
 
+      # End-to-end smoke of the headline features: unit tests can pass while a
+      # feature is unreachable from the outside (a dead parameter, an action that
+      # is accepted yet ignored, a hook that never fires).
+      - name: Feature smoke (CLI end to end)
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --locked -p openflex-cli
+          python3 scripts/feature-smoke.py
+
       # PowerShell cannot be parsed on Linux/macOS runners, so the Windows
       # runner is the one that proves install.ps1 / uninstall.ps1 / the two new
       # signing and verification scripts are syntactically valid.
