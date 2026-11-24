@@ -322,3 +322,26 @@ transporter 在整条腿上按直线/最短路匀速移动，**中间节点没�
 
 要解锁它们需要一个共同的前置：**先让旅行者按节点序列行进**（规划经过的节点、逐节点调度事件、
 为每个节点维护占用状态）。那是一次路由模型重写，不是加钩子能解决的，所以这几项一直记 ⛔ 而不是近似实现。
+
+## 物品转移的运输语义（`Use Transport` / `Request Transport From`）
+
+现状：物品在相连对象之间**瞬时转移**（`route` → `deliver`）。运输能力只有一条路径：
+processor 用 `process_operator` 向 dispatcher 请求 operator/transporter，由任务序列搬运"任务"而不是"物品"。
+
+FlexSim 的 `Use Transport` 是另一条路径：固定资源（Queue 等）设了 dispatcher 后，**物品本身**要等一台
+transporter 来搬，期间留在 Queue 里。
+
+评估（读代码后）：queue 的释放入口 `flow_queue` 是独立的，但**运输那一段深度复用** operator 任务机制
+（`Dispatcher.requests`、`RequestTransportFrom`、`pick_transporter`、`TransportPickup/Arrive`、`finish_task`），
+transporter 的任务模型里**没有"搬 item"这个类型**。
+
+因此分两步走，而不是硬加开关：
+
+1. **窄版（进行中）**：只支持单出边 Queue；绕过 `Dispatcher.requests`，直接挑空闲 transporter；
+   无车时 `transport_waiting`，由 `finish_task`/下游释放唤醒；状态放 `ObjectRt` 随 checkpoint；
+   不支持 preemption / 多车协同 / 任务序列。
+   **硬约束**：无 `use_transport` 的模型报告必须逐位不变（用基线 sha256 测试钉住，而不是靠"大概没影响"）。
+2. **完整语义（未排期）**：需要先把 `Dispatcher.requests: VecDeque<usize>` 抽象成带 kind 的请求
+   （`DispatcherRequestKind` / item-task），那是一次**零行为变化**的重构，之后才能安全接入任意对象与多车协同。
+
+为什么先做重构再上功能：在共用主循环里加分支开关，是这几轮里最容易留下"看起来能用、边缘处错"的做法。
