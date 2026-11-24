@@ -2820,6 +2820,69 @@ impl EditForm {
                     &mut p.process_operator,
                     &names.operators,
                 );
+                // Ordered step list: the item visits each step in turn. A step
+                // only carries a setup or process time when the box is ticked,
+                // so "absent" keeps inheriting the object-level values.
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("steps ({})", p.steps.len()))
+                            .size(9.0_f32)
+                            .color(palette::TEXT_DIM),
+                    );
+                    if ui.small_button("+ step").clicked() {
+                        p.steps.push(openflex_model::ProcessStep {
+                            process_time: None,
+                            setup_time: None,
+                        });
+                        changed = true;
+                    }
+                });
+                let mut remove = None;
+                for (index, step) in p.steps.iter_mut().enumerate() {
+                    ui.push_id(("mp-step", index), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{}", index + 1))
+                                    .size(9.0_f32)
+                                    .monospace()
+                                    .color(palette::TEXT_DIM),
+                            );
+                            let mut has_setup = step.setup_time.is_some();
+                            if ui.checkbox(&mut has_setup, "setup").changed() {
+                                step.setup_time =
+                                    has_setup.then_some(openflex_model::Distribution::Constant {
+                                        value: 1.0,
+                                    });
+                                changed = true;
+                            }
+                            let mut has_process = step.process_time.is_some();
+                            if ui.checkbox(&mut has_process, "process").changed() {
+                                step.process_time =
+                                    has_process.then_some(openflex_model::Distribution::Constant {
+                                        value: 1.0,
+                                    });
+                                changed = true;
+                            }
+                            if ui
+                                .small_button("x")
+                                .on_hover_text("remove this step")
+                                .clicked()
+                            {
+                                remove = Some(index);
+                            }
+                        });
+                        if let Some(setup) = step.setup_time.as_mut() {
+                            changed |= distribution_editor(ui, "  step setup", setup);
+                        }
+                        if let Some(process) = step.process_time.as_mut() {
+                            changed |= distribution_editor(ui, "  step process", process);
+                        }
+                    });
+                }
+                if let Some(index) = remove {
+                    p.steps.remove(index);
+                    changed = true;
+                }
             }
             ObjectParams::Combiner(p) => {
                 egui::ComboBox::from_id_salt("combiner-mode")
@@ -15200,6 +15263,37 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn multiprocessor_steps_serialise_only_when_present() {
+        // The editor adds steps on demand; an empty list must stay absent so
+        // old models keep their exact JSON, and a step with no times inherits
+        // the object-level setup/process.
+        use openflex_model::{Distribution, MultiProcessorParams, ProcessStep};
+        let plain = MultiProcessorParams::default();
+        let json = serde_json::to_string(&plain).expect("json");
+        assert!(!json.contains("steps"), "{json}");
+
+        let with_steps = MultiProcessorParams {
+            steps: vec![
+                ProcessStep {
+                    process_time: Some(Distribution::Constant { value: 2.0 }),
+                    setup_time: None,
+                },
+                ProcessStep {
+                    process_time: None,
+                    setup_time: None,
+                },
+            ],
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&with_steps).expect("json");
+        assert!(json.contains("\"process_time\""), "{json}");
+        let back: MultiProcessorParams = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back.steps.len(), 2);
+        assert!(back.steps[1].setup_time.is_none(), "absent stays absent");
+        assert!(back.steps[1].process_time.is_none());
     }
 
     #[test]

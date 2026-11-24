@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### 桌面 GUI
+
+- **MultiProcessor 工序列表编辑器**：`steps (n)` + `+ step`，每步可勾选 `setup` / `process` 并编辑对应分布，
+  也可删除。**未勾选 = 字段缺省**（继承对象级 setup/process），所以空列表与旧模型 JSON 逐字节一致。
+  测试 `multiprocessor_steps_serialise_only_when_present`。GUI **151 项**。
+
+
+
 ## v1.50.0 — 2026-11-25
 
 本轮补上一块**核心建模语义**：物品不再只能"瞬移"到下游。
