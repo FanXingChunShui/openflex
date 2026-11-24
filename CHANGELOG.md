@@ -21,12 +21,10 @@
   `name()` / `name(3.0)` 调用"。测试 `user_commands_round_trip_through_the_panel_buffer`
   （含"包装后的函数体以 `fn setx(v)` 开头"的断言）。GUI **146 项**。
 
-### 模型与引擎
-
 - **`MixerStep.delay` 真正生效**（此前**声明了但引擎从未读取**——注释写着 "waits out the step delay"，
   代码却在收齐的同一 tick 立即分发）。现在：材料收齐后设 `mixer_delay_until`（期间不输出）、
   调度新事件 `MixerDelayDone`，下一次 fluid step 才分发并进入下一步。
-  `delay == 0` **完全走旧路径**（不等待、不排事件、不触发钩子），既有模型逐位不变（钉住测试）。
+  `delay == 0` **不排任何等待事件**（既有模型逐位不变，钉住测试），但两个钩子**仍然触发**（见下条）。
   这又是一个"死参数"——而且它躲过了 `check-dead-params.sh`：因为 `delay` 是通用词，引擎里到处都有同名出现。
 - **流体混合器步前/步后延迟触发器**：`MixerStep.on_before_delay`（收齐后、delay 开始前）与
   `on_after_delay`（delay 结束事件里）。实测 delay=5 时钩子成对出现且**每对间隔精确 5.0**
