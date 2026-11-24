@@ -243,6 +243,15 @@ pub enum SimTrigger {
     /// level genuinely reached the capacity). Latched the same way as
     /// [`SimTrigger::OnEmpty`].
     OnFull,
+    /// An executer received a task sequence and is about to walk its first leg
+    /// (task-200). OpenFlex has no mutable per-executer sequence object: the
+    /// sequence is a model-level declaration (`task_sequence` / GTS) that is
+    /// read-only at run time, so this hook **cannot modify the sequence**; it is
+    /// a notification point for side effects only.
+    OnReceiveTaskSequence,
+    /// A resource slot or an executer became available again (task-200): a
+    /// `resource` slot was released or a transporter finished its task.
+    OnResourceAvailable,
     /// An executer asks for permission to enter a traffic-controlled area
     /// (task-189). Fires before `traffic_try_acquire` decides.
     ///
@@ -278,6 +287,8 @@ impl SimTrigger {
             SimTrigger::OnEmpty => "on_empty",
             SimTrigger::OnFull => "on_full",
             SimTrigger::OnEntryRequest => "on_entry_request",
+            SimTrigger::OnReceiveTaskSequence => "on_receive_task_sequence",
+            SimTrigger::OnResourceAvailable => "on_resource_available",
         }
     }
 
@@ -303,6 +314,8 @@ impl SimTrigger {
             "on_empty" => SimTrigger::OnEmpty,
             "on_full" => SimTrigger::OnFull,
             "on_entry_request" => SimTrigger::OnEntryRequest,
+            "on_receive_task_sequence" => SimTrigger::OnReceiveTaskSequence,
+            "on_resource_available" => SimTrigger::OnResourceAvailable,
             "setup_finish" => SimTrigger::SetupFinish,
             "process_finish" => SimTrigger::ProcessFinish,
             _ => return None,
@@ -384,6 +397,15 @@ pub struct Triggers {
     /// attempt, which is retried later.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub on_entry_request: Vec<Action>,
+    /// An executer is about to run the first leg of a task sequence (see
+    /// [`SimTrigger::OnReceiveTaskSequence`]). The hook cannot modify the
+    /// sequence: it is a model-level declaration, read-only at run time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_receive_task_sequence: Vec<Action>,
+    /// A resource slot or executer became available again (see
+    /// [`SimTrigger::OnResourceAvailable`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_resource_available: Vec<Action>,
 }
 
 impl Triggers {
@@ -410,6 +432,8 @@ impl Triggers {
             SimTrigger::OnEmpty => self.on_empty.clone(),
             SimTrigger::OnFull => self.on_full.clone(),
             SimTrigger::OnEntryRequest => self.on_entry_request.clone(),
+            SimTrigger::OnReceiveTaskSequence => self.on_receive_task_sequence.clone(),
+            SimTrigger::OnResourceAvailable => self.on_resource_available.clone(),
         }
     }
 
@@ -435,5 +459,7 @@ impl Triggers {
             && self.on_empty.is_empty()
             && self.on_full.is_empty()
             && self.on_entry_request.is_empty()
+            && self.on_receive_task_sequence.is_empty()
+            && self.on_resource_available.is_empty()
     }
 }

@@ -2324,6 +2324,11 @@ fn validate_trigger_scripts(object: &Object) -> Vec<ValidationIssue> {
         ("on_empty", &triggers.on_empty),
         ("on_full", &triggers.on_full),
         ("on_entry_request", &triggers.on_entry_request),
+        (
+            "on_receive_task_sequence",
+            &triggers.on_receive_task_sequence,
+        ),
+        ("on_resource_available", &triggers.on_resource_available),
     ];
     for (trigger, actions) in lists {
         for (position, action) in actions.iter().enumerate() {

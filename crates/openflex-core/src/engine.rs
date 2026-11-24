@@ -7707,6 +7707,9 @@ impl<'m> Simulation<'m> {
                 if self.objects[resource].resource_in_use == 0 {
                     self.set_state(resource, State::Idle);
                 }
+                // task-200: a resource slot became available again.
+                self.record_object_trace("on_resource_available", resource);
+                self.fire_trigger(resource, SimTrigger::OnResourceAvailable)?;
                 self.grant_waiting_resource(resource)?;
             }
             OperatorSource::Transporter(transporter) => {
@@ -7812,6 +7815,9 @@ impl<'m> Simulation<'m> {
                         self.transport_estimate_distance(transporter, requester);
                     self.objects[transporter].acc.input += 1;
                     self.claim_shaft(transporter);
+                    // task-200: same notification for coordinated tasks.
+                    self.record_object_trace("on_receive_task_sequence", transporter);
+                    self.fire_trigger(transporter, SimTrigger::OnReceiveTaskSequence)?;
                     self.objects[requester].in_transit += 1;
                     self.set_state(transporter, State::Busy);
                     self.set_executor_activity(transporter, ExecutorActivity::TravelEmpty);
@@ -7838,6 +7844,11 @@ impl<'m> Simulation<'m> {
                 self.transport_estimate_distance(transporter, requester);
             self.objects[transporter].acc.input += 1;
             self.claim_shaft(transporter);
+            // task-200: the executer just received its task sequence (it is
+            // about to walk the first leg). The sequence itself is a read-only
+            // model declaration, so the hook can only produce side effects.
+            self.record_object_trace("on_receive_task_sequence", transporter);
+            self.fire_trigger(transporter, SimTrigger::OnReceiveTaskSequence)?;
             let explicit =
                 self.dispatcher_task_sequence(dispatcher).1 == TaskSequenceMode::Explicit;
             if explicit {
@@ -10252,6 +10263,9 @@ impl<'m> Simulation<'m> {
         }
         self.objects[transporter].serving_requester = None;
         self.objects[transporter].acc.output += 1;
+        // task-200: the executer is available again.
+        self.record_object_trace("on_resource_available", transporter);
+        self.fire_trigger(transporter, SimTrigger::OnResourceAvailable)?;
         self.drain_agv_battery(transporter)?;
         self.set_state(transporter, State::Idle);
         if let Some(dispatcher) = self.objects[transporter].assigned_dispatcher {
@@ -13013,6 +13027,11 @@ fn collect_model_scripts(model: &Model) -> Vec<(String, String)> {
             ("on_empty", &triggers.on_empty),
             ("on_full", &triggers.on_full),
             ("on_entry_request", &triggers.on_entry_request),
+            (
+                "on_receive_task_sequence",
+                &triggers.on_receive_task_sequence,
+            ),
+            ("on_resource_available", &triggers.on_resource_available),
         ];
         for (trigger, actions) in lists {
             for (position, action) in actions.iter().enumerate() {
@@ -20911,5 +20930,171 @@ mod tests {
                 "each pair is one delay apart"
             );
         }
+    }
+
+    fn ready_hook_model(transporter_triggers: &str, processor_triggers: &str) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "ready-hooks",
+          "run": {{ "stop_time": 50.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "pos": [0.0, 0.0], "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "P", "kind": "processor", "pos": [10.0, 0.0], "params": {{
+                "process_time": {{ "distribution": "constant", "value": 1.0 }},
+                "process_operator": "D", "triggers": {{ {processor_triggers} }} }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }},
+            {{ "name": "R", "kind": "resource", "pos": [0.0, 0.0], "params": {{
+                "capacity": 1, "triggers": {{ "on_resource_available": [
+                    {{ "action": "script", "source": "log(\"r\");" }} ] }} }} }},
+            {{ "name": "D", "kind": "dispatcher", "pos": [0.0, 0.0], "params": {{}} }},
+            {{ "name": "T", "kind": "transporter", "pos": [0.0, 0.0], "params": {{
+                "speed": 10.0, "home": "D", "triggers": {{ {transporter_triggers} }} }} }}
+          ],
+          "connections": [
+            {{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }},
+            {{ "from": "D", "to": "T" }}
+          ]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    fn resource_hook_model() -> Model {
+        Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "resource-hook",
+          "run": { "stop_time": 50.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "pos": [0.0, 0.0], "params": {
+                "interarrival": { "distribution": "constant", "value": 1000.0 },
+                "max_arrivals": 1, "first_arrival": 0.0 } },
+            { "name": "P", "kind": "processor", "pos": [10.0, 0.0], "params": {
+                "process_time": { "distribution": "constant", "value": 1.0 },
+                "process_operator": "R" } },
+            { "name": "K", "kind": "sink", "params": {} },
+            { "name": "R", "kind": "resource", "pos": [0.0, 0.0], "params": {
+                "capacity": 1, "triggers": { "on_resource_available": [
+                    { "action": "script", "source": "log(\"r\");" } ] } } }
+          ],
+          "connections": [
+            { "from": "S", "to": "P" }, { "from": "P", "to": "K" }
+          ]
+        }"#,
+        )
+        .expect("model")
+    }
+
+    /// task-200: a dispatch fires `on_receive_task_sequence` exactly once, at the
+    /// dispatch instant.
+    #[test]
+    fn receive_task_sequence_fires_once_per_dispatch() {
+        let model = ready_hook_model(
+            r#""on_receive_task_sequence": [ { "action": "script", "source": "log(\"s\");" } ]"#,
+            "",
+        );
+        let config = SimConfig {
+            stop_time: 50.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let hits: Vec<f64> = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "on_receive_task_sequence")
+            .map(|event| event.time)
+            .collect();
+        assert_eq!(hits.len(), 1, "one dispatch, one notification: {hits:?}");
+        // The hook runs at the dispatch instant (t = 0 here).
+        assert!((hits[0] - 0.0).abs() < 1e-9, "dispatch instant: {hits:?}");
+    }
+
+    /// task-200: a released resource slot fires `on_resource_available`.
+    #[test]
+    fn resource_available_fires_on_slot_release() {
+        let model = resource_hook_model();
+        let config = SimConfig {
+            stop_time: 50.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        assert!(
+            trace
+                .events
+                .iter()
+                .any(|event| event.event == "on_resource_available" && event.object == "R"),
+            "the resource slot release must fire the hook"
+        );
+    }
+
+    /// task-200: both hooks are precompiled (their scripts run).
+    #[test]
+    fn ready_hooks_scripts_run() {
+        let model = ready_hook_model(
+            r#""on_receive_task_sequence": [ { "action": "script", "source": "log(\"s\");" } ]"#,
+            "",
+        );
+        let config = SimConfig {
+            stop_time: 50.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let (_, resource_trace) =
+            crate::simulate_traced(&resource_hook_model(), &config, 0).expect("resource run");
+        let logs: Vec<&str> = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "script_log")
+            .map(|event| event.message.as_str())
+            .collect();
+        assert!(
+            logs.contains(&"s"),
+            "the transporter hook script ran: {logs:?}"
+        );
+        let resource_logs: Vec<&str> = resource_trace
+            .events
+            .iter()
+            .filter(|event| event.event == "script_log")
+            .map(|event| event.message.as_str())
+            .collect();
+        assert!(
+            resource_logs.contains(&"r"),
+            "the resource hook script ran: {resource_logs:?}"
+        );
+    }
+
+    /// task-200: a `send_message` in the hook really changes downstream
+    /// behaviour (not just a trace line).
+    #[test]
+    fn receive_task_sequence_hook_can_change_the_model() {
+        let plain = ready_hook_model("", "");
+        // The hook sends a message; the processor's `on_message` runs as a
+        // consequence, which proves the side effect really reaches the model.
+        let hooked = ready_hook_model(
+            r#""on_receive_task_sequence": [ { "action": "send_message", "target": "P", "delay": "0" } ]"#,
+            r#""on_message": [ { "action": "script", "source": "log(\"got\");" } ]"#,
+        );
+        let plain_report = crate::run_model(&plain).expect("plain");
+        assert_eq!(plain_report.replications[0].items_completed, 1);
+        let config = SimConfig {
+            stop_time: 50.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&hooked, &config, 0).expect("hooked");
+        let messages: Vec<&str> = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "script_log")
+            .map(|event| event.message.as_str())
+            .collect();
+        assert!(
+            messages.contains(&"got"),
+            "the message from the hook triggered the processor's handler: {messages:?}"
+        );
     }
 }

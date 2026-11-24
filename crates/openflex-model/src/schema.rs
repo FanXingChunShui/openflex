@@ -235,7 +235,9 @@ fn definitions() -> Value {
                 "on_unload": { "type": "array", "items": { "$ref": "#/$defs/action" } },
                 "on_empty": { "type": "array", "items": { "$ref": "#/$defs/action" } },
                 "on_full": { "type": "array", "items": { "$ref": "#/$defs/action" } },
-                "on_entry_request": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+                "on_entry_request": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_receive_task_sequence": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+                "on_resource_available": { "type": "array", "items": { "$ref": "#/$defs/action" } }
             },
             "additionalProperties": false
         }),

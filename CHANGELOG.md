@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### 模型与引擎
+
+- **`on_receive_task_sequence` 触发器**：执行器被分派到任务序列、**开始执行第一腿之前**触发一次（每任务恰好一次，
+  普通与协同分支都触发）。**能力边界写进 Rust 文档注释**：我们的任务序列是模型级声明（`task_sequence`/GTS），
+  运行时只读，所以**此钩子不能修改序列**，只能做副作用（`log`/`set_label`/`send_message`/`set_motor`）。
+  时点说明也写清了：FlexSim 的"收到序列"事件在我们这里不存在，因此定义为"开始执行第一腿之前"。
+- **`on_resource_available` 触发器**：资源重新可用时触发，**两个来源都覆盖**——
+  `resource` 池位释放与 transporter 的 `finish_task`。
+  实测（3 件、每件一次派发）：`on_receive_task_sequence` 在 t=0/20/40 各一次，
+  `on_resource_available` 在 t=4/24/44 各一次，两个钩子的脚本各执行 3 次。
+  边界：shift 结束、维修完成等其它"可用性变化"不触发（记入矩阵的未覆盖说明）。
+- 两个钩子都进了 `collect_model_scripts` 的手写清单（第 7 次提，这次一开始就加）。
+  验收里特意加了一条 **"钩子里 `send_message` 能改变下游行为"**——证明副作用真的送达模型，而不只是写了一条 trace。
+
+
 ## v1.46.0 — 2026-11-24
 
 本轮又抓到一个**"声明了但代码没做"**的参数：`MixerStep.delay`。注释写着 "waits out the step delay"，
