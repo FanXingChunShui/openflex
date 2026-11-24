@@ -1185,6 +1185,7 @@ fn explicit_route_points(model: &Model, dispatcher: &openflex_model::Object) -> 
     let mut points = vec![dispatcher.pos];
     for step in &params.task_sequence {
         let openflex_model::model::TaskStep::Detailed {
+            involved: 1,
             kind: openflex_model::model::TaskStepKind::Travel,
             target: Some(target),
             ..
@@ -1995,12 +1996,14 @@ impl EditForm {
                                                 duration,
                                                 condition,
                                                 target,
+                                                involved,
                                                 ..
                                             } => TaskStep::Detailed {
                                                 kind,
                                                 duration: duration.clone(),
                                                 condition: condition.clone(),
                                                 target: target.clone(),
+                                                involved: *involved,
                                             },
                                             TaskStep::Simple(_) => TaskStep::Simple(kind),
                                             // task-169: extra-only legs are not
@@ -16541,6 +16544,7 @@ mod tests {
         // A detailed step keeps its duration when the kind is switched (mirrors
         // the assignment the combo box performs).
         let step = TaskStep::Detailed {
+            involved: 1,
             kind: TaskStepKind::Travel,
             duration: Some(Distribution::Constant { value: 2.0 }),
             condition: None,
@@ -16553,6 +16557,7 @@ mod tests {
                 target,
                 ..
             } => TaskStep::Detailed {
+                involved: 1,
                 kind: TaskStepKind::Load,
                 duration,
                 condition,

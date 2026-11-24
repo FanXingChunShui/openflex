@@ -599,6 +599,7 @@ fn definitions() -> Value {
                                 "kind": { "enum": ["travel", "load", "unload", "utilize", "break"] },
                                 "duration": { "$ref": "#/$defs/distribution" },
                                 "condition": { "type": "string" },
+                                "involved": { "enum": [1, 2], "default": 1 },
                                 "target": {
                                     "oneOf": [
                                         { "enum": ["home", "pickup", "requester"] },

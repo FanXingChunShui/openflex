@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### 模型与引擎
+
+- **协同任务序列（`involved: 2`）**：`TaskStep::Detailed.involved`（默认 1、空不序列化，`Simple` 等价 1），
+  声明"完成这一步需要两个执行器"。语义：dispatcher **一次派两个执行器**并写入同一 `task_group`；
+  **两个都 `TransportArrive` 才开始**（屏障在 explicit 与 append 的共同入口，先到者只登记、不轮询）；
+  结束时两个各自释放。实测：两名执行器同刻 `transport_arrive`；`involved: 1` 的报告与"完全不写 `involved`"
+  **sha256 相同**；只有一名执行器时 `completed 0` 且**整场仅 4 个事件**（永久等待且不忙等，按设计）。
+  **先停手条款起作用了**：这张卡第一轮只交了一份成本报告（"同一 requester 可以有多个请求，`serving_requester`
+  是每执行器的单值，所以不需要重写请求结构"），确认后才实施，避免了一个假功能。
+  **边界（如实记录）**：`involved: 2` 与 `explicit` 模式的组合当前不支持（下一版改为 validate 拒绝）；
+  抢占与 AGV 途中充电两个路径**代码就位但缺专测**（下一轮补）。
+
+
 ## v1.44.0 — 2026-11-24
 
 本轮的共同点是「**把写在文档里的东西变成真的**」：

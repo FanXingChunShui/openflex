@@ -2240,6 +2240,16 @@ pub enum TaskStep {
         /// task-173: destination for explicit-route `travel` legs.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<TravelTarget>,
+        /// task-196: how many executers must be present before the transport
+        /// task runs (default 1). Only 1 and 2 are supported.
+        ///
+        /// With `involved == 2` the dispatcher hands the same request to two
+        /// executers and the task only starts once **both** have arrived (the
+        /// later `TransportArrive` is the start instant). When fewer than two
+        /// executers are available the task waits — that is a model that lacks
+        /// an executer, not a deadlock.
+        #[serde(default = "one_u32", skip_serializing_if = "is_one")]
+        involved: u32,
     },
     /// task-169: an extra-only `utilize`/`break` leg; duration is required by
     /// validation (kept optional here so the validator can report it instead
@@ -2254,6 +2264,14 @@ pub enum TaskStep {
 }
 
 impl TaskStep {
+    /// task-196: executers required before this step runs (Simple = 1).
+    pub fn involved(&self) -> u32 {
+        match self {
+            TaskStep::Detailed { involved, .. } => (*involved).max(1),
+            _ => 1,
+        }
+    }
+
     /// The kind of the step.
     pub fn kind(&self) -> TaskStepKind {
         match self {
@@ -4721,6 +4739,10 @@ fn describe_ignored_path(path: &str, names: &[&str]) -> String {
 
 fn hundred_u32() -> u32 {
     100
+}
+
+fn is_one(value: &u32) -> bool {
+    *value == 1
 }
 
 fn one_u32() -> u32 {

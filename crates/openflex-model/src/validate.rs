@@ -2062,6 +2062,39 @@ fn validate_user_commands(model: &Model) -> Vec<ValidationIssue> {
 /// resolve; a dispatcher cannot set both the inline sequence and a reference.
 fn validate_task_sequences(model: &Model) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
+    // task-196: only 1 or 2 executers per step are supported.
+    let check_steps = |steps: &[crate::model::TaskStep], location: &str| -> Vec<ValidationIssue> {
+        let mut issues = Vec::new();
+        for (position, step) in steps.iter().enumerate() {
+            let involved = match step {
+                crate::model::TaskStep::Detailed { involved, .. } => *involved,
+                _ => 1,
+            };
+            if involved != 1 && involved != 2 {
+                issues.push(ValidationIssue::new(
+                    format!("{location}.{position}.involved"),
+                    format!(
+                        "`involved` must be 1 or 2 (only 1 or 2 executers are supported), found {involved}"
+                    ),
+                ));
+            }
+        }
+        issues
+    };
+    for (position, sequence) in model.task_sequences.iter().enumerate() {
+        issues.extend(check_steps(
+            &sequence.steps,
+            &format!("task_sequences.{position}.steps"),
+        ));
+    }
+    for object in &model.objects {
+        if let ObjectParams::Dispatcher(params) = &object.params {
+            issues.extend(check_steps(
+                &params.task_sequence,
+                &format!("objects.{}.task_sequence", object.name),
+            ));
+        }
+    }
     let mut seen = std::collections::BTreeMap::new();
     for (position, sequence) in model.task_sequences.iter().enumerate() {
         let location = format!("task_sequences.{position}");

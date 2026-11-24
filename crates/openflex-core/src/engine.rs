@@ -769,6 +769,19 @@ fn true_bool() -> bool {
     true
 }
 
+/// task-196: two executers working on the same request (coordinated task).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct TaskGroup {
+    requester: usize,
+    members: Vec<usize>,
+    /// Members that already reached the requester.
+    arrived: Vec<usize>,
+    /// Members waiting at the barrier.
+    waiting: Vec<usize>,
+    /// Members that finished their task.
+    released: usize,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ObjectRt {
     name: String,
@@ -875,6 +888,9 @@ pub(crate) struct ObjectRt {
     /// task-190: type of the last item this processor started (changeover).
     #[serde(default)]
     last_item_type: Option<u32>,
+    /// task-196: coordinated task group this executer belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    task_group: Option<u64>,
     /// task-191: the breakdown waits for its repair operator to arrive.
     #[serde(default)]
     repair_waiting: bool,
@@ -1060,6 +1076,7 @@ impl ObjectRt {
             recycled_count: 0,
             dispatcher_active: 0,
             last_item_type: None,
+            task_group: None,
             repair_waiting: false,
             repair_operator: None,
             person_path: VecDeque::new(),
@@ -2578,6 +2595,9 @@ struct Simulation<'m> {
     scripts: HashMap<String, CompiledScript>,
     /// Trigger location of the actions currently being applied (script errors).
     action_location: String,
+    /// task-196: coordinated task groups (two executers on one request).
+    task_groups: HashMap<u64, TaskGroup>,
+    next_task_group: u64,
     /// task-106: AGVs currently occupying each charger.
     charger_in_use: HashMap<usize, u32>,
     /// task-106: AGVs waiting for a charger slot (FIFO per charger).
@@ -2808,6 +2828,8 @@ impl<'m> Simulation<'m> {
             scripts,
             action_location: String::new(),
             distance_cache: RefCell::new(HashMap::new()),
+            task_groups: HashMap::new(),
+            next_task_group: 0,
             charger_in_use: HashMap::new(),
             charger_queue: HashMap::new(),
             traffic_waiters: vec![VecDeque::new(); traffic_controls.len()],
@@ -7701,7 +7723,44 @@ impl<'m> Simulation<'m> {
         }
         while let Some(position) = self.pick_request(dispatcher) {
             let requester = self.objects[dispatcher].requests[position];
-            let Some(transporter) = self.pick_transporter(dispatcher, requester) else {
+            // task-196: a coordinated step hands the same request to two
+            // executers; with fewer than two free executers the request stays
+            // queued and a later finish_task re-dispatches it (no busy waiting).
+            let involved = self.dispatcher_task_involved(dispatcher);
+            if involved >= 2 {
+                let mut chosen: Vec<usize> = Vec::new();
+                for _ in 0..involved {
+                    match self.pick_transporter(dispatcher, requester, &chosen) {
+                        Some(transporter) => chosen.push(transporter),
+                        None => break,
+                    }
+                }
+                if chosen.len() < involved as usize {
+                    break;
+                }
+                self.objects[dispatcher].requests.remove(position);
+                let group = self.allocate_task_group(requester, &chosen);
+                for &transporter in &chosen {
+                    self.objects[dispatcher].dispatcher_active =
+                        self.objects[dispatcher].dispatcher_active.saturating_add(1);
+                    self.objects[transporter].tasks += 1;
+                    self.objects[transporter].serving_requester = Some(requester);
+                    self.objects[transporter].task_group = Some(group);
+                    if let Some(item) = self.sole_item_id(requester) {
+                        self.transport_item_hints.insert(transporter, item);
+                    }
+                    self.objects[transporter].task_distance =
+                        self.transport_estimate_distance(transporter, requester);
+                    self.objects[transporter].acc.input += 1;
+                    self.claim_shaft(transporter);
+                    self.objects[requester].in_transit += 1;
+                    self.set_state(transporter, State::Busy);
+                    self.set_executor_activity(transporter, ExecutorActivity::TravelEmpty);
+                    self.schedule_transport_pickup(transporter, requester)?;
+                }
+                continue;
+            }
+            let Some(transporter) = self.pick_transporter(dispatcher, requester, &[]) else {
                 // A10: a preemptive request may interrupt a lower-priority task.
                 if self.try_preempt(dispatcher, requester)? {
                     continue;
@@ -7954,6 +8013,9 @@ impl<'m> Simulation<'m> {
             // the request can be served again instead of blocking the queue.
             self.objects[transporter].serving_requester = None;
             self.objects[transporter].tasks = self.objects[transporter].tasks.saturating_sub(1);
+            // task-196: a preempted group is cancelled as a whole, so the other
+            // member cannot wait forever at the barrier.
+            self.cancel_task_group(transporter);
             if let Some(dispatcher) = self.objects[transporter].assigned_dispatcher {
                 self.objects[dispatcher].dispatcher_active =
                     self.objects[dispatcher].dispatcher_active.saturating_sub(1);
@@ -7966,6 +8028,10 @@ impl<'m> Simulation<'m> {
         // Abort the transporter task (it is not counted as completed).
         self.objects[transporter].serving_requester = None;
         self.objects[transporter].tasks = self.objects[transporter].tasks.saturating_sub(1);
+        // task-196: a preempted group is cancelled as a whole, so the other
+        // member cannot wait forever at the barrier.
+        self.cancel_task_group(transporter);
+
         if let Some(dispatcher) = self.objects[transporter].assigned_dispatcher {
             self.objects[dispatcher].dispatcher_active =
                 self.objects[dispatcher].dispatcher_active.saturating_sub(1);
@@ -8290,9 +8356,17 @@ impl<'m> Simulation<'m> {
         }
     }
 
-    fn pick_transporter(&self, dispatcher: usize, requester: usize) -> Option<usize> {
+    fn pick_transporter(
+        &self,
+        dispatcher: usize,
+        requester: usize,
+        exclude: &[usize],
+    ) -> Option<usize> {
         let mut best: Option<(usize, f64)> = None;
         for &transporter in &self.transporters[dispatcher] {
+            if exclude.contains(&transporter) {
+                continue;
+            }
             if !self.objects[transporter].on_shift {
                 continue;
             }
@@ -8978,6 +9052,34 @@ impl<'m> Simulation<'m> {
         transporter: usize,
         requester: usize,
     ) -> Result<(), SimError> {
+        // task-196: two-executer barrier. The task starts only when both group
+        // members arrived (the later arrival is the start instant); the first
+        // one waits without polling and is woken by the second.
+        if let Some(group_id) = self.objects[transporter].task_group {
+            let mut wake: Vec<usize> = Vec::new();
+            let mut blocked = false;
+            if let Some(group) = self.task_groups.get_mut(&group_id) {
+                if !group.arrived.contains(&transporter) {
+                    group.arrived.push(transporter);
+                }
+                if group.arrived.len() < group.members.len() {
+                    if !group.waiting.contains(&transporter) {
+                        group.waiting.push(transporter);
+                    }
+                    blocked = true;
+                } else {
+                    wake = std::mem::take(&mut group.waiting);
+                }
+            }
+            if blocked {
+                return Ok(());
+            }
+            for member in wake {
+                if member != transporter {
+                    self.schedule(self.now, EventKind::TransportArrive(member, requester));
+                }
+            }
+        }
         // task-148: the controlled delivery leg ends when the executer arrives.
         self.traffic_release(transporter);
         if self.objects[transporter].kind == ObjectKind::Agv {
@@ -9262,8 +9364,15 @@ impl<'m> Simulation<'m> {
         if self.objects[requester].in_transit > 0 {
             self.objects[requester].in_transit -= 1;
         }
-        if self.objects[requester].requesting_operator {
+        let granted = self.objects[requester].requesting_operator;
+        if granted {
             self.grant_operator(requester, OperatorSource::Transporter(transporter));
+        }
+        // task-196: the second member of a coordinated group does not grant an
+        // operator (the requester needs one); it finishes its leg so both
+        // members are released and the group is cleared.
+        if self.objects[transporter].task_group.is_some() && !granted {
+            self.finish_task(transporter)?;
         }
         Ok(())
     }
@@ -9387,6 +9496,55 @@ impl<'m> Simulation<'m> {
     ///
     /// Travel targets are resolved once here; `pickup` is the executer's home
     /// (its pickup point), `requester` is the current task's requester.
+    /// task-196: executers required by a dispatcher's task sequence (max over
+    /// its steps, clamped to the supported 1..=2).
+    fn dispatcher_task_involved(&self, dispatcher: usize) -> u32 {
+        let (steps, _) = self.dispatcher_task_sequence(dispatcher);
+        steps
+            .iter()
+            .map(|step| step.involved())
+            .max()
+            .unwrap_or(1)
+            .clamp(1, 2)
+    }
+
+    /// task-196: abort the coordinated group of a preempted executer and wake
+    /// the other member so it does not wait at the barrier forever.
+    fn cancel_task_group(&mut self, transporter: usize) {
+        let Some(group_id) = self.objects[transporter].task_group.take() else {
+            return;
+        };
+        let Some(group) = self.task_groups.remove(&group_id) else {
+            return;
+        };
+        for member in group.members {
+            if member == transporter || self.objects[member].tasks == 0 {
+                continue;
+            }
+            self.objects[member].task_group = None;
+            if let Some(requester) = self.objects[member].serving_requester {
+                self.schedule(self.now, EventKind::TransportArrive(member, requester));
+            }
+        }
+    }
+
+    /// task-196: register a coordinated task group for `members`.
+    fn allocate_task_group(&mut self, requester: usize, members: &[usize]) -> u64 {
+        let id = self.next_task_group;
+        self.next_task_group = self.next_task_group.wrapping_add(1);
+        self.task_groups.insert(
+            id,
+            TaskGroup {
+                requester,
+                members: members.to_vec(),
+                arrived: Vec::new(),
+                waiting: Vec::new(),
+                released: 0,
+            },
+        );
+        id
+    }
+
     /// task-193: the task sequence a dispatcher runs, resolving a
     /// `task_sequence_ref` through `Model::task_sequences`.
     ///
@@ -9929,6 +10087,21 @@ impl<'m> Simulation<'m> {
         if let Some(dispatcher) = self.objects[transporter].assigned_dispatcher {
             self.objects[dispatcher].dispatcher_active =
                 self.objects[dispatcher].dispatcher_active.saturating_sub(1);
+        }
+        // task-196: the last group member clears the group (idempotent: removing
+        // an already gone group is a no-op, so a second release cannot leak or
+        // double-clear).
+        if let Some(group_id) = self.objects[transporter].task_group.take() {
+            let done = match self.task_groups.get_mut(&group_id) {
+                Some(group) => {
+                    group.released = group.released.saturating_add(1);
+                    group.released >= group.members.len()
+                }
+                None => true,
+            };
+            if done {
+                self.task_groups.remove(&group_id);
+            }
         }
         self.objects[transporter].serving_requester = None;
         self.objects[transporter].acc.output += 1;
@@ -20063,5 +20236,136 @@ mod tests {
             text.contains("within [0, capacity"),
             "the error must explain the range: {text}"
         );
+    }
+
+    fn coordinated_model(involved: u32, transporters: u32, arrivals: u32) -> Model {
+        let transports: Vec<String> = (0..transporters)
+            .map(|index| {
+                format!(
+                    r#"{{ "name": "T{index}", "kind": "transporter", "pos": [0.0, 0.0], "params": {{ "speed": 10.0, "home": "D" }} }}"#
+                )
+            })
+            .collect();
+        let links: Vec<String> = (0..transporters)
+            .map(|index| format!(r#"{{ "from": "D", "to": "T{index}" }}"#))
+            .collect();
+        let transports = transports.join(",\n            ");
+        let links = links.join(",\n            ");
+        let step = if involved == 1 {
+            r#"{ "kind": "travel" }"#.to_string()
+        } else {
+            format!(r#"{{ "kind": "travel", "involved": {involved} }}"#)
+        };
+        Model::parse_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "coordinated",
+          "run": {{ "stop_time": 50.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": {arrivals}, "first_arrival": 0.0 }} }},
+            {{ "name": "P", "kind": "processor", "pos": [100.0, 0.0], "params": {{
+                "process_time": {{ "distribution": "constant", "value": 1.0 }},
+                "process_operator": "D" }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }},
+            {{ "name": "D", "kind": "dispatcher", "pos": [0.0, 0.0], "params": {{
+                "task_sequence": [ {step} ] }} }},
+            {transports}
+          ],
+          "connections": [
+            {{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }},
+            {links}
+          ]
+        }}"#
+        ))
+        .expect("model")
+    }
+
+    /// task-196: models without `involved` are unchanged.
+    #[test]
+    fn involved_absent_keeps_the_report() {
+        let model = coordinated_model(1, 2, 1);
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(first.replications, second.replications);
+        let text = serde_json::to_string(&model).expect("serialize");
+        assert!(!text.contains("involved"), "involved 1 must be omitted");
+    }
+
+    /// task-196: with `involved: 2` both executers participate and the task
+    /// still completes.
+    #[test]
+    fn involved_two_needs_both_arrivals() {
+        let model = coordinated_model(2, 2, 1);
+        let config = SimConfig {
+            stop_time: 50.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (result, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        assert_eq!(result.items_completed, 1, "the coordinated task completes");
+        let arrivals = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "transport_arrive")
+            .map(|event| event.object.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(
+            arrivals.contains("T0") && arrivals.contains("T1"),
+            "both executers must take part: {arrivals:?}"
+        );
+    }
+
+    /// task-196: with only one executer the task waits for the missing member
+    /// without busy spinning (bounded events, never completes).
+    #[test]
+    fn involved_two_with_one_executer_waits_without_spinning() {
+        let model = coordinated_model(2, 1, 1);
+        let config = SimConfig {
+            stop_time: 50.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (result, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        assert_eq!(
+            result.items_completed, 0,
+            "the task cannot start without the second executer"
+        );
+        assert!(
+            trace.events.len() < 1000,
+            "waiting must not spin: {} events",
+            trace.events.len()
+        );
+    }
+
+    /// task-196: both executers are released, so later tasks can be dispatched.
+    #[test]
+    fn involved_two_releases_both_executers() {
+        let model = coordinated_model(2, 2, 1);
+        let report = crate::run_model(&model).expect("run");
+        let objects = &report.replications[0].objects;
+        assert_eq!(report.replications[0].items_completed, 1);
+        assert_eq!(
+            objects["T0"].output_count, 1,
+            "the first executer finished and was released"
+        );
+        assert_eq!(
+            objects["T1"].output_count, 1,
+            "the second executer finished and was released"
+        );
+    }
+
+    /// task-196: only `involved` 1 or 2 is accepted.
+    #[test]
+    fn involved_out_of_range_is_rejected() {
+        for involved in [0u32, 3u32] {
+            let model = coordinated_model(involved, 2, 1);
+            let issues = openflex_model::validate::validate_collect(&model);
+            let text = format!("{issues:?}");
+            assert!(
+                text.contains("involved") && text.contains("1 or 2"),
+                "involved={involved} must be rejected: {text}"
+            );
+        }
     }
 }
