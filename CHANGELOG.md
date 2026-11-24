@@ -2,6 +2,13 @@
 
 ## v1.43.0 — 2026-11-24
 
+> **发布事故（已修正，记录在此以免重演）**：v1.43.0 首次上传时多出一个
+> `openflex-1.42.0-universal-apple-darwin.tar.gz`——因为 `dist/`（构建产物目录）**一直被纳入版本库**，
+> 我上一版为补 macOS 资产在本地生成的 1.42.0 包被后续 `git add -A` 一并提交，发布流水线打包 `dist/*` 时
+> 就把它带进了新版本。已删除该资产、重建 `SHA256SUMS.txt`（15 → 14 行），并把 `dist/` 加入 `.gitignore`
+> 与 `git rm --cached`，从根上消除这类"旧产物搭车"。最终 15 资产 / 14 项哈希全 OK。
+
+
 这一版把「**模型声明的每个参数都真的能到达引擎**」这条线走完了：`dead-params-allowlist` 从 5 条降到 **0 条**。
 过程中接了两个真参数（`tick_length`、`repair_operator`），删了三个虚标（`receive_port`/`destination_port`/`product_id`）。
 
