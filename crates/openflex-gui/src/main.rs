@@ -2274,6 +2274,69 @@ impl EditForm {
                 changed |= optional_f64(ui, "max outflow", &mut p.max_outflow);
                 changed |= optional_f64(ui, "density", &mut p.density);
                 changed |= optional_f64(ui, "gravity", &mut p.gravity);
+                // Level marks: the name and threshold are edited here, the
+                // rise/fall action lists stay in the JSON editor (same split as
+                // photo eyes and decision points).
+                ui.label(
+                    egui::RichText::new(format!("level marks ({})", p.marks.len()))
+                        .size(9.0_f32)
+                        .color(palette::TEXT_DIM),
+                );
+                let mut remove_mark: Option<usize> = None;
+                for (index, mark) in p.marks.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        let mut name = mark.name.clone();
+                        if ui
+                            .add(
+                                egui::TextEdit::singleline(&mut name)
+                                    .hint_text("name")
+                                    .desired_width(90.0)
+                                    .font(egui::TextStyle::Small),
+                            )
+                            .changed()
+                        {
+                            mark.name = name;
+                            changed = true;
+                        }
+                        changed |= ui
+                            .add(
+                                egui::DragValue::new(&mut mark.level)
+                                    .speed(1.0)
+                                    .range(0.0..=p.capacity.max(0.0))
+                                    .prefix("level "),
+                            )
+                            .changed();
+                        let has_hooks = !mark.on_rise.is_empty() || !mark.on_fall.is_empty();
+                        if has_hooks {
+                            ui.label(
+                                egui::RichText::new("hooks")
+                                    .size(9.0_f32)
+                                    .color(palette::ACCENT_HI),
+                            )
+                            .on_hover_text("rise/fall actions are edited in the JSON below");
+                        }
+                        if ui
+                            .small_button("x")
+                            .on_hover_text("remove this mark")
+                            .clicked()
+                        {
+                            remove_mark = Some(index);
+                        }
+                    });
+                }
+                if let Some(index) = remove_mark {
+                    p.marks.remove(index);
+                    changed = true;
+                }
+                if ui.small_button("+ level mark").clicked() {
+                    p.marks.push(openflex_model::FluidMark {
+                        name: format!("mark{}", p.marks.len()),
+                        level: (p.capacity * 0.5).max(0.0),
+                        on_rise: Vec::new(),
+                        on_fall: Vec::new(),
+                    });
+                    changed = true;
+                }
             }
             ObjectParams::FluidValve(p) => {
                 changed |= ui.checkbox(&mut p.open, "open").changed();
@@ -14826,6 +14889,43 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn fluid_marks_round_trip_and_stay_within_capacity() {
+        // The form clamps the level to [0, capacity]; the model also validates
+        // it, so a value written by hand cannot slip through.
+        use openflex_model::FluidMark;
+        let mark = FluidMark {
+            name: "low".into(),
+            level: 1.5,
+            on_rise: Vec::new(),
+            on_fall: Vec::new(),
+        };
+        let json = serde_json::to_string(&mark).expect("json");
+        assert!(json.contains("\"low\""), "{json}");
+        assert!(json.contains("1.5"), "{json}");
+        let back: FluidMark = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back, mark);
+
+        let model = Model::from_json(
+            r#"{
+              "format": "openflex-model", "version": 1, "name": "marks",
+              "run": { "stop_time": 10.0, "replications": 1 },
+              "objects": [
+                { "name": "T", "kind": "fluid_tank", "params": {
+                    "capacity": 5.0, "initial_level": 0.0,
+                    "marks": [ { "name": "low", "level": 9.0 } ] } },
+                { "name": "K", "kind": "fluid_sink", "params": {} }
+              ],
+              "connections": [ { "from": "T", "to": "K" } ]
+            }"#,
+        );
+        let error = model.expect_err("a mark above capacity must be rejected");
+        assert!(
+            format!("{error}").contains("within [0, capacity"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
