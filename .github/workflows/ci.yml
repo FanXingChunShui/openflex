@@ -506,6 +506,9 @@ jobs:
           files=(scripts/*.sh packaging/*.sh packaging/*/*.sh)
           shellcheck -S warning "${files[@]}"
 
+      - name: parity matrix summary matches its tables
+        run: python3 scripts/check-parity-counts.py
+
       - name: changelog keeps its shape
         run: bash scripts/check-changelog.sh
 

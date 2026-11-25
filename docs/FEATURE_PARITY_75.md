@@ -172,7 +172,7 @@
 | User Events（按设定时刻执行的函数） | `Model.user_events: [{ time, name, actions }]` + GUI 面板 | ✅ | 进入事件日历、`(time, seq)` 确定性、**同刻按声明顺序**；早于 warmup 照常执行；支持 `script`/`send_message`/`set_motor`（其余动作 validate 明确拒绝，因无 item 上下文）。`user_event_runs_once_at_its_time`、`user_events_at_the_same_time_keep_declaration_order`、`user_event_negative_time_is_rejected`、`user_event_past_the_stop_time_does_not_run`。限制：checkpoint 恢复**不重放**已过去的事件（语义已实现，硬断言待补） |
 | Model Triggers（模型级触发器：OnReset/OnRunStart 等） | `model.model_triggers` | ✅ | `ModelTriggers` 含 `on_start`/`on_reset`/`on_stop`（Schema 有 `model_triggers`，执行点见 `fire_model_actions` 的四处调用）；执行失败上报 `SimError::Script`。仍无 FlexSim 的实验生命周期钩子（Start/End of Experiment/Scenario/Replication 共 6 个） |
 | Tracked Variables（Work In Progress / Time In System 等可追踪量） | `model.tracked_variables`（`TrackedKind: level/state/staytime/kinetic`）+ `tracked_interval` + `SimReport.tracked_series` | ✅ | 四种 kind 均已实现：level/kinetic 按间隔采样（kinetic 是变化率）、state 给每状态占比、staytime 给停留分布摘要；证据见 [PARITY_EVIDENCE](PARITY_EVIDENCE.md) #43 |
-| Event List（待处理事件列表，可快进到某事件） | `--trace` + trace 回放 + Studio 事件列表 | ✅ | `simulate_traced`、`TraceLog`、Studio 分页 trace |
+| Event List（待处理事件列表，可快进到某事件） | `--trace` + trace 回放 + Studio 事件列表 | 🟡 | 能做的是**已发生事件**的记录与回放（`TraceLog`、`openflex trace`、Studio 分页列表）；FlexSim 的 Event List 展示的是**未来待处理事件**并可跳转执行——引擎没有"窥视事件堆"的接口。**降级理由（审计发现）**：原 ✅ 引用的 `trace_writes_parseable_jsonl_events`/`reads_a_jsonl_trace_file` 只断言 JSONL 可写/可读，证明不了"待处理事件列表" |
 | Event Log（记录已发生事件，可导出 CSV） | `--trace <FILE>` | 🟡 | 有 trace 导出；无"Enable Logging + 时间段过滤 + CSV 导出"这套交互，也无"两次日志 diff 定位不复现点"的辅助 |
 | Excel Interface（多工作表导入/导出） | `--xlsx`（3 sheet 导出）+ `import --xlsx` | 🟡 | 有 xlsx 双向；无"任意工作表映射到 Global Table / 到达表"的通用界面 |
 | Script Console（即时执行 FlexScript） | `openflex eval --expr` / `--script` | 🟡 | 非交互式（每条命令一次进程），但**不跑模型即可试算表达式/运行沙箱脚本**，`--time` 可指定时刻；引擎状态路径（`Queue1.content`、`item.*`）明确报 `unknown variable` 而不是编造值；脚本错误带 `available:` 提示。`eval_answers_expressions_without_running_the_model`、`eval_runs_a_sandboxed_script`、`eval_reports_paths_that_need_a_run` |
@@ -307,7 +307,7 @@
 | FlexSim 7.5 功能 | OpenFlex 现状 | 状态 | 证据或缺口说明 |
 |---|---|---|---|
 | Getting Started（软件定位与建模流程） | `README`、`docs/`、`examples/` | 📄 | 教程流程页；对应的首个示例已单独成行（First Model） |
-| First Model（三品种加工示例） | `examples/three-varieties.ofm` | ✅ | 三品种各一台专机（`by_item_type` 分流）+ 共用测试站 + 不合格返工回入口（`by_condition`）。实测 480 分钟 5 复现：测试站 util **0.763** 成为瓶颈，入口缓冲因 FIFO 队头被占机阻塞而堆积 |
+| First Model（三品种加工示例） | `examples/three-varieties.ofm` | ✅ | 三品种各一台专机（`by_item_type` 分流）+ 共用测试站 + 不合格返工回入口（`by_condition`）。实测 480 分钟 5 复现：测试站 util **0.763** 成为瓶颈。**此前本行只有"实测数字"、没有测试函数（审计发现），现补行为测试**：`three_varieties_model_keeps_its_shape`（三条按类型分流 + 返工回边）、`three_varieties_runs_five_replications_and_the_tester_is_the_bottleneck`（5 复现、Tester 是利用率最高的对象、util 落在 0.7–0.85 带内）、`three_varieties_is_deterministic_across_repeated_runs` |
 | Interacting With FlexSim（建/命名/连接/导航） | Studio 交互 | 🟡 | 有建/连/导航；无键盘拖拽建连（A/S/Q 键语义） |
 | Keyboard Interaction（3D 视图快捷键） | Studio 快捷键 | 🟡 | 有部分快捷键；无 FlexSim 全套 |
 | Terminology（术语表） | `docs/spec/flexsim-to-openflex.md` 术语表 | 📄 | 术语参考页，无功能面 |
@@ -330,7 +330,8 @@
 > 并把 3 个纯教程/术语页从 🟡 改判为 📄。**权威总数以第 325 行的 ✅39 / 🟡97 / ⛔73 / 📄3 为准**，
 > 下表用来看**缺口集中在哪个目录**，不必逐格对齐。
 
-矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 52 行、🟡 103 行、⛔ 54 行、📄 3 行（参考页，不计入缺口）。
+矩阵共 **197 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 49 行、🟡 95 行、⛔ 50 行、📄 3 行（参考页，不计入缺口）。
+> 本行数字由 `scripts/check-parity-counts.py` 从下方表格**自动核对**；改矩阵后若不一致，CI 会失败。
 其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行。
 
 | 状态 | 行数 | 占比 |
