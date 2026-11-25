@@ -1,6 +1,33 @@
 # Changelog
 
-## Unreleased
+## v1.53.0 — 2026-11-25
+
+这一版的核心是**修掉一个"标着 ✅ 却完全失效"的功能**，以及它带出来的两个补全。
+
+**1. 表驱动到达此前是死的。** 矩阵写着"表驱动到达已接线（`engine.rs` 读全局表）"，
+实测却是 **`created 0.0`** —— 一个物品都不创建，而 `validate` 通过。
+根因：两个到达表函数只读 `params.arrival_schedule()`，该访问器对表驱动返回 `None`，于是第一行就 `return`。
+
+**这个缺陷上一轮躲过了审计**：原引用测试 `source_can_load_its_arrival_schedule_from_a_table`
+**只验证了 `Model::apply_table_reference` 这个解析器**，从没验证引擎用了它。
+审计当时只核对"测试名存在"，没核对"测试断言的是行为"——这正是审计方法的边界，现在写进了矩阵。
+
+修法是把 inline/table 到达表在 `Simulation::new` 里**解析一次缓存**，三个消费点改读缓存。
+行为测试：1+2+1=4 件、stop 25 时只有前两行、改 quantity 单元格 2→4（**这正是 GUI 表格编辑器的数据路径**）。
+
+**2. `on_create` 的 `rownumber`。** 表驱动到达修好之后，"这一件来自表的哪一行"才有意义：
+表驱动/inline 调度时给 **0 起**行号，其它创建路径给 **-1**（明确的"无行号"，不冒充第一行）。
+选择"始终暴露、不可用时 -1"而不是"变量不存在"，是为了避免脚本在别的触发器里炸出 `unknown variable`。
+实测：3 行表 1/2/1 件 → `row=0,1,1,2`；interarrival → `row=-1`。
+
+**3. 运输器加减速。** `acceleration`/`deceleration` 用梯形/三角形运动曲线，
+接进任务序列、`use_transport`、explicit route、elevator 水平段。**未设加速度时精确等于 `距离/速度`**。
+实测 d=10、v=1：无加速度 `dropoff@10.0`，加速度 1 → **11.0**；d=0.4 跑不到最高速，三角公式 `1.2649` 与实测一致。
+
+**4. 工具也会犯错。** `changelog-add.py` 把**描述它自己的那段文字里提到的 `## Unreleased`** 当成了区块标题，
+于是把条目插进了已发布版本。已改为只认行首标题，并给 `check-changelog.sh` 加了"不允许空区块"规则。
+
+发布节奏保持**至少 3 小时一版**。
 
 ### 模型与引擎
 
@@ -42,6 +69,16 @@
 - **运输器/AGV 表单新增 `acceleration` / `deceleration`**（留空 = 匀速，保持旧行为）。
   测试 `a_transporter_records_its_motion_profile`（缺省不序列化、有值时往返）。GUI **152 项**。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**1058 passed / 0 failed**；clippy 0 警告、fmt 干净。
+- GUI **152 项**、`openflex-core --lib` **299 项**；`scripts/acceptance.sh` **all golden checks passed**。
+- smoke **20/20**；示例 **66/66**；`check-parity-counts.py` **✅ 51 / 🟡 101 / ⛔ 53 / 📄 3 / 共 208 行**。
+- `check-dead-params.sh` 0 known；`check-doc-evidence.sh` 47 名可解析；`check-changelog.sh` 通过。
+- Windows 交叉编译 0 错误；fuzz 冒烟 PASS；1 万对象基准 run **0.24 s**、14.9 万事件/秒。
+- 独立实测：表驱动 1+2+1 → `created 4.0`、stop 25 → 2 件；`rownumber` = `0,1,1,2`（interarrival → `-1`）；
+  加减速 d=10/v=1 → `dropoff` 从 10.0 变 **11.0**，d=0.4 的三角曲线 `1.2649` 与实测一致。
 
 ## v1.52.0 — 2026-11-25
 
