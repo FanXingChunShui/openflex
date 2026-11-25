@@ -170,7 +170,7 @@
 | Time Tables（计划停机：成员/函数表/状态/日周重复/日期模式/相接合并） | `params.timetable {windows}` + `shifts` | 🟡 | 有窗口与重复；**无 Down/Resume 函数钩子、无相接时段自动合并、无按日期模式** |
 | User Commands（自定义命令，参数类型标注，可被模型调用） | `Model.user_commands: [{ name, parameters, body }]` | 🟡 | 脚本里直接 `<name>()` / `<name>(1.0)` 调用；**只支持 0/1 个数值参数**（更多在 validate 明确报错），命令名不得与 12 个内置脚本函数重名；包装体单一来源 → `validate` / `check-scripts` / 运行时三处判定一致。`user_command_without_parameters_runs`、`user_command_with_one_parameter_uses_the_value`、`user_command_return_value_is_usable`、`user_command_builtin_name_is_rejected`、`user_command_two_parameters_are_rejected`、`a_float_parameter_flows_into_integer_script_apis` |
 | User Events（按设定时刻执行的函数） | `Model.user_events: [{ time, name, actions }]` + GUI 面板 | ✅ | 进入事件日历、`(time, seq)` 确定性、**同刻按声明顺序**；早于 warmup 照常执行；支持 `script`/`send_message`/`set_motor`（其余动作 validate 明确拒绝，因无 item 上下文）。`user_event_runs_once_at_its_time`、`user_events_at_the_same_time_keep_declaration_order`、`user_event_negative_time_is_rejected`、`user_event_past_the_stop_time_does_not_run`。限制：checkpoint 恢复**不重放**已过去的事件（语义已实现，硬断言待补） |
-| Model Triggers（模型级触发器：OnReset/OnRunStart 等） | `model.model_triggers` | ✅ | `ModelTriggers` 含 `on_start`/`on_reset`/`on_stop`（Schema 有 `model_triggers`，执行点见 `fire_model_actions` 的四处调用）；执行失败上报 `SimError::Script`。仍无 FlexSim 的实验生命周期钩子（Start/End of Experiment/Scenario/Replication 共 6 个） |
+| Model Triggers（模型级触发器：OnReset/OnRunStart 等） | `model.model_triggers` | ✅ | `ModelTriggers` 含 `on_start`/`on_reset`/`on_stop`（Schema 有 `model_triggers`，执行点见 `fire_model_actions` 的四处调用）；执行失败上报 `SimError::Script`。实验生命周期钩子（Start/End of Experiment/Scenario/Replication）**已在另一行实现**（见 Start/End of Experiment 行）；本行只描述模型级 reset/start/stop。**旧措辞"仍无实验生命周期钩子"是 stale 描述，已按审计更正** |
 | Tracked Variables（Work In Progress / Time In System 等可追踪量） | `model.tracked_variables`（`TrackedKind: level/state/staytime/kinetic`）+ `tracked_interval` + `SimReport.tracked_series` | ✅ | 四种 kind 均已实现：level/kinetic 按间隔采样（kinetic 是变化率）、state 给每状态占比、staytime 给停留分布摘要；证据见 [PARITY_EVIDENCE](PARITY_EVIDENCE.md) #43 |
 | Event List（待处理事件列表，可快进到某事件） | `--trace` + trace 回放 + Studio 事件列表 | 🟡 | 能做的是**已发生事件**的记录与回放（`TraceLog`、`openflex trace`、Studio 分页列表）；FlexSim 的 Event List 展示的是**未来待处理事件**并可跳转执行——引擎没有"窥视事件堆"的接口。**降级理由（审计发现）**：原 ✅ 引用的 `trace_writes_parseable_jsonl_events`/`reads_a_jsonl_trace_file` 只断言 JSONL 可写/可读，证明不了"待处理事件列表" |
 | Event Log（记录已发生事件，可导出 CSV） | `--trace <FILE>` | 🟡 | 有 trace 导出；无"Enable Logging + 时间段过滤 + CSV 导出"这套交互，也无"两次日志 diff 定位不复现点"的辅助 |
@@ -330,7 +330,8 @@
 > 并把 3 个纯教程/术语页从 🟡 改判为 📄。**权威总数以第 325 行的 ✅39 / 🟡97 / ⛔73 / 📄3 为准**，
 > 下表用来看**缺口集中在哪个目录**，不必逐格对齐。
 
-矩阵共 **197 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 49 行、🟡 95 行、⛔ 50 行、📄 3 行（参考页，不计入缺口）。
+矩阵共 **208 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 50 行、🟡 102 行、⛔ 53 行、📄 3 行（参考页，不计入缺口）。
+> 本行数字由 `scripts/check-parity-counts.py` 从下方表格**自动核对**；改矩阵后若不一致，CI 会失败。
 > 本行数字由 `scripts/check-parity-counts.py` 从下方表格**自动核对**；改矩阵后若不一致，CI 会失败。
 其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行。
 

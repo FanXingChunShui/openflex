@@ -20,7 +20,10 @@ def main() -> int:
     total = 0
     in_matrix = False
     for line in lines:
-        if line.startswith("| FlexSim 7.5 功能"):
+        # Every parity table has an "OpenFlex 现状" / "状态" header; the section
+        # index tables and the gap lists do not, so this keeps them out of the
+        # count without hard-coding one header spelling.
+        if line.startswith("|") and "OpenFlex 现状" in line:
             in_matrix = True
             continue
         if not line.startswith("|"):
