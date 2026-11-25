@@ -1,6 +1,29 @@
 # Changelog
 
-## Unreleased
+## v1.54.0 — 2026-11-26
+
+这一版的主题是**取证**：把"这个 ✅ 到底靠什么撑起来"变成机器可查。
+
+**1. 新增 `scripts/audit-parity-evidence.py`（已进 CI，`--strict`）。**
+它把 ✅ 行引用的测试**按所在 crate 分类**：`behaviour`（core/cli 测试，会跑引擎）、`model`（只解析/校验）、
+`report`（输出/UI）。**只用模型层测试支撑的 ✅ 会被报出来**——因为"模型对了、引擎忽略该字段"
+正是上一版表驱动到达失效的形态。它还会比对台账的结论等级、检查矩阵行内引用的名字是否真是测试函数。
+
+**2. 抓到一个真正的过期引用。** 矩阵与审计文档都还引用 `mixer_delay_zero_keeps_the_report`，
+而该测试早已改名为 `mixer_delay_zero_fires_the_hooks_and_keeps_the_report`。
+`check-doc-evidence.sh` 只查台账、**从不查矩阵行**，所以改名后一直没人发现。
+现在补了 `docs/evidence-non-test-names.txt` 白名单（字段名/事件名/枚举值），
+白名单之外"像测试却查无此 fn"的名字会让 CI 失败。
+
+**3. Pick Lists 补行为证据。** 原先只有模型层求值测试。新增 `crates/openflex-core/tests/picklists.rs`：
+同一模型只改 picklist 条目值，路由就在两个 sink 之间翻面（4/0 ↔ 0/4）——**证明引擎真的消费了这个列表**。
+过程中还确认：**`split` 对象按自己的语义分发输出、忽略连接策略**，所以行为测试必须把路由点放在 processor 上。
+
+**4. 证据等级写明。** Quick Properties / Table Editor 原是"表单往返级"，现在矩阵里**明确标注等级**，
+不再与行为级证据混同；Table Editor 另外补了 `editing_the_table_changes_the_arrivals`
+（改单元格 → 到达数 2→4），因为它就是编辑器的数据路径。
+
+发布节奏保持**至少 3 小时一版**。
 
 ### 工具与 CI
 
@@ -19,6 +42,15 @@
   因为"模型对了、引擎忽略字段"正是上一版表驱动到达的失效形态。
   过程中还确认了一件事：**`split` 对象按自己的语义分发输出、会忽略连接策略**，所以行为测试必须把路由点放在 processor 上。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**1061 passed / 0 failed**；clippy 0 警告、fmt 干净。
+- smoke **20/20**；示例 **66/66**；`scripts/acceptance.sh` **all golden checks passed**。
+- `check-parity-counts.py` ok（✅ 51 / 🟡 101 / ⛔ 53 / 📄 3 / 共 208 行）；
+  **`audit-parity-evidence.py --strict` 通过**——51 行 ✅ 中不再有"仅模型层证据"或"查无此测试函数"的行。
+- `check-dead-params.sh` 0 known；`check-doc-evidence.sh` 47 名可解析；`check-changelog.sh` 通过。
+- 独立实测：`picklist` 条目值 0/1 切换 → KA/KB 的 4/0 与 0/4 对调。
 
 ## v1.53.0 — 2026-11-25
 
