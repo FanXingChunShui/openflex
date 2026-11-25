@@ -33,6 +33,17 @@
 
 ### 模型与引擎
 
+- **`OperatorRequest` 前置抽象（零行为变化）**：`Dispatcher`/`Resource` 的请求队列从 `VecDeque<usize>`
+  换成 `VecDeque<OperatorRequest { requester, id, phase }>`。`id`/`phase` 目前**只做簿记**，
+  授予逻辑仍按 `requester`，因此**没有任何可观察变化**。
+  验收方式就是这张卡的全部价值：**6 个基准模型（3 个 MP + 3 个 operator-heavy：`max_tasks`、resource 钩子、修理工）
+  的报告 SHA-256 与改动前常量完全一致**，且现有 operator/transport 测试**一条未改**全绿。
+  **checkpoint 兼容**处理得也干净：`ObjectRt.requests` 会被序列化，自定义 serde 让 `Serialize` **仍输出 `u64`**（与旧形状一致）、
+  `Deserialize` 同时接受旧整数与新结构，`id`/`phase` 不落盘——旧 checkpoint 可读、新 checkpoint 形状不变。
+  为后续两张卡铺路：MultiProcessor 按步操作员、Use Transport 的完整语义。
+
+### 模型与引擎
+
 - **MultiProcessor 的顺序工序列表**：`MultiProcessorParams.steps`（空不序列化）——物品占一个槽位后
   **按顺序**跑完每道工序（每步 setup → process），全部完成后才释放；多槽并行不受影响。
   实测：两步各 2.0 → 下游 `enter` 在 **t=4.0**；setup 1 + process 2 + setup 0.5 + process 1 → **t=4.5**；

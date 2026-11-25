@@ -740,8 +740,8 @@ enum UpstreamSlot {
 }
 
 /// Which phase of a processor an operator is requested for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OperatorPhase {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum OperatorPhase {
     Setup,
     Process,
 }
@@ -806,6 +806,56 @@ struct TaskGroup {
     waiting: Vec<usize>,
     /// Members that finished their task.
     released: usize,
+}
+
+/// task-205: one operator request. `requester` drives the existing grant
+/// behaviour; `id`/`phase` are bookkeeping for future per-lane requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OperatorRequest {
+    pub(crate) requester: usize,
+    #[allow(dead_code)]
+    pub(crate) id: u64,
+    #[allow(dead_code)]
+    pub(crate) phase: OperatorPhase,
+}
+
+impl Serialize for OperatorRequest {
+    fn serialize<S: serde::ser::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Keep the checkpoint's request queue byte-compatible with the old
+        // `VecDeque<usize>` (the id/phase are in-memory bookkeeping only).
+        serializer.serialize_u64(self.requester as u64)
+    }
+}
+
+impl<'de> Deserialize<'de> for OperatorRequest {
+    fn deserialize<D: serde::de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Legacy(u64),
+            Full {
+                requester: usize,
+                id: u64,
+                phase: OperatorPhase,
+            },
+        }
+        Ok(match Repr::deserialize(deserializer)? {
+            Repr::Legacy(requester) => OperatorRequest {
+                requester: requester as usize,
+                id: 0,
+                phase: OperatorPhase::Process,
+            },
+            Repr::Full {
+                requester,
+                id,
+                phase,
+            } => OperatorRequest {
+                requester,
+                id,
+                phase,
+            },
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1046,8 +1096,8 @@ pub(crate) struct ObjectRt {
     serving_requester: Option<usize>,
     home: Option<usize>,
     assigned_dispatcher: Option<usize>,
-    /// Dispatcher / resource request queue.
-    requests: VecDeque<usize>,
+    /// Dispatcher / resource request queue (task-205: requester + identity).
+    requests: VecDeque<OperatorRequest>,
     resource_in_use: u32,
     retry_pending: bool,
     /// Availability.
@@ -7842,6 +7892,23 @@ impl<'m> Simulation<'m> {
 
     /// Make sure the operators required for `phase` are held (A10). Returns
     /// `false` when the processor has to wait (its state is then `Blocked`).
+    /// task-205: queue one request with a queue-local id and the requested
+    /// phase; grants still key on `requester` only.
+    fn push_operator_request(&mut self, queue: usize, requester: usize, phase: OperatorPhase) {
+        let id = self.objects[queue]
+            .requests
+            .iter()
+            .map(|request| request.id)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        self.objects[queue].requests.push_back(OperatorRequest {
+            requester,
+            id,
+            phase,
+        });
+    }
+
     fn ensure_operator(
         &mut self,
         index: usize,
@@ -7886,7 +7953,7 @@ impl<'m> Simulation<'m> {
         self.block(index, reason);
         for _ in 0..missing {
             match kind {
-                ObjectKind::Dispatcher => self.objects[target].requests.push_back(index),
+                ObjectKind::Dispatcher => self.push_operator_request(target, index, phase),
                 ObjectKind::Resource => self.resource_request(target, index)?,
                 _ => {}
             }
@@ -8026,7 +8093,7 @@ impl<'m> Simulation<'m> {
             return self.dispatch_elevator(dispatcher);
         }
         while let Some(position) = self.pick_request(dispatcher) {
-            let requester = self.objects[dispatcher].requests[position];
+            let requester = self.objects[dispatcher].requests[position].requester;
             // task-196: a coordinated step hands the same request to two
             // executors; with fewer than two free executors the request stays
             // queued and a later finish_task re-dispatches it (no busy waiting).
@@ -8139,13 +8206,13 @@ impl<'m> Simulation<'m> {
         let stale: Vec<usize> = self.objects[dispatcher]
             .requests
             .iter()
-            .copied()
-            .filter(|&requester| !self.objects[requester].requesting_operator)
+            .filter(|request| !self.objects[request.requester].requesting_operator)
+            .map(|request| request.requester)
             .collect();
         if !stale.is_empty() {
             self.objects[dispatcher]
                 .requests
-                .retain(|requester| !stale.contains(requester));
+                .retain(|request| !stale.contains(&request.requester));
         }
         let busy = !self.objects[dispatcher].requests.is_empty();
         self.set_state(dispatcher, if busy { State::Blocked } else { State::Idle });
@@ -8166,7 +8233,7 @@ impl<'m> Simulation<'m> {
             let Some(position) = self.pick_elevator_request(dispatcher, executor) else {
                 break;
             };
-            let requester = self.objects[dispatcher].requests[position];
+            let requester = self.objects[dispatcher].requests[position].requester;
             self.objects[dispatcher].requests.remove(position);
             self.objects[executor].tasks += 1;
             self.objects[executor].serving_requester = Some(requester);
@@ -8188,13 +8255,13 @@ impl<'m> Simulation<'m> {
         let stale: Vec<usize> = self.objects[dispatcher]
             .requests
             .iter()
-            .copied()
-            .filter(|&requester| !self.objects[requester].requesting_operator)
+            .filter(|request| !self.objects[request.requester].requesting_operator)
+            .map(|request| request.requester)
             .collect();
         if !stale.is_empty() {
             self.objects[dispatcher]
                 .requests
-                .retain(|requester| !stale.contains(requester));
+                .retain(|request| !stale.contains(&request.requester));
         }
         let busy = !self.objects[dispatcher].requests.is_empty();
         self.set_state(dispatcher, if busy { State::Blocked } else { State::Idle });
@@ -8205,7 +8272,8 @@ impl<'m> Simulation<'m> {
         let current_floor = self.objects[executor].z;
         let direction = self.objects[executor].elevator_direction;
         let mut best: Option<(usize, u32, bool, bool, f64)> = None;
-        for (position, &requester) in self.objects[dispatcher].requests.iter().enumerate() {
+        for (position, request) in self.objects[dispatcher].requests.iter().enumerate() {
+            let requester = request.requester;
             if !self.objects[requester].requesting_operator {
                 continue;
             }
@@ -8235,7 +8303,8 @@ impl<'m> Simulation<'m> {
     /// (A10). Requests out of the queue keep their relative order.
     fn pick_request(&self, dispatcher: usize) -> Option<usize> {
         let mut best: Option<(usize, u32)> = None;
-        for (position, &requester) in self.objects[dispatcher].requests.iter().enumerate() {
+        for (position, request) in self.objects[dispatcher].requests.iter().enumerate() {
+            let requester = request.requester;
             if !self.objects[requester].requesting_operator {
                 continue;
             }
@@ -8375,7 +8444,7 @@ impl<'m> Simulation<'m> {
             } else {
                 // `pick_request` always serves the highest priority first, so
                 // the queue order itself does not matter.
-                self.objects[dispatcher].requests.push_back(index);
+                self.push_operator_request(dispatcher, index, OperatorPhase::Process);
             }
         }
         Ok(())
@@ -8388,7 +8457,7 @@ impl<'m> Simulation<'m> {
         requester: usize,
     ) -> Result<(), SimError> {
         if self.objects[requester].requesting_operator {
-            self.objects[dispatcher].requests.push_back(requester);
+            self.push_operator_request(dispatcher, requester, OperatorPhase::Process);
             self.dispatch(dispatcher)?;
         }
         Ok(())
@@ -10528,12 +10597,12 @@ impl<'m> Simulation<'m> {
             return Ok(());
         };
         if !self.objects[resource].on_shift {
-            self.objects[resource].requests.push_back(requester);
+            self.push_operator_request(resource, requester, OperatorPhase::Process);
             return Ok(());
         }
         if let Some(resume) = downtime_until(&params.downtimes, self.now) {
             self.schedule_resource_retry(resource, resume);
-            self.objects[resource].requests.push_back(requester);
+            self.push_operator_request(resource, requester, OperatorPhase::Process);
             return Ok(());
         }
         if self.objects[resource].resource_in_use < params.capacity {
@@ -10541,7 +10610,7 @@ impl<'m> Simulation<'m> {
             self.set_state(resource, State::Busy);
             self.grant_operator(requester, OperatorSource::Resource(resource));
         } else {
-            self.objects[resource].requests.push_back(requester);
+            self.push_operator_request(resource, requester, OperatorPhase::Process);
         }
         Ok(())
     }
@@ -10560,11 +10629,11 @@ impl<'m> Simulation<'m> {
         }
         while self.objects[resource].resource_in_use < params.capacity {
             let requester = loop {
-                let Some(requester) = self.objects[resource].requests.pop_front() else {
+                let Some(request) = self.objects[resource].requests.pop_front() else {
                     return Ok(());
                 };
-                if self.objects[requester].requesting_operator {
-                    break requester;
+                if self.objects[request.requester].requesting_operator {
+                    break request.requester;
                 }
             };
             self.objects[resource].resource_in_use += 1;
@@ -11978,7 +12047,7 @@ impl<'m> Simulation<'m> {
             self.objects[index].requesting_operator = true;
             // The object stays `down` while it waits; blocking here would move
             // it out of the down state and change the utilisation denominator.
-            self.objects[dispatcher].requests.push_back(index);
+            self.push_operator_request(dispatcher, index, OperatorPhase::Process);
             self.dispatch(dispatcher)?;
             return Ok(());
         }
@@ -12038,7 +12107,7 @@ impl<'m> Simulation<'m> {
             self.objects[driver].operators_pending =
                 self.objects[driver].operators_pending.saturating_add(1);
             self.objects[driver].requesting_operator = true;
-            self.objects[dispatcher].requests.push_back(driver);
+            self.push_operator_request(dispatcher, driver, OperatorPhase::Process);
             self.dispatch(dispatcher)?;
             return Ok(());
         }
@@ -22210,6 +22279,43 @@ mod tests {
                 crate::sha256::hex(text.as_bytes()),
                 expected[index],
                 "multiprocessor baseline {index} changed"
+            );
+        }
+    }
+
+    /// task-205: 3 MP + 3 operator-heavy model reports must stay bit-identical
+    /// after the OperatorRequest abstraction (constants recorded before it).
+    #[test]
+    fn operator_request_abstraction_keeps_all_baselines() {
+        let mp = [
+            r#"{"format":"openflex-model","version":1,"name":"mp-baseline-0","run":{"stop_time":50.0,"seed":781,"replications":1},"objects":[{"name":"S","kind":"source","params":{"interarrival":{"distribution":"exponential","mean":2.0},"max_arrivals":50,"first_arrival":0.0}},{"name":"M","kind":"multiprocessor","params":{"slots":3,"setup_time":{"distribution":"constant","value":0.5},"process_time":{"distribution":"constant","value":2.0}}},{"name":"K","kind":"sink","params":{}}],"connections":[{"from":"S","to":"M"},{"from":"M","to":"K"}]}"#,
+            r#"{"format":"openflex-model","version":1,"name":"mp-baseline-1","run":{"stop_time":50.0,"seed":685,"replications":1},"objects":[{"name":"S","kind":"source","params":{"interarrival":{"distribution":"exponential","mean":2.0},"max_arrivals":50,"first_arrival":0.0}},{"name":"M","kind":"multiprocessor","params":{"slots":2,"setup_time":{"distribution":"constant","value":0.5},"process_time":{"distribution":"constant","value":1.0}}},{"name":"K","kind":"sink","params":{}}],"connections":[{"from":"S","to":"M"},{"from":"M","to":"K"}]}"#,
+            r#"{"format":"openflex-model","version":1,"name":"mp-baseline-2","run":{"stop_time":50.0,"seed":766,"replications":1},"objects":[{"name":"S","kind":"source","params":{"interarrival":{"distribution":"exponential","mean":2.0},"max_arrivals":50,"first_arrival":0.0}},{"name":"M","kind":"multiprocessor","params":{"slots":3,"setup_time":{"distribution":"constant","value":1.0},"process_time":{"distribution":"constant","value":1.0}}},{"name":"K","kind":"sink","params":{}}],"connections":[{"from":"S","to":"M"},{"from":"M","to":"K"}]}"#,
+        ];
+        let models: Vec<Model> = mp
+            .iter()
+            .map(|json| Model::from_json(json).expect("mp"))
+            .chain([
+                max_tasks_model(0),
+                resource_hook_model(),
+                repair_failure_model(Some("D")),
+            ])
+            .collect();
+        let expected = [
+            "14acda280d3311d7a07a6c0125782e0b501ef4efb7c6ea41a9d67e421ed20b4e",
+            "4028c3076270afc7c084dc4311ee316ce9b0478e04c214bb984d7f1f67578a83",
+            "b409190a0fa32b05853800363c549f9974af55cbb195f2c5736bcf967dc60180",
+            "f1f03b20d4a8753ea997f6bee376fe98daa9871187d5e0faba25a35a91369aba",
+            "a7251df7ce3eb79752b58cb6b918f71fea25ef67746501a9256e66aaa9455a2b",
+            "c254871338637263208312867862a78459ba6e4b4e42bbb2edeb42d5089b553b",
+        ];
+        for (index, model) in models.iter().enumerate() {
+            let report = crate::run_model(model).expect("report");
+            let text = serde_json::to_string(&report).expect("json");
+            assert_eq!(
+                crate::sha256::hex(text.as_bytes()),
+                expected[index],
+                "operator baseline {index} changed"
             );
         }
     }
