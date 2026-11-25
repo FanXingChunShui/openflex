@@ -360,6 +360,9 @@ operator 分配从**对象级**改成**对象 + 槽/步骤级**：
 两种来源、preemption、repair operator，以及同一 MP 多槽同时等不同数量 operator 的情形——
 估计 300–500 行、2–3 天，且现有 100+ operator 相关测试全是回归面。
 
-**先做零行为变化的前置重构**：把请求抽象成 `OperatorRequest { requester, lane/step, id, phase }`
-（只改内部结构，钉住 3 个 MP 模型的报告 SHA-256），再在这个基础上加按步操作员。
+**前置重构已完成**（v1.51.0 前）：请求已抽象成 `OperatorRequest { requester, id, phase }`，
+`id` 能区分同一 requester 的不同槽/工序；`Serialize` 仍输出 `u64`（旧 checkpoint 可读）、
+6 个基准模型报告 SHA-256 完全不变、现有 operator 测试一条未改。
+**下一步**：在这个基础上实现"按步申请/该步结束释放、多槽独立"——释放粒度若也需要重构，
+继续用同一种做法（零行为抽象卡先行），不要在功能卡里顺手改既有语义。
 这和 `Use Transport` 完整语义的结论一致：**共享主循环上的语义扩展，先抽象、后加功能**。
