@@ -18,6 +18,12 @@
 - [未实现的功能](UNIMPLEMENTED.md)
 - [Backlog](BACKLOG.md)
 
+# 功能对照（净室清点）
+
+- [功能对照矩阵（208 行）](FEATURE_PARITY_75.md)
+- [取证台账](PARITY_EVIDENCE.md)
+- [第二轮取证审计](PARITY_AUDIT.md)
+
 # 规范（净室）
 
 - [FlexSim → OpenFlex 映射](spec/flexsim-to-openflex.md)
