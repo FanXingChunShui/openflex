@@ -46,6 +46,14 @@ for model in examples/*/*.ofm; do
         failures=$((failures + 1))
         continue
     fi
+    # `document` must describe every shipped model (it is lenient by design, so
+    # a failure here means the document renderer broke, not the model).
+    if ! "$BIN" document "$model" >/dev/null 2>"$work/document.log"; then
+        echo "  FAIL  $name: openflex document failed"
+        sed -n '1,3p' "$work/document.log" | sed 's/^/        /'
+        failures=$((failures + 1))
+        continue
+    fi
     first="$(shasum -a 256 "$work/a.json" | awk '{print $1}')"
     second="$(shasum -a 256 "$work/b.json" | awk '{print $1}')"
     if [ "$first" != "$second" ]; then
