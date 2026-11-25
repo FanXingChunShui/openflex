@@ -35,6 +35,10 @@
 
 - **CHANGELOG 插入助手**：`scripts/changelog-add.py --section "模型与引擎"`。这四次同一个错误（条目落进**已发布**区块、还重复了标题）终于被"机制"解决——助手先定位 `## Unreleased` 区块，只在区块内插入，找不到区块就报错，绝不全局替换。
 
+- **新增 `scripts/check-examples.sh`（已进 CI）**：**66 个示例模型**逐个 `validate` + 运行两次同 seed，
+  两次报告必须**逐字节相同**。示例是"能执行的文档"，引擎改动在那里出问题，单测未必覆盖得到。
+  当前结果：`all 66 example models validate, run, and are deterministic`。
+
 
 ## v1.50.0 — 2026-11-25
 

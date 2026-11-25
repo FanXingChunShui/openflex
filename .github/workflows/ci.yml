@@ -62,6 +62,14 @@ jobs:
       # End-to-end smoke of the headline features: unit tests can pass while a
       # feature is unreachable from the outside (a dead parameter, an action that
       # is accepted yet ignored, a hook that never fires).
+      # The shipped examples are documentation that happens to be executable:
+      # a regression there is user-visible even when every unit test passes.
+      - name: Examples validate, run, and are deterministic
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --locked -p openflex-cli
+          bash scripts/check-examples.sh
+
       - name: Feature smoke (CLI end to end)
         if: runner.os == 'Linux'
         run: |
