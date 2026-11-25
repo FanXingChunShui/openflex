@@ -375,6 +375,66 @@ def case_fluid_mark():
     assert len(rises) == 1, f"one rise expected, got {len(rises)}"
 
 
+def case_table_driven_arrivals():
+    """Rows in a global table really create items (this used to be dead)."""
+    path = write(
+        "table_arrivals",
+        model(
+            [
+                {"name": "S", "kind": "source", "params": {
+                    "arrival_schedule_from_table": "Schedule"}},
+                {"name": "K", "kind": "sink", "params": {}},
+            ],
+            [{"from": "S", "to": "K"}],
+            run={"stop_time": 100.0, "seed": 1, "replications": 1},
+            global_tables={"Schedule": {
+                "columns": ["time", "quantity"],
+                "rows": [[10.0, 1.0], [20.0, 2.0], [30.0, 1.0]],
+            }},
+        ),
+    )
+    rep = report(path)
+    assert rep["created"]["mean"] == 4.0, (
+        f"1+2+1 rows must create four items: {rep['created']['mean']}"
+    )
+
+
+def case_transporter_acceleration():
+    """A motion profile slows travel down; without one it is distance/speed."""
+    def build(acceleration):
+        transporter = {"speed": 1.0, "home": "D"}
+        if acceleration is not None:
+            transporter["acceleration"] = acceleration
+        return model(
+            [
+                {"name": "S", "kind": "source", "params": {
+                    "interarrival": {"distribution": "constant", "value": 1000.0},
+                    "max_arrivals": 1}, "pos": [0.0, 0.0]},
+                {"name": "Q", "kind": "queue", "params": {"use_transport": "D"},
+                 "pos": [0.0, 0.0]},
+                {"name": "K", "kind": "sink", "params": {}, "pos": [10.0, 0.0]},
+                {"name": "D", "kind": "dispatcher", "params": {}},
+                {"name": "T", "kind": "transporter", "params": transporter,
+                 "pos": [0.0, 0.0]},
+            ],
+            [{"from": "S", "to": "Q"}, {"from": "Q", "to": "K"},
+             {"from": "D", "to": "T"}],
+            run={"stop_time": 120.0, "seed": 1, "replications": 1},
+        )
+
+    def dropoff(events):
+        for event in events:
+            if event["event"] == "item_dropoff":
+                return round(event["time"], 6)
+        return None
+
+    plain = dropoff(trace_of(write("acc_plain", build(None))))
+    profiled = dropoff(trace_of(write("acc_profile", build(1.0))))
+    assert plain == 10.0, f"distance/speed should be ten: {plain}"
+    # 10 units at top speed 1 with accel 1: 1 + 1 + (10 - 0.5 - 0.5) / 1.
+    assert profiled == 11.0, f"the motion profile should take eleven: {profiled}"
+
+
 def case_multiprocessor_steps():
     """A multiprocessor runs its step list in order before releasing the item."""
     def build(steps):
@@ -588,6 +648,8 @@ CASES = [
     ("on change", case_on_change),
     ("queue use transport", case_queue_use_transport),
     ("multiprocessor steps", case_multiprocessor_steps),
+    ("table driven arrivals", case_table_driven_arrivals),
+    ("transporter acceleration", case_transporter_acceleration),
     ("combiner pack", case_combiner_pack),
     ("timetable off shift", case_timetable_off_shift),
     ("checkpoint resume", case_checkpoint_matches_straight_run),

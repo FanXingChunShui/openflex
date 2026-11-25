@@ -25,6 +25,10 @@
   `a_table_driven_source_respects_stop_time`（stop 25 时只有前两行）、
   `editing_the_table_changes_the_arrivals`（改 quantity 2→4、把行推到 500 后变 1——这正是 GUI 表格编辑器的数据路径）。
 
+- **冒烟套件 17 → 19 项**：新增 `table driven arrivals`（全局表 1+2+1 行 → 恰好 4 件；**这条正是那个"标着 ✅ 却完全失效"的功能**，
+  现在端到端盯住了）与 `transporter acceleration`（d=10/v=1：无加速度 `dropoff@10.0`，加速度 1 → `11.0`）。
+
+
 ### 桌面 GUI
 
 - **运输器/AGV 表单新增 `acceleration` / `deceleration`**（留空 = 匀速，保持旧行为）。
