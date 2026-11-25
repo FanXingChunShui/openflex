@@ -81,7 +81,7 @@
 | Queue Page（容量/LIFO/攒批/视觉摆放） | 容量、`order`（fifo/lifo/priority/by_label）、`batch_size`/`batch_max_wait` | 🟡 | 无 Item Placement/Stack Base Z 这类视觉参数（可接受，无 3D）；`FlushContent` 未实现 |
 | Processor Page（setup/process/操作员/交叉传送） | setup/process/容量/操作员请求（`setup_operator`/`process_operator`）/优先级/抢占 | ✅ | `ProcessorParams` 含 `operator_priority`、`operator_preempt` |
 | ProcessTimes Page（Setup 与 Process 各自的 operator 数与 Same as Setup） | `num_setup_operators`/`num_process_operators`/`use_same_num_operators` | ✅ | 三个字段齐备（`ProcessorParams.num_setup_operators` / `num_process_operators` / `use_same_num_operators`），含"Same as Setup"复用语义 |
-| MultiProcessor Page（工序列表，顺序/并行） | `multiprocessor` 多槽 + 每槽 setup/process + **`steps[]` 顺序工序** | 🟡 | 物品占槽后按序跑完每道工序（每步 setup→process）再释放，多槽仍并行；实测两步各 2.0 → 4.0、含 setup → 4.5。**缺**：每步独立的操作员数（故意不提供字段：引擎暂不能按步申请/释放 crew，留一个被忽略的字段比不提供更糟）。`multiprocessor_steps_sum_process_time`、`multiprocessor_steps_include_setup_time`、`multiprocessor_steps_keep_slots_parallel`、`multiprocessor_empty_steps_matches_absent_field`、`multiprocessor_report_hashes_without_steps_are_unchanged`、`multiprocessor_step_validation_rejects_bad_values`、`multiprocessor_steps_are_deterministic` |
+| MultiProcessor Page（工序列表，顺序/并行） | `multiprocessor` 多槽 + 每槽 setup/process + **`steps[]` 顺序工序（含每步操作员数）** | ✅ | 物品占槽后按序跑完每道工序（每步 setup→process）再释放，多槽仍并行；实测两步各 2.0 → 4.0、含 setup → 4.5。**每步 `num_operators` 已接线**：该步开始前申请、**本步结束即释放**、多槽各自等待不串锁；`OperatorRequest` 抽象（`id` 区分槽/步）先落地才实现功能。未设该字段的模型报告逐位不变。`multiprocessor_steps_sum_process_time`、`multiprocessor_steps_include_setup_time`、`multiprocessor_steps_keep_slots_parallel`、`multiprocessor_empty_steps_matches_absent_field`、`multiprocessor_report_hashes_without_steps_are_unchanged`、`multiprocessor_step_validation_rejects_bad_values`、`multiprocessor_steps_are_deterministic`、`multiprocessor_step_waits_for_operator`、`multiprocessor_step_releases_operator_for_next_item`、`multiprocessor_step_waits_for_two_operators`、`multiprocessor_step_operators_are_per_lane`、`multiprocessor_steps_without_operators_keep_report`、`operator_request_abstraction_keeps_all_baselines` |
 | Combiner Page（Pack/Join/Batch、Components list、Recycle To） | `mode`（pack/join/**batch**）+ `components_per_container` + setup/process + 操作员 | 🟡 | 三种模式与继承的 setup/process 均已实现（`CombinerMode::Batch`、`CombinerParams.setup_time/process_time`）；缺**逐端口 components 表**（单一数字）、Recycle To（join 销毁后回收） |
 | Separator Page（Unpack/Split、Split/Unpack Quantity、Recycle From） | `separate_mode` + `split_count` | 🟡 | 两种模式与 qty+1 / qty 语义已对齐（`SeparateMode::Unpack/Split` 与 `split_count` 注释）；缺 Recycle From（split 复制源的回收） |
 | Sink Page（Recycling Strategy 流项目回收） | `SinkParams.recycle: none|on_entry|by_batch` + `recycle_batch` | 🟡 | 策略显式化 + 批次 hook + 校验（`by_batch` 且 0 被拒）。**如实说明**：引擎在 Sink 入口本就丢弃件对象，因此这不改变运行时内存行为，只是把既有行为写明；仍无 Flowitem Bin（对象池） |
@@ -330,7 +330,7 @@
 > 并把 3 个纯教程/术语页从 🟡 改判为 📄。**权威总数以第 325 行的 ✅39 / 🟡97 / ⛔73 / 📄3 为准**，
 > 下表用来看**缺口集中在哪个目录**，不必逐格对齐。
 
-矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 50 行、🟡 104 行、⛔ 55 行、📄 3 行（参考页，不计入缺口）。
+矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 51 行、🟡 103 行、⛔ 55 行、📄 3 行（参考页，不计入缺口）。
 其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行。
 
 | 状态 | 行数 | 占比 |
