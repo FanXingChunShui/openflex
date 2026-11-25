@@ -667,6 +667,15 @@ struct Lane {
     /// task-203: current process-step index (0 when no step list is used).
     #[serde(default)]
     step: usize,
+    /// task-204: operators reserved by this lane for its current step.
+    #[serde(default)]
+    operator_held: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    operator_sources: Vec<OperatorSource>,
+    #[serde(default)]
+    operator_pending: u32,
+    #[serde(default)]
+    waiting_operator: bool,
     phase: Phase,
     token: u64,
     /// Scheduled end of the current setup/process step.
@@ -7964,8 +7973,43 @@ impl<'m> Simulation<'m> {
         Ok(self.objects[index].operator_held >= needed)
     }
 
+    fn multiprocessor_uses_step_operators(&self, index: usize) -> bool {
+        self.multiprocessor_params(index)
+            .is_some_and(|params| params.steps.iter().any(|step| step.num_operators.is_some()))
+    }
+
+    /// task-204: grant one operator to the first lane waiting for its step.
+    fn grant_mp_step_operator(&mut self, index: usize, source: OperatorSource) {
+        let lane = (0..self.objects[index].lanes.len()).find(|&lane| {
+            self.objects[index].lanes[lane].item.is_some()
+                && self.objects[index].lanes[lane].waiting_operator
+                && self.objects[index].lanes[lane].operator_pending > 0
+        });
+        let Some(lane) = lane else {
+            return;
+        };
+        self.objects[index].lanes[lane].operator_held += 1;
+        self.objects[index].lanes[lane]
+            .operator_sources
+            .push(source);
+        self.objects[index].lanes[lane].operator_pending = self.objects[index].lanes[lane]
+            .operator_pending
+            .saturating_sub(1);
+        self.objects[index].lanes[lane].waiting_operator = true;
+        self.objects[index].operator_held += 1;
+        self.objects[index].operator_sources.push(source);
+        self.objects[index].operators_pending =
+            self.objects[index].operators_pending.saturating_sub(1);
+        self.objects[index].requesting_operator = self.objects[index].operators_pending > 0;
+        self.schedule(self.now, EventKind::Flow(index));
+    }
+
     /// Hand one operator to a waiting processor and let it continue.
     fn grant_operator(&mut self, index: usize, source: OperatorSource) {
+        if self.multiprocessor_uses_step_operators(index) {
+            self.grant_mp_step_operator(index, source);
+            return;
+        }
         self.objects[index].operator_held += 1;
         self.objects[index].operator_sources.push(source);
         self.objects[index].operators_pending =
@@ -10690,8 +10734,15 @@ impl<'m> Simulation<'m> {
             .iter()
             .filter(|lane| lane.item.is_some())
             .count();
+        let step_operator_mode = params.steps.iter().any(|step| step.num_operators.is_some());
         let wanted = (active + self.objects[index].content.len()).min(slots);
-        if wanted > 0 && (params.process_operator.is_some() || params.setup_operator.is_some()) {
+        if step_operator_mode {
+            self.resume_mp_step_waiters(index, &params)?;
+        }
+        if !step_operator_mode
+            && wanted > 0
+            && (params.process_operator.is_some() || params.setup_operator.is_some())
+        {
             let operator_params = mp_operator_params(&params, wanted as u32);
             if !self.ensure_operator(index, OperatorPhase::Process, &operator_params)? {
                 // Existing slots keep working while the crew is incomplete.
@@ -10734,6 +10785,116 @@ impl<'m> Simulation<'m> {
         Ok(())
     }
 
+    /// task-204: request `needed` operators for one lane/step. Returns true
+    /// when the lane holds enough operators and may start the step.
+    fn ensure_mp_step_operator(
+        &mut self,
+        index: usize,
+        lane: usize,
+        needed: u32,
+        params: &openflex_model::MultiProcessorParams,
+    ) -> Result<bool, SimError> {
+        let held = self.objects[index].lanes[lane].operator_held;
+        if held >= needed {
+            return Ok(true);
+        }
+        let Some(name) = params
+            .process_operator
+            .clone()
+            .or_else(|| params.setup_operator.clone())
+        else {
+            return Ok(true);
+        };
+        let Some(&target) = self.by_name.get(&name) else {
+            return Ok(true);
+        };
+        let kind = self.objects[target].kind;
+        if !matches!(kind, ObjectKind::Dispatcher | ObjectKind::Resource) {
+            return Ok(true);
+        }
+        let pending = self.objects[index].lanes[lane].operator_pending;
+        let missing = needed.saturating_sub(held + pending);
+        if missing > 0 {
+            self.objects[index].lanes[lane].operator_pending += missing;
+            self.objects[index].operators_pending += missing;
+            self.objects[index].requesting_operator = true;
+            let reason = if kind == ObjectKind::Dispatcher && !self.transporters[target].is_empty()
+            {
+                BlockReason::Transport
+            } else {
+                BlockReason::Operator
+            };
+            self.block(index, reason);
+            for _ in 0..missing {
+                match kind {
+                    ObjectKind::Dispatcher => {
+                        self.objects[target].requests.push_back(OperatorRequest {
+                            requester: index,
+                            id: lane as u64 + 1,
+                            phase: OperatorPhase::Process,
+                        });
+                    }
+                    ObjectKind::Resource => self.resource_request(target, index)?,
+                    _ => {}
+                }
+            }
+            if kind == ObjectKind::Dispatcher {
+                self.dispatch(target)?;
+            }
+        }
+        Ok(self.objects[index].lanes[lane].operator_held >= needed)
+    }
+
+    /// task-204: start step timers for lanes whose requested operators arrived.
+    fn resume_mp_step_waiters(
+        &mut self,
+        index: usize,
+        params: &openflex_model::MultiProcessorParams,
+    ) -> Result<(), SimError> {
+        for lane in 0..self.objects[index].lanes.len() {
+            let waiting = self.objects[index].lanes[lane].waiting_operator
+                && self.objects[index].lanes[lane].item.is_some()
+                && self.objects[index].lanes[lane].phase == Phase::Idle;
+            if !waiting {
+                continue;
+            }
+            let step_index = self.objects[index].lanes[lane].step;
+            let Some(needed) = params
+                .steps
+                .get(step_index)
+                .and_then(|step| step.num_operators)
+            else {
+                continue;
+            };
+            if self.objects[index].lanes[lane].operator_held >= needed {
+                self.begin_mp_step(index, lane, step_index, params)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// task-204: release exactly the operators of one lane's finished step.
+    fn release_mp_step_operator(&mut self, index: usize, lane: usize) -> Result<(), SimError> {
+        let sources = std::mem::take(&mut self.objects[index].lanes[lane].operator_sources);
+        self.objects[index].lanes[lane].operator_held = 0;
+        self.objects[index].lanes[lane].operator_pending = 0;
+        self.objects[index].lanes[lane].waiting_operator = false;
+        for source in sources {
+            if let Some(position) = self.objects[index]
+                .operator_sources
+                .iter()
+                .position(|candidate| *candidate == source)
+            {
+                self.objects[index].operator_sources.remove(position);
+                self.objects[index].operator_held =
+                    self.objects[index].operator_held.saturating_sub(1);
+            }
+            self.release_operator_source(index, source)?;
+        }
+        self.objects[index].requesting_operator = self.objects[index].operators_pending > 0;
+        Ok(())
+    }
+
     /// task-203: start the setup (or processing when setup is zero) of one
     /// sequential step for a slot.
     fn begin_mp_step(
@@ -10746,6 +10907,15 @@ impl<'m> Simulation<'m> {
         let Some(step) = params.steps.get(step_index).cloned() else {
             return Ok(());
         };
+        self.objects[index].lanes[lane].step = step_index;
+        if let Some(needed) = step.num_operators
+            && !self.ensure_mp_step_operator(index, lane, needed, params)?
+        {
+            self.objects[index].lanes[lane].waiting_operator = true;
+            self.objects[index].lanes[lane].phase = Phase::Idle;
+            return Ok(());
+        }
+        self.objects[index].lanes[lane].waiting_operator = false;
         let setup = step
             .setup_time
             .as_ref()
@@ -10841,6 +11011,7 @@ impl<'m> Simulation<'m> {
             // A process step finished: either move to the next step or release
             // the item exactly like the old one-step path.
             self.fire_lifecycle_trigger(index, SimTrigger::ProcessFinish);
+            self.release_mp_step_operator(index, lane)?;
             if step_index + 1 < params.steps.len() {
                 self.begin_mp_step(index, lane, step_index + 1, &params)?;
                 self.refresh_multiprocessor(index)?;
@@ -22255,6 +22426,234 @@ mod tests {
                 "step should be rejected: {step}"
             );
         }
+    }
+
+    fn mp_step_operator_model(
+        steps: &str,
+        slots: u32,
+        source_count: u32,
+        transport_positions: &[f64],
+        stop: f64,
+    ) -> Model {
+        let transporters: Vec<String> = transport_positions
+            .iter()
+            .enumerate()
+            .map(|(index, position)| {
+                format!(
+                    r#"{{ "name": "T{index}", "kind": "transporter", "pos": [{position}, 0.0],
+                        "params": {{ "speed": 1.0, "home": "D" }} }}"#
+                )
+            })
+            .collect();
+        let dispatcher_connections: Vec<String> = (0..transport_positions.len())
+            .map(|index| format!(r#"{{ "from": "D", "to": "T{index}" }}"#))
+            .collect();
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "mp-step-operators",
+          "run": {{ "stop_time": {stop}, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1.0 }},
+                "max_arrivals": {source_count}, "first_arrival": 0.0 }} }},
+            {{ "name": "M", "kind": "multiprocessor", "pos": [0.0, 0.0], "params": {{
+                "slots": {slots}, "process_operator": "D", "steps": [{steps}] }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }},
+            {{ "name": "D", "kind": "dispatcher", "pos": [0.0, 0.0], "params": {{}} }},
+            {}
+          ],
+          "connections": [
+            {{ "from": "S", "to": "M" }}, {{ "from": "M", "to": "K" }},
+            {}
+          ]
+        }}"#,
+            transporters.join(",\n            "),
+            dispatcher_connections.join(", "),
+        ))
+        .expect("mp step operator model")
+    }
+
+    /// task-204: a step with `num_operators` waits for the operator to arrive.
+    #[test]
+    fn multiprocessor_step_waits_for_operator() {
+        let model = mp_step_operator_model(
+            r#"{ "process_time": { "distribution": "constant", "value": 2.0 },
+                 "num_operators": 1 }"#,
+            1,
+            1,
+            &[10.0],
+            30.0,
+        );
+        let (_, trace) = crate::simulate_traced(
+            &model,
+            &SimConfig {
+                stop_time: 30.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect("run");
+        let loaded = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "operator_loaded")
+            .map(|event| event.time)
+            .collect::<Vec<_>>();
+        let enter = trace
+            .events
+            .iter()
+            .find(|event| event.event == "enter" && event.object == "K")
+            .map(|event| event.time)
+            .expect("enter");
+        assert_eq!(loaded.len(), 1, "{loaded:?}");
+        assert!(
+            enter >= loaded[0] + 2.0 - 1e-6,
+            "loaded {loaded:?}, enter {enter}"
+        );
+    }
+
+    /// task-204: the step releases its operator at its end, so a second item
+    /// can acquire one and complete.
+    #[test]
+    fn multiprocessor_step_releases_operator_for_next_item() {
+        let model = mp_step_operator_model(
+            r#"{ "process_time": { "distribution": "constant", "value": 1.0 },
+                 "num_operators": 1 }"#,
+            1,
+            2,
+            &[10.0],
+            50.0,
+        );
+        let report = crate::run_model(&model).expect("run");
+        assert_eq!(report.replications[0].items_completed, 2, "{report:?}");
+    }
+
+    /// task-204: `num_operators: 2` waits for both operators before starting.
+    #[test]
+    fn multiprocessor_step_waits_for_two_operators() {
+        let model = mp_step_operator_model(
+            r#"{ "process_time": { "distribution": "constant", "value": 1.0 },
+                 "num_operators": 2 }"#,
+            1,
+            1,
+            &[5.0, 10.0],
+            30.0,
+        );
+        let (_, trace) = crate::simulate_traced(
+            &model,
+            &SimConfig {
+                stop_time: 30.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect("run");
+        let mut loaded = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "operator_loaded")
+            .map(|event| event.time)
+            .collect::<Vec<_>>();
+        loaded.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let enter = trace
+            .events
+            .iter()
+            .find(|event| event.event == "enter" && event.object == "K")
+            .map(|event| event.time)
+            .expect("enter");
+        assert_eq!(loaded.len(), 2, "{loaded:?}");
+        assert!(
+            enter >= loaded[1] + 1.0 - 1e-6,
+            "loaded {loaded:?}, enter {enter}"
+        );
+        assert!(
+            trace.events.len() < 5_000,
+            "operator wait spun: {}",
+            trace.events.len()
+        );
+    }
+
+    /// task-204: two slots each wait for their own operator; with one shared
+    /// transporter the other lane must not deadlock (both complete eventually).
+    #[test]
+    fn multiprocessor_step_operators_are_per_lane() {
+        let model = mp_step_operator_model(
+            r#"{ "process_time": { "distribution": "constant", "value": 1.0 },
+                 "num_operators": 1 }"#,
+            2,
+            2,
+            &[10.0],
+            50.0,
+        );
+        let report = crate::run_model(&model).expect("run");
+        assert_eq!(report.replications[0].items_completed, 2, "{report:?}");
+    }
+
+    /// task-204: `num_operators: 0` is rejected by validate.
+    #[test]
+    fn multiprocessor_step_operator_count_zero_is_rejected() {
+        let json = r#"{
+          "format": "openflex-model", "version": 1, "name": "mp-zero-operators",
+          "objects": [
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "M", "kind": "multiprocessor", "params": {
+                "steps": [ { "process_time": { "distribution": "constant", "value": 1.0 },
+                             "num_operators": 0 } ] } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "M" }, { "from": "M", "to": "K" } ]
+        }"#;
+        assert!(Model::from_json(json).is_err());
+    }
+
+    /// task-204: steps that all omit num_operators keep the old report.
+    #[test]
+    fn multiprocessor_steps_without_operators_keep_report() {
+        let absent = Model::from_json(
+            r#"{
+              "format": "openflex-model", "version": 1, "name": "mp-steps-no-ops",
+              "run": { "stop_time": 30.0, "seed": 1 },
+              "objects": [
+                { "name": "S", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 1.0 },
+                    "max_arrivals": 2 } },
+                { "name": "M", "kind": "multiprocessor", "params": {
+                    "slots": 2, "steps": [
+                      { "process_time": { "distribution": "constant", "value": 1.0 } },
+                      { "process_time": { "distribution": "constant", "value": 2.0 } } ] } },
+                { "name": "K", "kind": "sink", "params": {} }
+              ],
+              "connections": [ { "from": "S", "to": "M" }, { "from": "M", "to": "K" } ]
+            }"#,
+        )
+        .expect("model");
+        let first = crate::run_model(&absent).expect("first");
+        let second = crate::run_model(&absent).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
+    }
+
+    /// task-204: per-step operator models are deterministic for one seed.
+    #[test]
+    fn multiprocessor_step_operators_are_deterministic() {
+        let model = mp_step_operator_model(
+            r#"{ "process_time": { "distribution": "constant", "value": 1.0 },
+                 "num_operators": 1 }"#,
+            2,
+            2,
+            &[10.0],
+            50.0,
+        );
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
     }
 
     /// task-203: report SHA-256 for three generated multiprocessor models

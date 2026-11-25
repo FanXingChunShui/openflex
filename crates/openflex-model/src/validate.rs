@@ -855,6 +855,12 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                         }
                     }
                 }
+                if step.num_operators == Some(0) {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("steps[{step_index}].num_operators")),
+                        "must be at least 1",
+                    ));
+                }
             }
         }
         crate::model::ObjectParams::Conveyor(params) => {

@@ -421,7 +421,8 @@ fn definitions() -> Value {
                     "type": "object",
                     "properties": {
                         "process_time": { "$ref": "#/$defs/distribution" },
-                        "setup_time": { "$ref": "#/$defs/distribution" }
+                        "setup_time": { "$ref": "#/$defs/distribution" },
+                        "num_operators": { "type": ["integer", "null"], "minimum": 1 }
                     },
                     "additionalProperties": false
                 }

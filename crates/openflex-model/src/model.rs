@@ -1500,9 +1500,10 @@ pub struct ProcessStep {
     /// Setup time before this step; `None` means no setup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup_time: Option<Distribution>,
-    // Per-step operator counts are deliberately absent until the engine can
-    // request and release them per step: a field that validate accepts and the
-    // engine ignores is worse than no field at all.
+    /// task-204: operators requested for this step only; `None` inherits the
+    /// object-level whole-busy-period crew semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_operators: Option<u32>,
 }
 
 /// Multi-slot parallel processor (`MultiProcessor` in FlexSim, B1).

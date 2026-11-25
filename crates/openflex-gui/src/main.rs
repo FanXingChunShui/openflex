@@ -2833,6 +2833,7 @@ impl EditForm {
                         p.steps.push(openflex_model::ProcessStep {
                             process_time: None,
                             setup_time: None,
+                            num_operators: None,
                         });
                         changed = true;
                     }
@@ -15280,10 +15281,12 @@ mod tests {
                 ProcessStep {
                     process_time: Some(Distribution::Constant { value: 2.0 }),
                     setup_time: None,
+                    num_operators: None,
                 },
                 ProcessStep {
                     process_time: None,
                     setup_time: None,
+                    num_operators: None,
                 },
             ],
             ..Default::default()

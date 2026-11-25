@@ -19,6 +19,14 @@
   `Deserialize` 同时接受旧整数与新结构，`id`/`phase` 不落盘——旧 checkpoint 可读、新 checkpoint 形状不变。
   为后续两张卡铺路：MultiProcessor 按步操作员、Use Transport 的完整语义。
 
+- **MultiProcessor 的按步操作员**：`ProcessStep.num_operators` 真正接线——该工序开始前申请 n 个操作员、
+  **本步结束即释放**（不是整个 busy period），多槽各自等待/授予、不串全局锁。
+  这是上一版**故意留空**的字段：当时引擎读不了它，所以字段被删掉了；`OperatorRequest` 抽象落地后才加回来。
+  **未设 `num_operators` 的模型报告逐位不变**（含"有 steps 但都没设"这种中间态），
+  `check-dead-params.sh` 0 known 证明字段被真实读取。
+  实测差别：同一模型只把某步加上 `num_operators: 1`，MP 的 busy 分布就从 0 变成 0.6——字段不再是装饰。
+
+
 ### 工具与 CI
 
 - **CHANGELOG 插入助手**：`scripts/changelog-add.py --section "模型与引擎"`。这四次同一个错误（条目落进**已发布**区块、还重复了标题）终于被"机制"解决——助手先定位 `## Unreleased` 区块，只在区块内插入，找不到区块就报错，绝不全局替换。
