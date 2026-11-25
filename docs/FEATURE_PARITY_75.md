@@ -211,7 +211,7 @@
 |---|---|---|---|
 | Reports and Statistics：Summary Report（Excell 导出） | `report`（Markdown/CSV/JSON）+ `--xlsx` | 🟡 | 有汇总报告与 xlsx；**无"用户自选属性列 → Excel"的可配置报告**，列由引擎固定 |
 | Reports and Statistics：State Report（状态占比报表） | 报告含状态占比 | ✅ | |
-| Reports and Statistics：Model Documentation（自动生成模型文档） | 无 | ⛔ | 无文档生成 |
+| Reports and Statistics：Model Documentation（自动生成模型文档） | `openflex document <model>`（`--format json`） | ✅ | Markdown 文档：对象表（参数**去掉默认值**）、连接表、每对象实际挂动作的触发器、模型级命令/事件/跟踪变量/任务序列、校验结果；`--format json` 为机器可读版本。**宽容设计**：用宽松加载，**有问题的模型也能出文档**，并把 issue 列在文档里（其它命令拒绝无效模型，因为会算出无意义的数）。`SimTrigger::ALL`（23 个）保证新增触发器不会被文档漏掉。`document_describes_the_model_without_running_it` |
 | Experimenter：模型的场景声明（`experiments[]`） | `experiments[]` + `openflex experiment` + GUI `Declared experiments` 面板 | ✅ | 场景 × 复现、置信区间、per-scenario 失败隔离、hook 日志；GUI 可单个/全部运行并显示成败 |
 | Dashboard Concepts（仪表盘容器，运行中实时刷新） | Studio 仪表盘 + `openflex chart`（终端） | 🟡 | 有动态仪表盘与终端图表；仍无 FlexSim 的"图表对象 + 数据源绑定"可编辑模型 |
 | Dashboard Statistics Page（把对象统计画成图） | Studio 时间序列/柱状图 | 🟡 | 有吞吐柱状与多对象时序；无按"统计项选择器"自由组合 |
@@ -330,7 +330,7 @@
 > 并把 3 个纯教程/术语页从 🟡 改判为 📄。**权威总数以第 325 行的 ✅39 / 🟡97 / ⛔73 / 📄3 为准**，
 > 下表用来看**缺口集中在哪个目录**，不必逐格对齐。
 
-矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 51 行、🟡 103 行、⛔ 55 行、📄 3 行（参考页，不计入缺口）。
+矩阵共 **212 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 52 行、🟡 103 行、⛔ 54 行、📄 3 行（参考页，不计入缺口）。
 其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行。
 
 | 状态 | 行数 | 占比 |
