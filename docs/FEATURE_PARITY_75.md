@@ -47,7 +47,7 @@
 | Labels（对象与流项目上的命名数据） | `item.label(name)` 表达式 + `set_label`/`increment_label` 动作 | 🟡 | 仅数值标签；文档允许字符串、列表、表（`FlexSimConcepts/Labels.html`），`PickListEntry.value` 是字符串但流项目标签无字符串通道 |
 | Item 与 Current（两个访问变量） | 表达式里 `item`、`object`、`time` 等隐式绑定 | 🟡 | 无 `current`/`parnode(1)`/`ownerobject(c)` 这套 C 风格访问变量，依赖 rhai 沙箱的扁平 API |
 | Ports（输入/输出/中心三类端口） | `connections[]`（A 连接）+ `pull`/`operator`/`transport_ref` 具名字段 | 🟡 | 无"中心端口"这一等概念：FlexSim 用 S 连接建立对象间引用，OpenFlex 用具名字符串引用（`model.rs`）；语义等价但不可自由新增任意引用通道 |
-| Pick Lists（点选即得代码的列表控件） | `model.picklists` + 表达式 `picklist("list","entry")` + GUI 面板 | ✅ | 模型字段 `Model.picklists`、校验 `validate_picklists`、Schema `$defs/model.properties.picklists`、表达式求值 `EvalContext::picklist_entry`、GUI 增删改 `OpenFlexApp::add_pick_list` 等；没有 FlexSim 那种"点选即插入模板代码"的编辑器机制（模板代码见下一行） |
+| Pick Lists（点选即得代码的列表控件） | `model.picklists` + 表达式 `picklist("list","entry")` + GUI 面板 | ✅ | 模型字段 `Model.picklists`、校验 `validate_picklists`、Schema `$defs/model.properties.picklists`、表达式求值 `EvalContext::picklist_entry`、GUI 增删改 `OpenFlexApp::add_pick_list` 等；没有 FlexSim 那种"点选即插入模板代码"的编辑器机制（模板代码见下一行）；**行为证据（本轮补）**：`the_condition_is_a_expression_that_can_read_a_picklist`、`the_picklist_value_decides_which_port_gets_the_item`（改条目 → 全部去 KA 或 KB）、`editing_a_picklist_entry_changes_the_outcome`（`crates/openflex-core/tests/picklists.rs`，跑引擎验证路由） |
 | Return Values（代码字段的返回值语义） | 表达式/脚本有返回值；`script_condition` 用 `result` 标签 | ✅ | `expr.rs`、`action.rs` |
 | Template Code（弹窗与代码双向绑定的 `/**tag:*/` 机制） | 无对应物 | ⛔（有意差异） | 纯 FlexSim GUI 编辑器机制；OpenFlex 用 JSON 直接表达参数，不需要模板注入。**不计划实现** |
 | Model Units（时间/长度/流体单位，创建后不可改） | `time_unit`（秒/分/小时/天） | 🟡 | 只有时间单位；**长度单位与流体单位没有独立字段**（`model.rs` Model 无 `length_unit`/`fluid_unit`），运输距离与流体量按无量纲数处理 |
@@ -192,7 +192,7 @@
 | FlexSim 7.5 功能 | OpenFlex 现状 | 状态 | 证据或缺口说明 |
 |---|---|---|---|
 | Perspective / Orthographic View（3D/正交视图、视图保存、单位网格） | Studio 透视投影 + 2D 俯视（Canvas/WebGL） | 🟡 | 有双视图、相机预设、网格吸附；无正交相机与"命名视图保存" |
-| Quick Properties（上下文属性面板） | Studio 字段表单 | ✅ | |
+| Quick Properties（上下文属性面板） | Studio 字段表单 | ✅ | 选中对象即显示其参数表单，编辑走"改副本 → `validate` → 落盘"。**证据强度：表单往返级**——测试断言的是"改完参数后模型里的值正确"，不断言仿真行为（面板本身不产生行为）。按次口径标注，避免与行为级证据混同 |
 | Toolbox（工具集中管理：Global Table/Time Table/Dashboard…） | Studio 侧栏 | 🟡 | 有等效入口，但不是"可 Add 任意工具对象"的工具箱 |
 | Library Icon Grid（图标库拖拽建对象） | Studio 新建对象 | 🟡 | 可从列表新建；无拖拽图标网格与自定义库 |
 | Edit Selected Objects（批量改坐标/尺寸/旋转/复位位置） | 批量编辑/复制/删除、对齐分布 | 🟡 | 有批量操作；无"复位位置"概念 |
@@ -285,7 +285,7 @@
 |---|---|---|---|
 | Model Settings（精度、传送带角度、样条张力、日期格式、加密、嵌入媒体） | 无设置文件 | ⛔ | 无模型级设置（精度/格式/加密）；只保留 `time_unit` |
 | Global Preferences（跨模型默认偏好） | 无 | ⛔ | 无用户级偏好存储 |
-| Table Editor（编辑任意节点的表数据） | Studio Global Table 编辑器 | ✅ | 有表格编辑 |
+| Table Editor（编辑任意节点的表数据） | Studio Global Table 编辑器 | ✅ | 表格/列的重命名、增删行与单元格编辑走"改副本 → `validate` → 落盘"的路径。**证据补强（原为"有表格编辑"，属表单往返级）**：`editing_the_table_changes_the_arrivals`（改 quantity 单元格 → 到达数 2→4；把行推到 500 → 变 1，即编辑器数据路径真的改变仿真结果）、`editing_a_picklist_entry_changes_the_outcome`（改 picklist 条目 → 路由翻面） |
 | Database Table View（dbopen 打开的数据库表） | 无数据库驱动 | ⛔ | 无 DB 连接 |
 | Find and Replace（跨窗口查找替换） | 模型树搜索 | 🟡 | 有查找；无跨对象批量替换 |
 | Attribute Hints（特殊属性名释义表） | `schema` 命令 | 🟡 | 有字段说明；无属性名速查表 |

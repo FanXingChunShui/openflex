@@ -156,7 +156,8 @@ def main() -> int:
             if "_" in name and len(name) > 12
         ] + list(ledger_names or [])
         names = sorted(set(raw))
-        if conclusion and conclusion not in ("有证据",):
+        # "已升级 ✅" is a note that the old wording was wrong, not a weаker grade.
+        if conclusion and conclusion not in ("有证据",) and "已升级" not in conclusion:
             soft.append((number, feature, conclusion))
         # Keep only the ones that really are test names.
         known = [name for name in names if name in index]
