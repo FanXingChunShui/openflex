@@ -8,6 +8,10 @@
   也可删除。**未勾选 = 字段缺省**（继承对象级 setup/process），所以空列表与旧模型 JSON 逐字节一致。
   测试 `multiprocessor_steps_serialise_only_when_present`。GUI **151 项**。
 
+- **MultiProcessor 每步的操作员数**：步骤行的 `operators` 复选框 + 数字（未勾选 = 字段缺省，继承对象级 crew）。
+  测试扩展到断言 `num_operators: 2` 会被序列化。GUI **151 项**。
+
+
 ### 模型与引擎
 
 - **`OperatorRequest` 前置抽象（零行为变化）**：`Dispatcher`/`Resource` 的请求队列从 `VecDeque<usize>`

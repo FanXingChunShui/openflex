@@ -2864,6 +2864,23 @@ impl EditForm {
                                     });
                                 changed = true;
                             }
+                            // Per-step operator count: absent inherits the
+                            // object-level crew, which is the old behaviour.
+                            let mut needs_operators = step.num_operators.is_some();
+                            if ui.checkbox(&mut needs_operators, "operators").changed() {
+                                step.num_operators = needs_operators.then_some(1);
+                                changed = true;
+                            }
+                            if let Some(count) = step.num_operators.as_mut() {
+                                changed |= ui
+                                    .add(
+                                        egui::DragValue::new(count)
+                                            .speed(1.0)
+                                            .range(1..=100)
+                                            .prefix("x"),
+                                    )
+                                    .changed();
+                            }
                             if ui
                                 .small_button("x")
                                 .on_hover_text("remove this step")
@@ -15297,6 +15314,17 @@ mod tests {
         assert_eq!(back.steps.len(), 2);
         assert!(back.steps[1].setup_time.is_none(), "absent stays absent");
         assert!(back.steps[1].process_time.is_none());
+        // The per-step operator box writes a count only when ticked.
+        let operators = MultiProcessorParams {
+            steps: vec![ProcessStep {
+                process_time: None,
+                setup_time: None,
+                num_operators: Some(2),
+            }],
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&operators).expect("json");
+        assert!(json.contains("\"num_operators\":2"), "{json}");
     }
 
     #[test]
