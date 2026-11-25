@@ -91,6 +91,9 @@ pub struct ScriptContext {
     pub item_id: u64,
     /// Numeric labels currently on the item.
     pub labels: BTreeMap<String, f64>,
+    /// task-208: 0-based arrival-schedule row during `on_create`; -1 means the
+    /// item did not come from a schedule row.
+    pub rownumber: i64,
     /// Read-only object snapshot for `object_content`/`object_state`/
     /// `object_utilization` (empty when the script has no model access).
     pub objects: BTreeMap<String, ScriptObjectInfo>,
@@ -105,6 +108,7 @@ impl ScriptContext {
             item_id,
             labels: BTreeMap::new(),
             objects: BTreeMap::new(),
+            rownumber: -1,
         }
     }
 
@@ -217,6 +221,7 @@ impl CompiledScript {
         scope.push("time", context.time);
         scope.push("item_type", i64::from(context.item_type));
         scope.push("item_id", u64_to_i64(context.item_id));
+        scope.push("rownumber", context.rownumber);
         let value: Dynamic = engine
             .eval_ast_with_scope::<Dynamic>(&mut scope, &self.ast)
             .map_err(|error| map_eval_error(*error, self.max_operations))?;
@@ -358,6 +363,10 @@ pub const SCRIPT_VARIABLES: &[(&str, &str)] = &[
     ("time", "model time"),
     ("item_type", "flow item type"),
     ("item_id", "flow item id"),
+    (
+        "rownumber",
+        "0-based arrival-schedule row during on_create; -1 when not from a row",
+    ),
     ("label(name)", "numeric label of the item"),
     ("set_label(name, value)", "set a numeric label"),
     ("set_item_type(value)", "change the item type"),

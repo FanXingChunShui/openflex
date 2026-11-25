@@ -213,6 +213,12 @@ pub struct FlowItem {
     /// task-187: one-shot output-port override for the item's next routing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination: Option<u32>,
+    /// task-208: arrival-schedule row passed to on_create; -1 otherwise.
+    #[serde(
+        default = "negative_one_i64",
+        skip_serializing_if = "is_negative_one_i64"
+    )]
+    pub rownumber: i64,
 }
 
 impl FlowItem {
@@ -225,6 +231,7 @@ impl FlowItem {
             created: now,
             entry_time: now,
             destination: None,
+            rownumber: -1,
         }
     }
 }
@@ -802,6 +809,14 @@ enum PhotoEyeState {
 
 fn true_bool() -> bool {
     true
+}
+
+fn negative_one_i64() -> i64 {
+    -1
+}
+
+fn is_negative_one_i64(value: &i64) -> bool {
+    *value == -1
 }
 
 /// task-196: two executors working on the same request (coordinated task).
@@ -4454,7 +4469,7 @@ impl<'m> Simulation<'m> {
     ) -> Result<(), SimError> {
         self.objects[index].arrivals += 1;
         for _ in 0..params.items_per_arrival {
-            let item = self.create_item(params.item_type, &params.labels, index)?;
+            let item = self.create_item(params.item_type, &params.labels, index, -1)?;
             self.objects[index].out_pending.push(item);
         }
         // The next inter-arrival time is measured from the moment the batch
@@ -4477,7 +4492,14 @@ impl<'m> Simulation<'m> {
             return Ok(());
         };
         self.objects[index].arrivals += 1;
-        self.create_row_items(index, params, row.quantity, row.item_type, &row.labels)?;
+        self.create_row_items(
+            index,
+            params,
+            row.quantity,
+            row.item_type,
+            &row.labels,
+            self.objects[index].arrival_row as i64,
+        )?;
         self.objects[index].arrival_row += 1;
         self.schedule_next_schedule_row(index, params)?;
         self.flow(index)
@@ -4547,7 +4569,7 @@ impl<'m> Simulation<'m> {
             return Ok(());
         };
         self.objects[index].arrivals += 1;
-        self.create_row_items(index, params, row.quantity, row.item_type, &row.labels)?;
+        self.create_row_items(index, params, row.quantity, row.item_type, &row.labels, -1)?;
         self.objects[index].arrival_row += 1;
         self.objects[index].next_arrival_pending = true;
         self.flow(index)
@@ -4562,12 +4584,13 @@ impl<'m> Simulation<'m> {
         quantity: u32,
         item_type: Option<u32>,
         labels: &BTreeMap<String, f64>,
+        row_number: i64,
     ) -> Result<(), SimError> {
         let mut merged = params.labels.clone();
         merged.extend(labels.iter().map(|(name, value)| (name.clone(), *value)));
         let item_type = item_type.unwrap_or(params.item_type);
         for _ in 0..quantity {
-            let item = self.create_item(item_type, &merged, index)?;
+            let item = self.create_item(item_type, &merged, index, row_number)?;
             self.objects[index].out_pending.push(item);
         }
         Ok(())
@@ -4671,6 +4694,7 @@ impl<'m> Simulation<'m> {
         item_type: u32,
         labels: &BTreeMap<String, f64>,
         source: usize,
+        rownumber: i64,
     ) -> Result<FlowItem, SimError> {
         self.items_created += 1;
         self.stats_created += 1;
@@ -4681,6 +4705,7 @@ impl<'m> Simulation<'m> {
             created: self.now,
             entry_time: self.now,
             destination: None,
+            rownumber,
         };
         self.record_item_trace("enter", source, item.id);
         self.flow_item_hints.insert(source, item.id);
@@ -4689,6 +4714,8 @@ impl<'m> Simulation<'m> {
             self.action_location = format!("{}.on_create", self.objects[source].name);
             self.apply_actions(source, &mut item, actions)?;
         }
+        // The row number is an on_create input only; later triggers see -1.
+        item.rownumber = -1;
         Ok(item)
     }
 
@@ -6648,6 +6675,7 @@ impl<'m> Simulation<'m> {
                 created: self.now,
                 entry_time: self.now,
                 destination: None,
+                rownumber: -1,
             };
             self.flow_note(block, self.now);
             self.flow_add_token(block, token, None);
@@ -6822,6 +6850,7 @@ impl<'m> Simulation<'m> {
                         created: now,
                         entry_time: now,
                         destination: None,
+                        rownumber: -1,
                     };
                     self.record_token_trace("token_transfer", block, token.id);
                     if !self.receive_item(target, 0, item)? {
@@ -7858,7 +7887,8 @@ impl<'m> Simulation<'m> {
                         let mut made = false;
                         for _ in 0..ready as u64 {
                             let labels = std::collections::BTreeMap::new();
-                            if let Ok(item) = self.create_item(0, &labels, model_indices[position])
+                            if let Ok(item) =
+                                self.create_item(0, &labels, model_indices[position], -1)
                             {
                                 let now = self.now;
                                 self.objects[model_indices[position]].push_content(now, item);
@@ -12221,7 +12251,7 @@ impl<'m> Simulation<'m> {
         }
         for _ in 0..ready as u64 {
             let labels = BTreeMap::new();
-            let item = self.create_item(0, &labels, index)?;
+            let item = self.create_item(0, &labels, index, -1)?;
             let now = self.now;
             self.objects[index].push_content(now, item);
         }
@@ -12720,6 +12750,7 @@ impl<'m> Simulation<'m> {
         })?;
         let mut context = ScriptContext::new(self.now, item.item_type, item.id);
         context.labels = item.labels.clone();
+        context.rownumber = item.rownumber;
         context.objects = self.script_objects();
         let outcome = script
             .run(&mut context)
@@ -12866,6 +12897,7 @@ impl<'m> Simulation<'m> {
                 created: self.now,
                 entry_time: self.now,
                 destination: None,
+                rownumber: -1,
             };
             self.receive_item(target, 0, item)?;
         }
@@ -14578,6 +14610,7 @@ mod tests {
             created: 0.0,
             entry_time: 0.0,
             destination: None,
+            rownumber: -1,
         }
     }
 
@@ -22798,6 +22831,106 @@ mod tests {
                 "multiprocessor baseline {index} changed"
             );
         }
+    }
+
+    fn rownumber_schedule_model(table: bool, inline: bool, trigger: &str) -> Model {
+        let table_json = if table {
+            r#", "global_tables": { "Schedule": { "columns": ["time", "quantity"],
+                 "rows": [[10.0, 1.0], [20.0, 1.0], [30.0, 1.0]] } }"#
+        } else {
+            ""
+        };
+        let params = if table {
+            r#"{ "arrival_schedule_from_table": "Schedule", "triggers": { "on_create": [
+                { "action": "script", "source": "log(\"row=\" + rownumber);" } ] } }"#
+        } else if inline {
+            r#"{ "arrival_schedule": { "rows": [
+                { "time": 10.0, "quantity": 1 }, { "time": 20.0, "quantity": 1 },
+                { "time": 30.0, "quantity": 1 } ] },
+                "triggers": { "on_create": [
+                { "action": "script", "source": "log(\"row=\" + rownumber);" } ] } }"#
+        } else {
+            &format!(
+                r#"{{ "interarrival": {{ "distribution": "constant", "value": 5.0 }},
+                    "max_arrivals": 3, "triggers": {{ "{trigger}": [
+                    {{ "action": "script", "source": "log(\"row=\" + rownumber);" }} ] }} }}"#
+            )
+        };
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "rownumber",
+          "run": {{ "stop_time": 100.0, "seed": 1, "replications": 1 }}{table_json},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {params} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [ {{ "from": "S", "to": "K" }} ]
+        }}"#
+        ))
+        .expect("rownumber model")
+    }
+
+    fn script_log_messages(model: &Model) -> Vec<String> {
+        let (_, trace) = crate::simulate_traced(
+            model,
+            &SimConfig {
+                stop_time: 100.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect("trace");
+        trace
+            .events
+            .iter()
+            .filter(|event| event.event == "script_log")
+            .map(|event| event.message.clone())
+            .collect()
+    }
+
+    /// task-208: table-driven rows expose 0,1,2 to on_create.
+    #[test]
+    fn table_driven_rownumber_is_zero_based() {
+        let messages = script_log_messages(&rownumber_schedule_model(true, false, "on_create"));
+        assert_eq!(messages, vec!["row=0", "row=1", "row=2"], "{messages:?}");
+    }
+
+    /// task-208: inline schedules expose the same row numbers.
+    #[test]
+    fn inline_schedule_rownumber_is_zero_based() {
+        let messages = script_log_messages(&rownumber_schedule_model(false, true, "on_create"));
+        assert_eq!(messages, vec!["row=0", "row=1", "row=2"], "{messages:?}");
+    }
+
+    /// task-208: interarrival has no row: rownumber is -1, never 0.
+    #[test]
+    fn interarrival_rownumber_is_minus_one() {
+        let messages = script_log_messages(&rownumber_schedule_model(false, false, "on_create"));
+        assert_eq!(messages, vec!["row=-1", "row=-1", "row=-1"], "{messages:?}");
+    }
+
+    /// task-208: non-on_create triggers see -1, not a stale row number.
+    #[test]
+    fn rownumber_is_reset_after_on_create() {
+        let messages = script_log_messages(&rownumber_schedule_model(false, false, "on_exit"));
+        assert!(!messages.is_empty(), "on_exit must run");
+        assert!(
+            messages.iter().all(|message| message == "row=-1"),
+            "{messages:?}"
+        );
+    }
+
+    /// task-208: rownumber does not break determinism.
+    #[test]
+    fn rownumber_is_deterministic() {
+        let model = rownumber_schedule_model(true, false, "on_create");
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
     }
 
     /// task-205: 3 MP + 3 operator-heavy model reports must stay bit-identical

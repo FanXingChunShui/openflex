@@ -130,7 +130,7 @@
 | Text Display（VisualTool 的 3D 文字） | `visual_tool.text`，画布上绘制为标签 | 🟡 | **已修**：`visual_tool` 此前只可编辑、画布上什么都不画（形状/大小/颜色/文字全是空转），现在按自身参数绘制（`visual_tool_size` / `parse_hex_color`，颜色写错回退而不是消失），`text` 画在对象上方；仍是 2D 画布标签，没有 3D 文字渲染。测试 `a_visual_tool_is_drawn_from_its_own_parameters` |
 | Rise Fall Through Mark Triggers（液位穿越） | 同 `FluidTankParams.marks` 的 `on_rise`/`on_fall` | ✅ | 穿越事件即使钩子为空也写 trace（`fluid_mark_rise`/`fluid_mark_fall`）；与内置 `on_empty`/`on_full` 各自独立判定、互不吞没 |
 | Entry Exit Trigger（OnEntry/OnExit） | `on_entry`/`on_exit` | ✅ | |
-| Creation Trigger（OnCreation，含 row number） | `on_create` | 🟡 | 有触发器；无 `rownumber` 访问变量（表驱动到达时无法知道来自哪一行） |
+| Creation Trigger（OnCreation，含 row number） | `on_create` + **`rownumber`** | ✅ | 表驱动/inline 调度时 `on_create` 可读 `rownumber`（**0 起**的表行号），其它创建路径为 **-1**（"无行号"，不冒充第一行）。`on_create` 之后立即重置，`on_exit` 等触发器读到 -1，不会误用。独立实测（3 行表 1/2/1 件）：`row=0,1,1,2`；interarrival → `-1`。`rownumber_is_available_*` 5 项（表驱动/inline/interarrival/on_exit/确定性） |
 | Message Trigger（OnMessage，三个参数） | `on_message` | 🟡 | 有触发器；`SendMessage` 动作**只带 target+delay，无三个用户参数**（`action.rs`） |
 | Reset Trigger | `on_reset` | ✅ | |
 | OnChange Trigger（watchlist 变量变化） | `TrackedVariable.on_change` | ✅ | 复用既有跟踪采样点（`tracked_interval`）与采样器已维护的"上一次值"（随 checkpoint 持久化）；**首次采样不算变化**，变化判定基于采样值（不是连续抖动）。实测 `time` 表达式 interval 5 / stop 30 → 恰好 5 次（`[10,15,20,25,30]`），常量 0 次。`kind != level` 给 `on_change` → validate 明确拒绝。`on_change_fires_once_per_changed_sample`、`on_change_never_fires_for_a_constant`、`on_change_script_runs`、`on_change_on_a_summary_is_rejected` |
@@ -330,7 +330,7 @@
 > 并把 3 个纯教程/术语页从 🟡 改判为 📄。**权威总数以第 325 行的 ✅39 / 🟡97 / ⛔73 / 📄3 为准**，
 > 下表用来看**缺口集中在哪个目录**，不必逐格对齐。
 
-矩阵共 **208 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 50 行、🟡 102 行、⛔ 53 行、📄 3 行（参考页，不计入缺口）。
+矩阵共 **208 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 51 行、🟡 101 行、⛔ 53 行、📄 3 行（参考页，不计入缺口）。
 > 本行数字由 `scripts/check-parity-counts.py` 从下方表格**自动核对**；改矩阵后若不一致，CI 会失败。
 > 本行数字由 `scripts/check-parity-counts.py` 从下方表格**自动核对**；改矩阵后若不一致，CI 会失败。
 其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行。
