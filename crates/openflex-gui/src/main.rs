@@ -1841,6 +1841,9 @@ impl EditForm {
                     .changed();
                 changed |= distribution_editor(ui, "load time", &mut p.load_time);
                 changed |= distribution_editor(ui, "unload time", &mut p.unload_time);
+                // Optional motion profile: without it travel is distance/speed.
+                changed |= optional_f64(ui, "acceleration", &mut p.acceleration);
+                changed |= optional_f64(ui, "deceleration", &mut p.deceleration);
                 changed |= object_picker(ui, "home", &mut p.home, &names.any);
             }
             ObjectParams::Agv(p) => {
@@ -1859,6 +1862,8 @@ impl EditForm {
                     )
                     .changed();
                 changed |= distribution_editor(ui, "charge time", &mut p.charge_time);
+                changed |= optional_f64(ui, "acceleration", &mut p.acceleration);
+                changed |= optional_f64(ui, "deceleration", &mut p.deceleration);
                 changed |= optional_f64(ui, "battery/distance", &mut p.consumption_per_distance);
                 changed |= object_picker(ui, "charger", &mut p.charger, &names.any);
             }
@@ -15281,6 +15286,29 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn a_transporter_records_its_motion_profile() {
+        // The form writes the two optional fields; absent must stay absent so
+        // existing models keep constant-speed travel.
+        use openflex_model::TransporterParams;
+        let plain = TransporterParams::default();
+        let json = serde_json::to_string(&plain).expect("json");
+        assert!(!json.contains("acceleration"), "{json}");
+        assert!(!json.contains("deceleration"), "{json}");
+
+        let profiled = TransporterParams {
+            acceleration: Some(1.0),
+            deceleration: Some(2.0),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&profiled).expect("json");
+        assert!(json.contains("\"acceleration\":1.0"), "{json}");
+        assert!(json.contains("\"deceleration\":2.0"), "{json}");
+        let back: TransporterParams = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back.acceleration, Some(1.0));
+        assert_eq!(back.deceleration, Some(2.0));
     }
 
     #[test]

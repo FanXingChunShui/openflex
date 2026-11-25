@@ -92,7 +92,7 @@
 | Container Page（容器件的打包方法） | 无容器件概念 | ⛔ | Flowitem Bin 的 Container 类型与打包方法未实现 |
 | Container Functionality Page（VisualTool 内含对象时的输入端口代理） | `visual_tool` 存在 | ⛔ | 无"把输入连接动作转交给内部对象"的能力 |
 | Collision Page（碰撞检测球、检查间隔） | 无 | ⛔ | TaskExecuter 无碰撞检测 |
-| TaskExecuter Page（Capacity/Max speed/Accel/Decel/Flip threshold/Offset travel） | `capacity`/`speed`/`load_time`/`unload_time`/`home` | 🟡 | 无 Acceleration/Deceleration（匀速）、无 Flip Threshold、无 offset travel、无装载容量与实际载货的区分（`capacity` 在部分变体是并发任务数） |
+| TaskExecuter Page（Capacity/Max speed/Accel/Decel/Flip threshold/Offset travel） | `capacity`/`speed`/`load_time`/`unload_time`/`home` + **`acceleration`/`deceleration`** | 🟡 | **加减速已接线**：单一 `travel_time` 实现梯形/三角形运动曲线，接进任务序列 pickup/leg/home、`queue.use_transport`、explicit route、elevator 水平段；未设加速度时精确等于 `距离/速度`（3 个基准模型 SHA-256 不变）。独立实测：d=10、v=1 无加速度 `dropoff@10.0`，加速度 1 → **11.0**；d=0.4 跑不到最高速，三角公式 `1.2649` 与实测一致。**仍缺** Flip Threshold、offset travel、载货量与并发任务数的区分。`travel_without_acceleration_keeps_the_reports`、`travel_time_trapezoid_formula`、`travel_time_triangle_formula`、`travel_time_boundary_matches`、`acceleration_slows_use_transport_leg` |
 | Transporter Page（Lift speed / 升降） | `ElevatorParams` 有垂直速度与停靠时间；transporter 无升降 | 🟡 | 升降能力只在 `elevator` 上（`speed` 垂直速度 + `stop_time` 门停靠）；`transporter` 无叉车升降时长，取放瞬时完成 |
 | ASRSvehicle / Crane / Robot Page（升降速度、行程顺序、关节速度表） | `asrs_vehicle`/`crane`/`robot` 变体 | 🟡 | 有路径策略；无关节/升降速度表与运动学曲线 |
 | Robot Geometry Page（逐关节相对速度/复位位置/手动定位） | 无 | ⛔ | 无关节模型 |

@@ -25,6 +25,12 @@
   `a_table_driven_source_respects_stop_time`（stop 25 时只有前两行）、
   `editing_the_table_changes_the_arrivals`（改 quantity 2→4、把行推到 500 后变 1——这正是 GUI 表格编辑器的数据路径）。
 
+### 桌面 GUI
+
+- **运输器/AGV 表单新增 `acceleration` / `deceleration`**（留空 = 匀速，保持旧行为）。
+  测试 `a_transporter_records_its_motion_profile`（缺省不序列化、有值时往返）。GUI **152 项**。
+
+
 ## v1.52.0 — 2026-11-25
 
 本轮最值得记的不是新功能，而是**审计推翻了我自己的数字**。
