@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### 工具与 CI
+
+- **新增 `scripts/audit-parity-evidence.py`（已进 CI，`--strict`）**：把 ✅ 行的证据**按测试所在 crate 分类**——
+  `behaviour`（core / cli 测试，会跑引擎）、`model`（只解析/校验）、`report`（输出/UI）。
+  **只用模型层测试支撑的 ✅ 会被报出来**，因为"模型对了、引擎却忽略该字段"正是上一版表驱动到达失效的形态。
+  它还会比对 `docs/PARITY_EVIDENCE.md` 台账的结论等级，并检查矩阵行内引用的名字是否真的是测试函数。
+- **抓到一个真正的过期引用**：矩阵与审计文档都还引用 `mixer_delay_zero_keeps_the_report`，
+  而该测试早已改名为 `mixer_delay_zero_fires_the_hooks_and_keeps_the_report`。
+  `check-doc-evidence.sh` 只查台账、**从不查矩阵行**，所以改名后一直没人发现——现在补了
+  `docs/evidence-non-test-names.txt` 白名单（字段名/事件名/枚举值），白名单外的"像测试却查无此 fn"的名字会让 CI 失败。
+
+
 ## v1.53.0 — 2026-11-25
 
 这一版的核心是**修掉一个"标着 ✅ 却完全失效"的功能**，以及它带出来的两个补全。

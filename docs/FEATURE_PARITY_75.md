@@ -102,7 +102,7 @@
 | Fluid 各类页（Generator/Tank/Mixer/Blender/Splitter/Pipe/Processor/Conveyor/Terminator/ItemToFluid/FluidToItem/Ticker） | 同名 `fluid_*` | 🟡 | 见对象库表；流体页的 Marks（低/中/高液位触发）、Steps（分批延迟）、Sensors（传送带传感器）、Recipe/Percents 表可配置但语义简化 |
 | Fluid Marks Page（低/中/高液位升降触发） | `FluidTankParams.marks: [{ name, level, on_rise, on_fall }]` | ✅ | 任意数量的具名液位标记，上穿/下穿各触发一次；`level ∈ [0, capacity]`，重名/空名被拒。约定：穿越判定以 **tick 采样**为准（步内多次穿越算一次），已写进 `FluidMark` 文档。`fluid_mark_rise_fires_once`、`fluid_mark_fall_fires_once`、`fluid_mark_jitter_counts_each_crossing`、`fluid_mark_and_full_hook_coexist` |
 | Fluid Sensors Page（FluidConveyor 传感器表） | 无 | ⛔ | 无离散传感器 |
-| Fluid Steps Page（分批收集 + 步前/步后延迟触发器） | `FluidMixerParams.steps: [{ pull, delay, on_before_delay, on_after_delay }]` | ✅ | 每步按端口拉取材料，收齐后等 `delay` 再分发到下一步；两个钩子分别在"收齐后/延迟前"与"延迟结束"触发。**本行此前标 ⛔ 的实际原因是 `MixerStep.delay` 声明了但引擎从未读取**（注释承诺、代码没做），本版已实现。实测 delay=5 时钩子成对且**每对间隔精确 5.0**。`mixer_delay_zero_keeps_the_report`、`mixer_delay_hooks_are_one_delay_apart`、`mixer_delay_hooks_fire_per_step` |
+| Fluid Steps Page（分批收集 + 步前/步后延迟触发器） | `FluidMixerParams.steps: [{ pull, delay, on_before_delay, on_after_delay }]` | ✅ | 每步按端口拉取材料，收齐后等 `delay` 再分发到下一步；两个钩子分别在"收齐后/延迟前"与"延迟结束"触发。**本行此前标 ⛔ 的实际原因是 `MixerStep.delay` 声明了但引擎从未读取**（注释承诺、代码没做），本版已实现。实测 delay=5 时钩子成对且**每对间隔精确 5.0**。`mixer_delay_zero_fires_the_hooks_and_keeps_the_report`、`mixer_delay_hooks_are_one_delay_apart`、`mixer_delay_hooks_fire_per_step` |
 | Initial Product Window（ProductID + 子组分列表） | 无产物/组分（Product ID）概念 | ⛔ | 流体无组分追踪 |
 
 ## 4. PickLists（45 页）— 点选式逻辑字段（最重要的语义清单）
@@ -128,7 +128,7 @@
 | Flow Rate / Item Speed（流体/传送带速度） | `conveyor.speed`、流体速率 | 🟡 | 静态或分布；无"每件进入时求值"的 Item Speed picklist |
 | Break To（中断任务序列的接受条件） | 无 | ⛔ | TaskExecuter 无 break 任务与 BreakTo 钩子 |
 | Text Display（VisualTool 的 3D 文字） | `visual_tool.text`，画布上绘制为标签 | 🟡 | **已修**：`visual_tool` 此前只可编辑、画布上什么都不画（形状/大小/颜色/文字全是空转），现在按自身参数绘制（`visual_tool_size` / `parse_hex_color`，颜色写错回退而不是消失），`text` 画在对象上方；仍是 2D 画布标签，没有 3D 文字渲染。测试 `a_visual_tool_is_drawn_from_its_own_parameters` |
-| Rise Fall Through Mark Triggers（液位穿越） | 同 `FluidTankParams.marks` 的 `on_rise`/`on_fall` | ✅ | 穿越事件即使钩子为空也写 trace（`fluid_mark_rise`/`fluid_mark_fall`）；与内置 `on_empty`/`on_full` 各自独立判定、互不吞没 |
+| Rise Fall Through Mark Triggers（液位穿越） | 同 `FluidTankParams.marks` 的 `on_rise`/`on_fall` | ✅ | 穿越事件即使钩子为空也写 trace（事件名 `fluid_mark_rise`/`fluid_mark_fall`）；与内置 `on_empty`/`on_full` 各自独立判定、互不吞没。`fluid_mark_rise_fires_once`、`fluid_mark_fall_fires_once`、`fluid_mark_jitter_counts_each_crossing`、`fluid_mark_and_full_hook_coexist`、`fluid_marks_absent_keeps_the_report` |
 | Entry Exit Trigger（OnEntry/OnExit） | `on_entry`/`on_exit` | ✅ | |
 | Creation Trigger（OnCreation，含 row number） | `on_create` + **`rownumber`** | ✅ | 表驱动/inline 调度时 `on_create` 可读 `rownumber`（**0 起**的表行号），其它创建路径为 **-1**（"无行号"，不冒充第一行）。`on_create` 之后立即重置，`on_exit` 等触发器读到 -1，不会误用。独立实测（3 行表 1/2/1 件）：`row=0,1,1,2`；interarrival → `-1`。`rownumber_is_available_*` 5 项（表驱动/inline/interarrival/on_exit/确定性） |
 | Message Trigger（OnMessage，三个参数） | `on_message` | 🟡 | 有触发器；`SendMessage` 动作**只带 target+delay，无三个用户参数**（`action.rs`） |
@@ -212,7 +212,7 @@
 | Reports and Statistics：Summary Report（Excell 导出） | `report`（Markdown/CSV/JSON）+ `--xlsx` | 🟡 | 有汇总报告与 xlsx；**无"用户自选属性列 → Excel"的可配置报告**，列由引擎固定 |
 | Reports and Statistics：State Report（状态占比报表） | 报告含状态占比 | ✅ | |
 | Reports and Statistics：Model Documentation（自动生成模型文档） | `openflex document <model>`（`--format json`） | ✅ | Markdown 文档：对象表（参数**去掉默认值**）、连接表、每对象实际挂动作的触发器、模型级命令/事件/跟踪变量/任务序列、校验结果；`--format json` 为机器可读版本。**宽容设计**：用宽松加载，**有问题的模型也能出文档**，并把 issue 列在文档里（其它命令拒绝无效模型，因为会算出无意义的数）。`SimTrigger::ALL`（23 个）保证新增触发器不会被文档漏掉。`document_describes_the_model_without_running_it` |
-| Experimenter：模型的场景声明（`experiments[]`） | `experiments[]` + `openflex experiment` + GUI `Declared experiments` 面板 | ✅ | 场景 × 复现、置信区间、per-scenario 失败隔离、hook 日志；GUI 可单个/全部运行并显示成败 |
+| Experimenter：模型的场景声明（`experiments[]`） | `experiments[]` + `openflex experiment` + GUI `Declared experiments` 面板 | ✅ | 场景 × 复现、置信区间、per-scenario 失败隔离、hook 日志；GUI 可单个/全部运行并显示成败。`returns_one_outcome_per_scenario_with_full_reports`、`a_failing_scenario_does_not_stop_its_siblings`（`crates/openflex-report/tests/experiments.rs`） |
 | Dashboard Concepts（仪表盘容器，运行中实时刷新） | Studio 仪表盘 + `openflex chart`（终端） | 🟡 | 有动态仪表盘与终端图表；仍无 FlexSim 的"图表对象 + 数据源绑定"可编辑模型 |
 | Dashboard Statistics Page（把对象统计画成图） | Studio 时间序列/柱状图 | 🟡 | 有吞吐柱状与多对象时序；无按"统计项选择器"自由组合 |
 | Dashboard Tracked Variables（把 tracked variable 画成图） | `tracked_series` / `tracked_summaries` + GUI 迷你折线 | 🟡 | 数据与类型体系（level/state/staytime/kinetic）已具备；GUI 有 84×14 迷你折线，无独立图表对象 |

@@ -1,0 +1,29 @@
+# Backticked identifiers that appear in the parity matrix / evidence ledger but
+# are NOT test functions: field names, trace event names, strategy values.
+#
+# `scripts/audit-parity-evidence.py` reports any cited name that looks like a
+# test (`snake_case`, long enough) but declares no `fn`. A name has to be listed
+# here to be accepted. The point is to catch a *renamed* test still cited under
+# its old name — `mixer_delay_zero_keeps_the_report` was exactly that, and no
+# existing check looked at the matrix rows at all.
+#
+# Adding a line is a deliberate act: if it is actually a test, fix the citation
+# instead.
+
+# strategy / enum values
+by_label
+
+# trace event names
+fluid_mark_fall
+fluid_mark_rise
+operator_loaded
+
+# parameter and trigger field names
+model_triggers
+num_operators
+num_process_operators
+operator_preempt
+operator_priority
+process_finish
+tracked_interval
+use_same_num_operators
