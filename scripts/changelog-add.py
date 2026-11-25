@@ -41,12 +41,22 @@ def main() -> int:
     if not text.lstrip().startswith("# "):
         return fail("CHANGELOG.md should start with a `# ` title")
 
-    if UNRELEASED not in text:
+    # The heading has to be a *line*, not a mention inside prose: an earlier
+    # version of this script matched a sentence that quoted `## Unreleased` and
+    # happily inserted the entry into a released section.
+    def heading_index(source: str) -> int:
+        for index, line in enumerate(source.split("\n")):
+            if line.rstrip() == UNRELEASED:
+                # Convert the line number back to a character offset.
+                return sum(len(part) + 1 for part in source.split("\n")[:index])
+        return -1
+
+    if heading_index(text) == -1:
         text = text.replace("# Changelog\n", "# Changelog\n\n## Unreleased\n\n", 1)
-        if UNRELEASED not in text:
+        if heading_index(text) == -1:
             return fail("could not find or create `## Unreleased`")
 
-    start = text.index(UNRELEASED)
+    start = heading_index(text)
     # The unreleased block ends at the next version heading.
     nxt = text.find("\n## v", start)
     if nxt == -1:

@@ -46,7 +46,25 @@ for newer, older in zip(versions, versions[1:]):
     if older >= newer:
         sys.exit(f"versions out of order: {older} listed after {newer}")
 
-# 3. No duplicated `###` heading inside one section.
+# 3. No empty `###` section: a heading whose body is only blank lines before the
+#    next heading. Happens when an entry is moved and its heading is left behind.
+empty_sections = []
+lines = text.split("\n")
+for index, line in enumerate(lines):
+    if not line.startswith("### "):
+        continue
+    cursor = index + 1
+    body = []
+    while cursor < len(lines) and not lines[cursor].startswith("### ") and not lines[cursor].startswith("## "):
+        if lines[cursor].strip():
+            body.append(lines[cursor])
+        cursor += 1
+    if not body:
+        empty_sections.append(line.strip())
+if empty_sections:
+    sys.exit("empty changelog section(s): " + ", ".join(empty_sections))
+
+# 4. No duplicated `###` heading inside one section.
 problems = []
 current = None
 seen = set()

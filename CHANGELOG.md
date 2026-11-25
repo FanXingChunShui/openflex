@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### 模型与引擎
+
+- **运输器加减速（`acceleration` / `deceleration`）**：`TransporterParams`/`AgvParams`/`ElevatorParams` 新增两个可选字段。
+  单一 `travel_time(distance, speed, accel, decel)` 实现**梯形/三角形**两种运动曲线，接进任务序列 pickup/leg/home、
+  `queue.use_transport` 的物品搬运、explicit route、elevator 的水平段。
+  **未设加速度时精确返回 `distance / speed`**（3 个基准模型报告 SHA-256 与改动前常量一致）。
+  独立实测：d=10、v=1 时无加速度 `item_dropoff@10.0`，加速度 1 → **11.0**（梯形）；d=0.4 时**跑不到最高速**，
+  三角公式给出 `1.2649`，实测同值。
+
+### 工具与 CI
+
+- **修复：表驱动到达此前**完全失效**（虚标的 ✅）。矩阵写着"表驱动到达已接线（`engine.rs` 读全局表）"，
+  实测却是 **`created 0.0`** —— 一个物品都不创建，而 validate 通过。
+  根因：`handle_schedule_arrival` / `schedule_next_schedule_row` 只读 `params.arrival_schedule()`，
+  该访问器对表驱动返回 `None`，两个函数第一行就直接返回。
+  原引用测试 `source_can_load_its_arrival_schedule_from_a_table` **只验证了 `Model::apply_table_reference` 这个解析器**，
+  从没验证引擎用了它——**这正是"只测解析、不测行为"的典型虚标**，而且它躲过了上一轮审计（审计只看测试名）。
+  修法：`Simulation::new` 对每个 source 的 inline/table 到达表**解析一次缓存**（table 失败时报 `object '<name>': …`），
+  三个消费点改读缓存；inline 与 table 共用同一份运行时数据。
+  行为测试（`crates/openflex-core/tests/table_arrivals.rs`）：`a_table_driven_source_creates_the_rows_items`（1+2+1=4 件）、
+  `a_table_driven_source_respects_stop_time`（stop 25 时只有前两行）、
+  `editing_the_table_changes_the_arrivals`（改 quantity 2→4、把行推到 500 后变 1——这正是 GUI 表格编辑器的数据路径）。
+
 ## v1.52.0 — 2026-11-25
 
 本轮最值得记的不是新功能，而是**审计推翻了我自己的数字**。
@@ -116,28 +141,6 @@
 - **新增 `scripts/check-examples.sh`（已进 CI）**：**66 个示例模型**逐个 `validate` + 运行两次同 seed，
   两次报告必须**逐字节相同**。示例是"能执行的文档"，引擎改动在那里出问题，单测未必覆盖得到。
   当前结果：`all 66 example models validate, run, and are deterministic`。
-
-- **修复：表驱动到达此前**完全失效**（虚标的 ✅）。矩阵写着"表驱动到达已接线（`engine.rs` 读全局表）"，
-  实测却是 **`created 0.0`** —— 一个物品都不创建，而 validate 通过。
-  根因：`handle_schedule_arrival` / `schedule_next_schedule_row` 只读 `params.arrival_schedule()`，
-  该访问器对表驱动返回 `None`，两个函数第一行就直接返回。
-  原引用测试 `source_can_load_its_arrival_schedule_from_a_table` **只验证了 `Model::apply_table_reference` 这个解析器**，
-  从没验证引擎用了它——**这正是"只测解析、不测行为"的典型虚标**，而且它躲过了上一轮审计（审计只看测试名）。
-  修法：`Simulation::new` 对每个 source 的 inline/table 到达表**解析一次缓存**（table 失败时报 `object '<name>': …`），
-  三个消费点改读缓存；inline 与 table 共用同一份运行时数据。
-  行为测试（`crates/openflex-core/tests/table_arrivals.rs`）：`a_table_driven_source_creates_the_rows_items`（1+2+1=4 件）、
-  `a_table_driven_source_respects_stop_time`（stop 25 时只有前两行）、
-  `editing_the_table_changes_the_arrivals`（改 quantity 2→4、把行推到 500 后变 1——这正是 GUI 表格编辑器的数据路径）。
-
-### 模型与引擎
-
-- **运输器加减速（`acceleration` / `deceleration`）**：`TransporterParams`/`AgvParams`/`ElevatorParams` 新增两个可选字段。
-  单一 `travel_time(distance, speed, accel, decel)` 实现**梯形/三角形**两种运动曲线，接进任务序列 pickup/leg/home、
-  `queue.use_transport` 的物品搬运、explicit route、elevator 的水平段。
-  **未设加速度时精确返回 `distance / speed`**（3 个基准模型报告 SHA-256 与改动前常量一致）。
-  独立实测：d=10、v=1 时无加速度 `item_dropoff@10.0`，加速度 1 → **11.0**（梯形）；d=0.4 时**跑不到最高速**，
-  三角公式给出 `1.2649`，实测同值。
-
 
 ### 验证
 
