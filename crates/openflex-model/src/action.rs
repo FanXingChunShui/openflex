@@ -264,6 +264,35 @@ pub enum SimTrigger {
 }
 
 impl SimTrigger {
+    /// Every trigger, in declaration order. Tools that document or audit a model
+    /// need to enumerate them; keeping the list here means a new trigger cannot
+    /// be forgotten in those tools.
+    pub const ALL: [SimTrigger; 23] = [
+        SimTrigger::OnCreate,
+        SimTrigger::OnEntry,
+        SimTrigger::OnExit,
+        SimTrigger::OnReceive,
+        SimTrigger::OnMessage,
+        SimTrigger::OnBreakdown,
+        SimTrigger::OnRepair,
+        SimTrigger::OnPhotoEye,
+        SimTrigger::SetupFinish,
+        SimTrigger::ProcessFinish,
+        SimTrigger::OnContentChange,
+        SimTrigger::OnStateChange,
+        SimTrigger::OnReset,
+        SimTrigger::OnStop,
+        SimTrigger::OnResume,
+        SimTrigger::OnDraw,
+        SimTrigger::OnLoad,
+        SimTrigger::OnUnload,
+        SimTrigger::OnEmpty,
+        SimTrigger::OnFull,
+        SimTrigger::OnEntryRequest,
+        SimTrigger::OnReceiveTaskSequence,
+        SimTrigger::OnResourceAvailable,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             SimTrigger::OnCreate => "on_create",

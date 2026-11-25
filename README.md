@@ -147,6 +147,8 @@ openflex trace events.jsonl                  # trace 摘要（件数/时间范�
 openflex trace events.jsonl --items          # 每件 id 与步数
 openflex trace events.jsonl --item 7         # 单件完整路径表
 openflex trace events.jsonl --paths          # 跨件路径分组 + 覆盖率
+openflex document model.ofm                 # 生成模型文档（对象/连接/触发器/脚本/校验，Markdown）
+openflex document model.ofm --format json -o doc.json   # 同一份内容的机器可读版本
 openflex check-scripts model.ofm             # 只编译所有脚本，不跑仿真（退出码 2 = 有编译错误）
 openflex eval model.ofm --expr "1 + 2 * 3"   # 不跑模型就试算表达式（=7）
 openflex eval model.ofm --expr "time * 2" --time 5   # `time` 可取任意时刻

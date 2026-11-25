@@ -308,6 +308,21 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Write a model document (structure, parameters, triggers, scripts).
+    ///
+    /// This is the "model documentation" deliverable: a human-readable record of
+    /// what the model contains, independent of any run.
+    Document {
+        /// Path to the model file.
+        #[arg(value_name = "MODEL")]
+        model: PathBuf,
+        /// Output format (markdown or json).
+        #[arg(long, value_enum, default_value_t = Format::Markdown)]
+        format: Format,
+        /// Write the document here instead of standard output.
+        #[arg(long, short = 'o', value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
     /// List or describe the supported object kinds.
     Objects {
         #[command(subcommand)]
@@ -1300,6 +1315,31 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
             template,
             force,
         } => create_model(&directory, &template, force, quiet),
+        Command::Document {
+            model: path,
+            format,
+            output,
+        } => {
+            // Deliberately lenient: the document reports the issues instead of
+            // refusing to describe a model that still needs work.
+            let model = load_model_lenient(&path)?;
+            let text = match format {
+                Format::Json => {
+                    let mut text = serde_json::to_string_pretty(&model_document_json(
+                        &model, &path,
+                    ))
+                    .map_err(|error| {
+                        Failure::runtime(anyhow!("could not render the document: {error}"))
+                    })?;
+                    text.push('\n');
+                    text
+                }
+                // Markdown is the document; table/csv would flatten the nesting
+                // that makes it readable, so they fall back to markdown.
+                _ => model_document_markdown(&model, &path),
+            };
+            emit(&text, output.as_deref(), quiet)
+        }
         Command::Objects { command } => match command {
             ObjectCommand::List => {
                 for kind in ObjectKind::all() {
@@ -1465,12 +1505,293 @@ fn run(command: Command, quiet: bool, progress: bool) -> Result<(), Failure> {
 }
 
 /// Read and validate a model, attaching the file path to every diagnostic.
+/// JSON form of the model document: the model plus the derived summaries the
+/// markdown uses, so scripts can read the same facts.
+fn model_document_json(model: &Model, path: &Path) -> serde_json::Value {
+    let objects: Vec<serde_json::Value> = model
+        .objects
+        .iter()
+        .enumerate()
+        .map(|(index, object)| {
+            serde_json::json!({
+                "index": index,
+                "name": object.name,
+                "kind": format!("{:?}", object.kind).to_lowercase(),
+                "pos": object.pos,
+                "z": object.z,
+                "params": object.params,
+            })
+        })
+        .collect();
+    let connections: Vec<serde_json::Value> = model
+        .connections
+        .iter()
+        .map(|connection| {
+            serde_json::json!({
+                "from": connection.from,
+                "to": connection.to,
+                "strategy": connection.strategy,
+            })
+        })
+        .collect();
+    let triggers: Vec<serde_json::Value> = model
+        .objects
+        .iter()
+        .filter_map(|object| {
+            let triggers = object.params.triggers();
+            let active: serde_json::Map<String, serde_json::Value> =
+                openflex_model::SimTrigger::ALL
+                    .iter()
+                    .filter_map(|trigger| {
+                        let actions = triggers.actions(*trigger);
+                        (!actions.is_empty())
+                            .then(|| (trigger.as_str().to_string(), serde_json::json!(actions)))
+                    })
+                    .collect();
+            (!active.is_empty())
+                .then(|| serde_json::json!({ "object": object.name, "triggers": active }))
+        })
+        .collect();
+    let issues = openflex_model::validate_collect(model);
+    serde_json::json!({
+        "path": path.display().to_string(),
+        "name": model.name,
+        "format": model.format,
+        "version": model.version,
+        "run": model.run,
+        "object_count": model.objects.len(),
+        "connection_count": model.connections.len(),
+        "objects": objects,
+        "connections": connections,
+        "triggers": triggers,
+        "user_commands": model.user_commands,
+        "user_events": model.user_events,
+        "tracked_variables": model.tracked_variables,
+        "task_sequences": model.task_sequences,
+        "global_variables": model.global_variables,
+        "global_tables": model.global_tables,
+        "performance_measures": model.performance_measures,
+        "validation": {
+            "ok": issues.is_empty(),
+            "issues": issues.iter().map(|issue| serde_json::json!({
+                "location": issue.location,
+                "message": issue.message,
+            })).collect::<Vec<_>>(),
+        },
+    })
+}
+
+/// Markdown model document: what the model is made of, independent of any run.
+fn model_document_markdown(model: &Model, path: &Path) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("# Model: {}\n\n", model.name));
+    out.push_str(&format!("- File: `{}`\n", path.display()));
+    out.push_str(&format!(
+        "- Format: `{}` v{}\n",
+        model.format, model.version
+    ));
+    out.push_str(&format!(
+        "- {} object(s), {} connection(s)\n",
+        model.objects.len(),
+        model.connections.len()
+    ));
+    out.push_str(&format!(
+        "- Run: stop_time **{}**, warmup **{}**, seed **{}**, replications **{}**\n\n",
+        model.run.stop_time, model.run.warmup, model.run.seed, model.run.replications
+    ));
+
+    out.push_str(
+        "## Objects\n\n| # | Name | Kind | Position | Parameters |\n|---|---|---|---|---|\n",
+    );
+    for (index, object) in model.objects.iter().enumerate() {
+        let mut value = serde_json::to_value(&object.params).unwrap_or_default();
+        strip_empty(&mut value);
+        let params = serde_json::to_string(&value).unwrap_or_default();
+        out.push_str(&format!(
+            "| {} | `{}` | {} | ({}, {}) | {} |\n",
+            index + 1,
+            object.name,
+            format!("{:?}", object.kind).to_lowercase(),
+            object.pos[0],
+            object.pos[1],
+            escape_table(&truncate(&params, 120))
+        ));
+    }
+    out.push('\n');
+
+    if !model.connections.is_empty() {
+        out.push_str("## Connections\n\n| From | To | Strategy |\n|---|---|---|\n");
+        for connection in &model.connections {
+            out.push_str(&format!(
+                "| `{}` | `{}` | {} |\n",
+                connection.from,
+                connection.to,
+                match &connection.strategy {
+                    Some(strategy) => serde_json::to_string(strategy).unwrap_or_default(),
+                    None => "default".to_string(),
+                }
+            ));
+        }
+        out.push('\n');
+    }
+
+    let mut trigger_rows: Vec<String> = Vec::new();
+    for object in &model.objects {
+        let triggers = object.params.triggers();
+        for trigger in openflex_model::SimTrigger::ALL.iter() {
+            let actions = triggers.actions(*trigger);
+            if actions.is_empty() {
+                continue;
+            }
+            let summary: Vec<String> = actions
+                .iter()
+                .map(|action| match action {
+                    openflex_model::Action::Script { source } => {
+                        format!("script `{}`", truncate(source.trim(), 40))
+                    }
+                    other => serde_json::to_string(other).unwrap_or_default(),
+                })
+                .collect();
+            trigger_rows.push(format!(
+                "| `{}` | `{}` | {} |",
+                object.name,
+                trigger.as_str(),
+                escape_table(&summary.join("; "))
+            ));
+        }
+    }
+    if !trigger_rows.is_empty() {
+        out.push_str("## Triggers\n\n| Object | Trigger | Actions |\n|---|---|---|\n");
+        for row in &trigger_rows {
+            out.push_str(row);
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+
+    let mut model_level: Vec<String> = Vec::new();
+    if !model.user_commands.is_empty() {
+        let names: Vec<String> = model
+            .user_commands
+            .iter()
+            .map(|command| format!("`{}`", command.name))
+            .collect();
+        model_level.push(format!("- User commands: {}", names.join(", ")));
+    }
+    if !model.user_events.is_empty() {
+        let names: Vec<String> = model
+            .user_events
+            .iter()
+            .map(|event| format!("`{}`@{}", event.name, event.time))
+            .collect();
+        model_level.push(format!("- User events: {}", names.join(", ")));
+    }
+    if !model.tracked_variables.is_empty() {
+        let names: Vec<String> = model
+            .tracked_variables
+            .iter()
+            .map(|variable| format!("`{}` = {}", variable.name, variable.expression))
+            .collect();
+        model_level.push(format!("- Tracked variables: {}", names.join(", ")));
+    }
+    if !model.task_sequences.is_empty() {
+        let names: Vec<String> = model
+            .task_sequences
+            .iter()
+            .map(|sequence| format!("`{}` ({} step(s))", sequence.name, sequence.steps.len()))
+            .collect();
+        model_level.push(format!("- Task sequences: {}", names.join(", ")));
+    }
+    if !model.global_variables.is_empty() {
+        model_level.push(format!(
+            "- Global variables: {}",
+            model.global_variables.len()
+        ));
+    }
+    if !model.global_tables.is_empty() {
+        model_level.push(format!("- Global tables: {}", model.global_tables.len()));
+    }
+    if !model.performance_measures.is_empty() {
+        model_level.push(format!(
+            "- Performance measures: {}",
+            model.performance_measures.len()
+        ));
+    }
+    if !model_level.is_empty() {
+        out.push_str("## Model-level\n\n");
+        for line in &model_level {
+            out.push_str(line);
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+
+    let issues = openflex_model::validate_collect(model);
+    if issues.is_empty() {
+        out.push_str("## Validation\n\nValid: no issues.\n");
+    } else {
+        out.push_str(&format!(
+            "## Validation\n\n**{} issue(s):**\n\n",
+            issues.len()
+        ));
+        for issue in &issues {
+            out.push_str(&format!("- `{}`: {}\n", issue.location, issue.message));
+        }
+    }
+    out
+}
+
+/// Drop nulls, empty arrays and empty objects so a parameter dump shows what the
+/// model actually sets instead of a wall of defaults.
+fn strip_empty(value: &mut serde_json::Value) {
+    if let serde_json::Value::Object(map) = value {
+        for entry in map.values_mut() {
+            strip_empty(entry);
+        }
+        map.retain(|_, entry| {
+            !(entry.is_null()
+                || entry.as_array().is_some_and(|array| array.is_empty())
+                || entry.as_object().is_some_and(|object| object.is_empty()))
+        });
+    } else if let serde_json::Value::Array(items) = value {
+        for item in items.iter_mut() {
+            strip_empty(item);
+        }
+    }
+}
+
+fn truncate(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(limit).collect();
+    format!("{kept}…")
+}
+
+fn escape_table(text: &str) -> String {
+    text.replace('|', "\\|").replace('\n', " ")
+}
+
 fn load_model(path: &Path) -> Result<Model, Failure> {
     let text = fs::read_to_string(path).map_err(|error| {
         Failure::runtime(anyhow!("could not read model {}: {error}", path.display()))
             .with_path(path)
     })?;
     Model::from_json(&text)
+        .map_err(|error| Failure::model(path, anyhow!("invalid model {}: {error}", path.display())))
+}
+
+/// Load a model **without** semantic validation, for `document`.
+///
+/// Documenting a model is most useful while it still has problems: the document
+/// shows the structure *and* the issues. Other commands reject invalid models
+/// because they would produce meaningless numbers.
+fn load_model_lenient(path: &Path) -> Result<Model, Failure> {
+    let text = fs::read_to_string(path).map_err(|error| {
+        Failure::runtime(anyhow!("could not read model {}: {error}", path.display()))
+            .with_path(path)
+    })?;
+    Model::parse_json(&text)
         .map_err(|error| Failure::model(path, anyhow!("invalid model {}: {error}", path.display())))
 }
 

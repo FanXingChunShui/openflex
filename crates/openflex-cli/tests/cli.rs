@@ -5417,6 +5417,73 @@ fn chart_without_measures_says_no_data() {
     assert!(stdout(&output).contains("(no data)"), "{}", stdout(&output));
 }
 
+/// `document` writes a model record: structure, triggers, and validation, with
+/// no run involved.
+#[test]
+fn document_describes_the_model_without_running_it() {
+    let dir = TempDir::new("document");
+    let model = dir.write(
+        "doc.ofm",
+        r#"{
+          "format": "openflex-model", "version": 1, "name": "doc-model",
+          "run": { "stop_time": 50.0, "warmup": 1.0, "seed": 3, "replications": 1 },
+          "user_commands": [ { "name": "ping", "body": "log(1);" } ],
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 5.0 },
+                "max_arrivals": 2, "first_arrival": 0.0,
+                "triggers": { "on_create": [ { "action": "script",
+                  "source": "log(\"made\");" } ] } } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [ { "from": "S", "to": "K" } ]
+        }"#,
+    );
+    let output = openflex(&["document", &path_str(&model)]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.contains("# Model: doc-model"), "{text}");
+    assert!(text.contains("| `S` | source |"), "object row: {text}");
+    assert!(
+        text.contains("| `S` | `K` | default |"),
+        "connection row: {text}"
+    );
+    assert!(
+        text.contains("| `S` | `on_create` |"),
+        "trigger row: {text}"
+    );
+    assert!(text.contains("User commands: `ping`"), "{text}");
+    assert!(text.contains("Valid: no issues"), "{text}");
+
+    let output = openflex(&["document", &path_str(&model), "--format", "json"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let doc = json(&stdout(&output));
+    assert_eq!(doc["object_count"].as_u64(), Some(2));
+    assert_eq!(doc["connection_count"].as_u64(), Some(1));
+    assert_eq!(doc["validation"]["ok"].as_bool(), Some(true));
+    assert_eq!(doc["objects"][0]["name"].as_str(), Some("S"));
+    assert_eq!(doc["triggers"][0]["object"].as_str(), Some("S"));
+
+    // An invalid model is documented, not rejected: the issues are part of it.
+    let broken = dir.write(
+        "broken.ofm",
+        r#"{
+          "format": "openflex-model", "version": 1, "name": "broken",
+          "run": { "stop_time": 10.0, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "S", "kind": "sink", "params": {} }
+          ],
+          "connections": []
+        }"#,
+    );
+    let output = openflex(&["document", &path_str(&broken)]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.contains("## Validation"), "{text}");
+    assert!(text.contains("issue(s)"), "issues are reported: {text}");
+}
+
 /// `run --logs` prints script log messages to stderr, so `--format json` on
 /// stdout stays parseable.
 #[test]
