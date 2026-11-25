@@ -2718,6 +2718,8 @@ struct Simulation<'m> {
     flow_item_hints: HashMap<usize, u64>,
     /// task-171: item served by each executer task, for transport_* events.
     transport_item_hints: HashMap<usize, u64>,
+    /// task-208: resolved absolute arrival schedules (inline or table-backed).
+    arrival_schedules: Vec<Option<openflex_model::ArrivalSchedule>>,
     /// task-184: motor -> controlled conveyors and reverse map.
     motor_conveyors: Vec<Vec<usize>>,
     conveyor_motors: Vec<Vec<usize>>,
@@ -2864,6 +2866,19 @@ impl<'m> Simulation<'m> {
             }
         }
 
+        let mut arrival_schedules = vec![None; model.objects.len()];
+        for (index, object) in model.objects.iter().enumerate() {
+            if let ObjectParams::Source(params) = &object.params {
+                if let Some(table) = params.arrival_schedule_from_table.as_deref() {
+                    let schedule = model.apply_table_reference(table).map_err(|error| {
+                        SimError::Config(format!("object '{}': {error}", object.name))
+                    })?;
+                    arrival_schedules[index] = Some(schedule);
+                } else if let Some(schedule) = params.arrival_schedule() {
+                    arrival_schedules[index] = Some(schedule.clone());
+                }
+            }
+        }
         let mut motor_conveyors = vec![Vec::new(); model.objects.len()];
         let mut conveyor_motors = vec![Vec::new(); model.objects.len()];
         for connection in &conns {
@@ -2961,6 +2976,7 @@ impl<'m> Simulation<'m> {
             traffic_waiters: vec![VecDeque::new(); traffic_controls.len()],
             traffic_occupancy: vec![0; traffic_controls.len()],
             traffic_controls,
+            arrival_schedules,
             motor_conveyors,
             conveyor_motors,
             failure_group_of,
@@ -3169,6 +3185,26 @@ fn operators_needed(params: &openflex_model::ProcessorParams, phase: OperatorPha
         (OperatorPhase::Process, false) => params.num_process_operators,
     };
     count.unwrap_or(1).max(1)
+}
+
+/// task-207: trapezoidal/triangular travel time with acceleration and
+/// deceleration. With `accel = None` this is exactly the old `distance / speed`.
+fn travel_time(distance: f64, speed: f64, accel: Option<f64>, decel: Option<f64>) -> f64 {
+    let distance = distance.max(0.0);
+    let speed = speed.max(EPS);
+    let Some(accel) = accel else {
+        return distance / speed;
+    };
+    let accel = accel.max(EPS);
+    let decel = decel.unwrap_or(accel).max(EPS);
+    let accel_distance = speed * speed / (2.0 * accel);
+    let decel_distance = speed * speed / (2.0 * decel);
+    if distance >= accel_distance + decel_distance {
+        speed / accel + speed / decel + (distance - accel_distance - decel_distance) / speed
+    } else {
+        let peak = (2.0 * distance * accel * decel / (accel + decel)).sqrt();
+        peak / accel + peak / decel
+    }
 }
 
 fn sample_distribution(rng: &mut ChaCha12Rng, distribution: &Distribution) -> f64 {
@@ -4434,7 +4470,7 @@ impl<'m> Simulation<'m> {
         index: usize,
         params: &openflex_model::SourceParams,
     ) -> Result<(), SimError> {
-        let Some(schedule) = params.arrival_schedule() else {
+        let Some(schedule) = self.arrival_schedules[index].clone() else {
             return Ok(());
         };
         let Some(row) = schedule.rows.get(self.objects[index].arrival_row) else {
@@ -4457,7 +4493,7 @@ impl<'m> Simulation<'m> {
         index: usize,
         params: &openflex_model::SourceParams,
     ) -> Result<(), SimError> {
-        let Some(schedule) = params.arrival_schedule() else {
+        let Some(schedule) = self.arrival_schedules[index].clone() else {
             return Ok(());
         };
         if schedule.rows.is_empty() {
@@ -4550,7 +4586,9 @@ impl<'m> Simulation<'m> {
             ArrivalStyle::InterArrivalTime => self.schedule_next_arrival(index),
             ArrivalStyle::ArrivalSchedule => {
                 if self.objects[index].arrival_row
-                    < params.arrival_schedule().map_or(0, |s| s.rows.len())
+                    < self.arrival_schedules[index]
+                        .as_ref()
+                        .map_or(0, |schedule| schedule.rows.len())
                 {
                     self.objects[index].arrival_row += 1;
                 }
@@ -5812,7 +5850,8 @@ impl<'m> Simulation<'m> {
         self.set_state(transporter, State::Busy);
         self.set_executor_activity(transporter, ExecutorActivity::TravelEmpty);
         let distance = self.transport_object_distance(transporter, transporter, index);
-        let travel = distance / self.transport_speed(transporter);
+        let (accel, decel) = self.transport_acceleration(transporter);
+        let travel = travel_time(distance, self.transport_speed(transporter), accel, decel);
         self.schedule(self.now + travel, EventKind::ItemPickup(transporter, index));
         Ok(())
     }
@@ -5859,7 +5898,8 @@ impl<'m> Simulation<'m> {
         }
         self.set_executor_activity(transporter, ExecutorActivity::TravelLoaded);
         let distance = self.transport_object_distance(transporter, queue, job.destination);
-        let travel = distance / self.transport_speed(transporter);
+        let (accel, decel) = self.transport_acceleration(transporter);
+        let travel = travel_time(distance, self.transport_speed(transporter), accel, decel);
         self.schedule(
             self.now + travel,
             EventKind::ItemDropoff(transporter, queue),
@@ -8908,7 +8948,7 @@ impl<'m> Simulation<'m> {
                 return Ok(());
             }
             let speed_scale = self.traffic_speed_factor(from, to).max(EPS);
-            let travel = self.transport_pickup_travel(transporter) / speed_scale;
+            let travel = self.transport_pickup_travel_scaled(transporter, speed_scale);
             self.schedule(
                 self.now + travel,
                 EventKind::TransportPickup(transporter, requester),
@@ -9095,13 +9135,26 @@ impl<'m> Simulation<'m> {
         }
     }
 
-    fn transport_pickup_travel(&self, transporter: usize) -> f64 {
-        let speed = self.transport_speed(transporter);
+    /// task-207: acceleration/deceleration of the executer kind.
+    fn transport_acceleration(&self, transporter: usize) -> (Option<f64>, Option<f64>) {
+        match &self.model.objects[transporter].params {
+            ObjectParams::Transporter(params)
+            | ObjectParams::Person(params)
+            | ObjectParams::Robot(params)
+            | ObjectParams::Crane(params)
+            | ObjectParams::AsrsVehicle(params) => (params.acceleration, params.deceleration),
+            ObjectParams::Agv(params) => (params.acceleration, params.deceleration),
+            ObjectParams::Elevator(params) => (params.acceleration, params.deceleration),
+            _ => (None, None),
+        }
+    }
+
+    fn transport_pickup_distance(&self, transporter: usize) -> f64 {
         let Some(home) = self.objects[transporter].home else {
             return 0.0;
         };
         if self.transport_is_elevator(transporter) {
-            (self.objects[transporter].z - self.objects[home].z).abs() / speed
+            (self.objects[transporter].z - self.objects[home].z).abs()
         } else if self.objects[transporter].kind == ObjectKind::Person
             && let Some(grid) = self.model.grid.as_ref()
             && let Some(distance) = grid_distance(
@@ -9110,12 +9163,36 @@ impl<'m> Simulation<'m> {
                 self.objects[home].position,
             )
         {
-            distance / speed
+            distance
         } else {
             distance(
                 self.objects[transporter].position,
                 self.objects[home].position,
-            ) / speed
+            )
+        }
+    }
+
+    fn transport_pickup_travel(&self, transporter: usize) -> f64 {
+        let (accel, decel) = self.transport_acceleration(transporter);
+        travel_time(
+            self.transport_pickup_distance(transporter),
+            self.transport_speed(transporter),
+            accel,
+            decel,
+        )
+    }
+
+    fn transport_pickup_travel_scaled(&self, transporter: usize, scale: f64) -> f64 {
+        let (accel, decel) = self.transport_acceleration(transporter);
+        if accel.is_some() {
+            travel_time(
+                self.transport_pickup_distance(transporter),
+                self.transport_speed(transporter) * scale,
+                accel,
+                decel,
+            )
+        } else {
+            self.transport_pickup_travel(transporter) / scale
         }
     }
 
@@ -9486,7 +9563,7 @@ impl<'m> Simulation<'m> {
         let speed_scale = self
             .traffic_speed_factor(from_position, to_position)
             .max(EPS);
-        let travel = self.transport_leg_travel(transporter, requester) / speed_scale;
+        let travel = self.transport_leg_travel_scaled(transporter, requester, speed_scale);
         self.schedule(
             self.now + travel,
             EventKind::TransportArrive(transporter, requester),
@@ -9810,12 +9887,11 @@ impl<'m> Simulation<'m> {
     }
 
     /// Travel time from the pickup point to the requester.
-    fn transport_leg_travel(&self, transporter: usize, requester: usize) -> f64 {
-        let speed = self.transport_speed(transporter);
+    fn transport_leg_distance(&self, transporter: usize, requester: usize) -> f64 {
         match self.objects[transporter].home {
-            Some(home) => self.transport_object_distance(transporter, home, requester) / speed,
+            Some(home) => self.transport_object_distance(transporter, home, requester),
             None if self.transport_is_elevator(transporter) => {
-                (self.objects[transporter].z - self.objects[requester].z).abs() / speed
+                (self.objects[transporter].z - self.objects[requester].z).abs()
             }
             None if self.objects[transporter].kind == ObjectKind::Person => self
                 .model
@@ -9828,21 +9904,40 @@ impl<'m> Simulation<'m> {
                         self.objects[requester].position,
                     )
                 })
-                .map_or_else(
-                    || {
-                        distance(
-                            self.objects[transporter].position,
-                            self.objects[requester].position,
-                        ) / speed
-                    },
-                    |grid_distance| grid_distance / speed,
-                ),
-            None => {
-                distance(
-                    self.objects[transporter].position,
-                    self.objects[requester].position,
-                ) / speed
-            }
+                .unwrap_or_else(|| {
+                    distance(
+                        self.objects[transporter].position,
+                        self.objects[requester].position,
+                    )
+                }),
+            None => distance(
+                self.objects[transporter].position,
+                self.objects[requester].position,
+            ),
+        }
+    }
+
+    fn transport_leg_travel(&self, transporter: usize, requester: usize) -> f64 {
+        let (accel, decel) = self.transport_acceleration(transporter);
+        travel_time(
+            self.transport_leg_distance(transporter, requester),
+            self.transport_speed(transporter),
+            accel,
+            decel,
+        )
+    }
+
+    fn transport_leg_travel_scaled(&self, transporter: usize, requester: usize, scale: f64) -> f64 {
+        let (accel, decel) = self.transport_acceleration(transporter);
+        if accel.is_some() {
+            travel_time(
+                self.transport_leg_distance(transporter, requester),
+                self.transport_speed(transporter) * scale,
+                accel,
+                decel,
+            )
+        } else {
+            self.transport_leg_travel(transporter, requester) / scale
         }
     }
 
@@ -9934,9 +10029,12 @@ impl<'m> Simulation<'m> {
         self.set_executor_activity(transporter, ExecutorActivity::TravelEmpty);
         self.traffic_release(transporter);
         let speed = self.transport_speed(transporter);
-        let mut home_travel = self.objects[transporter]
+        let (accel, decel) = self.transport_acceleration(transporter);
+        let home_distance = self.objects[transporter]
             .home
-            .map(|home| self.transport_object_distance(transporter, requester, home) / speed);
+            .map(|home| self.transport_object_distance(transporter, requester, home));
+        let mut home_travel =
+            home_distance.map(|distance| travel_time(distance, speed, accel, decel));
         if let Some(home) = self.objects[transporter].home {
             let from_position = self.objects[requester].position;
             let to_position = self.objects[home].position;
@@ -9951,7 +10049,15 @@ impl<'m> Simulation<'m> {
                 let speed_scale = self
                     .traffic_speed_factor(from_position, to_position)
                     .max(EPS);
-                home_travel = home_travel.map(|travel| travel / speed_scale);
+                home_travel = if let Some(distance) = home_distance {
+                    if accel.is_some() {
+                        Some(travel_time(distance, speed * speed_scale, accel, decel))
+                    } else {
+                        home_travel.map(|travel| travel / speed_scale)
+                    }
+                } else {
+                    home_travel.map(|travel| travel / speed_scale)
+                };
             }
             let distance = self.transport_object_distance(transporter, requester, home);
             if self.agv_mid_task_charge(transporter, requester, distance, 2)? {
@@ -10282,7 +10388,13 @@ impl<'m> Simulation<'m> {
                     }
                     let speed_scale = self.traffic_speed_factor(from, destination).max(EPS);
                     let speed = self.transport_speed(transporter).max(EPS) * speed_scale;
-                    let travel = route_distance(self.model, from, destination) / speed;
+                    let (accel, decel) = self.transport_acceleration(transporter);
+                    let travel = travel_time(
+                        route_distance(self.model, from, destination),
+                        speed,
+                        accel,
+                        decel,
+                    );
                     self.set_state(transporter, State::Busy);
                     self.set_executor_activity(
                         transporter,
@@ -10401,7 +10513,13 @@ impl<'m> Simulation<'m> {
             .is_some_and(|state| state.loaded);
         let speed_scale = self.traffic_speed_factor(from, destination).max(EPS);
         let speed = self.transport_speed(transporter).max(EPS) * speed_scale;
-        let travel = route_distance(self.model, from, destination) / speed;
+        let (accel, decel) = self.transport_acceleration(transporter);
+        let travel = travel_time(
+            route_distance(self.model, from, destination),
+            speed,
+            accel,
+            decel,
+        );
         self.set_state(transporter, State::Busy);
         self.set_executor_activity(
             transporter,
@@ -22715,6 +22833,126 @@ mod tests {
                 crate::sha256::hex(text.as_bytes()),
                 expected[index],
                 "operator baseline {index} changed"
+            );
+        }
+    }
+
+    /// task-207: equal acceleration/deceleration (symmetric trapezoid).
+    #[test]
+    fn travel_time_symmetric_trapezoid() {
+        let d: f64 = 100.0;
+        let v: f64 = 10.0;
+        let a: f64 = 2.0;
+        let expected = v / a + v / a + (d - v * v / a) / v;
+        assert!((travel_time(d, v, Some(a), None) - expected).abs() < 1e-9);
+    }
+
+    /// task-207: trapezoid formula, asymmetric deceleration.
+    #[test]
+    fn travel_time_trapezoid_formula() {
+        let d = 100.0;
+        let v: f64 = 10.0;
+        let a: f64 = 2.0;
+        let b: f64 = 4.0;
+        let expected = v / a + v / b + (d - v * v / (2.0 * a) - v * v / (2.0 * b)) / v;
+        assert!((travel_time(d, v, Some(a), Some(b)) - expected).abs() < 1e-9);
+    }
+
+    /// task-207: short distance is triangular and never reaches v.
+    #[test]
+    fn travel_time_triangle_formula() {
+        let d = 20.0;
+        let v: f64 = 10.0;
+        let a: f64 = 2.0;
+        let b: f64 = 4.0;
+        let peak = (2.0_f64 * d * a * b / (a + b)).sqrt();
+        let expected = peak / a + peak / b;
+        assert!(peak < v);
+        assert!((travel_time(d, v, Some(a), Some(b)) - expected).abs() < 1e-9);
+    }
+
+    /// task-207: at the exact trapezoid/triangle boundary both formulas agree.
+    #[test]
+    fn travel_time_boundary_matches() {
+        let v: f64 = 10.0;
+        let a: f64 = 2.0;
+        let b: f64 = 4.0;
+        let d = v * v / (2.0 * a) + v * v / (2.0 * b);
+        let trapezoid = v / a + v / b;
+        let peak = (2.0_f64 * d * a * b / (a + b)).sqrt();
+        let triangle = peak / a + peak / b;
+        assert!((travel_time(d, v, Some(a), Some(b)) - trapezoid).abs() < 1e-9);
+        assert!((triangle - trapezoid).abs() < 1e-9);
+        assert!(travel_time(d, v, Some(a), Some(b)) > d / v);
+    }
+
+    /// task-207: acceleration is actually applied to a use_transport leg.
+    #[test]
+    fn acceleration_slows_use_transport_leg() {
+        let mut model = queue_transport_model(true);
+        if let ObjectParams::Transporter(params) = &mut model.objects[4].params {
+            params.acceleration = Some(1.0);
+            params.deceleration = None;
+        }
+        let (_, trace) = crate::simulate_traced(
+            &model,
+            &SimConfig {
+                stop_time: 50.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect("run");
+        let dropoff = trace
+            .events
+            .iter()
+            .find(|event| event.event == "item_dropoff")
+            .map(|event| event.time)
+            .expect("dropoff");
+        // d=10, v=1, a=b=1: trapezoid = 1 + 1 + (10-1) = 11.
+        assert!((dropoff - 11.0).abs() < 1e-9, "dropoff at {dropoff}");
+    }
+
+    /// task-207: only positive acceleration/deceleration values are accepted.
+    #[test]
+    fn travel_acceleration_validation_rejects_non_positive() {
+        for field in ["acceleration", "deceleration"] {
+            let json = format!(
+                r#"{{
+                  "format": "openflex-model", "version": 1, "name": "bad-accel",
+                  "objects": [
+                    {{ "name": "S", "kind": "source", "params": {{}} }},
+                    {{ "name": "K", "kind": "sink", "params": {{}} }},
+                    {{ "name": "T", "kind": "transporter", "params": {{ "{field}": 0.0 }} }}
+                  ],
+                  "connections": [ {{ "from": "S", "to": "K" }} ]
+                }}"#
+            );
+            assert!(Model::from_json(&json).is_err(), "{field} must be rejected");
+        }
+    }
+
+    /// task-207: no-acceleration models keep bit-identical reports.
+    #[test]
+    fn travel_without_acceleration_keeps_the_reports() {
+        let models = [
+            max_tasks_model(0),
+            queue_transport_model(true),
+            repair_failure_model(Some("D")),
+        ];
+        let expected = [
+            "f1f03b20d4a8753ea997f6bee376fe98daa9871187d5e0faba25a35a91369aba",
+            "4d89c6ed5ed2068b2483306ca5709e61cb21751bd6bd868b4bb53ac5afadc42c",
+            "c254871338637263208312867862a78459ba6e4b4e42bbb2edeb42d5089b553b",
+        ];
+        for (index, model) in models.iter().enumerate() {
+            let report = crate::run_model(model).expect("report");
+            let text = serde_json::to_string(&report).expect("json");
+            assert_eq!(
+                crate::sha256::hex(text.as_bytes()),
+                expected[index],
+                "travel baseline {index} changed"
             );
         }
     }

@@ -538,6 +538,8 @@ fn definitions() -> Value {
         params_schema(json!({
             "capacity": { "type": "integer", "minimum": 1, "default": 1 },
             "speed": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
+            "acceleration": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+            "deceleration": { "type": ["number", "null"], "exclusiveMinimum": 0 },
             "load_time": { "$ref": "#/$defs/distribution" },
             "unload_time": { "$ref": "#/$defs/distribution" },
             "home": { "type": ["string", "null"] },
@@ -562,6 +564,8 @@ fn definitions() -> Value {
         params_schema(json!({
             "capacity": { "type": "integer", "minimum": 1, "default": 1 },
             "speed": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
+            "acceleration": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+            "deceleration": { "type": ["number", "null"], "exclusiveMinimum": 0 },
             "load_time": { "$ref": "#/$defs/distribution" },
             "unload_time": { "$ref": "#/$defs/distribution" },
             "home": { "type": ["string", "null"] },
@@ -590,6 +594,8 @@ fn definitions() -> Value {
         params_schema(json!({
             "capacity": { "type": "integer", "minimum": 1, "default": 1 },
             "speed": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
+            "acceleration": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+            "deceleration": { "type": ["number", "null"], "exclusiveMinimum": 0 },
             "stop_time": { "$ref": "#/$defs/distribution" },
             "home": { "type": ["string", "null"] }
         })),

@@ -1122,6 +1122,19 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
             if params.speed <= 0.0 {
                 issues.push(ValidationIssue::new(location("speed"), "must be positive"));
             }
+            for (field, value) in [
+                ("acceleration", params.acceleration),
+                ("deceleration", params.deceleration),
+            ] {
+                if let Some(value) = value
+                    && (!value.is_finite() || value <= 0.0)
+                {
+                    issues.push(ValidationIssue::new(
+                        location(field),
+                        "must be positive when present",
+                    ));
+                }
+            }
             distribution!("load_time", &params.load_time);
             distribution!("unload_time", &params.unload_time);
             for (i, edge) in params.network.iter().enumerate() {
@@ -1351,6 +1364,19 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
             }
             if params.speed <= 0.0 || !params.speed.is_finite() {
                 issues.push(ValidationIssue::new(location("speed"), "must be positive"));
+            }
+            for (field, value) in [
+                ("acceleration", params.acceleration),
+                ("deceleration", params.deceleration),
+            ] {
+                if let Some(value) = value
+                    && (!value.is_finite() || value <= 0.0)
+                {
+                    issues.push(ValidationIssue::new(
+                        location(field),
+                        "must be positive when present",
+                    ));
+                }
             }
             distribution!("stop_time", &params.stop_time);
         }

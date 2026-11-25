@@ -1306,6 +1306,8 @@ impl Default for TransporterParams {
         Self {
             capacity: 1,
             speed: 1.0,
+            acceleration: None,
+            deceleration: None,
             load_time: Distribution::default(),
             unload_time: Distribution::default(),
             home: None,
@@ -2036,6 +2038,12 @@ pub struct TransporterParams {
     pub capacity: u32,
     #[serde(default = "one_f64")]
     pub speed: f64,
+    /// Acceleration (distance/time²); `None` keeps constant-speed travel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceleration: Option<f64>,
+    /// Deceleration; `None` uses `acceleration`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deceleration: Option<f64>,
     #[serde(default)]
     pub load_time: Distribution,
     #[serde(default)]
@@ -2090,6 +2098,12 @@ pub struct AgvParams {
     pub capacity: u32,
     #[serde(default = "one_f64")]
     pub speed: f64,
+    /// Acceleration (distance/time²); `None` keeps constant-speed travel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceleration: Option<f64>,
+    /// Deceleration; `None` uses `acceleration`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deceleration: Option<f64>,
     #[serde(default)]
     pub load_time: Distribution,
     #[serde(default)]
@@ -2138,6 +2152,8 @@ impl Default for AgvParams {
         Self {
             capacity: 1,
             speed: 1.0,
+            acceleration: None,
+            deceleration: None,
             load_time: Distribution::default(),
             unload_time: Distribution::default(),
             home: None,
@@ -2167,6 +2183,12 @@ pub struct ElevatorParams {
     /// Vertical travel speed (height units per time unit).
     #[serde(default = "one_f64")]
     pub speed: f64,
+    /// Acceleration (height/time²); `None` keeps constant-speed travel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceleration: Option<f64>,
+    /// Deceleration; `None` uses `acceleration`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deceleration: Option<f64>,
     /// Dwell time at every stop (doors), default constant 0.
     #[serde(default)]
     pub stop_time: Distribution,
@@ -2229,6 +2251,8 @@ impl Default for ElevatorParams {
         Self {
             capacity: 1,
             speed: 1.0,
+            acceleration: None,
+            deceleration: None,
             stop_time: Distribution::default(),
             home: None,
             door_open_time: 0.0,
