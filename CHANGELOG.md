@@ -8,6 +8,16 @@
   也可删除。**未勾选 = 字段缺省**（继承对象级 setup/process），所以空列表与旧模型 JSON 逐字节一致。
   测试 `multiprocessor_steps_serialise_only_when_present`。GUI **151 项**。
 
+### 模型与引擎
+
+- **`OperatorRequest` 前置抽象（零行为变化）**：`Dispatcher`/`Resource` 的请求队列从 `VecDeque<usize>`
+  换成 `VecDeque<OperatorRequest { requester, id, phase }>`。`id`/`phase` 目前**只做簿记**，
+  授予逻辑仍按 `requester`，因此**没有任何可观察变化**。
+  验收方式就是这张卡的全部价值：**6 个基准模型（3 个 MP + 3 个 operator-heavy：`max_tasks`、resource 钩子、修理工）
+  的报告 SHA-256 与改动前常量完全一致**，且现有 operator/transport 测试**一条未改**全绿。
+  **checkpoint 兼容**处理得也干净：`ObjectRt.requests` 会被序列化，自定义 serde 让 `Serialize` **仍输出 `u64`**（与旧形状一致）、
+  `Deserialize` 同时接受旧整数与新结构，`id`/`phase` 不落盘——旧 checkpoint 可读、新 checkpoint 形状不变。
+  为后续两张卡铺路：MultiProcessor 按步操作员、Use Transport 的完整语义。
 
 
 ## v1.50.0 — 2026-11-25
@@ -30,17 +40,6 @@
 
 冒烟套件从 11 项扩到 **17 项**，现在覆盖 `use_transport` 与工序链。
 发布节奏保持**至少 3 小时一版**。
-
-### 模型与引擎
-
-- **`OperatorRequest` 前置抽象（零行为变化）**：`Dispatcher`/`Resource` 的请求队列从 `VecDeque<usize>`
-  换成 `VecDeque<OperatorRequest { requester, id, phase }>`。`id`/`phase` 目前**只做簿记**，
-  授予逻辑仍按 `requester`，因此**没有任何可观察变化**。
-  验收方式就是这张卡的全部价值：**6 个基准模型（3 个 MP + 3 个 operator-heavy：`max_tasks`、resource 钩子、修理工）
-  的报告 SHA-256 与改动前常量完全一致**，且现有 operator/transport 测试**一条未改**全绿。
-  **checkpoint 兼容**处理得也干净：`ObjectRt.requests` 会被序列化，自定义 serde 让 `Serialize` **仍输出 `u64`**（与旧形状一致）、
-  `Deserialize` 同时接受旧整数与新结构，`id`/`phase` 不落盘——旧 checkpoint 可读、新 checkpoint 形状不变。
-  为后续两张卡铺路：MultiProcessor 按步操作员、Use Transport 的完整语义。
 
 ### 模型与引擎
 
