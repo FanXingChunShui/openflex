@@ -34,6 +34,8 @@
 - **冒烟套件 17 → 19 项**：新增 `table driven arrivals`（全局表 1+2+1 行 → 恰好 4 件；**这条正是那个"标着 ✅ 却完全失效"的功能**，
   现在端到端盯住了）与 `transporter acceleration`（d=10/v=1：无加速度 `dropoff@10.0`，加速度 1 → `11.0`）。
 
+- **冒烟套件 19 → 20 项**：新增 `row number`（表驱动 `on_create` 依次得到 `row=0,1,1,2`；interarrival 得到 `row=-1`）。
+
 
 ### 桌面 GUI
 

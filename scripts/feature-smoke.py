@@ -399,6 +399,53 @@ def case_table_driven_arrivals():
     )
 
 
+def case_row_number():
+    """`on_create` sees the arrival-table row, and -1 when there is no row."""
+    table_model = write(
+        "rownum",
+        model(
+            [
+                {"name": "S", "kind": "source", "params": {
+                    "arrival_schedule_from_table": "Schedule",
+                    "triggers": {"on_create": [{"action": "script",
+                                                "source": 'log("row=" + rownumber);'}]}}},
+                {"name": "K", "kind": "sink", "params": {}},
+            ],
+            [{"from": "S", "to": "K"}],
+            run={"stop_time": 100.0, "seed": 1, "replications": 1},
+            global_tables={"Schedule": {
+                "columns": ["time", "quantity"],
+                "rows": [[10.0, 1.0], [20.0, 2.0], [30.0, 1.0]],
+            }},
+        ),
+    )
+    messages = [
+        event["message"]
+        for event in trace_of(table_model)
+        if event["event"] == "script_log"
+    ]
+    assert messages == ["row=0", "row=1", "row=1", "row=2"], messages
+
+    plain = write(
+        "rownum_plain",
+        model(
+            [
+                {"name": "S", "kind": "source", "params": {
+                    "interarrival": {"distribution": "constant", "value": 10.0},
+                    "max_arrivals": 2,
+                    "triggers": {"on_create": [{"action": "script",
+                                                "source": 'log("row=" + rownumber);'}]}}},
+                {"name": "K", "kind": "sink", "params": {}},
+            ],
+            [{"from": "S", "to": "K"}],
+        ),
+    )
+    messages = [
+        event["message"] for event in trace_of(plain) if event["event"] == "script_log"
+    ]
+    assert messages == ["row=-1", "row=-1"], messages
+
+
 def case_transporter_acceleration():
     """A motion profile slows travel down; without one it is distance/speed."""
     def build(acceleration):
@@ -650,6 +697,7 @@ CASES = [
     ("multiprocessor steps", case_multiprocessor_steps),
     ("table driven arrivals", case_table_driven_arrivals),
     ("transporter acceleration", case_transporter_acceleration),
+    ("row number", case_row_number),
     ("combiner pack", case_combiner_pack),
     ("timetable off shift", case_timetable_off_shift),
     ("checkpoint resume", case_checkpoint_matches_straight_run),
