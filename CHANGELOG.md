@@ -1,6 +1,27 @@
 # Changelog
 
-## Unreleased
+## v1.51.0 — 2026-11-25
+
+本轮的**主线是一次"先抽象、后加功能"的成功案例**，以及把"改了什么没改什么"变成可验证事实。
+
+**1. `OperatorRequest` 抽象（零行为变化）。** 请求队列从 `VecDeque<usize>` 换成带 `{requester, id, phase}` 的结构。
+验收标准就是它存在的理由：**6 个基准模型（3 MP + 3 operator-heavy）的报告 SHA-256 与改动前完全一致**，
+现有 operator/transport 测试**一条未改**全绿。checkpoint 也处理干净了：`Serialize` 仍输出 `u64`（旧形状），
+`Deserialize` 兼容旧整数与新结构——旧存档可读。
+
+**2. 按步操作员（上一版**故意删掉**的字段）现在真的接线了。** 该步开始前申请、本步结束即释放、多槽各自等待不串锁。
+上一版我们把 `ProcessStep.num_operators` 删掉了，因为引擎读不了它；抽象落地后才加回来。
+实测差别：同一模型只给某步加上 `num_operators: 1`，MP 的 busy 分布就从 0 变成 0.6——字段不再是装饰。
+
+**3. 两条新的回归网。**
+- `scripts/check-examples.sh`（已进 CI）：**66 个示例模型**逐个 validate + 同 seed 跑两次，报告必须逐字节相同。
+  示例是"能执行的文档"，引擎改动在那里出问题，单测未必覆盖得到。
+- 冒烟套件已在上一版扩到 17 项。
+
+**4. 把我自己犯过 4 次的错误做成机制。** CHANGELOG 条目总被插进**已发布**区块（还重复过标题），
+现在有 `scripts/changelog-add.py`：先定位 `## Unreleased`，只在区块内插入，找不到就报错。
+
+发布节奏保持**至少 3 小时一版**。
 
 ### 桌面 GUI
 
@@ -39,6 +60,15 @@
   两次报告必须**逐字节相同**。示例是"能执行的文档"，引擎改动在那里出问题，单测未必覆盖得到。
   当前结果：`all 66 example models validate, run, and are deterministic`。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**1038 passed / 0 failed**；clippy 0 警告、fmt 干净。
+- GUI **151 项**、`openflex-core --lib` **287 项**；`scripts/acceptance.sh` **all golden checks passed**；
+  smoke **17/17**；**`scripts/check-examples.sh` 66/66**（新）。
+- `check-dead-params.sh` 0 known；`check-doc-evidence.sh` 47 名可解析；`check-changelog.sh` 通过。
+- Windows 交叉编译 0 错误；fuzz 冒烟 PASS；1 万对象基准 run **0.24 s**、15.4 万事件/秒。
+- 独立实测：只给某步加 `num_operators: 1` → MP 的 busy 分布从 0 变 0.6；`num_operators: 0` 被 validate 拒绝。
 
 ## v1.50.0 — 2026-11-25
 
