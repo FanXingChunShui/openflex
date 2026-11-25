@@ -19,6 +19,10 @@
   `Deserialize` 同时接受旧整数与新结构，`id`/`phase` 不落盘——旧 checkpoint 可读、新 checkpoint 形状不变。
   为后续两张卡铺路：MultiProcessor 按步操作员、Use Transport 的完整语义。
 
+### 工具与 CI
+
+- **CHANGELOG 插入助手**：`scripts/changelog-add.py --section "模型与引擎"`。这四次同一个错误（条目落进**已发布**区块、还重复了标题）终于被"机制"解决——助手先定位 `## Unreleased` 区块，只在区块内插入，找不到区块就报错，绝不全局替换。
+
 
 ## v1.50.0 — 2026-11-25
 
