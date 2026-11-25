@@ -27,7 +27,7 @@ fn three_varieties_model_keeps_its_shape() {
             connection.from == "EntryBuffer"
                 && matches!(
                     &connection.strategy,
-                    Some(openflex_model::PortStrategy::ByItemType { .. })
+                    Some(openflex_model::PortStrategy::ByItemType)
                 )
         })
         .map(|connection| connection.to.as_str())
