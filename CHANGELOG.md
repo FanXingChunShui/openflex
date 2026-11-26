@@ -27,6 +27,13 @@
   未闭合引号、`; DROP TABLE`、NUL 字符、负 LIMIT…）走 `parse`/`check`/`execute` 三条路径都不得 panic——
   `query()` 是从模型表达式里调的，panic 会把整次跑挂掉，而不是报一条坏查询。
 
+- **皮带按 item type 的动态间距（`ConveyorParams.gap_by_type`）**：矩阵 🟡「Gapping」此前只有静态 `item_spacing`。
+  现在可按**前车的 `item_type`** 覆盖间距（`[{ item_type, gap }]`），未命中回落 `item_spacing`；空表 = 原路径
+  （**3 个 conveyor 基准 SHA 逐位不变**）。**slug 的交互写死**：slug 内部仍按 `slug_min_gap`，
+  slug **之间**的下一组首件按"前一组最后一件的类型"查本表。实现上给 `Belt` 增加了与 follower 对齐的 gaps，
+  `limit`/`compress`/time-to-next-event 全部按 follower gap，**没有改推进模型**（那是 slug/accumulating 共用的核心路径）。
+  独立实测：重复 `item_type` 与负 `gap` 分别报错并点名 `gap_by_type[1].item_type` / `gap_by_type[0].gap`。
+
 
 ### 工具与 CI
 

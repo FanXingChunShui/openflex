@@ -32,6 +32,11 @@ pub struct Belt {
     pub accumulating: bool,
     /// Item positions, front first.
     pub positions: Vec<f64>,
+    /// task-215: minimum gap behind each item (gap `i` is the gap to
+    /// `positions[i-1]`; index 0's value is unused). Empty/missing entries fall
+    /// back to `spacing`.
+    #[serde(default)]
+    gaps: Vec<f64>,
     /// Remaining station dwell time per item (front first, aligned with
     /// `positions`); `0` means the item is moving. B3 stations stop an item at
     /// a fixed position for a while without blocking the whole belt.
@@ -54,6 +59,7 @@ impl Belt {
             spacing: spacing.max(0.0),
             accumulating,
             positions: Vec::new(),
+            gaps: Vec::new(),
             holds: Vec::new(),
             segment_bounds: Vec::new(),
             segment_speeds: Vec::new(),
@@ -168,19 +174,31 @@ impl Belt {
     /// A new item fits on the belt surface. `max_content` is the hard limit;
     /// the spacing rule keeps the entry zone free.
     pub fn entry_free(&self, max_content: u32) -> bool {
+        self.entry_free_with_gap(max_content, self.spacing)
+    }
+
+    /// task-215: entry check using the gap required behind the current back
+    /// item (its type is the new item's leading item).
+    pub fn entry_free_with_gap(&self, max_content: u32, gap: f64) -> bool {
         if self.positions.len() >= max_content as usize {
             return false;
         }
         match self.positions.last() {
             None => true,
-            Some(&back) => back >= self.spacing - EPS,
+            Some(&back) => back >= gap.max(0.0) - EPS,
         }
     }
 
     /// Put a new item on the entry point.
     pub fn admit(&mut self) {
+        self.admit_with_gap(self.spacing);
+    }
+
+    /// task-215: admit a follower whose leading item requires `gap`.
+    pub fn admit_with_gap(&mut self, gap: f64) {
         self.positions.push(0.0);
         self.holds.push(0.0);
+        self.gaps.push(gap.max(0.0));
     }
 
     /// Remove the leading item (it left the belt).
@@ -190,6 +208,24 @@ impl Belt {
         }
         if !self.holds.is_empty() {
             self.holds.remove(0);
+        }
+        if !self.gaps.is_empty() {
+            self.gaps.remove(0);
+        }
+    }
+
+    /// task-215: gap required behind the item at `index`.
+    pub fn gap_for(&self, index: usize) -> f64 {
+        self.gaps.get(index).copied().unwrap_or(self.spacing)
+    }
+
+    /// task-215: set one follower's gap (used after restore/recompute).
+    pub fn set_gap(&mut self, index: usize, gap: f64) {
+        if self.gaps.len() <= index {
+            self.gaps.resize(index + 1, self.spacing);
+        }
+        if let Some(slot) = self.gaps.get_mut(index) {
+            *slot = gap.max(0.0);
         }
     }
 
@@ -222,7 +258,7 @@ impl Belt {
         if index == 0 {
             self.length
         } else {
-            (self.positions[index - 1] - self.spacing).max(self.positions[index])
+            (self.positions[index - 1] - self.gap_for(index)).max(self.positions[index])
         }
     }
 
@@ -232,7 +268,7 @@ impl Belt {
     /// overlapping.
     fn compress(&mut self) {
         for index in 1..self.positions.len() {
-            let limit = self.positions[index - 1] - self.spacing;
+            let limit = self.positions[index - 1] - self.gap_for(index);
             if self.positions[index] > limit {
                 self.positions[index] = limit.max(0.0);
             }

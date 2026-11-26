@@ -1869,6 +1869,16 @@ pub struct DecisionPoint {
     pub name: String,
 }
 
+/// task-215: one item-type → minimum-gap row for a conveyor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypeGap {
+    /// Type of the item in front; the gap applies to the follower behind it.
+    pub item_type: u32,
+    /// Minimum distance to that front item; must be non-negative.
+    pub gap: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConveyorParams {
@@ -1888,6 +1898,14 @@ pub struct ConveyorParams {
     /// task-176: maximum gap inside a slug; defaults to `item_spacing`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slug_min_gap: Option<f64>,
+    /// task-215: minimum gap by the **leading item's** `item_type`. The gap
+    /// required behind an item is looked up from the type of the item in front
+    /// of it; an unmatched type falls back to `item_spacing`. Empty keeps the
+    /// historical single `item_spacing`. With `slug`, `slug_min_gap` still
+    /// controls the gap *inside* a slug and this table controls the gap
+    /// *between* slugs (based on the last item of the preceding slug).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gap_by_type: Vec<TypeGap>,
     /// Photo eyes mounted on the belt (B3): when an item reaches `position` the
     /// conveyor runs its `on_photo_eye` trigger for that item.
     #[serde(default)]
@@ -1953,6 +1971,7 @@ impl Default for ConveyorParams {
             max_content: 1_000,
             slug: false,
             slug_min_gap: None,
+            gap_by_type: Vec::new(),
             photo_eyes: Vec::new(),
             stations: Vec::new(),
             join_inputs: None,

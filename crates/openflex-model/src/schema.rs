@@ -493,6 +493,18 @@ fn definitions() -> Value {
             "max_content": { "type": "integer", "minimum": 1, "default": 1000 },
             "slug": { "type": "boolean", "default": false },
             "slug_min_gap": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+            "gap_by_type": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "item_type": { "type": "integer", "minimum": 0 },
+                        "gap": { "type": "number", "minimum": 0 }
+                    },
+                    "required": ["item_type", "gap"],
+                    "additionalProperties": false
+                }
+            },
             "photo_eyes": {
                 "type": "array",
                 "items": {
@@ -1675,5 +1687,6 @@ mod tests {
         let conveyor = &schema["$defs"]["conveyor_params"]["properties"];
         assert_eq!(conveyor["slug"]["default"], false);
         assert!(conveyor.get("slug_min_gap").is_some());
+        assert!(conveyor.get("gap_by_type").is_some());
     }
 }

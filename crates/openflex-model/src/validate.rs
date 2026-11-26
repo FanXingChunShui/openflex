@@ -925,6 +925,21 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                     "must be positive",
                 ));
             }
+            let mut seen_types = std::collections::BTreeSet::new();
+            for (i, band) in params.gap_by_type.iter().enumerate() {
+                if !seen_types.insert(band.item_type) {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("gap_by_type[{i}].item_type")),
+                        "duplicate item_type; each type may appear once",
+                    ));
+                }
+                if !band.gap.is_finite() || band.gap < 0.0 {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("gap_by_type[{i}].gap")),
+                        "must be non-negative and finite",
+                    ));
+                }
+            }
             match params.merge_mode {
                 crate::model::MergeMode::RoundRobin | crate::model::MergeMode::ByItemType => {
                     if params.merge_weight.is_some() {

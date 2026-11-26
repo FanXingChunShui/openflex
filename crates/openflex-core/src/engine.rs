@@ -4951,10 +4951,18 @@ impl<'m> Simulation<'m> {
             ObjectParams::MultiProcessor(params) => {
                 (object.effective_content() as u32) < params.slots.max(1)
             }
-            ObjectParams::Conveyor(params) | ObjectParams::Escalator(params) => object
-                .belt
-                .as_ref()
-                .is_some_and(|belt| belt.entry_free(params.max_content)),
+            ObjectParams::Conveyor(params) | ObjectParams::Escalator(params) => {
+                let gap = match &self.model.objects[index].params {
+                    ObjectParams::Conveyor(conveyor) | ObjectParams::Escalator(conveyor) => {
+                        conveyor_gap_for_leader(conveyor, object.belt_items.last())
+                    }
+                    _ => params.item_spacing,
+                };
+                object
+                    .belt
+                    .as_ref()
+                    .is_some_and(|belt| belt.entry_free_with_gap(params.max_content, gap))
+            }
             ObjectParams::Combiner(params) => match object.combine_mode {
                 CombinerMode::Pack | CombinerMode::Batch => {
                     if port == 0 {
@@ -5116,7 +5124,32 @@ impl<'m> Simulation<'m> {
         Ok(true)
     }
 
+    /// task-215: bring type-gapped output belts to `now` before their entry
+    /// gap is read. Empty tables keep the historical lazy sync.
+    fn sync_dynamic_conveyor_outputs(&mut self, from: usize) {
+        let mut targets = Vec::new();
+        for &conn in &self.outputs[from] {
+            let target = self.conns[conn].to;
+            if targets.contains(&target) {
+                continue;
+            }
+            let dynamic = match &self.model.objects[target].params {
+                ObjectParams::Conveyor(params) | ObjectParams::Escalator(params) => {
+                    !params.gap_by_type.is_empty()
+                }
+                _ => false,
+            };
+            if dynamic {
+                targets.push(target);
+            }
+        }
+        for target in targets {
+            self.sync_belt(target);
+        }
+    }
+
     fn route(&mut self, from: usize, item: &FlowItem) -> Result<Option<usize>, SimError> {
+        self.sync_dynamic_conveyor_outputs(from);
         // A3: a downstream object that pulls its input is never pushed into,
         // otherwise the item would be delivered twice. S (resource) links are
         // additionally excluded defensively: they must never carry a flow item.
@@ -5259,6 +5292,7 @@ impl<'m> Simulation<'m> {
             let connection = &self.conns[conn];
             (connection.to, connection.to_port)
         };
+        self.sync_conveyor_entry(target);
         if !self.can_accept(target, to_port) {
             return Ok(false);
         }
@@ -5284,6 +5318,20 @@ impl<'m> Simulation<'m> {
         self.receive_item_from(target, to_port, item, Some(from))
     }
 
+    /// task-215: a type-gapped belt must be at the current instant before its
+    /// entry gap is consulted; empty tables keep the historical lazy sync.
+    fn sync_conveyor_entry(&mut self, index: usize) {
+        let dynamic = match &self.model.objects[index].params {
+            ObjectParams::Conveyor(params) | ObjectParams::Escalator(params) => {
+                !params.gap_by_type.is_empty()
+            }
+            _ => false,
+        };
+        if dynamic {
+            self.sync_belt(index);
+        }
+    }
+
     /// Receive an item at the target object: entry triggers, capacity already
     /// checked, content/out-pending bookkeeping and the follow-up flow event.
     /// Used by normal connections and by process-flow `transfer` blocks.
@@ -5303,6 +5351,7 @@ impl<'m> Simulation<'m> {
         mut item: FlowItem,
         from: Option<usize>,
     ) -> Result<bool, SimError> {
+        self.sync_conveyor_entry(target);
         if !self.can_accept(target, to_port) {
             return Ok(false);
         }
@@ -5404,8 +5453,14 @@ impl<'m> Simulation<'m> {
                 self.sync_belt(target);
                 self.process_belt_stops(target)?;
                 self.objects[target].note_content(now);
+                let gap = match &self.model.objects[target].params {
+                    ObjectParams::Conveyor(params) | ObjectParams::Escalator(params) => {
+                        conveyor_gap_for_leader(params, self.objects[target].belt_items.last())
+                    }
+                    _ => 1.0,
+                };
                 if let Some(belt) = self.objects[target].belt.as_mut() {
-                    belt.admit();
+                    belt.admit_with_gap(gap);
                 }
                 self.objects[target].belt_items.push(item);
                 let point_count = self.objects[target].decision_point_ranges.len();
@@ -11489,7 +11544,7 @@ impl<'m> Simulation<'m> {
         let separation = if start == 0 {
             0.0
         } else {
-            belt.spacing.max(0.0)
+            belt.gap_for(start).max(0.0)
         };
         let mut target = if start == 0 {
             belt.length
@@ -11933,7 +11988,7 @@ impl<'m> Simulation<'m> {
                 let limit = if item == 0 {
                     belt.length
                 } else {
-                    (belt.positions[item - 1] - belt.spacing).max(current)
+                    (belt.positions[item - 1] - belt.gap_for(item)).max(current)
                 };
                 let boundary = if current < lower - EPS {
                     lower
@@ -11989,7 +12044,7 @@ impl<'m> Simulation<'m> {
                 let limit = if item == 0 {
                     belt.length
                 } else {
-                    (belt.positions[item - 1] - belt.spacing).max(current)
+                    (belt.positions[item - 1] - belt.gap_for(item)).max(current)
                 };
                 let boundary = if current < lower - EPS {
                     lower
@@ -14420,6 +14475,27 @@ fn distribute_fluid(
 /// task-148: resolve the traffic-control areas once. A control's members are
 /// the `network_node` objects connected to it by A connections (direction is
 /// irrelevant, S links are resource plumbing and never members).
+/// task-215: gap required behind the item in front of a new follower. The
+/// table is keyed by the **leading** item's type; empty tables and unmatched
+/// types fall back to `item_spacing`.
+fn conveyor_gap_for_leader(
+    params: &openflex_model::ConveyorParams,
+    leader: Option<&FlowItem>,
+) -> f64 {
+    if params.gap_by_type.is_empty() {
+        return params.item_spacing;
+    }
+    let Some(leader) = leader else {
+        return params.item_spacing;
+    };
+    params
+        .gap_by_type
+        .iter()
+        .find(|band| band.item_type == leader.item_type)
+        .map(|band| band.gap.max(0.0))
+        .unwrap_or(params.item_spacing)
+}
+
 fn build_traffic_controls(model: &Model) -> Vec<TrafficControlRt> {
     let mut controls = Vec::new();
     for (index, object) in model.objects.iter().enumerate() {
@@ -24970,6 +25046,187 @@ mod tests {
                 crate::sha256::hex(text.as_bytes()),
                 expected[index],
                 "traffic baseline {index} changed"
+            );
+        }
+    }
+
+    fn gap_type_model_json(
+        sources: &[(f64, u32)],
+        gaps: &str,
+        slug: &str,
+        min_gap: &str,
+    ) -> String {
+        let mut objects: Vec<String> = Vec::new();
+        let mut connections: Vec<String> = Vec::new();
+        for (index, (time, item_type)) in sources.iter().enumerate() {
+            objects.push(format!(
+                r#"{{ "name": "S{index}", "kind": "source", "params": {{
+                    "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                    "max_arrivals": 1, "first_arrival": {time}, "item_type": {item_type} }} }}"#
+            ));
+            connections.push(format!(r#"{{ "from": "S{index}", "to": "C" }}"#));
+        }
+        objects.push(format!(
+            r#"{{ "name": "C", "kind": "conveyor", "params": {{
+                "speed": 1.0, "length": 10.0, "item_spacing": 1.0,
+                "accumulating": true, "max_content": 100,
+                "gap_by_type": [{gaps}]{slug}{min_gap} }} }}"#
+        ));
+        objects.push(r#"{ "name": "K", "kind": "sink", "params": {} }"#.into());
+        connections.push(r#"{ "from": "C", "to": "K" }"#.into());
+        format!(
+            r#"{{ "format": "openflex-model", "version": 1, "name": "gap-by-type",
+                "run": {{ "stop_time": 100.0, "seed": 1, "replications": 1 }},
+                "objects": [{}], "connections": [{}] }}"#,
+            objects.join(",\n            "),
+            connections.join(",\n            ")
+        )
+    }
+
+    fn gap_type_model(sources: &[(f64, u32)], gaps: &str, slug: &str, min_gap: &str) -> Model {
+        Model::from_json(&gap_type_model_json(sources, gaps, slug, min_gap))
+            .expect("gap-by-type model")
+    }
+
+    fn sink_enter_times(model: &Model) -> Vec<f64> {
+        let (_, trace) = crate::simulate_traced(
+            model,
+            &SimConfig {
+                stop_time: 100.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect("run");
+        trace
+            .events
+            .iter()
+            .filter(|event| event.event == "enter" && event.object == "K")
+            .map(|event| event.time)
+            .collect()
+    }
+
+    /// task-215: alternating types use the leading item's gap (1 and 3).
+    #[test]
+    fn conveyor_gap_by_type_uses_the_leading_type() {
+        let model = gap_type_model(
+            &[(0.0, 0), (1.0, 1), (4.0, 0)],
+            r#"{ "item_type": 0, "gap": 1.0 }, { "item_type": 1, "gap": 3.0 }"#,
+            "",
+            "",
+        );
+        let times = sink_enter_times(&model);
+        assert_eq!(times.len(), 3, "{times:?}");
+        assert!((times[0] - 10.0).abs() < 1e-9, "{times:?}");
+        assert!((times[1] - 11.0).abs() < 1e-9, "{times:?}");
+        assert!((times[2] - 14.0).abs() < 1e-9, "{times:?}");
+        assert!((times[1] - times[0] - 1.0).abs() < 1e-9);
+        assert!((times[2] - times[1] - 3.0).abs() < 1e-9);
+    }
+
+    /// task-215: an unmatched leading type falls back to `item_spacing`.
+    #[test]
+    fn conveyor_gap_by_type_falls_back_to_item_spacing() {
+        let model = gap_type_model(
+            &[(0.0, 2), (1.0, 0), (2.0, 2)],
+            r#"{ "item_type": 0, "gap": 1.0 }, { "item_type": 1, "gap": 3.0 }"#,
+            "",
+            "",
+        );
+        let times = sink_enter_times(&model);
+        assert_eq!(times.len(), 3, "{times:?}");
+        let diffs: Vec<f64> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        assert!(
+            diffs.iter().all(|diff| (*diff - 1.0).abs() < 1e-9),
+            "type 2 must fall back to item_spacing 1: {times:?}"
+        );
+    }
+
+    /// task-215: duplicate types are rejected at the field.
+    #[test]
+    fn conveyor_gap_by_type_rejects_duplicate_types() {
+        let duplicate = gap_type_model_json(
+            &[],
+            r#"{ "item_type": 0, "gap": 1.0 }, { "item_type": 0, "gap": 2.0 }"#,
+            "",
+            "",
+        );
+        let error = Model::from_json(&duplicate).expect_err("duplicate type");
+        assert!(
+            error.to_string().contains("gap_by_type[1].item_type"),
+            "{error}"
+        );
+    }
+
+    /// task-215: negative gaps are rejected at the field.
+    #[test]
+    fn conveyor_gap_by_type_rejects_negative_gaps() {
+        let negative = gap_type_model_json(&[], r#"{ "item_type": 0, "gap": -1.0 }"#, "", "");
+        let error = Model::from_json(&negative).expect_err("negative gap");
+        assert!(error.to_string().contains("gap_by_type[0].gap"), "{error}");
+    }
+
+    /// task-215: inside a slug `slug_min_gap` still groups items; between slugs
+    /// the next follower uses the table for the preceding slug's last type.
+    #[test]
+    fn conveyor_gap_by_type_with_slug_uses_both_rules() {
+        let model = gap_type_model(
+            &[(0.0, 1), (1.0, 0), (4.0, 0)],
+            r#"{ "item_type": 0, "gap": 3.0 }, { "item_type": 1, "gap": 1.0 }"#,
+            r#", "slug": true"#,
+            r#", "slug_min_gap": 2.0"#,
+        );
+        let times = sink_enter_times(&model);
+        assert_eq!(times.len(), 3, "{times:?}");
+        assert!(
+            (times[1] - times[0] - 1.0).abs() < 1e-9,
+            "inside slug {times:?}"
+        );
+        assert!(
+            (times[2] - times[1] - 3.0).abs() < 1e-9,
+            "between slugs {times:?}"
+        );
+    }
+
+    /// task-215: gap-by-type models are deterministic for one seed.
+    #[test]
+    fn conveyor_gap_by_type_is_deterministic() {
+        let model = gap_type_model(
+            &[(0.0, 0), (1.0, 1), (4.0, 0)],
+            r#"{ "item_type": 0, "gap": 1.0 }, { "item_type": 1, "gap": 3.0 }"#,
+            "",
+            "",
+        );
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
+    }
+
+    /// task-215: empty gap_by_type keeps the three conveyor baselines.
+    #[test]
+    fn conveyor_gap_by_type_empty_keeps_the_reports() {
+        let models = [
+            slug_belt_model("", ""),
+            slug_belt_model(r#", "accumulating": false"#, ""),
+            slug_belt_model(r#", "slug": true"#, r#", "slug_min_gap": 2.0"#),
+        ];
+        let expected = [
+            "1da813469e474b63db08f51e4db144f7c0f8c987b0c859d72ddc0ad00db07b83",
+            "1da813469e474b63db08f51e4db144f7c0f8c987b0c859d72ddc0ad00db07b83",
+            "1da813469e474b63db08f51e4db144f7c0f8c987b0c859d72ddc0ad00db07b83",
+        ];
+        for (index, json) in models.iter().enumerate() {
+            let model = Model::from_json(json).expect("model");
+            let report = crate::run_model(&model).expect("report");
+            let text = serde_json::to_string(&report).expect("json");
+            assert_eq!(
+                crate::sha256::hex(text.as_bytes()),
+                expected[index],
+                "conveyor baseline {index} changed"
             );
         }
     }
