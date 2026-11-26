@@ -830,6 +830,33 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                     ));
                 }
             }
+            for (index, failure) in params.extra_failures.iter().enumerate() {
+                let base = format!("extra_failures[{index}]");
+                distribution!(format!("{base}.mtbf").as_str(), &failure.mtbf);
+                distribution!(format!("{base}.mttr").as_str(), &failure.mttr);
+                if failure.group.is_some() {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("{base}.group")),
+                        "extra failure sources cannot use a group; multi-source group sharing is not implemented",
+                    ));
+                }
+                if let Some(first) = failure.first_failure_time
+                    && !first.is_finite()
+                {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("{base}.first_failure_time")),
+                        "must be a finite time (negative values mean ignore)",
+                    ));
+                }
+                for state in &failure.count_time_in_states {
+                    if !is_runtime_state(state) {
+                        issues.push(ValidationIssue::new(
+                            location(&format!("{base}.count_time_in_states")),
+                            format!("unknown runtime state '{state}'"),
+                        ));
+                    }
+                }
+            }
         }
         crate::model::ObjectParams::MultiProcessor(params) => {
             distribution!("setup_time", &params.setup_time);

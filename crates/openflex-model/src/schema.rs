@@ -404,6 +404,10 @@ fn definitions() -> Value {
             "operator_priority": { "type": "integer", "minimum": 0, "default": 0 },
             "operator_preempt": { "type": "boolean", "default": false },
             "failure": { "$ref": "#/$defs/failure" },
+            "extra_failures": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/failure" }
+            },
             "changeover_time": { "$ref": "#/$defs/distribution" }
         })),
     );

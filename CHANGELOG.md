@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### 模型与引擎
+
+### 模型与引擎
+
+- **多个独立故障源（`ProcessorParams.extra_failures`）**：矩阵 🟡「一个对象可属多个 MTBF/MTTR 组、多个停机请求可叠加」。
+  按既定路径**先做零行为重构**：`ObjectRt.failure: Option<FailureRt>` → `failures: Vec<FailureRt>`，
+  **4 个带故障的基准模型（plain / count_time_in_states / repair_operator / MTBF group）报告 SHA-256 逐位不变**，
+  既有 breakdown/repair 测试**一条未改**。然后加 `extra_failures: Vec<FailureParams>`：每源独立计时，
+  对象 down **当且仅当任一源未修复**，一源修完只清自己的停机请求，**重叠期间不重复计入 down**。
+  每源可有自己的 `first_failure_time`、`count_time_in_states`、`repair_operator`（不同 dispatcher 也行）。
+  **明确不做**：`extra_failures` 里的 `group` 被 validate 拒绝——"多源共享组"是另一个数量级的问题，错误信息会点名字段。
+  独立实测：单源 down 10.0s；加一个 mtbf 25 / mttr 3 的源后 down 16.0s。
+
+
 ## v1.54.0 — 2026-11-26
 
 这一版的主题是**取证**：把"这个 ✅ 到底靠什么撑起来"变成机器可查。

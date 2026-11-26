@@ -1273,6 +1273,7 @@ impl Default for ProcessorParams {
             operator_priority: 0,
             operator_preempt: false,
             failure: None,
+            extra_failures: Vec::new(),
             changeover_time: Distribution::default(),
             shifts: Vec::new(),
             process_flow: None,
@@ -1432,6 +1433,11 @@ pub struct ProcessorParams {
     pub operator_preempt: bool,
     #[serde(default)]
     pub failure: Option<FailureParams>,
+    /// task-209: independent extra failure sources. Each has its own
+    /// MTBF/MTTR/first-failure clock; the object is down while any is broken.
+    /// A `group` is rejected here (multi-source group sharing is out of scope).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_failures: Vec<FailureParams>,
     /// Time spent waiting before the processor can accept a new item (changeover).
     #[serde(default)]
     pub changeover_time: Distribution,

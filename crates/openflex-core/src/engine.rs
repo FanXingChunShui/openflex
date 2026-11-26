@@ -267,9 +267,10 @@ pub(crate) enum EventKind {
     SetupDone(usize, u64),
     ProcessDone(usize, u64),
     /// A failure clock reached its threshold; the generation guards against
-    /// events armed for a state the object already left (A8).
-    Breakdown(usize, u64),
-    RepairDone(usize),
+    /// events armed for a state the object already left (A8). The second index
+    /// selects the failure source.
+    Breakdown(usize, usize, u64),
+    RepairDone(usize, usize),
     /// A user message reaches an object.
     Message(usize),
     /// The next conveyor movement boundary is reached.
@@ -718,8 +719,8 @@ enum BlockReason {
 /// spec requires (`logic.md` §8.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum DowntimeSource {
-    /// A random failure (MTBF/MTTR).
-    Breakdown,
+    /// A random failure (MTBF/MTTR) from a specific failure source.
+    Breakdown(usize),
     /// Planned maintenance.
     ScheduledMaintenance,
     /// The shift plan put the object off shift while it was working.
@@ -736,6 +737,8 @@ pub enum DowntimeSource {
 /// 100 hours of *processing* keeps its clock paused while it waits for work.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FailureRt {
+    /// Which failure source this clock belongs to (0 = primary `failure`).
+    source: usize,
     /// State names that advance the clock; empty = wall clock.
     count_states: Vec<String>,
     /// Counted time accumulated since the last repair.
@@ -744,6 +747,15 @@ struct FailureRt {
     threshold: f64,
     /// Bumped on every state change; stale `Breakdown` events are ignored.
     generation: u64,
+    /// This source has failed and has not been repaired yet.
+    #[serde(default)]
+    failed: bool,
+    /// This source's repair waits for its operator to arrive.
+    #[serde(default)]
+    repair_waiting: bool,
+    /// Operator currently doing this source's repair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    repair_operator: Option<OperatorSource>,
 }
 
 /// A3: where a pulled item currently sits in the upstream object.
@@ -904,8 +916,8 @@ pub(crate) struct ObjectRt {
     /// Items promised to (or in transport towards) this object but not yet
     /// inside it. Counted against capacity by [`Simulation::can_accept`].
     in_transit: u32,
-    /// Failure clock (A8); `None` for objects without a `failure` parameter.
-    failure: Option<FailureRt>,
+    /// Failure clocks (A8/task-209); one per failure source.
+    failures: Vec<FailureRt>,
     /// A4: the object holds finished items until an explicit `release_item`.
     hold_release: bool,
     /// A4: the next delivery ignores the `hold` strategy (set by
@@ -991,12 +1003,6 @@ pub(crate) struct ObjectRt {
     /// task-196: coordinated task group this executer belongs to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     task_group: Option<u64>,
-    /// task-191: the breakdown waits for its repair operator to arrive.
-    #[serde(default)]
-    repair_waiting: bool,
-    /// task-191: operator currently doing the repair (released on recovery).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    repair_operator: Option<OperatorSource>,
     /// task-124: remaining cells of a step-by-step person move.
     #[serde(default)]
     person_path: VecDeque<[f64; 2]>,
@@ -1144,7 +1150,7 @@ impl ObjectRt {
             last_content_change: now,
             acc: Accum::default(),
             in_transit: 0,
-            failure: None,
+            failures: Vec::new(),
             hold_release: false,
             release_bypass: false,
             pull_cursor: 0,
@@ -1185,8 +1191,6 @@ impl ObjectRt {
             dispatcher_active: 0,
             last_item_type: None,
             task_group: None,
-            repair_waiting: false,
-            repair_operator: None,
             person_path: VecDeque::new(),
             person_target: None,
             pending_steps: Vec::new(),
@@ -1502,10 +1506,11 @@ impl ObjectRt {
     fn accrue_up_time(&mut self, now: f64) {
         let dt = (now - self.up_time_checkpoint).max(0.0);
         self.up_time_checkpoint = now;
-        let counted = self.failure.as_ref().is_some_and(|failure| {
-            Self::counts_up_time(failure, self.state, self.phase, self.block_reason)
-        });
-        if let Some(failure) = self.failure.as_mut() {
+        let state = self.state;
+        let phase = self.phase;
+        let block_reason = self.block_reason;
+        for failure in &mut self.failures {
+            let counted = Self::counts_up_time(failure, state, phase, block_reason);
             if counted {
                 failure.up_time += dt;
             }
@@ -3081,11 +3086,13 @@ impl<'m> Simulation<'m> {
                 ObjectParams::Source(params) => {
                     self.schedule_first_arrival(index, &params)?;
                 }
-                ObjectParams::Processor(params) => {
-                    if let Some(failure) = &params.failure {
-                        // A8: `first_failure_time` overrides the first MTBF
-                        // draw; negative values mean "ignore".
-                        self.schedule_next_failure(index, failure.first_failure_time);
+                ObjectParams::Processor(_) => {
+                    let count = self.failure_source_count(index);
+                    for source in 0..count {
+                        let first = self
+                            .failure_params(index, source)
+                            .and_then(|failure| failure.first_failure_time);
+                        self.schedule_next_failure(index, source, first);
                     }
                 }
                 _ => {}
@@ -3946,8 +3953,10 @@ impl<'m> Simulation<'m> {
             EventKind::Flow(index) => self.flow(index),
             EventKind::SetupDone(index, token) => self.handle_setup_done(index, token),
             EventKind::ProcessDone(index, token) => self.handle_process_done(index, token),
-            EventKind::Breakdown(index, generation) => self.handle_breakdown(index, generation),
-            EventKind::RepairDone(index) => self.handle_repair(index),
+            EventKind::Breakdown(index, source, generation) => {
+                self.handle_breakdown(index, source, generation)
+            }
+            EventKind::RepairDone(index, source) => self.handle_repair(index, source),
             EventKind::Message(index) => self.handle_message(index),
             EventKind::MpDone(index, lane, token) => self.handle_mp_done(index, lane, token),
             EventKind::BeltTick(index) => self.handle_belt_tick(index),
@@ -4317,20 +4326,39 @@ impl<'m> Simulation<'m> {
         Ok(())
     }
 
-    /// Sample the next failure and arm the failure clock (A8).
+    fn failure_params(&self, index: usize, source: usize) -> Option<openflex_model::FailureParams> {
+        let params = self.processor_params(index)?;
+        if source == 0 {
+            params.failure
+        } else {
+            params.extra_failures.get(source - 1).cloned()
+        }
+    }
+
+    fn failure_source_count(&self, index: usize) -> usize {
+        let Some(params) = self.processor_params(index) else {
+            return 0;
+        };
+        usize::from(params.failure.is_some()) + params.extra_failures.len()
+    }
+
+    /// Sample the next failure for one source and arm its clock (A8/task-209).
     ///
     /// `first_failure_time` replaces the first MTBF draw; a negative value is
     /// ignored, which is what FlexSim documents.
-    fn schedule_next_failure(&mut self, index: usize, first_failure_time: Option<f64>) {
-        let Some(failure) = self
-            .processor_params(index)
-            .and_then(|params| params.failure)
-        else {
+    fn schedule_next_failure(
+        &mut self,
+        index: usize,
+        source: usize,
+        first_failure_time: Option<f64>,
+    ) {
+        let Some(failure) = self.failure_params(index, source) else {
             return;
         };
         // task-201: a group has one shared clock on its model-order driver.
         // Non-driver members never arm their own Breakdown event.
-        if let Some(group) = self.failure_group_of.get(index).and_then(Option::as_ref)
+        if source == 0
+            && let Some(group) = self.failure_group_of.get(index).and_then(Option::as_ref)
             && self.failure_group_drivers.get(group) != Some(&index)
         {
             return;
@@ -4339,34 +4367,53 @@ impl<'m> Simulation<'m> {
             Some(time) if time >= 0.0 => time,
             _ => self.sample(&failure.mtbf).max(EPS),
         };
-        let generation = self.objects[index]
-            .failure
-            .as_ref()
-            .map(|clock| clock.generation)
-            .unwrap_or(0);
-        let count_states = failure.count_time_in_states.clone();
-        self.objects[index].failure = Some(FailureRt {
-            count_states: count_states.clone(),
+        let previous = self.objects[index]
+            .failures
+            .iter()
+            .find(|clock| clock.source == source)
+            .cloned();
+        let generation = previous.as_ref().map(|clock| clock.generation).unwrap_or(0);
+        let clock = FailureRt {
+            source,
+            count_states: failure.count_time_in_states.clone(),
             up_time: 0.0,
             threshold,
             generation,
-        });
-        if count_states.is_empty() {
-            self.schedule(
-                self.now + threshold.max(EPS),
-                EventKind::Breakdown(index, generation),
-            );
-            return;
+            failed: false,
+            repair_waiting: false,
+            // The repair operator is released just after the re-arm; carry it
+            // across the clock replacement so `release_repair_operator` finds it.
+            repair_operator: previous.and_then(|clock| clock.repair_operator),
+        };
+        if let Some(existing) = self.objects[index]
+            .failures
+            .iter_mut()
+            .find(|clock| clock.source == source)
+        {
+            *existing = clock;
+        } else {
+            self.objects[index].failures.push(clock);
         }
-        self.reschedule_failure(index);
+        self.objects[index]
+            .failures
+            .sort_by_key(|clock| clock.source);
+        self.arm_failure(index, source);
     }
 
-    /// Arm a failure event when the object currently accumulates up time (A8).
-    fn reschedule_failure(&mut self, index: usize) {
-        let Some(clock) = self.objects[index].failure.clone() else {
+    fn arm_failure(&mut self, index: usize, source: usize) {
+        let Some(clock) = self.objects[index]
+            .failures
+            .iter()
+            .find(|clock| clock.source == source)
+            .cloned()
+        else {
             return;
         };
         if clock.count_states.is_empty() {
+            self.schedule(
+                self.now + clock.threshold.max(EPS),
+                EventKind::Breakdown(index, source, clock.generation),
+            );
             return;
         }
         if !ObjectRt::counts_up_time(
@@ -4380,8 +4427,43 @@ impl<'m> Simulation<'m> {
         let remaining = (clock.threshold - clock.up_time).max(0.0);
         self.schedule(
             self.now + remaining,
-            EventKind::Breakdown(index, clock.generation),
+            EventKind::Breakdown(index, source, clock.generation),
         );
+    }
+
+    /// Arm every state-based failure event when the object accumulates up time.
+    fn reschedule_failure(&mut self, index: usize) {
+        let sources: Vec<usize> = self.objects[index]
+            .failures
+            .iter()
+            .map(|clock| clock.source)
+            .collect();
+        for source in sources {
+            let Some(clock) = self.objects[index]
+                .failures
+                .iter()
+                .find(|clock| clock.source == source)
+                .cloned()
+            else {
+                continue;
+            };
+            if clock.count_states.is_empty() {
+                continue;
+            }
+            if !ObjectRt::counts_up_time(
+                &clock,
+                self.objects[index].state,
+                self.objects[index].phase,
+                self.objects[index].block_reason,
+            ) {
+                continue;
+            }
+            let remaining = (clock.threshold - clock.up_time).max(0.0);
+            self.schedule(
+                self.now + remaining,
+                EventKind::Breakdown(index, source, clock.generation),
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -8091,14 +8173,25 @@ impl<'m> Simulation<'m> {
             self.objects[index].operator_preempted = false;
             let _ = self.resume_phase(index);
         }
-        // task-191: the repair operator just arrived, so the repair clock starts
-        // now. The operator is remembered and released when the repair ends.
-        if self.objects[index].repair_waiting {
-            self.objects[index].repair_waiting = false;
-            self.objects[index].repair_operator =
-                self.objects[index].operator_sources.last().copied();
-            let repair = self.repair_duration(index);
-            self.schedule(self.now + repair, EventKind::RepairDone(index));
+        // task-191/task-209: the repair operator just arrived, so that source's
+        // repair clock starts now. The operator is remembered per source.
+        let repair_source = self.objects[index]
+            .failures
+            .iter()
+            .find(|clock| clock.repair_waiting && clock.repair_operator.is_none())
+            .map(|clock| clock.source);
+        if let Some(source) = repair_source {
+            let operator = self.objects[index].operator_sources.last().copied();
+            if let Some(clock) = self.objects[index]
+                .failures
+                .iter_mut()
+                .find(|clock| clock.source == source)
+            {
+                clock.repair_waiting = false;
+                clock.repair_operator = operator;
+            }
+            let repair = self.repair_duration(index, source);
+            self.schedule(self.now + repair, EventKind::RepairDone(index, source));
         }
         self.schedule(self.now, EventKind::Flow(index));
     }
@@ -8151,19 +8244,25 @@ impl<'m> Simulation<'m> {
     }
 
     /// task-191: repair duration for a breakdown that waited for its operator.
-    fn repair_duration(&mut self, index: usize) -> f64 {
-        let Some(params) = self.processor_params(index) else {
-            return 0.0;
-        };
-        let Some(failure) = params.failure else {
+    fn repair_duration(&mut self, index: usize, source: usize) -> f64 {
+        let Some(failure) = self.failure_params(index, source) else {
             return 0.0;
         };
         self.sample(&failure.mttr).max(0.0)
     }
 
     /// task-191: release the operator that performed the repair.
-    fn release_repair_operator(&mut self, index: usize) -> Result<(), SimError> {
-        let Some(source) = self.objects[index].repair_operator.take() else {
+    fn release_repair_operator(
+        &mut self,
+        index: usize,
+        failure_source: usize,
+    ) -> Result<(), SimError> {
+        let Some(source) = self.objects[index]
+            .failures
+            .iter_mut()
+            .find(|clock| clock.source == failure_source)
+            .and_then(|clock| clock.repair_operator.take())
+        else {
             return Ok(());
         };
         if let Some(position) = self.objects[index]
@@ -12288,31 +12387,38 @@ impl<'m> Simulation<'m> {
     fn settle_failure_clock(&mut self, index: usize) {
         let state = self.objects[index].state;
         let phase = self.objects[index].phase;
+        let block_reason = self.objects[index].block_reason;
         let now = self.now;
         let checkpoint = self.objects[index].up_time_checkpoint;
-        let Some(clock) = self.objects[index].failure.as_ref() else {
-            return;
-        };
-        if clock.count_states.is_empty() {
+        if self.objects[index].failures.is_empty() {
             return;
         }
-        let block_reason = self.objects[index].block_reason;
-        let counted = ObjectRt::counts_up_time(clock, state, phase, block_reason);
-        if let Some(clock) = self.objects[index].failure.as_mut()
-            && counted
-        {
-            clock.up_time += (now - checkpoint).max(0.0);
+        let counted: Vec<bool> = self.objects[index]
+            .failures
+            .iter()
+            .map(|clock| ObjectRt::counts_up_time(clock, state, phase, block_reason))
+            .collect();
+        for (clock, counted) in self.objects[index].failures.iter_mut().zip(counted) {
+            if counted {
+                clock.up_time += (now - checkpoint).max(0.0);
+            }
         }
         self.objects[index].up_time_checkpoint = now;
     }
 
-    fn handle_breakdown(&mut self, index: usize, generation: u64) -> Result<(), SimError> {
+    fn handle_breakdown(
+        &mut self,
+        index: usize,
+        source: usize,
+        generation: u64,
+    ) -> Result<(), SimError> {
         self.settle_failure_clock(index);
-        if self
-            .failure_group_of
-            .get(index)
-            .and_then(Option::as_ref)
-            .is_some()
+        if source == 0
+            && self
+                .failure_group_of
+                .get(index)
+                .and_then(Option::as_ref)
+                .is_some()
             && self
                 .failure_group_of
                 .get(index)
@@ -12321,20 +12427,28 @@ impl<'m> Simulation<'m> {
         {
             return self.handle_group_breakdown(index, generation);
         }
-        let Some(params) = self.processor_params(index) else {
+        let Some(failure) = self.failure_params(index, source) else {
             return Ok(());
         };
-        let Some(failure) = params.failure.clone() else {
+        // Preserve the historical single-source guard: a source that fires while
+        // the object is already down does not start a second down period.
+        if self.objects[index].failures.len() <= 1 && self.objects[index].state == State::Down {
+            return Ok(());
+        }
+        let Some(clock) = self.objects[index]
+            .failures
+            .iter()
+            .find(|clock| clock.source == source)
+            .cloned()
+        else {
             return Ok(());
         };
-        if self.objects[index].state == State::Down {
+        if clock.failed {
             return Ok(());
         }
         // A8: with a state-based clock the event can be stale (the object left
         // the counted states) or early (it was paused in between).
-        if let Some(clock) = self.objects[index].failure.clone()
-            && !clock.count_states.is_empty()
-        {
+        if !clock.count_states.is_empty() {
             if clock.generation != generation {
                 return Ok(());
             }
@@ -12342,25 +12456,39 @@ impl<'m> Simulation<'m> {
                 let remaining = (clock.threshold - clock.up_time).max(EPS);
                 self.schedule(
                     self.now + remaining,
-                    EventKind::Breakdown(index, generation),
+                    EventKind::Breakdown(index, source, generation),
                 );
                 return Ok(());
             }
         }
         self.fire_trigger(index, SimTrigger::OnBreakdown)?;
-        self.pause_phase(index);
-        // A9: a breakdown is one downtime request among possibly several.
-        self.add_downtime(index, DowntimeSource::Breakdown);
-        // task-191: with `repair_operator` the repair clock only starts once the
-        // dispatcher delivered an operator; the object stays `down` meanwhile
-        // (the utilisation denominator is unchanged). The wait is event driven:
-        // the dispatcher request triggers `dispatch`, and `grant_operator`
-        // starts the clock when the operator arrives.
+        let was_down = self.objects[index].state == State::Down;
+        if !was_down {
+            self.pause_phase(index);
+        }
+        // A9: each source adds its own downtime request; the object stays down
+        // until the last source is repaired.
+        self.add_downtime(index, DowntimeSource::Breakdown(source));
+        if let Some(clock) = self.objects[index]
+            .failures
+            .iter_mut()
+            .find(|clock| clock.source == source)
+        {
+            clock.failed = true;
+        }
+        // task-191/task-209: with `repair_operator` the repair clock only starts
+        // once the dispatcher delivered the operator for this source.
         if let Some(name) = failure.repair_operator.as_ref()
             && let Some(dispatcher) = self.by_name.get(name).copied()
             && self.objects[dispatcher].kind == ObjectKind::Dispatcher
         {
-            self.objects[index].repair_waiting = true;
+            if let Some(clock) = self.objects[index]
+                .failures
+                .iter_mut()
+                .find(|clock| clock.source == source)
+            {
+                clock.repair_waiting = true;
+            }
             self.objects[index].operators_pending =
                 self.objects[index].operators_pending.saturating_add(1);
             self.objects[index].requesting_operator = true;
@@ -12371,7 +12499,7 @@ impl<'m> Simulation<'m> {
             return Ok(());
         }
         let repair = self.sample(&failure.mttr).max(0.0);
-        self.schedule(self.now + repair, EventKind::RepairDone(index));
+        self.schedule(self.now + repair, EventKind::RepairDone(index, source));
         Ok(())
     }
 
@@ -12385,10 +12513,7 @@ impl<'m> Simulation<'m> {
         if members.is_empty() {
             return Ok(());
         }
-        let Some(failure) = self
-            .processor_params(driver)
-            .and_then(|params| params.failure)
-        else {
+        let Some(failure) = self.failure_params(driver, 0) else {
             return Ok(());
         };
         // A stale event for a group that is already down must not fire the
@@ -12398,7 +12523,11 @@ impl<'m> Simulation<'m> {
         }
         // The shared clock is the driver's; stale or early events are retried
         // exactly like the single-object path.
-        if let Some(clock) = self.objects[driver].failure.clone()
+        if let Some(clock) = self.objects[driver]
+            .failures
+            .iter()
+            .find(|clock| clock.source == 0)
+            .cloned()
             && !clock.count_states.is_empty()
         {
             if clock.generation != generation {
@@ -12408,21 +12537,34 @@ impl<'m> Simulation<'m> {
                 let remaining = (clock.threshold - clock.up_time).max(EPS);
                 self.schedule(
                     self.now + remaining,
-                    EventKind::Breakdown(driver, generation),
+                    EventKind::Breakdown(driver, 0, generation),
                 );
                 return Ok(());
             }
         }
         for &member in &members {
             self.fire_trigger(member, SimTrigger::OnBreakdown)?;
-            self.add_downtime(member, DowntimeSource::Breakdown);
+            self.add_downtime(member, DowntimeSource::Breakdown(0));
+        }
+        if let Some(clock) = self.objects[driver]
+            .failures
+            .iter_mut()
+            .find(|clock| clock.source == 0)
+        {
+            clock.failed = true;
         }
         // The driver's repair operator/MTTR semantics decide the group repair.
         if let Some(name) = failure.repair_operator.as_ref()
             && let Some(dispatcher) = self.by_name.get(name).copied()
             && self.objects[dispatcher].kind == ObjectKind::Dispatcher
         {
-            self.objects[driver].repair_waiting = true;
+            if let Some(clock) = self.objects[driver]
+                .failures
+                .iter_mut()
+                .find(|clock| clock.source == 0)
+            {
+                clock.repair_waiting = true;
+            }
             self.objects[driver].operators_pending =
                 self.objects[driver].operators_pending.saturating_add(1);
             self.objects[driver].requesting_operator = true;
@@ -12431,43 +12573,59 @@ impl<'m> Simulation<'m> {
             return Ok(());
         }
         let repair = self.sample(&failure.mttr).max(0.0);
-        self.schedule(self.now + repair, EventKind::RepairDone(driver));
+        self.schedule(self.now + repair, EventKind::RepairDone(driver, 0));
         Ok(())
     }
 
-    fn handle_repair(&mut self, index: usize) -> Result<(), SimError> {
+    fn handle_repair(&mut self, index: usize, source: usize) -> Result<(), SimError> {
         if self.processor_params(index).is_none() {
             return Ok(());
         }
-        if let Some(group) = self.failure_group_of.get(index).and_then(Option::clone)
+        if source == 0
+            && let Some(group) = self.failure_group_of.get(index).and_then(Option::clone)
             && self.failure_group_drivers.get(&group) == Some(&index)
         {
             let members = self.failure_groups.get(&group).cloned().unwrap_or_default();
             for &member in &members {
                 self.fire_trigger(member, SimTrigger::OnRepair)?;
             }
-            // Re-arm the shared clock on the driver before the group recovers.
-            self.schedule_next_failure(index, None);
-            for &member in &members {
-                self.clear_downtime(member, DowntimeSource::Breakdown);
+            if let Some(clock) = self.objects[index]
+                .failures
+                .iter_mut()
+                .find(|clock| clock.source == 0)
+            {
+                clock.failed = false;
             }
-            self.release_repair_operator(index)?;
+            // Re-arm the shared clock on the driver before the group recovers.
+            self.schedule_next_failure(index, 0, None);
+            for &member in &members {
+                self.clear_downtime(member, DowntimeSource::Breakdown(0));
+            }
+            self.release_repair_operator(index, 0)?;
             for &member in &members {
                 self.settle_downtime(member)?;
             }
             return Ok(());
         }
         self.fire_trigger(index, SimTrigger::OnRepair)?;
-        // Re-arm the failure clock before the object recovers: the old clock is
-        // exhausted and must not fire again immediately.
-        self.schedule_next_failure(index, None);
-        // A9: only the breakdown request clears here; other sources (shift,
-        // maintenance, manual) keep the object down.
-        self.clear_downtime(index, DowntimeSource::Breakdown);
+        if let Some(clock) = self.objects[index]
+            .failures
+            .iter_mut()
+            .find(|clock| clock.source == source)
+        {
+            clock.failed = false;
+        }
+        // Re-arm this source's failure clock before the object recovers.
+        self.schedule_next_failure(index, source, None);
+        // A9: only this source's breakdown request clears here; other sources
+        // (and shift/maintenance/manual) keep the object down.
+        self.clear_downtime(index, DowntimeSource::Breakdown(source));
         // task-191: hand the repair operator back before the object resumes.
-        self.release_repair_operator(index)?;
+        self.release_repair_operator(index, source)?;
         self.settle_downtime(index)?;
-        self.flow(index)?;
+        if self.objects[index].state != State::Down {
+            self.flow(index)?;
+        }
         Ok(())
     }
 
@@ -12988,12 +13146,12 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
         EventKind::ProcessDone(index, token) => {
             (Some(*index), "process_done", Some(("token", *token as f64)))
         }
-        EventKind::Breakdown(index, generation) => (
+        EventKind::Breakdown(index, _source, generation) => (
             Some(*index),
             "breakdown",
             Some(("generation", *generation as f64)),
         ),
-        EventKind::RepairDone(index) => (Some(*index), "repair_done", None),
+        EventKind::RepairDone(index, _source) => (Some(*index), "repair_done", None),
         EventKind::Message(index) => (Some(*index), "message", None),
         EventKind::MpDone(index, lane, _) => {
             (Some(*index), "mp_done", Some(("lane", *lane as f64)))
@@ -23086,6 +23244,302 @@ mod tests {
                 crate::sha256::hex(text.as_bytes()),
                 expected[index],
                 "travel baseline {index} changed"
+            );
+        }
+    }
+
+    fn extra_failure_model(primary: &str, extras: &str) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "extra-failures",
+          "run": {{ "stop_time": 30.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "first_arrival": 1000.0 }} }},
+            {{ "name": "P", "kind": "processor", "pos": [0, 0], "params": {{
+                "process_time": {{ "distribution": "constant", "value": 100.0 }},
+                "failure": {primary},
+                "extra_failures": [{extras}]
+            }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [ {{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }} ]
+        }}"#
+        ))
+        .expect("extra failure model")
+    }
+
+    fn failure_times(model: &Model) -> (Vec<f64>, Vec<f64>) {
+        let (_, trace) = crate::simulate_traced(
+            model,
+            &SimConfig {
+                stop_time: 30.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect("trace");
+        let breakdowns = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "breakdown")
+            .map(|event| event.time)
+            .collect();
+        let repairs = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "repair_done")
+            .map(|event| event.time)
+            .collect();
+        (breakdowns, repairs)
+    }
+
+    /// task-209: each source can name its own repair operator; the object
+    /// remains down until the last repair is done.
+    #[test]
+    fn extra_failure_sources_use_independent_repair_operators() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "extra-repair-ops",
+          "run": { "stop_time": 30.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1000.0 },
+                "first_arrival": 1000.0 } },
+            { "name": "P", "kind": "processor", "params": {
+                "process_time": { "distribution": "constant", "value": 100.0 },
+                "failure": { "mtbf": { "distribution": "constant", "value": 1000.0 },
+                    "mttr": { "distribution": "constant", "value": 2.0 },
+                    "first_failure_time": 5.0, "repair_operator": "D1" },
+                "extra_failures": [
+                  { "mtbf": { "distribution": "constant", "value": 1000.0 },
+                    "mttr": { "distribution": "constant", "value": 4.0 },
+                    "first_failure_time": 6.0, "repair_operator": "D2" } ] } },
+            { "name": "K", "kind": "sink", "params": {} },
+            { "name": "D1", "kind": "dispatcher", "pos": [0, 0], "params": {} },
+            { "name": "D2", "kind": "dispatcher", "pos": [0, 0], "params": {} },
+            { "name": "T1", "kind": "transporter", "pos": [0, 0], "params": { "home": "D1" } },
+            { "name": "T2", "kind": "transporter", "pos": [0, 0], "params": { "home": "D2" } }
+          ],
+          "connections": [
+            { "from": "S", "to": "P" }, { "from": "P", "to": "K" },
+            { "from": "D1", "to": "T1" }, { "from": "D2", "to": "T2" }
+          ]
+        }"#,
+        )
+        .expect("model");
+        let report = crate::run_model(&model).expect("report");
+        let down = report.replications[0].objects["P"].state_times.down;
+        assert!((down - 5.0).abs() < 1e-9, "down must be [5,10], got {down}");
+        let mut sim = Simulation::new(
+            &model,
+            SimConfig {
+                stop_time: 30.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            false,
+        )
+        .expect("sim");
+        sim.start().expect("start");
+        let processor = sim.by_name["P"];
+        sim.pause_at = Some(8.0);
+        sim.run_events().expect("to 8");
+        assert_eq!(
+            sim.objects[processor].state,
+            State::Down,
+            "first repair is not enough"
+        );
+        sim.pause_at = Some(11.0);
+        sim.run_events().expect("to 11");
+        assert_ne!(
+            sim.objects[processor].state,
+            State::Down,
+            "last repair recovers"
+        );
+    }
+
+    /// task-209: each source counts only its own configured states.
+    #[test]
+    fn extra_failure_sources_count_their_own_states() {
+        let model = extra_failure_model(
+            r#"{ "mtbf": { "distribution": "constant", "value": 1000.0 },
+                 "mttr": { "distribution": "constant", "value": 1.0 },
+                 "first_failure_time": 5.0 }"#,
+            r#"{ "mtbf": { "distribution": "constant", "value": 5.0 },
+                 "mttr": { "distribution": "constant", "value": 1.0 },
+                 "count_time_in_states": ["processing"] }"#,
+        );
+        let (breakdowns, _) = failure_times(&model);
+        assert_eq!(
+            breakdowns,
+            vec![5.0],
+            "the extra source only counts processing, so it never fires while idle"
+        );
+    }
+
+    /// task-209: two independent sources have a union down interval, counted
+    /// once; repairing the first source keeps the object down until the second.
+    #[test]
+    fn extra_failure_sources_overlap_without_double_counting() {
+        let model = extra_failure_model(
+            r#"{ "mtbf": { "distribution": "constant", "value": 1000.0 },
+                 "mttr": { "distribution": "constant", "value": 10.0 },
+                 "first_failure_time": 5.0 }"#,
+            r#"{ "mtbf": { "distribution": "constant", "value": 1000.0 },
+                 "mttr": { "distribution": "constant", "value": 2.0 },
+                 "first_failure_time": 10.0 }"#,
+        );
+        let (breakdowns, repairs) = failure_times(&model);
+        assert_eq!(breakdowns, vec![5.0, 10.0], "{breakdowns:?}");
+        assert_eq!(repairs, vec![12.0, 15.0], "{repairs:?}");
+        let report = crate::run_model(&model).expect("report");
+        let down = report.replications[0].objects["P"].state_times.down;
+        assert!(
+            (down - 10.0).abs() < 1e-9,
+            "down must be [5,15], got {down}"
+        );
+
+        let mut sim = Simulation::new(
+            &model,
+            SimConfig {
+                stop_time: 30.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            false,
+        )
+        .expect("sim");
+        sim.start().expect("start");
+        let processor = sim.by_name["P"];
+        sim.pause_at = Some(13.0);
+        sim.run_events().expect("to 13");
+        assert_eq!(
+            sim.objects[processor].state,
+            State::Down,
+            "still down at 13"
+        );
+        sim.pause_at = Some(16.0);
+        sim.run_events().expect("to 16");
+        assert_ne!(
+            sim.objects[processor].state,
+            State::Down,
+            "recovered after 15"
+        );
+    }
+
+    /// task-209: two sources failing together produce one down interval.
+    #[test]
+    fn simultaneous_extra_failures_are_one_down_interval() {
+        let model = extra_failure_model(
+            r#"{ "mtbf": { "distribution": "constant", "value": 1000.0 },
+                 "mttr": { "distribution": "constant", "value": 2.0 },
+                 "first_failure_time": 5.0 }"#,
+            r#"{ "mtbf": { "distribution": "constant", "value": 1000.0 },
+                 "mttr": { "distribution": "constant", "value": 2.0 },
+                 "first_failure_time": 5.0 }"#,
+        );
+        let (breakdowns, repairs) = failure_times(&model);
+        assert_eq!(breakdowns, vec![5.0, 5.0], "{breakdowns:?}");
+        assert_eq!(repairs, vec![7.0, 7.0], "{repairs:?}");
+        let report = crate::run_model(&model).expect("report");
+        let down = report.replications[0].objects["P"].state_times.down;
+        assert!(
+            (down - 2.0).abs() < 1e-9,
+            "overlap must count once, got {down}"
+        );
+    }
+
+    /// task-209: each source has its own first_failure_time.
+    #[test]
+    fn extra_failure_sources_keep_independent_first_failure_times() {
+        let model = extra_failure_model(
+            r#"{ "mtbf": { "distribution": "constant", "value": 1000.0 },
+                 "mttr": { "distribution": "constant", "value": 1.0 },
+                 "first_failure_time": 7.0 }"#,
+            r#"{ "mtbf": { "distribution": "constant", "value": 1000.0 },
+                 "mttr": { "distribution": "constant", "value": 1.0 },
+                 "first_failure_time": 3.0 }"#,
+        );
+        let (breakdowns, _) = failure_times(&model);
+        assert_eq!(breakdowns, vec![3.0, 7.0], "{breakdowns:?}");
+    }
+
+    /// task-209: a group is rejected on an extra source with a field-named error.
+    #[test]
+    fn extra_failure_group_is_rejected() {
+        let json = r#"{
+          "format": "openflex-model", "version": 1, "name": "bad-extra-group",
+          "objects": [
+            { "name": "P", "kind": "processor", "params": {
+                "failure": { "mtbf": { "distribution": "constant", "value": 10.0 },
+                             "mttr": { "distribution": "constant", "value": 1.0 } },
+                "extra_failures": [
+                  { "mtbf": { "distribution": "constant", "value": 10.0 },
+                    "mttr": { "distribution": "constant", "value": 1.0 },
+                    "group": "G" } ] } }
+          ],
+          "connections": []
+        }"#;
+        let error = Model::from_json(json).expect_err("group must be rejected");
+        let text = error.to_string();
+        assert!(text.contains("extra_failures[0].group"), "{text}");
+    }
+
+    /// task-209: extra failure models are deterministic for one seed.
+    #[test]
+    fn extra_failures_are_deterministic() {
+        let model = extra_failure_model(
+            r#"{ "mtbf": { "distribution": "constant", "value": 1000.0 },
+                 "mttr": { "distribution": "constant", "value": 10.0 },
+                 "first_failure_time": 5.0 }"#,
+            r#"{ "mtbf": { "distribution": "constant", "value": 1000.0 },
+                 "mttr": { "distribution": "constant", "value": 2.0 },
+                 "first_failure_time": 10.0 }"#,
+        );
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
+    }
+
+    /// task-209: single-source failure models keep bit-identical reports.
+    #[test]
+    fn failure_reports_without_extra_sources_are_unchanged() {
+        let models = [
+            Model::from_json(&failure_model("", 10.0, Some(5))).expect("plain failure"),
+            Model::from_json(&failure_model(
+                r#", "count_time_in_states": ["processing"]"#,
+                10.0,
+                Some(5),
+            ))
+            .expect("count states"),
+            repair_failure_model(Some("D")),
+            mtbf_group_model(
+                &[
+                    ("P1".into(), Some("G".into()), 15.0, 15.0),
+                    ("P2".into(), Some("G".into()), 15.0, 15.0),
+                ],
+                true,
+            ),
+        ];
+        let expected = [
+            "fe2ea923038bf3e90d1435d2b855fb5f53c5680324fe5ddd3c77ddad09484215",
+            "1665f20badc20b14614be179d4bdd1756924d78b3102c857da7630a35a4e7b33",
+            "c254871338637263208312867862a78459ba6e4b4e42bbb2edeb42d5089b553b",
+            "df45f2ec5e3b0e26703067affbe4f688a7b4537d893cbdc448c02c28dccfd9ce",
+        ];
+        for (index, model) in models.iter().enumerate() {
+            let report = crate::run_model(model).expect("report");
+            let text = serde_json::to_string(&report).expect("json");
+            assert_eq!(
+                crate::sha256::hex(text.as_bytes()),
+                expected[index],
+                "failure baseline {index} changed"
             );
         }
     }
