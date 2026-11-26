@@ -1138,6 +1138,39 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                     "batch mode needs at least one component per batch",
                 ));
             }
+            if let Some(components) = &params.components {
+                if params.mode != CombinerMode::Pack {
+                    issues.push(ValidationIssue::new(
+                        location("components"),
+                        "the per-port components table is only valid in pack mode; join/batch use their own port semantics",
+                    ));
+                }
+                if components.is_empty() {
+                    issues.push(ValidationIssue::new(
+                        location("components"),
+                        "must not be empty when given",
+                    ));
+                }
+                for (index, &count) in components.iter().enumerate() {
+                    if count == 0 {
+                        issues.push(ValidationIssue::new(
+                            location(&format!("components[{index}]")),
+                            "must be at least 1",
+                        ));
+                    }
+                }
+                let component_ports = model.inputs(&object.name).len().saturating_sub(1);
+                if components.len() != component_ports {
+                    issues.push(ValidationIssue::new(
+                        location("components"),
+                        format!(
+                            "length {} does not match the {} component input port(s) (port 0 is the container)",
+                            components.len(),
+                            component_ports
+                        ),
+                    ));
+                }
+            }
         }
         crate::model::ObjectParams::Transporter(params) => {
             if params.capacity == 0 {

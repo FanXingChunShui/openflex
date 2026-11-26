@@ -1288,6 +1288,7 @@ impl Default for CombinerParams {
     fn default() -> Self {
         Self {
             components_per_container: 2,
+            components: None,
             mode: CombinerMode::Pack,
             setup_time: Distribution::default(),
             process_time: Distribution::default(),
@@ -1653,6 +1654,12 @@ pub enum CombinerMode {
 pub struct CombinerParams {
     #[serde(default = "two_u32")]
     pub components_per_container: u32,
+    /// task-210: per component-input-port quantities. `Some(list)` means port 1
+    /// needs `list[0]`, port 2 needs `list[1]`, etc. `None` keeps the historical
+    /// single `components_per_container` rule for all component ports. The table
+    /// is only valid in `pack` mode; `join`/`batch` reject it at validation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub components: Option<Vec<u32>>,
     #[serde(default)]
     pub mode: CombinerMode,
     /// Setup delay before the first component of a batch is consumed

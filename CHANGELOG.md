@@ -6,6 +6,10 @@
 
 - **文档：`split` 对象忽略连接策略**（实测在连接上写 `by_condition` 不生效，仍按自己的轮询/按类型分流）。已在 `COMPATIBILITY.md` 与矩阵 Send To Port 行列明，并给出"把路由点放在下游 processor/queue"的用法。这类"模型作者以为生效、实际不生效"的差异，比缺功能更容易坑人。
 
+### 模型与引擎
+
+- **Combiner 逐端口 components 表（`CombinerParams.components`）**：Pack 模式下每个组件端口可以要不同数量（2 个瓶子 + 1 个盖子），`None` 时沿用 `components_per_container`，**3 个 combiner 基准模型（pack/join/batch）报告 SHA-256 逐位不变**。实现上把 `ObjectRt.components` 从 `Vec<FlowItem>` 换成保留端口号的 `Vec<(u32, FlowItem)>`。**`join`/`batch` 模式下设 `components` 会被 validate 明确拒绝**（而不是静默忽略），错误信息说明"各自模式有独立端口语义"。实测：[2,1] 时 combiner 收 4 件、完成 1 个容器；缺省时只消费 1 个组件。
+
 
 ## v1.55.0 — 2026-11-26
 

@@ -444,6 +444,10 @@ fn definitions() -> Value {
         "combiner_params".into(),
         params_schema(json!({
             "components_per_container": { "type": "integer", "minimum": 1, "default": 2 },
+            "components": {
+                "type": ["array", "null"],
+                "items": { "type": "integer", "minimum": 1 }
+            },
             "mode": { "enum": ["pack", "join", "batch"] },
             "setup_time": { "$ref": "#/$defs/distribution" },
             "process_time": { "$ref": "#/$defs/distribution" },

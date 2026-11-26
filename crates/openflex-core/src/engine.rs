@@ -22,7 +22,7 @@
 //! | `processor` | setup + process, breakdown/repair with preemption, optional operator (dispatcher or resource pool) and `operator_preempt` task interruption (A10) |
 //! | `multiprocessor` | `slots` parallel setup/process pipelines in one object (B1); one operator crew of `slots` per busy period |
 //! | `conveyor` | item positions, accumulating or rigid transport, spacing and exit blocking; photo eyes fire `on_photo_eye`, stations dwell for their `process_time`, `join_inputs` merges upstream belts fairly (B3) |
-//! | `combiner` | port 1 container + `components_per_container` components; `pack` releases the container, `join` merges one item per port, `batch` runs setup/process and releases every item (A7) |
+//! | `combiner` | port 0 container + component ports; `pack` uses `components_per_container` or the per-port `components` table (pack only), `join` merges one item per port, `batch` runs setup/process and releases every item (A7) |
 //! | `separator` | `unpack` releases `split_count + 1` items, `split` copies the item `split_count` times (A6) |
 //! | `merge` | one item per input port, optional `wait_for_all` gating |
 //! | `split` | round-robin or by-item-type distribution over the output ports |
@@ -1064,7 +1064,7 @@ pub(crate) struct ObjectRt {
     /// Combiner runtime.
     combine_mode: CombinerMode,
     container: Option<FlowItem>,
-    components: Vec<FlowItem>,
+    components: Vec<(u32, FlowItem)>,
     join_slots: Vec<Option<FlowItem>>,
     /// MultiProcessor slots (B1); empty for every other kind.
     lanes: Vec<Lane>,
@@ -4904,6 +4904,16 @@ impl<'m> Simulation<'m> {
                 CombinerMode::Pack | CombinerMode::Batch => {
                     if port == 0 {
                         object.container.is_none() && object.components.is_empty()
+                    } else if let Some(required) = &params.components {
+                        object.container.is_some()
+                            && required.get(port as usize - 1).is_some_and(|&need| {
+                                (object
+                                    .components
+                                    .iter()
+                                    .filter(|(to_port, _)| *to_port == port)
+                                    .count() as u32)
+                                    < need
+                            })
                     } else {
                         object.container.is_some()
                             && (object.components.len() as u32) < params.components_per_container
@@ -5373,7 +5383,7 @@ impl<'m> Simulation<'m> {
                         if to_port == 0 {
                             self.objects[target].container = Some(item);
                         } else {
-                            self.objects[target].components.push(item);
+                            self.objects[target].components.push((to_port, item));
                         }
                     }
                     CombinerMode::Join => {
@@ -6463,7 +6473,11 @@ impl<'m> Simulation<'m> {
         if let Some(container) = self.objects[index].container.take() {
             items.push(container);
         }
-        items.extend(std::mem::take(&mut self.objects[index].components));
+        items.extend(
+            std::mem::take(&mut self.objects[index].components)
+                .into_iter()
+                .map(|(_, item)| item),
+        );
         let count = items.len();
         for mut item in items {
             item.labels.insert("batch".to_string(), count as f64);
@@ -11998,7 +12012,21 @@ impl<'m> Simulation<'m> {
             self.set_state(index, State::Idle);
             return Ok(());
         }
-        if (self.objects[index].components.len() as u32) < params.components_per_container {
+        let components_here = &self.objects[index].components;
+        let enough = match &params.components {
+            Some(required) => required.iter().enumerate().all(|(port_index, &need)| {
+                let port = port_index as u32 + 1;
+                components_here
+                    .iter()
+                    .filter(|(to_port, _)| *to_port == port)
+                    .count() as u32
+                    >= need
+            }),
+            None => {
+                (self.objects[index].components.len() as u32) >= params.components_per_container
+            }
+        };
+        if !enough {
             // Waiting for the remaining components.
             self.set_state(index, State::Blocked);
             return Ok(());
@@ -12008,7 +12036,10 @@ impl<'m> Simulation<'m> {
         let Some(mut container) = self.objects[index].container.take() else {
             return Ok(());
         };
-        let components = std::mem::take(&mut self.objects[index].components);
+        let components: Vec<FlowItem> = std::mem::take(&mut self.objects[index].components)
+            .into_iter()
+            .map(|(_, item)| item)
+            .collect();
         let count = components.len();
         for component in &components {
             for (label, value) in &component.labels {
@@ -12076,7 +12107,21 @@ impl<'m> Simulation<'m> {
             self.set_state(index, State::Idle);
             return Ok(());
         }
-        if (self.objects[index].components.len() as u32) < params.components_per_container {
+        let components_here = &self.objects[index].components;
+        let enough = match &params.components {
+            Some(required) => required.iter().enumerate().all(|(port_index, &need)| {
+                let port = port_index as u32 + 1;
+                components_here
+                    .iter()
+                    .filter(|(to_port, _)| *to_port == port)
+                    .count() as u32
+                    >= need
+            }),
+            None => {
+                (self.objects[index].components.len() as u32) >= params.components_per_container
+            }
+        };
+        if !enough {
             self.set_state(index, State::Blocked);
             return Ok(());
         }
@@ -23540,6 +23585,253 @@ mod tests {
                 crate::sha256::hex(text.as_bytes()),
                 expected[index],
                 "failure baseline {index} changed"
+            );
+        }
+    }
+
+    fn per_port_combiner_model(cap_first: f64, cycles: u32) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "components-table",
+          "run": {{ "stop_time": 50.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "Tray", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 5.0 }},
+                "first_arrival": 0.0, "max_arrivals": {cycles} }} }},
+            {{ "name": "Bottle", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 5.0 }},
+                "first_arrival": 1.0, "items_per_arrival": 2, "max_arrivals": {cycles} }} }},
+            {{ "name": "Cap", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 5.0 }},
+                "first_arrival": {cap_first}, "max_arrivals": {cycles} }} }},
+            {{ "name": "C", "kind": "combiner", "params": {{
+                "mode": "pack", "components": [2, 1],
+                "triggers": {{ "on_exit": [
+                    {{ "action": "script", "source": "log(\"pack\");" }} ] }} }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [
+            {{ "from": "Tray", "to": "C" }}, {{ "from": "Bottle", "to": "C" }},
+            {{ "from": "Cap", "to": "C" }}, {{ "from": "C", "to": "K" }}
+          ]
+        }}"#
+        ))
+        .expect("per-port combiner")
+    }
+
+    fn pack_times(model: &Model) -> Vec<f64> {
+        let (_, trace) = crate::simulate_traced(
+            model,
+            &SimConfig {
+                stop_time: 50.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect("trace");
+        trace
+            .events
+            .iter()
+            .filter(|event| event.event == "script_log")
+            .map(|event| event.time)
+            .collect()
+    }
+
+    /// task-210: ports 1 and 2 need 2 and 1 components respectively.
+    #[test]
+    fn per_port_components_wait_for_every_port() {
+        let model = per_port_combiner_model(3.0, 1);
+        let report = crate::run_model(&model).expect("report");
+        assert_eq!(report.replications[0].objects["Tray"].output_count, 1);
+        assert_eq!(report.replications[0].objects["Bottle"].output_count, 2);
+        assert_eq!(report.replications[0].objects["Cap"].output_count, 1);
+        assert_eq!(report.replications[0].objects["C"].input_count, 4);
+        assert_eq!(report.replications[0].objects["C"].output_count, 1);
+        assert_eq!(pack_times(&model), vec![3.0], "pack when the cap arrives");
+    }
+
+    /// task-210: a full port 1 alone does not release the container.
+    #[test]
+    fn per_port_components_keep_the_container_waiting() {
+        let model = per_port_combiner_model(10.0, 1);
+        let mut sim = Simulation::new(
+            &model,
+            SimConfig {
+                stop_time: 50.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            false,
+        )
+        .expect("sim");
+        sim.start().expect("start");
+        sim.pause_at = Some(5.0);
+        sim.run_events().expect("to 5");
+        let combiner = sim.by_name["C"];
+        assert!(
+            sim.objects[combiner].container.is_some(),
+            "container is held"
+        );
+        assert_eq!(sim.objects[combiner].components.len(), 2, "port 1 is full");
+        assert!(
+            sim.objects[combiner].out_pending.is_empty(),
+            "no release yet"
+        );
+        sim.pause_at = Some(11.0);
+        sim.run_events().expect("to 11");
+        assert!(
+            sim.objects[combiner].container.is_none(),
+            "cap completes the pack"
+        );
+    }
+
+    /// task-210: components is rejected outside pack mode.
+    #[test]
+    fn per_port_components_reject_join_and_batch_modes() {
+        for mode in ["join", "batch"] {
+            let json = format!(
+                r#"{{
+                  "format": "openflex-model", "version": 1, "name": "bad-mode",
+                  "objects": [
+                    {{ "name": "S", "kind": "source", "params": {{}} }},
+                    {{ "name": "C", "kind": "combiner", "params": {{
+                        "mode": "{mode}", "components": [1] }} }},
+                    {{ "name": "K", "kind": "sink", "params": {{}} }}
+                  ],
+                  "connections": [
+                    {{ "from": "S", "to": "C" }}, {{ "from": "C", "to": "K" }} ]
+                }}"#
+            );
+            let error = Model::from_json(&json).expect_err("mode must be rejected");
+            assert!(error.to_string().contains("components"), "{error}");
+        }
+    }
+
+    /// task-210: invalid component tables are rejected at the field name.
+    #[test]
+    fn per_port_components_validate_empty_length_and_zero() {
+        let cases = [
+            ("[]", 1, "components"),
+            ("[2, 1]", 1, "components"),
+            ("[1, 0]", 2, "components[1]"),
+        ];
+        for (table, ports, field) in cases {
+            let mut objects = String::from(r#"{ "name": "S", "kind": "source", "params": {} }"#);
+            let mut connections = String::from(r#"{ "from": "S", "to": "C" }"#);
+            objects.push_str(&format!(
+                r#", {{ "name": "C", "kind": "combiner", "params": {{ "components": {table} }} }}"#
+            ));
+            for port in 1..=ports {
+                objects.push_str(&format!(
+                    r#", {{ "name": "P{port}", "kind": "source", "params": {{}} }}"#
+                ));
+                connections.push_str(&format!(r#", {{ "from": "P{port}", "to": "C" }}"#));
+            }
+            objects.push_str(r#", { "name": "K", "kind": "sink", "params": {} }"#);
+            connections.push_str(r#", { "from": "C", "to": "K" }"#);
+            let json = format!(
+                r#"{{ "format": "openflex-model", "version": 1, "name": "bad-components",
+                     "objects": [{objects}], "connections": [{connections}] }}"#
+            );
+            let error = Model::from_json(&json).expect_err("components must be rejected");
+            assert!(error.to_string().contains(field), "{error}");
+        }
+    }
+
+    /// task-210: two consecutive packs keep their component groups separate.
+    #[test]
+    fn per_port_components_do_not_mix_cycles() {
+        let model = per_port_combiner_model(3.0, 2);
+        let report = crate::run_model(&model).expect("report");
+        assert_eq!(report.replications[0].objects["C"].input_count, 8);
+        assert_eq!(report.replications[0].objects["C"].output_count, 2);
+        assert_eq!(report.replications[0].objects["K"].input_count, 2);
+    }
+
+    /// task-210: per-port combiner models are deterministic for one seed.
+    #[test]
+    fn per_port_components_are_deterministic() {
+        let model = per_port_combiner_model(3.0, 2);
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
+    }
+
+    /// task-210: combiner models without the per-port table keep their reports.
+    #[test]
+    fn combiner_reports_without_the_per_port_table_are_unchanged() {
+        let pack = r#"{
+          "format": "openflex-model", "version": 1, "name": "combiner-pack",
+          "run": { "stop_time": 500.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "TraySource", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 50.0 }, "first_arrival": 0.0 } },
+            { "name": "BoxSource", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+            { "name": "Combiner1", "kind": "combiner", "params": {
+                "mode": "pack", "components_per_container": 4 } },
+            { "name": "Sink1", "kind": "sink", "params": {} }
+          ],
+          "connections": [
+            { "from": "TraySource", "to": "Combiner1" },
+            { "from": "BoxSource", "to": "Combiner1" },
+            { "from": "Combiner1", "to": "Sink1" }
+          ]
+        }"#;
+        let join = r#"{
+          "format": "openflex-model", "version": 1, "name": "combiner-join",
+          "run": { "stop_time": 500.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "A", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+            { "name": "B", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+            { "name": "Combiner1", "kind": "combiner", "params": { "mode": "join" } },
+            { "name": "Sink1", "kind": "sink", "params": {} }
+          ],
+          "connections": [
+            { "from": "A", "to": "Combiner1" },
+            { "from": "B", "to": "Combiner1" },
+            { "from": "Combiner1", "to": "Sink1" }
+          ]
+        }"#;
+        let batch = r#"{
+          "format": "openflex-model", "version": 1, "name": "combiner-batch",
+          "run": { "stop_time": 500.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "TraySource", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 50.0 }, "first_arrival": 0.0 } },
+            { "name": "BoxSource", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+            { "name": "Combiner1", "kind": "combiner", "params": {
+                "mode": "batch", "components_per_container": 4,
+                "setup_time": { "distribution": "constant", "value": 5.0 },
+                "process_time": { "distribution": "constant", "value": 6.0 } } },
+            { "name": "Sink1", "kind": "sink", "params": {} }
+          ],
+          "connections": [
+            { "from": "TraySource", "to": "Combiner1" },
+            { "from": "BoxSource", "to": "Combiner1" },
+            { "from": "Combiner1", "to": "Sink1" }
+          ]
+        }"#;
+        let expected = [
+            "d29a873fa33d075b9b18eca22487a93d672be36232bb1ba1f6395bb8d6d24e18",
+            "41fb6c327ed943264734462fa5228461f7138392333666dcf4bfc5ee21fcba7a",
+            "8bccbcbd59dcadab123e408aac6c3f5a049940449bbd4169ca43f17161e1679c",
+        ];
+        for (index, json) in [pack, join, batch].iter().enumerate() {
+            let model = Model::from_json(json).expect("combiner model");
+            let report = crate::run_model(&model).expect("report");
+            let text = serde_json::to_string(&report).expect("json");
+            assert_eq!(
+                crate::sha256::hex(text.as_bytes()),
+                expected[index],
+                "combiner baseline {index} changed"
             );
         }
     }
