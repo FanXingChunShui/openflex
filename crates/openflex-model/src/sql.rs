@@ -990,6 +990,58 @@ mod tests {
         Ctx(BTreeMap::from([("Shipments".to_string(), table())]))
     }
 
+    /// Malformed queries must come back as errors, never as panics.
+    ///
+    /// `query()` is called from model expressions, so a panic would take the
+    /// whole run down instead of reporting a bad query. The parser is hand
+    /// written, which makes this a cheap guard against index arithmetic and
+    /// slicing bugs.
+    #[test]
+    fn malformed_queries_never_panic() {
+        let cases = [
+            "",
+            " ",
+            "SELECT",
+            "SELECT *",
+            "SELECT * FROM",
+            "SELECT * FROM Missing",
+            "SELECT * FROM Shipments WHERE",
+            "SELECT * FROM Shipments WHERE 1 1",
+            "SELECT * FROM Shipments ORDER BY",
+            "SELECT * FROM Shipments ORDER BY missing",
+            "SELECT * FROM Shipments LIMIT",
+            "SELECT * FROM Shipments LIMIT -1",
+            "SELECT * FROM Shipments LIMIT abc",
+            "SELECT ( FROM Shipments",
+            "SELECT COUNT( FROM Shipments",
+            "SELECT COUNT(*) FROM",
+            "SELECT COUNT(*) FROM Shipments GROUP BY",
+            "SELECT COUNT(*), name FROM Shipments",
+            "SELECT SUM(name) FROM Shipments",
+            "SELECT MEDIAN(prio) FROM Shipments",
+            "SELECT * FROM Shipments GROUP BY name, name",
+            "SELECT * FROM Shipments; DROP TABLE Shipments",
+            "\u{0}",
+            "SELECT * FROM Shipments WHERE prio > 'unterminated",
+        ];
+        for case in cases {
+            // Neither path may panic; both must return *something*.
+            let _ = parse(case);
+            match check(&ctx(), case) {
+                Ok(()) => {}
+                Err(error) => {
+                    assert!(
+                        !error.to_string().trim().is_empty(),
+                        "an error must say something: {case:?}"
+                    );
+                }
+            }
+            if let Err(error) = execute(&ctx(), case) {
+                assert!(!error.to_string().trim().is_empty(), "{case:?}");
+            }
+        }
+    }
+
     #[test]
     fn parses_every_clause() {
         let query =

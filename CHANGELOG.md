@@ -23,6 +23,11 @@
   `ORDER BY` 用函数形式（`count(*)`）；`check()` 在 validate 阶段就能拒绝坏聚合。
   独立实测：`3|60|20|10|30`（count/sum/avg/min/max）、`A|2|40` 与 `B|1|20`（按 count 降序）、空 WHERE 得 `0`。
 
+- **SQL 解析器加健壮性测试 `malformed_queries_never_panic`**：24 条畸形/恶意语句（空串、`SELECT COUNT(`、
+  未闭合引号、`; DROP TABLE`、NUL 字符、负 LIMIT…）走 `parse`/`check`/`execute` 三条路径都不得 panic——
+  `query()` 是从模型表达式里调的，panic 会把整次跑挂掉，而不是报一条坏查询。
+
+
 ### 工具与 CI
 
 - **冒烟套件 24 → 25 项**：新增 `sql aggregates`（`3|60|20|10|30`、`A|2|40` / `B|1|20` 按 count 降序、空 WHERE 得 `0`）。
