@@ -758,6 +758,13 @@ struct FailureRt {
     repair_operator: Option<OperatorSource>,
 }
 
+/// task-211: one independent combiner staging slot.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct CombinerSlot {
+    container: Option<FlowItem>,
+    components: Vec<(u32, FlowItem)>,
+}
+
 /// A3: where a pulled item currently sits in the upstream object.
 #[derive(Debug, Clone, Copy)]
 enum UpstreamSlot {
@@ -1063,8 +1070,10 @@ pub(crate) struct ObjectRt {
     force_release: bool,
     /// Combiner runtime.
     combine_mode: CombinerMode,
-    container: Option<FlowItem>,
-    components: Vec<(u32, FlowItem)>,
+    /// task-211: independent combiner staging slots.
+    combiner_slots: Vec<CombinerSlot>,
+    /// task-211: slot currently in batch setup/process.
+    active_batch_slot: Option<usize>,
     join_slots: Vec<Option<FlowItem>>,
     /// MultiProcessor slots (B1); empty for every other kind.
     lanes: Vec<Lane>,
@@ -1214,8 +1223,8 @@ impl ObjectRt {
             batch_anchor: None,
             force_release: false,
             combine_mode: CombinerMode::Pack,
-            container: None,
-            components: Vec::new(),
+            combiner_slots: Vec::new(),
+            active_batch_slot: None,
             join_slots: Vec::new(),
             lanes: Vec::new(),
             slot_busy: 0.0,
@@ -1344,7 +1353,13 @@ impl ObjectRt {
                 runtime.battery = params.battery_capacity;
             }
             ObjectParams::Elevator(params) => runtime.capacity = params.capacity.max(1),
-            ObjectParams::Combiner(params) => runtime.combine_mode = params.mode,
+            ObjectParams::Combiner(params) => {
+                runtime.combine_mode = params.mode;
+                if matches!(params.mode, CombinerMode::Pack | CombinerMode::Batch) {
+                    runtime.combiner_slots =
+                        vec![CombinerSlot::default(); params.max_content.max(1) as usize];
+                }
+            }
             ObjectParams::MultiProcessor(params) => {
                 runtime.lanes = (0..params.slots.max(1)).map(|_| Lane::default()).collect();
             }
@@ -1369,10 +1384,16 @@ impl ObjectRt {
     fn held(&self) -> usize {
         match self.kind {
             ObjectKind::Combiner => match self.combine_mode {
-                CombinerMode::Pack => usize::from(self.container.is_some()),
-                CombinerMode::Batch => {
-                    usize::from(self.container.is_some()) + self.components.len()
-                }
+                CombinerMode::Pack => self
+                    .combiner_slots
+                    .iter()
+                    .filter(|slot| slot.container.is_some())
+                    .count(),
+                CombinerMode::Batch => self
+                    .combiner_slots
+                    .iter()
+                    .map(|slot| usize::from(slot.container.is_some()) + slot.components.len())
+                    .sum(),
                 CombinerMode::Join => self.join_slots.iter().flatten().count(),
             },
             ObjectKind::Separator => {
@@ -4903,20 +4924,27 @@ impl<'m> Simulation<'m> {
             ObjectParams::Combiner(params) => match object.combine_mode {
                 CombinerMode::Pack | CombinerMode::Batch => {
                     if port == 0 {
-                        object.container.is_none() && object.components.is_empty()
+                        object
+                            .combiner_slots
+                            .iter()
+                            .any(|slot| slot.container.is_none() && slot.components.is_empty())
                     } else if let Some(required) = &params.components {
-                        object.container.is_some()
-                            && required.get(port as usize - 1).is_some_and(|&need| {
-                                (object
-                                    .components
-                                    .iter()
-                                    .filter(|(to_port, _)| *to_port == port)
-                                    .count() as u32)
-                                    < need
-                            })
+                        object.combiner_slots.iter().any(|slot| {
+                            slot.container.is_some()
+                                && required.get(port as usize - 1).is_some_and(|&need| {
+                                    (slot
+                                        .components
+                                        .iter()
+                                        .filter(|(to_port, _)| *to_port == port)
+                                        .count() as u32)
+                                        < need
+                                })
+                        })
                     } else {
-                        object.container.is_some()
-                            && (object.components.len() as u32) < params.components_per_container
+                        object.combiner_slots.iter().any(|slot| {
+                            slot.container.is_some()
+                                && (slot.components.len() as u32) < params.components_per_container
+                        })
                     }
                 }
                 CombinerMode::Join => object
@@ -5381,9 +5409,44 @@ impl<'m> Simulation<'m> {
                 match self.objects[target].combine_mode {
                     CombinerMode::Pack | CombinerMode::Batch => {
                         if to_port == 0 {
-                            self.objects[target].container = Some(item);
+                            if let Some(slot) = self.objects[target]
+                                .combiner_slots
+                                .iter_mut()
+                                .find(|slot| slot.container.is_none() && slot.components.is_empty())
+                            {
+                                slot.container = Some(item);
+                            }
                         } else {
-                            self.objects[target].components.push((to_port, item));
+                            let params = match &self.model.objects[target].params {
+                                ObjectParams::Combiner(params) => params.clone(),
+                                _ => return Ok(false),
+                            };
+                            if let Some(slot) =
+                                self.objects[target].combiner_slots.iter_mut().find(|slot| {
+                                    if slot.container.is_none() {
+                                        return false;
+                                    }
+                                    match &params.components {
+                                        Some(required) => required
+                                            .get(to_port as usize - 1)
+                                            .is_some_and(|&need| {
+                                                (slot
+                                                    .components
+                                                    .iter()
+                                                    .filter(|(port, _)| *port == to_port)
+                                                    .count()
+                                                    as u32)
+                                                    < need
+                                            }),
+                                        None => {
+                                            (slot.components.len() as u32)
+                                                < params.components_per_container
+                                        }
+                                    }
+                                })
+                            {
+                                slot.components.push((to_port, item));
+                            }
                         }
                     }
                     CombinerMode::Join => {
@@ -6470,14 +6533,17 @@ impl<'m> Simulation<'m> {
         let now = self.now;
         self.objects[index].note_content(now);
         let mut items: Vec<FlowItem> = Vec::new();
-        if let Some(container) = self.objects[index].container.take() {
-            items.push(container);
+        let batch_slot = self.objects[index].active_batch_slot.take().unwrap_or(0);
+        if let Some(slot) = self.objects[index].combiner_slots.get_mut(batch_slot) {
+            if let Some(container) = slot.container.take() {
+                items.push(container);
+            }
+            items.extend(
+                std::mem::take(&mut slot.components)
+                    .into_iter()
+                    .map(|(_, item)| item),
+            );
         }
-        items.extend(
-            std::mem::take(&mut self.objects[index].components)
-                .into_iter()
-                .map(|(_, item)| item),
-        );
         let count = items.len();
         for mut item in items {
             item.labels.insert("batch".to_string(), count as f64);
@@ -6488,8 +6554,10 @@ impl<'m> Simulation<'m> {
         self.release_operator(index)?;
         self.flow(index)?;
         if self.objects[index].out_pending.is_empty()
-            && self.objects[index].container.is_none()
-            && self.objects[index].components.is_empty()
+            && self.objects[index]
+                .combiner_slots
+                .iter()
+                .all(|slot| slot.container.is_none() && slot.components.is_empty())
             && !matches!(self.objects[index].phase, Phase::Setup | Phase::Processing)
         {
             self.set_phase(index, Phase::Idle);
@@ -12002,56 +12070,75 @@ impl<'m> Simulation<'m> {
     }
 
     /// `pack`: wait for the container plus its components, then release the
-    /// container with the components inside.
+    /// container with the components inside. task-211: every staging slot is
+    /// independent, so one completed slot does not wait for another.
     fn flow_combiner_pack(
         &mut self,
         index: usize,
         params: &openflex_model::CombinerParams,
     ) -> Result<(), SimError> {
-        if self.objects[index].container.is_none() {
+        if self.objects[index]
+            .combiner_slots
+            .iter()
+            .all(|slot| slot.container.is_none())
+        {
             self.set_state(index, State::Idle);
             return Ok(());
         }
-        let components_here = &self.objects[index].components;
-        let enough = match &params.components {
-            Some(required) => required.iter().enumerate().all(|(port_index, &need)| {
-                let port = port_index as u32 + 1;
-                components_here
-                    .iter()
-                    .filter(|(to_port, _)| *to_port == port)
-                    .count() as u32
-                    >= need
-            }),
-            None => {
-                (self.objects[index].components.len() as u32) >= params.components_per_container
-            }
-        };
-        if !enough {
+        let completed: Vec<usize> = (0..self.objects[index].combiner_slots.len())
+            .filter(|&slot_index| {
+                let slot = &self.objects[index].combiner_slots[slot_index];
+                if slot.container.is_none() {
+                    return false;
+                }
+                match &params.components {
+                    Some(required) => required.iter().enumerate().all(|(port_index, &need)| {
+                        let port = port_index as u32 + 1;
+                        slot.components
+                            .iter()
+                            .filter(|(to_port, _)| *to_port == port)
+                            .count() as u32
+                            >= need
+                    }),
+                    None => (slot.components.len() as u32) >= params.components_per_container,
+                }
+            })
+            .collect();
+        if completed.is_empty() {
             // Waiting for the remaining components.
             self.set_state(index, State::Blocked);
             return Ok(());
         }
         let now = self.now;
         self.objects[index].note_content(now);
-        let Some(mut container) = self.objects[index].container.take() else {
-            return Ok(());
-        };
-        let components: Vec<FlowItem> = std::mem::take(&mut self.objects[index].components)
-            .into_iter()
-            .map(|(_, item)| item)
-            .collect();
-        let count = components.len();
-        for component in &components {
-            for (label, value) in &component.labels {
-                *container.labels.entry(label.clone()).or_insert(0.0) += *value;
+        for slot_index in completed {
+            let slot = std::mem::take(&mut self.objects[index].combiner_slots[slot_index]);
+            let Some(mut container) = slot.container else {
+                continue;
+            };
+            let components: Vec<FlowItem> =
+                slot.components.into_iter().map(|(_, item)| item).collect();
+            let count = components.len();
+            for component in &components {
+                for (label, value) in &component.labels {
+                    *container.labels.entry(label.clone()).or_insert(0.0) += *value;
+                }
             }
+            container
+                .labels
+                .insert(COMPONENTS_LABEL.to_string(), count as f64);
+            self.objects[index].out_pending.push(container);
         }
-        container
-            .labels
-            .insert(COMPONENTS_LABEL.to_string(), count as f64);
-        self.objects[index].out_pending.push(container);
         self.objects[index].touch();
-        self.set_state(index, State::Idle);
+        if self.objects[index]
+            .combiner_slots
+            .iter()
+            .any(|slot| slot.container.is_some())
+        {
+            self.set_state(index, State::Blocked);
+        } else {
+            self.set_state(index, State::Idle);
+        }
         Ok(())
     }
 
@@ -12094,7 +12181,8 @@ impl<'m> Simulation<'m> {
 
     /// `batch` (A7): collect the container plus its components, run the
     /// inherited setup/process cycle (including operators), then release every
-    /// item of the batch together.
+    /// item of the batch together. task-211: one active batch at a time; other
+    /// slots stage independently.
     fn flow_combiner_batch(
         &mut self,
         index: usize,
@@ -12103,28 +12191,37 @@ impl<'m> Simulation<'m> {
         if !self.objects[index].on_shift || self.objects[index].state == State::Down {
             return Ok(());
         }
-        if self.objects[index].container.is_none() {
-            self.set_state(index, State::Idle);
+        if matches!(self.objects[index].phase, Phase::Setup | Phase::Processing) {
             return Ok(());
         }
-        let components_here = &self.objects[index].components;
-        let enough = match &params.components {
-            Some(required) => required.iter().enumerate().all(|(port_index, &need)| {
-                let port = port_index as u32 + 1;
-                components_here
-                    .iter()
-                    .filter(|(to_port, _)| *to_port == port)
-                    .count() as u32
-                    >= need
-            }),
-            None => {
-                (self.objects[index].components.len() as u32) >= params.components_per_container
+        let mut waiting = false;
+        let mut candidate = None;
+        for (slot_index, slot) in self.objects[index].combiner_slots.iter().enumerate() {
+            if slot.container.is_none() {
+                continue;
             }
-        };
-        if !enough {
-            self.set_state(index, State::Blocked);
-            return Ok(());
+            waiting = true;
+            let enough = match &params.components {
+                Some(required) => required.iter().enumerate().all(|(port_index, &need)| {
+                    let port = port_index as u32 + 1;
+                    slot.components
+                        .iter()
+                        .filter(|(to_port, _)| *to_port == port)
+                        .count() as u32
+                        >= need
+                }),
+                None => (slot.components.len() as u32) >= params.components_per_container,
+            };
+            if enough {
+                candidate = Some(slot_index);
+                break;
+            }
         }
+        let Some(slot_index) = candidate else {
+            self.set_state(index, if waiting { State::Blocked } else { State::Idle });
+            return Ok(());
+        };
+        self.objects[index].active_batch_slot = Some(slot_index);
         let operator_params = combiner_operator_params(params);
         // Continue after a setup whose process operator was not available yet.
         if self.objects[index].ready_for_process {
@@ -12139,9 +12236,6 @@ impl<'m> Simulation<'m> {
             self.objects[index].phase_end = self.now + process;
             self.set_state(index, State::Busy);
             self.schedule(self.now + process, EventKind::ProcessDone(index, token));
-            return Ok(());
-        }
-        if matches!(self.objects[index].phase, Phase::Setup | Phase::Processing) {
             return Ok(());
         }
         let setup = self.sample(&params.setup_time).max(0.0);
@@ -23670,10 +23764,14 @@ mod tests {
         sim.run_events().expect("to 5");
         let combiner = sim.by_name["C"];
         assert!(
-            sim.objects[combiner].container.is_some(),
+            sim.objects[combiner].combiner_slots[0].container.is_some(),
             "container is held"
         );
-        assert_eq!(sim.objects[combiner].components.len(), 2, "port 1 is full");
+        assert_eq!(
+            sim.objects[combiner].combiner_slots[0].components.len(),
+            2,
+            "port 1 is full"
+        );
         assert!(
             sim.objects[combiner].out_pending.is_empty(),
             "no release yet"
@@ -23681,7 +23779,7 @@ mod tests {
         sim.pause_at = Some(11.0);
         sim.run_events().expect("to 11");
         assert!(
-            sim.objects[combiner].container.is_none(),
+            sim.objects[combiner].combiner_slots[0].container.is_none(),
             "cap completes the pack"
         );
     }
@@ -23832,6 +23930,224 @@ mod tests {
                 crate::sha256::hex(text.as_bytes()),
                 expected[index],
                 "combiner baseline {index} changed"
+            );
+        }
+    }
+
+    fn multi_slot_pack_model() -> Model {
+        Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "multi-slot-pack",
+          "run": { "stop_time": 50.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "Tray", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1.0 },
+                "first_arrival": 0.0, "items_per_arrival": 2, "max_arrivals": 1 } },
+            { "name": "Bottle", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 8.0 },
+                "first_arrival": 2.0, "items_per_arrival": 2, "max_arrivals": 2 } },
+            { "name": "Cap", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 8.0 },
+                "first_arrival": 2.0, "items_per_arrival": 1, "max_arrivals": 2 } },
+            { "name": "C", "kind": "combiner", "params": {
+                "mode": "pack", "max_content": 2, "components": [2, 1],
+                "triggers": { "on_exit": [
+                    { "action": "script", "source": "log(\"pack\");" } ] } } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [
+            { "from": "Tray", "to": "C" }, { "from": "Bottle", "to": "C" },
+            { "from": "Cap", "to": "C" }, { "from": "C", "to": "K" }
+          ]
+        }"#,
+        )
+        .expect("multi-slot pack")
+    }
+
+    /// task-211: two slots stage independently and complete when each has its
+    /// own components; the first does not wait for the second.
+    #[test]
+    fn combiner_multi_slot_pack_completes_each_group() {
+        let model = multi_slot_pack_model();
+        let report = crate::run_model(&model).expect("report");
+        assert_eq!(report.replications[0].objects["C"].input_count, 8);
+        assert_eq!(report.replications[0].objects["C"].output_count, 2);
+        assert_eq!(report.replications[0].objects["K"].input_count, 2);
+        assert_eq!(pack_times(&model), vec![2.0, 10.0]);
+    }
+
+    /// task-211: max_content = 2 accepts a second container while the first is
+    /// still being completed.
+    #[test]
+    fn combiner_multi_slot_accepts_staged_containers() {
+        let model = multi_slot_pack_model();
+        let mut sim = Simulation::new(
+            &model,
+            SimConfig {
+                stop_time: 50.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            false,
+        )
+        .expect("sim");
+        sim.start().expect("start");
+        let combiner = sim.by_name["C"];
+        sim.pause_at = Some(1.5);
+        sim.run_events().expect("to 1.5");
+        assert_eq!(sim.objects[combiner].combiner_slots.len(), 2);
+        assert!(sim.objects[combiner].combiner_slots[0].container.is_some());
+        assert!(sim.objects[combiner].combiner_slots[1].container.is_some());
+    }
+
+    /// task-211: batch mode stages multiple slots but processes one at a time.
+    #[test]
+    fn combiner_multi_slot_batch_processes_all_groups() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "multi-slot-batch",
+          "run": { "stop_time": 50.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "Tray", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1.0 },
+                "first_arrival": 0.0, "items_per_arrival": 2, "max_arrivals": 1 } },
+            { "name": "Bottle", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 2.0 },
+                "first_arrival": 2.0, "items_per_arrival": 2, "max_arrivals": 1 } },
+            { "name": "C", "kind": "combiner", "params": {
+                "mode": "batch", "max_content": 2, "components_per_container": 1,
+                "setup_time": { "distribution": "constant", "value": 1.0 },
+                "process_time": { "distribution": "constant", "value": 1.0 } } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [
+            { "from": "Tray", "to": "C" }, { "from": "Bottle", "to": "C" },
+            { "from": "C", "to": "K" }
+          ]
+        }"#,
+        )
+        .expect("multi-slot batch");
+        let report = crate::run_model(&model).expect("report");
+        assert_eq!(report.replications[0].objects["C"].input_count, 4);
+        assert_eq!(report.replications[0].objects["C"].output_count, 4);
+        assert_eq!(report.replications[0].objects["K"].input_count, 4);
+    }
+
+    /// task-211: max_content validation and join-mode restriction.
+    #[test]
+    fn combiner_max_content_is_validated() {
+        let bad = r#"{
+          "format": "openflex-model", "version": 1, "name": "bad-max-content",
+          "objects": [
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "C", "kind": "combiner", "params": { "max_content": 0 } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [{ "from": "S", "to": "C" }, { "from": "C", "to": "K" }]
+        }"#;
+        let error = Model::from_json(bad).expect_err("zero max_content");
+        assert!(error.to_string().contains("max_content"), "{error}");
+
+        let join = r#"{
+          "format": "openflex-model", "version": 1, "name": "join-max-content",
+          "objects": [
+            { "name": "S", "kind": "source", "params": {} },
+            { "name": "C", "kind": "combiner", "params": {
+                "mode": "join", "max_content": 2 } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [{ "from": "S", "to": "C" }, { "from": "C", "to": "K" }]
+        }"#;
+        let error = Model::from_json(join).expect_err("join max_content");
+        assert!(error.to_string().contains("max_content"), "{error}");
+    }
+
+    /// task-211: multi-slot models are deterministic for one seed.
+    #[test]
+    fn combiner_multi_slot_is_deterministic() {
+        let model = multi_slot_pack_model();
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
+    }
+
+    /// task-211: slot化 with max_content == 1 keeps all four combiner reports.
+    #[test]
+    fn combiner_slots_default_keep_the_reports() {
+        let models = [
+            Model::from_json(r#"{
+              "format": "openflex-model", "version": 1, "name": "combiner-pack",
+              "run": { "stop_time": 500.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+              "objects": [
+                { "name": "TraySource", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 50.0 }, "first_arrival": 0.0 } },
+                { "name": "BoxSource", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+                { "name": "Combiner1", "kind": "combiner", "params": {
+                    "mode": "pack", "components_per_container": 4 } },
+                { "name": "Sink1", "kind": "sink", "params": {} }
+              ],
+              "connections": [
+                { "from": "TraySource", "to": "Combiner1" },
+                { "from": "BoxSource", "to": "Combiner1" },
+                { "from": "Combiner1", "to": "Sink1" }
+              ]
+            }"#).expect("pack"),
+            Model::from_json(r#"{
+              "format": "openflex-model", "version": 1, "name": "combiner-join",
+              "run": { "stop_time": 500.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+              "objects": [
+                { "name": "A", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+                { "name": "B", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+                { "name": "Combiner1", "kind": "combiner", "params": { "mode": "join" } },
+                { "name": "Sink1", "kind": "sink", "params": {} }
+              ],
+              "connections": [
+                { "from": "A", "to": "Combiner1" },
+                { "from": "B", "to": "Combiner1" },
+                { "from": "Combiner1", "to": "Sink1" }
+              ]
+            }"#).expect("join"),
+            Model::from_json(r#"{
+              "format": "openflex-model", "version": 1, "name": "combiner-batch",
+              "run": { "stop_time": 500.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+              "objects": [
+                { "name": "TraySource", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 50.0 }, "first_arrival": 0.0 } },
+                { "name": "BoxSource", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 10.0 }, "first_arrival": 0.0 } },
+                { "name": "Combiner1", "kind": "combiner", "params": {
+                    "mode": "batch", "components_per_container": 4,
+                    "setup_time": { "distribution": "constant", "value": 5.0 },
+                    "process_time": { "distribution": "constant", "value": 6.0 } } },
+                { "name": "Sink1", "kind": "sink", "params": {} }
+              ],
+              "connections": [
+                { "from": "TraySource", "to": "Combiner1" },
+                { "from": "BoxSource", "to": "Combiner1" },
+                { "from": "Combiner1", "to": "Sink1" }
+              ]
+            }"#).expect("batch"),
+            per_port_combiner_model(3.0, 1),
+        ];
+        let expected = [
+            "d29a873fa33d075b9b18eca22487a93d672be36232bb1ba1f6395bb8d6d24e18",
+            "41fb6c327ed943264734462fa5228461f7138392333666dcf4bfc5ee21fcba7a",
+            "8bccbcbd59dcadab123e408aac6c3f5a049940449bbd4169ca43f17161e1679c",
+            "f35ef9f7bed15033615540f394a89a6a48c3a843a1c22484893b22740b318037",
+        ];
+        for (index, model) in models.iter().enumerate() {
+            let report = crate::run_model(model).expect("report");
+            let text = serde_json::to_string(&report).expect("json");
+            assert_eq!(
+                crate::sha256::hex(text.as_bytes()),
+                expected[index],
+                "combiner slot baseline {index} changed"
             );
         }
     }

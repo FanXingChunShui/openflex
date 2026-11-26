@@ -444,6 +444,7 @@ fn definitions() -> Value {
         "combiner_params".into(),
         params_schema(json!({
             "components_per_container": { "type": "integer", "minimum": 1, "default": 2 },
+            "max_content": { "type": "integer", "minimum": 1, "default": 1 },
             "components": {
                 "type": ["array", "null"],
                 "items": { "type": "integer", "minimum": 1 }

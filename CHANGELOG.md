@@ -10,6 +10,16 @@
 
 - **Combiner 逐端口 components 表（`CombinerParams.components`）**：Pack 模式下每个组件端口可以要不同数量（2 个瓶子 + 1 个盖子），`None` 时沿用 `components_per_container`，**3 个 combiner 基准模型（pack/join/batch）报告 SHA-256 逐位不变**。实现上把 `ObjectRt.components` 从 `Vec<FlowItem>` 换成保留端口号的 `Vec<(u32, FlowItem)>`。**`join`/`batch` 模式下设 `components` 会被 validate 明确拒绝**（而不是静默忽略），错误信息说明"各自模式有独立端口语义"。实测：[2,1] 时 combiner 收 4 件、完成 1 个容器；缺省时只消费 1 个组件。
 
+- **Combiner 多槽（`CombinerParams.max_content`，pack 模式）**：先做零行为重构——`ObjectRt` 的
+  "单容器 + 扁平组件"换成 `Vec<CombinerSlot>`，`max_content == 1` 时 **4 个基准模型 SHA-256 逐位不变**
+  （3 个 combiner 基准 + 逐端口 components 模型）。`max_content > 1` 时 pack 可同时 staging 多组、
+  组间不串；`max_content: 0` 与 `join + max_content > 1` 均被 validate 拒绝。
+  **明确未做（本卡按 A 方案验收）**：`batch` 模式下多槽只是"可以同时攒多组"，**setup/process 仍按对象顺序执行**
+  （`phase/token/phase_end` 还是对象级），所以吞吐与 `max_content=1` 相同。
+  要让两个批处理真正并行，必须把 phase/token/结束事件下沉到每个槽，并**重新定义 busy/processing 的统计口径**
+  （对象级 busy 会从"累加"变成"并集"）——这是统计语义变更，单独开卡，不在功能卡里顺手改。
+
+
 ### 桌面 GUI
 
 - **GUI：Combiner 的逐端口 components 编辑**（`per-port components` 复选框 + 每端口数量；离开 pack 模式时自动收起该表，避免写出校验会拒绝的模型）。测试 `a_combiner_can_need_different_counts_per_port`。GUI **154 项**。

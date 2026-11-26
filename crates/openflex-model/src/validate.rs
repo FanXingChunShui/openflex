@@ -1138,6 +1138,18 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                     "batch mode needs at least one component per batch",
                 ));
             }
+            if params.max_content == 0 {
+                issues.push(ValidationIssue::new(
+                    location("max_content"),
+                    "must be at least 1",
+                ));
+            }
+            if params.mode == CombinerMode::Join && params.max_content > 1 {
+                issues.push(ValidationIssue::new(
+                    location("max_content"),
+                    "join mode has one item per port and only supports max_content 1",
+                ));
+            }
             if let Some(components) = &params.components {
                 if params.mode != CombinerMode::Pack {
                     issues.push(ValidationIssue::new(
