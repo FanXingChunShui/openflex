@@ -81,7 +81,7 @@
 | Separator | `separator` | ✅ | `separate_mode: unpack`（qty+1 件）/ `split`（qty 件）；0 = 容器内全部组件 |
 | Conveyor | `conveyor` | 🟡 | 速度/长度/间距/容量、`curve` 弧长、`segments` 逐段积分、精确回退、严格最小间距（推挤压缩）；`photo_eyes`/`stations`/`join_inputs`；**slug 组**（`slug` + `slug_min_gap`：组内间隙恒定、组首被挡整组停）与**合流控制器**（`merge_mode` = `round_robin`/`weighted`/`by_item_type` + `merge_weight`，入口被占不吃配额）；仍缺光电门阵列高级语义与 Mass Flow 质量流 |
 | Merge | `merge` | ✅ | 多输入合流；可选等待全部输入 |
-| Split | `split` | ✅ | 轮询或按 item type 分流 |
+| Split | `split` | ✅ | 轮询或按 item type 分流。**注意**：`split` 用自己的分流逻辑，**忽略连接上的 `strategy`**（实测在连接上写 `by_condition` 不生效）——需要在 split 下游按条件路由时，把路由点放在后面的 processor/queue 上 |
 | Transporter / TaskExecuter | `transporter` | 🟡 | 速度、装载/卸载时间、`network` 最短路、`home` 取货、两段任务；`capacity`=并发任务数（不搬运 flow item）；自定义任务序列为**腿级**扩展（见 Dispatcher 行） |
 | Dispatcher | `dispatcher` | 🟡 | 派发/优先级/抢占（`preempt_retry_delay`/`preempt_max_retries`/`max_tasks` 挂起任务上限）、电梯召唤；`task_sequence` 支持 `travel`/`load`/`unload`，额外 `utilize`/`break` 腿（带 `duration`、`condition`），`explicit` 整链模式，以及 `involved: 2` 的**两执行器协同步骤**（两者都到场才同步开始）；序列可命名后经 `task_sequences[]` + `task_sequence_ref` 复用（GTS）。仍无过程式任务序列构造 API（`createcoordinatedtasksequence` 等） |
 | Operator / Resource | `resource` | ✅ | 资源池容量与停机窗口 |

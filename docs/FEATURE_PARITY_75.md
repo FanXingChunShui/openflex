@@ -112,7 +112,7 @@
 
 | FlexSim 7.5 功能 | OpenFlex 现状 | 状态 | 证据或缺口说明 |
 |---|---|---|---|
-| Send To Port | `connections[].strategy`（7 种 + Hold） | ✅ | 含 −1 语义 `Hold` + `release_item` |
+| Send To Port | `connections[].strategy`（7 种 + Hold） | ✅ | 含 −1 语义 `Hold` + `release_item`。**对象差异（实测）**：processor/queue 等遵守连接策略；**`split` 用自己的轮询/按类型分流、忽略连接上的策略**（需按条件路由时把路由点放在下游 processor/queue）。证据：`split_by_item_type_routes_to_the_matching_port`；picklist 行为测试（`crates/openflex-core/tests/picklists.rs`，processor 上按条件路由 4/0 ↔ 0/4） |
 | Pull Strategy | `params.pull.strategy` | ✅ | `engine.rs` 有 `pull_requirement_met` |
 | Pull Requirement | `params.pull.requirement` | ✅ | 同上；有 `p0_semantics.rs::a03_pull_requirement_skips_items` 测试 |
 | Request Transport From | `queue.use_transport`（指向 dispatcher） | 🟡 | 固定资源发起运输请求的对象级入口**已对 Queue 落地**：指定 dispatcher 后由其空闲 transporter 直接承运（**不经过 `Dispatcher.requests`**，因此不影响既有 operator 任务）。**边界**：仅 Queue、仅单出边、不做多车协同/preemption；其余对象与完整语义需要先把 `Dispatcher.requests` 抽象成带 kind 的请求（已记入 `docs/BACKLOG.md`） |
