@@ -277,6 +277,10 @@ pub(crate) enum EventKind {
     BeltTick(usize),
     /// One slot of a multiprocessor finished its setup/process step (B1).
     MpDone(usize, usize, u64),
+    /// task-212: a combiner batch slot finished its setup.
+    CombinerSlotSetupDone(usize, usize, u64),
+    /// task-212: a combiner batch slot finished its process.
+    CombinerSlotProcessDone(usize, usize, u64),
     /// A queue batch waited `batch_max_wait` and is released early.
     BatchTimeout(usize),
     /// A rack item finished its minimum dwell time and may be released.
@@ -763,6 +767,28 @@ struct FailureRt {
 struct CombinerSlot {
     container: Option<FlowItem>,
     components: Vec<(u32, FlowItem)>,
+    /// task-212: per-slot batch stage (idle/setup/process).
+    #[serde(default)]
+    phase: Phase,
+    /// Stale completion events are ignored via this token.
+    #[serde(default)]
+    token: u64,
+    /// Scheduled end of the current setup/process.
+    #[serde(default)]
+    end: f64,
+    /// This slot's setup/process operators (task-212).
+    #[serde(default)]
+    operator_held: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    operator_sources: Vec<OperatorSource>,
+    #[serde(default)]
+    operator_pending: u32,
+    #[serde(default)]
+    waiting_operator: bool,
+    #[serde(default)]
+    waiting_operator_phase: Option<OperatorPhase>,
+    #[serde(default)]
+    ready_for_process: bool,
 }
 
 /// A3: where a pulled item currently sits in the upstream object.
@@ -3980,6 +4006,12 @@ impl<'m> Simulation<'m> {
             EventKind::RepairDone(index, source) => self.handle_repair(index, source),
             EventKind::Message(index) => self.handle_message(index),
             EventKind::MpDone(index, lane, token) => self.handle_mp_done(index, lane, token),
+            EventKind::CombinerSlotSetupDone(index, slot, token) => {
+                self.handle_combiner_slot_setup_done(index, slot, token)
+            }
+            EventKind::CombinerSlotProcessDone(index, slot, token) => {
+                self.handle_combiner_slot_process_done(index, slot, token)
+            }
             EventKind::BeltTick(index) => self.handle_belt_tick(index),
             EventKind::BatchTimeout(index) => self.handle_batch_timeout(index),
             EventKind::DwellDone(index) => self.handle_dwell_done(index),
@@ -8240,6 +8272,13 @@ impl<'m> Simulation<'m> {
 
     /// Hand one operator to a waiting processor and let it continue.
     fn grant_operator(&mut self, index: usize, source: OperatorSource) {
+        if self
+            .combiner_params(index)
+            .is_some_and(|params| params.mode == CombinerMode::Batch && params.max_content > 1)
+        {
+            self.grant_combiner_slot_operator(index, source);
+            return;
+        }
         if self.multiprocessor_uses_step_operators(index) {
             self.grant_mp_step_operator(index, source);
             return;
@@ -12179,6 +12218,291 @@ impl<'m> Simulation<'m> {
         Ok(())
     }
 
+    fn ensure_combiner_slot_operator(
+        &mut self,
+        index: usize,
+        slot_index: usize,
+        phase: OperatorPhase,
+    ) -> Result<bool, SimError> {
+        let Some(params) = self.combiner_params(index) else {
+            return Ok(true);
+        };
+        if self.objects[index].combiner_slots[slot_index].operator_held >= 1 {
+            return Ok(true);
+        }
+        let name = match phase {
+            OperatorPhase::Setup => params
+                .setup_operator
+                .clone()
+                .or_else(|| params.process_operator.clone()),
+            OperatorPhase::Process => params
+                .process_operator
+                .clone()
+                .or_else(|| params.setup_operator.clone()),
+        };
+        let Some(name) = name else {
+            return Ok(true);
+        };
+        let Some(&target) = self.by_name.get(&name) else {
+            return Ok(true);
+        };
+        let kind = self.objects[target].kind;
+        if !matches!(kind, ObjectKind::Dispatcher | ObjectKind::Resource) {
+            return Ok(true);
+        }
+        let pending = self.objects[index].combiner_slots[slot_index].operator_pending;
+        if pending == 0 && self.objects[index].combiner_slots[slot_index].operator_held == 0 {
+            self.objects[index].combiner_slots[slot_index].operator_pending = 1;
+            self.objects[index].operators_pending =
+                self.objects[index].operators_pending.saturating_add(1);
+            self.objects[index].requesting_operator = true;
+            match kind {
+                ObjectKind::Dispatcher => self.push_operator_request(target, index, phase),
+                ObjectKind::Resource => self.resource_request(target, index)?,
+                _ => {}
+            }
+            if kind == ObjectKind::Dispatcher {
+                self.dispatch(target)?;
+            }
+        }
+        Ok(self.objects[index].combiner_slots[slot_index].operator_held >= 1)
+    }
+
+    fn release_combiner_slot_operator(
+        &mut self,
+        index: usize,
+        slot_index: usize,
+    ) -> Result<(), SimError> {
+        let sources =
+            std::mem::take(&mut self.objects[index].combiner_slots[slot_index].operator_sources);
+        self.objects[index].combiner_slots[slot_index].operator_held = 0;
+        self.objects[index].combiner_slots[slot_index].operator_pending = 0;
+        self.objects[index].combiner_slots[slot_index].waiting_operator = false;
+        self.objects[index].combiner_slots[slot_index].waiting_operator_phase = None;
+        for source in sources {
+            if let Some(position) = self.objects[index]
+                .operator_sources
+                .iter()
+                .position(|candidate| *candidate == source)
+            {
+                self.objects[index].operator_sources.remove(position);
+                self.objects[index].operator_held =
+                    self.objects[index].operator_held.saturating_sub(1);
+            }
+            self.release_operator_source(index, source)?;
+        }
+        self.objects[index].requesting_operator = self.objects[index].operators_pending > 0;
+        Ok(())
+    }
+
+    /// A granted operator goes to the first batch slot waiting for its setup or
+    /// process; the other slots keep their own state.
+    fn grant_combiner_slot_operator(&mut self, index: usize, source: OperatorSource) {
+        let slot_index = self.objects[index]
+            .combiner_slots
+            .iter()
+            .position(|slot| slot.waiting_operator && slot.operator_held == 0);
+        let Some(slot_index) = slot_index else {
+            return;
+        };
+        let slot = &mut self.objects[index].combiner_slots[slot_index];
+        slot.operator_held += 1;
+        slot.operator_sources.push(source);
+        slot.operator_pending = slot.operator_pending.saturating_sub(1);
+        slot.waiting_operator = false;
+        self.objects[index].operator_held += 1;
+        self.objects[index].operator_sources.push(source);
+        self.objects[index].operators_pending =
+            self.objects[index].operators_pending.saturating_sub(1);
+        self.objects[index].requesting_operator = self.objects[index].operators_pending > 0;
+        self.schedule(self.now, EventKind::Flow(index));
+    }
+
+    /// task-212: start every ready batch slot; each slot owns its setup/process
+    /// stage and token, so two slots overlap instead of running serially.
+    fn flow_combiner_batch_parallel(&mut self, index: usize) -> Result<(), SimError> {
+        let Some(params) = self.combiner_params(index) else {
+            return Ok(());
+        };
+        if !self.objects[index].on_shift || self.objects[index].state == State::Down {
+            return Ok(());
+        }
+        for slot_index in 0..self.objects[index].combiner_slots.len() {
+            let slot = &self.objects[index].combiner_slots[slot_index];
+            if slot.container.is_none() || slot.phase != Phase::Idle {
+                continue;
+            }
+            let enough = match &params.components {
+                Some(required) => required.iter().enumerate().all(|(port_index, &need)| {
+                    let port = port_index as u32 + 1;
+                    slot.components
+                        .iter()
+                        .filter(|(to_port, _)| *to_port == port)
+                        .count() as u32
+                        >= need
+                }),
+                None => (slot.components.len() as u32) >= params.components_per_container,
+            };
+            if !enough {
+                continue;
+            }
+            let wants_process = self.objects[index].combiner_slots[slot_index].ready_for_process;
+            let setup_phase = if wants_process {
+                OperatorPhase::Process
+            } else {
+                OperatorPhase::Setup
+            };
+            if !self.ensure_combiner_slot_operator(index, slot_index, setup_phase)? {
+                self.objects[index].combiner_slots[slot_index].waiting_operator = true;
+                self.objects[index].combiner_slots[slot_index].waiting_operator_phase =
+                    Some(setup_phase);
+                continue;
+            }
+            if wants_process {
+                self.objects[index].combiner_slots[slot_index].ready_for_process = false;
+                let process = self.sample(&params.process_time).max(0.0);
+                let slot = &mut self.objects[index].combiner_slots[slot_index];
+                slot.token += 1;
+                let token = slot.token;
+                slot.phase = Phase::Processing;
+                slot.end = self.now + process;
+                self.schedule(
+                    self.now + process,
+                    EventKind::CombinerSlotProcessDone(index, slot_index, token),
+                );
+            } else {
+                let setup = self.sample(&params.setup_time).max(0.0);
+                if setup > 0.0 {
+                    let slot = &mut self.objects[index].combiner_slots[slot_index];
+                    slot.token += 1;
+                    let token = slot.token;
+                    slot.phase = Phase::Setup;
+                    slot.end = self.now + setup;
+                    self.schedule(
+                        self.now + setup,
+                        EventKind::CombinerSlotSetupDone(index, slot_index, token),
+                    );
+                } else {
+                    if !self.ensure_combiner_slot_operator(
+                        index,
+                        slot_index,
+                        OperatorPhase::Process,
+                    )? {
+                        self.objects[index].combiner_slots[slot_index].waiting_operator = true;
+                        self.objects[index].combiner_slots[slot_index].waiting_operator_phase =
+                            Some(OperatorPhase::Process);
+                        continue;
+                    }
+                    let process = self.sample(&params.process_time).max(0.0);
+                    let slot = &mut self.objects[index].combiner_slots[slot_index];
+                    slot.token += 1;
+                    let token = slot.token;
+                    slot.phase = Phase::Processing;
+                    slot.end = self.now + process;
+                    self.schedule(
+                        self.now + process,
+                        EventKind::CombinerSlotProcessDone(index, slot_index, token),
+                    );
+                }
+            }
+        }
+        self.refresh_combiner_batch_slots(index)
+    }
+
+    fn refresh_combiner_batch_slots(&mut self, index: usize) -> Result<(), SimError> {
+        let active = self.objects[index]
+            .combiner_slots
+            .iter()
+            .any(|slot| matches!(slot.phase, Phase::Setup | Phase::Processing));
+        if active {
+            let any_setup = self.objects[index]
+                .combiner_slots
+                .iter()
+                .any(|slot| slot.phase == Phase::Setup);
+            self.set_phase(
+                index,
+                if any_setup {
+                    Phase::Setup
+                } else {
+                    Phase::Processing
+                },
+            );
+            self.set_state(index, State::Busy);
+        } else {
+            self.set_phase(index, Phase::Idle);
+            self.set_state(index, State::Idle);
+        }
+        Ok(())
+    }
+
+    fn handle_combiner_slot_setup_done(
+        &mut self,
+        index: usize,
+        slot_index: usize,
+        token: u64,
+    ) -> Result<(), SimError> {
+        let Some(params) = self.combiner_params(index) else {
+            return Ok(());
+        };
+        let Some(slot) = self.objects[index].combiner_slots.get_mut(slot_index) else {
+            return Ok(());
+        };
+        if slot.token != token || slot.phase != Phase::Setup || slot.container.is_none() {
+            return Ok(());
+        }
+        self.fire_lifecycle_trigger(index, SimTrigger::SetupFinish);
+        let same_operator =
+            params.setup_operator.is_some() && params.setup_operator == params.process_operator;
+        if !same_operator {
+            self.release_combiner_slot_operator(index, slot_index)?;
+        }
+        let slot = &mut self.objects[index].combiner_slots[slot_index];
+        slot.ready_for_process = true;
+        slot.phase = Phase::Idle;
+        self.refresh_combiner_batch_slots(index)?;
+        self.flow_combiner(index)
+    }
+
+    fn handle_combiner_slot_process_done(
+        &mut self,
+        index: usize,
+        slot_index: usize,
+        token: u64,
+    ) -> Result<(), SimError> {
+        let Some(slot) = self.objects[index].combiner_slots.get_mut(slot_index) else {
+            return Ok(());
+        };
+        if slot.token != token || slot.phase != Phase::Processing || slot.container.is_none() {
+            return Ok(());
+        }
+        let now = self.now;
+        self.objects[index].note_content(now);
+        self.fire_lifecycle_trigger(index, SimTrigger::ProcessFinish);
+        self.release_combiner_slot_operator(index, slot_index)?;
+        let slot = &mut self.objects[index].combiner_slots[slot_index];
+        let mut items: Vec<FlowItem> = Vec::new();
+        if let Some(container) = slot.container.take() {
+            items.push(container);
+        }
+        items.extend(
+            std::mem::take(&mut slot.components)
+                .into_iter()
+                .map(|(_, item)| item),
+        );
+        slot.phase = Phase::Idle;
+        slot.token += 1;
+        let count = items.len();
+        for mut item in items {
+            item.labels.insert("batch".to_string(), count as f64);
+            self.objects[index].out_pending.push(item);
+        }
+        self.objects[index].touch();
+        self.refresh_combiner_batch_slots(index)?;
+        self.flow(index)?;
+        self.notify_upstreams(index)?;
+        Ok(())
+    }
+
     /// `batch` (A7): collect the container plus its components, run the
     /// inherited setup/process cycle (including operators), then release every
     /// item of the batch together. task-211: one active batch at a time; other
@@ -12190,6 +12514,9 @@ impl<'m> Simulation<'m> {
     ) -> Result<(), SimError> {
         if !self.objects[index].on_shift || self.objects[index].state == State::Down {
             return Ok(());
+        }
+        if params.max_content > 1 {
+            return self.flow_combiner_batch_parallel(index);
         }
         if matches!(self.objects[index].phase, Phase::Setup | Phase::Processing) {
             return Ok(());
@@ -13295,6 +13622,16 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
         EventKind::MpDone(index, lane, _) => {
             (Some(*index), "mp_done", Some(("lane", *lane as f64)))
         }
+        EventKind::CombinerSlotSetupDone(index, slot, _) => (
+            Some(*index),
+            "combiner_slot_setup_done",
+            Some(("slot", *slot as f64)),
+        ),
+        EventKind::CombinerSlotProcessDone(index, slot, _) => (
+            Some(*index),
+            "combiner_slot_process_done",
+            Some(("slot", *slot as f64)),
+        ),
         EventKind::BeltTick(index) => (Some(*index), "belt_tick", None),
         EventKind::BatchTimeout(index) => (Some(*index), "batch_timeout", None),
         EventKind::DwellDone(index) => (Some(*index), "dwell_done", None),
@@ -24066,6 +24403,244 @@ mod tests {
     #[test]
     fn combiner_multi_slot_is_deterministic() {
         let model = multi_slot_pack_model();
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
+    }
+
+    fn parallel_batch_model(max_content: u32, stop_time: f64) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "parallel-batch",
+          "run": {{ "stop_time": {stop_time}, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "Tray", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 100.0 }},
+                "first_arrival": 0.0, "items_per_arrival": 2, "max_arrivals": 1 }} }},
+            {{ "name": "Bottle", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 100.0 }},
+                "first_arrival": 0.0, "items_per_arrival": 2, "max_arrivals": 1 }} }},
+            {{ "name": "C", "kind": "combiner", "params": {{
+                "mode": "batch", "max_content": {max_content},
+                "components_per_container": 1,
+                "process_time": {{ "distribution": "constant", "value": 2.0 }} }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [
+            {{ "from": "Tray", "to": "C" }}, {{ "from": "Bottle", "to": "C" }},
+            {{ "from": "C", "to": "K" }}
+          ]
+        }}"#
+        ))
+        .expect("parallel batch")
+    }
+
+    /// task-212 #2/#4: two batch slots overlap; object busy is the union, not
+    /// the sum of the two slot durations.
+    #[test]
+    fn combiner_batch_slots_overlap_and_busy_is_a_union() {
+        let one = parallel_batch_model(1, 10.0);
+        let two = parallel_batch_model(2, 10.0);
+        let one_report = crate::run_model(&one).expect("one");
+        let two_report = crate::run_model(&two).expect("two");
+        let one_busy = one_report.replications[0].objects["C"].state_times.busy;
+        let two_busy = two_report.replications[0].objects["C"].state_times.busy;
+        assert!(
+            (one_busy - 4.0).abs() < 1e-9,
+            "serial busy = 4, got {one_busy}"
+        );
+        assert!(
+            (two_busy - 2.0).abs() < 1e-9,
+            "overlap busy = 2, got {two_busy}"
+        );
+        let busy_fraction = two_report.objects["C"].busy_fraction.mean;
+        assert!(
+            (busy_fraction - 0.2).abs() < 1e-9,
+            "two fully overlapping slots must be 2/10, not 4/10: {busy_fraction}"
+        );
+        let (_, trace) = crate::simulate_traced(
+            &two,
+            &SimConfig {
+                stop_time: 10.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect("trace");
+        let done: Vec<f64> = trace
+            .events
+            .iter()
+            .filter(|event| event.event == "combiner_slot_process_done")
+            .map(|event| event.time)
+            .collect();
+        assert_eq!(
+            done,
+            vec![2.0, 2.0],
+            "both batches finish together: {done:?}"
+        );
+    }
+
+    /// task-212 #3: at the same stop time the parallel combiner completes more.
+    #[test]
+    fn combiner_batch_parallel_has_higher_throughput() {
+        let one = crate::run_model(&parallel_batch_model(1, 3.0)).expect("one");
+        let two = crate::run_model(&parallel_batch_model(2, 3.0)).expect("two");
+        let completed_one = one.replications[0].items_completed;
+        let completed_two = two.replications[0].items_completed;
+        assert_eq!(completed_one, 2, "serial completed {completed_one}");
+        assert_eq!(completed_two, 4, "parallel completed {completed_two}");
+        assert!(completed_two > completed_one);
+    }
+
+    /// task-212 #6: a busy slot does not prevent the other slot from accepting.
+    #[test]
+    fn combiner_batch_busy_slot_does_not_block_an_empty_slot() {
+        let model = Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "parallel-batch-staging",
+          "run": { "stop_time": 10.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "Tray", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1.0 },
+                "first_arrival": 0.0, "max_arrivals": 2 } },
+            { "name": "Bottle", "kind": "source", "params": {
+                "interarrival": { "distribution": "constant", "value": 1.0 },
+                "first_arrival": 0.0, "max_arrivals": 2 } },
+            { "name": "C", "kind": "combiner", "params": {
+                "mode": "batch", "max_content": 2, "components_per_container": 1,
+                "process_time": { "distribution": "constant", "value": 5.0 } } },
+            { "name": "K", "kind": "sink", "params": {} }
+          ],
+          "connections": [
+            { "from": "Tray", "to": "C" }, { "from": "Bottle", "to": "C" },
+            { "from": "C", "to": "K" }
+          ]
+        }"#,
+        )
+        .expect("staging");
+        let mut sim = Simulation::new(
+            &model,
+            SimConfig {
+                stop_time: 10.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            false,
+        )
+        .expect("sim");
+        sim.start().expect("start");
+        sim.pause_at = Some(2.0);
+        sim.run_events().expect("to 2");
+        let combiner = sim.by_name["C"];
+        assert!(sim.objects[combiner].combiner_slots[0].phase == Phase::Processing);
+        assert!(
+            sim.objects[combiner].combiner_slots[1].container.is_some(),
+            "second container staged while slot 0 is busy"
+        );
+    }
+
+    fn parallel_batch_operator_model(process_operator: &str, setup_operator: &str) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "parallel-batch-operators",
+          "run": {{ "stop_time": 50.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "Tray", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 100.0 }},
+                "first_arrival": 0.0, "items_per_arrival": 2, "max_arrivals": 1 }} }},
+            {{ "name": "Bottle", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 100.0 }},
+                "first_arrival": 0.0, "items_per_arrival": 2, "max_arrivals": 1 }} }},
+            {{ "name": "C", "kind": "combiner", "params": {{
+                "mode": "batch", "max_content": 2, "components_per_container": 1,
+                "setup_time": {{ "distribution": "constant", "value": 1.0 }},
+                "process_time": {{ "distribution": "constant", "value": 1.0 }},
+                "setup_operator": "{setup_operator}",
+                "process_operator": "{process_operator}" }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }},
+            {{ "name": "D1", "kind": "dispatcher", "pos": [10, 0], "params": {{}} }},
+            {{ "name": "D2", "kind": "dispatcher", "pos": [0, 0], "params": {{}} }},
+            {{ "name": "T1", "kind": "transporter", "pos": [10, 0], "params": {{ "home": "D1" }} }},
+            {{ "name": "T2", "kind": "transporter", "pos": [0, 0], "params": {{ "home": "D2" }} }}
+          ],
+          "connections": [
+            {{ "from": "Tray", "to": "C" }}, {{ "from": "Bottle", "to": "C" }},
+            {{ "from": "C", "to": "K" }},
+            {{ "from": "D1", "to": "T1" }}, {{ "from": "D2", "to": "T2" }}
+          ]
+        }}"#
+        ))
+        .expect("parallel batch operators")
+    }
+
+    /// task-212 #5: the setup crew for one slot waiting does not stop another
+    /// slot from processing; a different dispatcher is used for process.
+    #[test]
+    fn combiner_batch_slot_operator_wait_does_not_block_another_slot() {
+        let model = parallel_batch_operator_model("D2", "D1");
+        let report = crate::run_model(&model).expect("report");
+        assert_eq!(report.replications[0].objects["C"].output_count, 4);
+        assert_eq!(report.replications[0].objects["K"].input_count, 4);
+    }
+
+    /// task-212: two slots' setup waits stay per-slot, not object-wide.
+    #[test]
+    fn combiner_batch_per_slot_operator_waits_are_independent() {
+        let model = parallel_batch_operator_model("D2", "D1");
+        let (_, trace) = crate::simulate_traced(
+            &model,
+            &SimConfig {
+                stop_time: 50.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect("trace");
+        let events: Vec<(f64, &str, f64)> = trace
+            .events
+            .iter()
+            .filter(|event| event.object == "C")
+            .filter(|event| {
+                event.event == "combiner_slot_setup_done"
+                    || event.event == "combiner_slot_process_done"
+            })
+            .map(|event| {
+                (
+                    event.time,
+                    event.event.as_str(),
+                    event.data.get("slot").copied().unwrap_or(-1.0),
+                )
+            })
+            .collect();
+        let first_process = events
+            .iter()
+            .find(|(_, name, slot)| *name == "combiner_slot_process_done" && *slot == 0.0)
+            .map(|(time, _, _)| *time);
+        let second_setup = events
+            .iter()
+            .find(|(_, name, slot)| *name == "combiner_slot_setup_done" && *slot == 1.0)
+            .map(|(time, _, _)| *time);
+        assert!(
+            first_process.is_some() && second_setup.is_some(),
+            "events: {events:?}"
+        );
+        assert!(
+            first_process.unwrap() < second_setup.unwrap(),
+            "slot 0 processes while slot 1 waits for its setup operator: {events:?}"
+        );
+        let report = crate::run_model(&model).expect("report");
+        assert_eq!(report.replications[0].objects["C"].output_count, 4);
+    }
+
+    /// task-212: parallel batch models are deterministic for one seed.
+    #[test]
+    fn combiner_batch_parallel_is_deterministic() {
+        let model = parallel_batch_model(2, 10.0);
         let first = crate::run_model(&model).expect("first");
         let second = crate::run_model(&model).expect("second");
         assert_eq!(

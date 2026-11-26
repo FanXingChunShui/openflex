@@ -8,6 +8,14 @@
   "表驱动参数更新未支持"（表驱动到达已修）。**过期的清单比没有更糟**——它告诉读者一个已经存在的能力不存在。
   已刷新到 v1.56.0，并新增 `scripts/check-doc-baselines.sh`（已进 CI）：文档里的基线版本与 `Cargo.toml` 不一致就失败。
 
+### 模型与引擎
+
+- **Combiner batch 逐槽并行**（task-211 里明确留白的那一块，现在补上）：`max_content > 1` 时每槽有自己的
+  `phase/token/end/operator_*`，`flow_combiner_batch_parallel` 同时启动所有满料槽；**对象级 busy 取"任一槽非 idle 的并集"**
+  （与 MultiProcessor 同一口径，不新增累加语义）。`max_content == 1` 仍走原对象级路径，**4 个基准 SHA 逐位不变**。
+  逐槽 setup→process、逐槽操作员（setup/process 可用不同 dispatcher，一槽等操作员不阻塞另一槽的 process）。
+  独立实测（stop 10、setup 1 + process 2）：完成数都为 4，但 **busy 0.6（单槽顺序）vs 0.3（双槽重叠）**——正是并集而非累加。
+
 
 ## v1.56.0 — 2026-11-26
 
