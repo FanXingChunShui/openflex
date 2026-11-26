@@ -399,6 +399,37 @@ def case_table_driven_arrivals():
     )
 
 
+def case_combiner_multi_slot():
+    """A combiner can stage two groups at once (batch still processes them in turn)."""
+    path = write(
+        "combiner_multi_slot",
+        model(
+            [
+                {"name": "Tray", "kind": "source", "params": {
+                    "interarrival": {"distribution": "constant", "value": 1.0},
+                    "first_arrival": 0.0, "items_per_arrival": 2, "max_arrivals": 1}},
+                {"name": "Bottle", "kind": "source", "params": {
+                    "interarrival": {"distribution": "constant", "value": 2.0},
+                    "first_arrival": 2.0, "items_per_arrival": 2, "max_arrivals": 1}},
+                {"name": "C", "kind": "combiner", "params": {
+                    "mode": "batch", "max_content": 2,
+                    "components_per_container": 1,
+                    "setup_time": {"distribution": "constant", "value": 1.0},
+                    "process_time": {"distribution": "constant", "value": 1.0}}},
+                {"name": "K", "kind": "sink", "params": {}},
+            ],
+            [{"from": "Tray", "to": "C"}, {"from": "Bottle", "to": "C"},
+             {"from": "C", "to": "K"}],
+            run={"stop_time": 50.0, "seed": 1, "replications": 1},
+        ),
+    )
+    rep = report(path)
+    assert rep["objects"]["C"]["input_count"]["mean"] == 4.0
+    assert rep["objects"]["K"]["input_count"]["mean"] == 4.0, (
+        "all four items must leave the combiner"
+    )
+
+
 def case_per_port_components():
     """Pack mode can take different counts from each component port."""
     def build(components):
@@ -777,6 +808,7 @@ CASES = [
     ("row number", case_row_number),
     ("extra failure source", case_extra_failure_source),
     ("per-port components", case_per_port_components),
+    ("combiner multi slot", case_combiner_multi_slot),
     ("combiner pack", case_combiner_pack),
     ("timetable off shift", case_timetable_off_shift),
     ("checkpoint resume", case_checkpoint_matches_straight_run),

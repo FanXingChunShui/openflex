@@ -2974,6 +2974,17 @@ impl EditForm {
                             .prefix("components "),
                     )
                     .changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut p.max_content)
+                            .speed(1.0)
+                            .range(1..=1_000)
+                            .prefix("max content "),
+                    )
+                    .on_hover_text(
+                        "how many groups this combiner can hold at once; batch still processes them one by one",
+                    )
+                    .changed();
                 // Per-port component counts (pack only; the validator rejects the
                 // table in join/batch, so the control is hidden there).
                 let pack_mode = p.mode == openflex_model::CombinerMode::Pack;
@@ -15398,6 +15409,10 @@ mod tests {
             !json.contains("\"components\""),
             "absent stays absent: {json}"
         );
+        // `max_content` follows the repo convention for numbers: it always
+        // serialises (like `components_per_container`), so old and new files
+        // stay interchangeable.
+        assert!(json.contains("\"max_content\":1"), "{json}");
 
         let per_port = CombinerParams {
             components: Some(vec![2, 1]),

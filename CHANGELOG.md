@@ -24,9 +24,14 @@
 
 - **GUI：Combiner 的逐端口 components 编辑**（`per-port components` 复选框 + 每端口数量；离开 pack 模式时自动收起该表，避免写出校验会拒绝的模型）。测试 `a_combiner_can_need_different_counts_per_port`。GUI **154 项**。
 
+- **GUI：Combiner 加 `max content`（同时可攒几组）与逐端口 components 编辑**；测试断言 `max_content` 按仓库惯例始终序列化（与 `components_per_container` 一致），旧新文件可互换。GUI **154 项**。
+
+
 ### 工具与 CI
 
 - **冒烟套件 21 → 22 项**：新增 `per-port components`（缺省收 2 件；`[2,1]` 收 4 件、完成 1 个容器）。
+
+- **冒烟套件 22 → 23 项**：新增 `combiner multi slot`（`max_content: 2` 的 batch：4 件进、4 件出）。
 
 
 ## v1.55.0 — 2026-11-26
