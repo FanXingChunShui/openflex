@@ -2974,6 +2974,67 @@ impl EditForm {
                             .prefix("components "),
                     )
                     .changed();
+                // Per-port component counts (pack only; the validator rejects the
+                // table in join/batch, so the control is hidden there).
+                let pack_mode = p.mode == openflex_model::CombinerMode::Pack;
+                if pack_mode {
+                    let mut per_port = p.components.is_some();
+                    if ui
+                        .checkbox(&mut per_port, "per-port components")
+                        .on_hover_text(
+                            "each component port needs its own count; off = the number above",
+                        )
+                        .changed()
+                    {
+                        p.components = per_port.then(|| vec![1]);
+                        changed = true;
+                    }
+                    let mut clear_components = false;
+                    if let Some(components) = p.components.as_mut() {
+                        let mut remove = None;
+                        for (port, count) in components.iter_mut().enumerate() {
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(count)
+                                            .speed(1.0)
+                                            .range(1..=10_000)
+                                            .prefix("port "),
+                                    )
+                                    .changed()
+                                {
+                                    changed = true;
+                                }
+                                // Port 0 is the container, so the list starts at 1.
+                                ui.label(
+                                    egui::RichText::new(format!("(input {})", port + 1))
+                                        .size(9.0_f32)
+                                        .color(palette::TEXT_DIM),
+                                );
+                                if ui.small_button("x").clicked() {
+                                    remove = Some(port);
+                                }
+                            });
+                        }
+                        if let Some(port) = remove {
+                            components.remove(port);
+                            clear_components = components.is_empty();
+                            changed = true;
+                        }
+                        if ui.small_button("+ component port").clicked() {
+                            components.push(1);
+                            changed = true;
+                        }
+                    }
+                    if clear_components {
+                        p.components = None;
+                    }
+                } else if p.components.is_some() {
+                    // The mode changed under an existing table: drop it rather
+                    // than leave a model the validator will reject.
+                    p.components = None;
+                    changed = true;
+                }
                 changed |= distribution_editor(ui, "setup time", &mut p.setup_time);
                 changed |= distribution_editor(ui, "process time", &mut p.process_time);
                 changed |= object_picker(
@@ -15326,6 +15387,26 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn a_combiner_can_need_different_counts_per_port() {
+        use openflex_model::CombinerParams;
+        let plain = CombinerParams::default();
+        let json = serde_json::to_string(&plain).expect("json");
+        assert!(
+            !json.contains("\"components\""),
+            "absent stays absent: {json}"
+        );
+
+        let per_port = CombinerParams {
+            components: Some(vec![2, 1]),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&per_port).expect("json");
+        assert!(json.contains("\"components\":[2,1]"), "{json}");
+        let back: CombinerParams = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back.components, Some(vec![2, 1]));
     }
 
     #[test]

@@ -10,6 +10,14 @@
 
 - **Combiner 逐端口 components 表（`CombinerParams.components`）**：Pack 模式下每个组件端口可以要不同数量（2 个瓶子 + 1 个盖子），`None` 时沿用 `components_per_container`，**3 个 combiner 基准模型（pack/join/batch）报告 SHA-256 逐位不变**。实现上把 `ObjectRt.components` 从 `Vec<FlowItem>` 换成保留端口号的 `Vec<(u32, FlowItem)>`。**`join`/`batch` 模式下设 `components` 会被 validate 明确拒绝**（而不是静默忽略），错误信息说明"各自模式有独立端口语义"。实测：[2,1] 时 combiner 收 4 件、完成 1 个容器；缺省时只消费 1 个组件。
 
+### 桌面 GUI
+
+- **GUI：Combiner 的逐端口 components 编辑**（`per-port components` 复选框 + 每端口数量；离开 pack 模式时自动收起该表，避免写出校验会拒绝的模型）。测试 `a_combiner_can_need_different_counts_per_port`。GUI **154 项**。
+
+### 工具与 CI
+
+- **冒烟套件 21 → 22 项**：新增 `per-port components`（缺省收 2 件；`[2,1]` 收 4 件、完成 1 个容器）。
+
 
 ## v1.55.0 — 2026-11-26
 

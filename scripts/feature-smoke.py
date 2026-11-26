@@ -399,6 +399,46 @@ def case_table_driven_arrivals():
     )
 
 
+def case_per_port_components():
+    """Pack mode can take different counts from each component port."""
+    def build(components):
+        params = {
+            "mode": "pack",
+            "components_per_container": 1,
+            "process_time": {"distribution": "constant", "value": 1.0},
+        }
+        if components is not None:
+            params["components"] = components
+        return model(
+            [
+                {"name": "S0", "kind": "source", "params": {
+                    "interarrival": {"distribution": "constant", "value": 1000.0},
+                    "max_arrivals": 1}},
+                {"name": "S1", "kind": "source", "params": {
+                    "interarrival": {"distribution": "constant", "value": 5.0},
+                    "max_arrivals": 4}},
+                {"name": "S2", "kind": "source", "params": {
+                    "interarrival": {"distribution": "constant", "value": 5.0},
+                    "max_arrivals": 4}},
+                {"name": "C", "kind": "combiner", "params": params},
+                {"name": "K", "kind": "sink", "params": {}},
+            ],
+            [{"from": "S0", "to": "C"}, {"from": "S1", "to": "C"},
+             {"from": "S2", "to": "C"}, {"from": "C", "to": "K"}],
+            run={"stop_time": 100.0, "seed": 1, "replications": 1},
+        )
+
+    default = report(write("cmp_default", build(None)))
+    per_port = report(write("cmp_per_port", build([2, 1])))
+    assert default["objects"]["C"]["input_count"]["mean"] == 2.0, (
+        "the default takes one container and one component"
+    )
+    assert per_port["objects"]["C"]["input_count"]["mean"] == 4.0, (
+        "two from port 1 and one from port 2 plus the container"
+    )
+    assert per_port["completed"]["mean"] == 1.0
+
+
 def case_extra_failure_source():
     """Two independent failure sources: down time is the union, not the sum."""
     def build(extra):
@@ -736,6 +776,7 @@ CASES = [
     ("transporter acceleration", case_transporter_acceleration),
     ("row number", case_row_number),
     ("extra failure source", case_extra_failure_source),
+    ("per-port components", case_per_port_components),
     ("combiner pack", case_combiner_pack),
     ("timetable off shift", case_timetable_off_shift),
     ("checkpoint resume", case_checkpoint_matches_straight_run),
