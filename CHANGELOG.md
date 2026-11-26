@@ -1,6 +1,25 @@
 # Changelog
 
-## Unreleased
+## v1.55.0 — 2026-11-26
+
+这一版补的是**可靠性建模**：一个对象可以因为**多个互不相关的原因**停机。
+
+**`ProcessorParams.extra_failures`**：在原有的 `failure` 之外再加独立故障源，每个源有自己的
+mtbf / mttr / 首次故障时刻 / 状态计时 / 修理工。对象 down **当且仅当任一源未修复**；
+一个源修完只清自己的停机请求，其它源还在修就继续 down，**重叠期间不重复计入 down**。
+
+**又一次"先抽象、后加功能"。** 第一步是零行为重构：`failure: Option<FailureRt>` → `failures: Vec<FailureRt>`，
+**4 个带故障的基准模型（plain / 状态计时 / 修理工 / MTBF 组）报告 SHA-256 逐位不变**，
+既有 breakdown/repair 测试**一条未改**。在这个过程中还发现并修掉一处单源差异：重新计时会把 per-source 的修理工丢掉。
+
+**明确不做的事**：`extra_failures` 里写 `group` 会被 validate 拒绝，错误信息点名
+`extra_failures[0].group`——"多源共享组"是另一个数量级的问题，与其留一个被忽略的字段，不如明确拒绝。
+
+实测：单源（mtbf 10 / mttr 2）down **10.0s**；再加一个 mtbf 25 / mttr 3 的源后 down **16.0s**。
+
+GUI 里处理器表单多了 `+ failure source`（不提供 group 输入，因为校验会拒绝），冒烟套件扩到 21 项。
+
+发布节奏保持**至少 3 小时一版**。
 
 ### 模型与引擎
 
@@ -21,6 +40,14 @@
 
 - **GUI：处理器的额外故障源编辑器**（`+ failure source`，每源 mtbf/mttr；不提供 group——validate 会拒绝）。测试 `extra_failure_sources_round_trip_without_a_group`。GUI **153 项**。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**1069 passed / 0 failed**；clippy 0 警告、fmt 干净。
+- GUI **153 项**、`openflex-core --lib` **307 项**；smoke **21/21**；示例 **66/66**。
+- `scripts/acceptance.sh` **all golden checks passed**；`check-parity-counts.py` ✅ 51 / 🟡 101 / ⛔ 53 / 📄 3。
+- `check-dead-params.sh` 0 known；`audit-parity-evidence.py --strict` 通过；`check-doc-evidence.sh` 47 名可解析。
+- 独立实测：单源 down 10.0s → 双源 16.0s；`extra_failures[0].group` 被 validate 拒绝并点名。
 
 ## v1.54.0 — 2026-11-26
 
