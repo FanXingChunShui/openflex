@@ -97,7 +97,7 @@
 | ASRSvehicle / Crane / Robot Page（升降速度、行程顺序、关节速度表） | `asrs_vehicle`/`crane`/`robot` 变体 | 🟡 | 有路径策略；无关节/升降速度表与运动学曲线 |
 | Robot Geometry Page（逐关节相对速度/复位位置/手动定位） | 无 | ⛔ | 无关节模型 |
 | NetworkNode Page（最大停留车辆数） | **无**（`max_travelers` 曾是死参数，已移除） | ⛔ | 审计发现该字段声明了但引擎从不读取；实现节点级限额需重写 network 路由的占用模型，因此**删除字段而非保留虚标** |
-| NetworkNodes / Speeds Page（TrafficControl 关联节点、按含量调速度表） | `traffic_control`（capacity/mode/speed_factor） | 🟡 | 准入互斥已生效；**"按含量分档调速度"表**仍只有单一 `speed_factor`，无逐档曲线 |
+| NetworkNodes / Speeds Page（TrafficControl 关联节点、按含量调速度表） | `traffic_control`（capacity/mode/speed_factor + **`speed_by_content`**） | 🟡 | 准入互斥已生效；**按占用量分档调速已支持**：`speed_by_content: [{ up_to, factor }]`，命中"第一个 `occupancy <= up_to`"，都不命中用最后一档，空表回退单一 `speed_factor`（3 个交通基准 SHA 不变）。两处语义写死：**占用量 = 该 control 当前已准入的 traveler 数**（行程开始即时读取）；**分档因子替换 `speed_factor`、不相乘**（多 control 重叠仍各因子相乘）；`un_timed` 不做准入、占用量恒 0 只命中第一档。**仍缺**：关联到具体 NetworkNode 的"按节点含量"语义（我们是 control 级占用量），以及 GUI 编辑该表 |
 | Traffic Control Page（互斥 / 非定时两种模式） | `traffic_control`（`mode: mutual_exclusion` / `un_timed`） | ✅ | 两种模式均生效：互斥按 `capacity` 限名额，`un_timed` 不限名额只缩放 `speed_factor` |
 | Fluid 各类页（Generator/Tank/Mixer/Blender/Splitter/Pipe/Processor/Conveyor/Terminator/ItemToFluid/FluidToItem/Ticker） | 同名 `fluid_*` | 🟡 | 见对象库表；流体页的 Marks（低/中/高液位触发）、Steps（分批延迟）、Sensors（传送带传感器）、Recipe/Percents 表可配置但语义简化 |
 | Fluid Marks Page（低/中/高液位升降触发） | `FluidTankParams.marks: [{ name, level, on_rise, on_fall }]` | ✅ | 任意数量的具名液位标记，上穿/下穿各触发一次；`level ∈ [0, capacity]`，重名/空名被拒。约定：穿越判定以 **tick 采样**为准（步内多次穿越算一次），已写进 `FluidMark` 文档。`fluid_mark_rise_fires_once`、`fluid_mark_fall_fires_once`、`fluid_mark_jitter_counts_each_crossing`、`fluid_mark_and_full_hook_coexist` |

@@ -2807,6 +2807,63 @@ impl EditForm {
                     .size(9.0_f32)
                     .color(palette::TEXT_DIM),
                 );
+                // Speed by occupancy: empty means "use the single speed factor".
+                let mut banded = !p.speed_by_content.is_empty();
+                if ui
+                    .checkbox(&mut banded, "speed by occupancy")
+                    .on_hover_text(
+                        "slower as more travellers are admitted; replaces the speed factor above",
+                    )
+                    .changed()
+                {
+                    p.speed_by_content = if banded {
+                        vec![openflex_model::SpeedBand {
+                            up_to: 2,
+                            factor: 1.0,
+                        }]
+                    } else {
+                        Vec::new()
+                    };
+                    changed = true;
+                }
+                if banded {
+                    let mut remove_band = None;
+                    for (index, band) in p.speed_by_content.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            changed |= ui
+                                .add(
+                                    egui::DragValue::new(&mut band.up_to)
+                                        .speed(1.0)
+                                        .range(0..=100_000)
+                                        .prefix("up to "),
+                                )
+                                .changed();
+                            changed |= ui
+                                .add(
+                                    egui::DragValue::new(&mut band.factor)
+                                        .speed(0.05)
+                                        .range(0.01..=10.0)
+                                        .prefix("factor "),
+                                )
+                                .changed();
+                            if ui.small_button("x").clicked() {
+                                remove_band = Some(index);
+                            }
+                        });
+                    }
+                    if let Some(index) = remove_band {
+                        p.speed_by_content.remove(index);
+                        changed = true;
+                    }
+                    if ui.small_button("+ band").clicked() {
+                        let next = p.speed_by_content.last().map_or(1, |band| band.up_to + 1);
+                        p.speed_by_content.push(openflex_model::SpeedBand {
+                            up_to: next,
+                            factor: 1.0,
+                        });
+                        changed = true;
+                    }
+                }
             }
             ObjectParams::VisualTool(p) => {
                 egui::ComboBox::from_id_salt("visual-shape")
@@ -15398,6 +15455,32 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn traffic_speed_bands_round_trip() {
+        use openflex_model::{SpeedBand, TrafficControlParams};
+        let plain = TrafficControlParams::default();
+        let json = serde_json::to_string(&plain).expect("json");
+        assert!(!json.contains("speed_by_content"), "{json}");
+
+        let banded = TrafficControlParams {
+            speed_by_content: vec![
+                SpeedBand {
+                    up_to: 2,
+                    factor: 1.0,
+                },
+                SpeedBand {
+                    up_to: 5,
+                    factor: 0.5,
+                },
+            ],
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&banded).expect("json");
+        let back: TrafficControlParams = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back.speed_by_content.len(), 2);
+        assert_eq!(back.speed_by_content[1].factor, 0.5);
     }
 
     #[test]

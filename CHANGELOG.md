@@ -31,6 +31,11 @@
 
 - **冒烟套件 23 → 24 项**：新增 `combiner batch parallel`（单槽顺序 busy 0.6；双槽重叠 busy 0.3 —— 并集而非累加）。
 
+### 桌面 GUI
+
+- **GUI：TrafficControl 的 `speed by occupancy` 分档编辑**（勾选后逐档 `up to / factor`，空 = 沿用单一速度因子）。
+  测试 `traffic_speed_bands_round_trip`。GUI **155 项**。
+
 
 ## v1.56.0 — 2026-11-26
 
