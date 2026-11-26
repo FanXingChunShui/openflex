@@ -399,6 +399,39 @@ def case_table_driven_arrivals():
     )
 
 
+def case_sql_aggregates():
+    """query() can count, sum, group and sort by an aggregate."""
+    path = write(
+        "sql_aggregates",
+        model(
+            [
+                {"name": "S", "kind": "source", "params": {}},
+                {"name": "K", "kind": "sink", "params": {}},
+            ],
+            [{"from": "S", "to": "K"}],
+            global_tables={"T": {
+                "columns": ["zone", "amount"],
+                "rows": [["A", 10.0], ["B", 20.0], ["A", 30.0]],
+            }},
+        ),
+    )
+
+    def evaluate(expr):
+        out = run("eval", path, "--expr", expr)
+        if out.returncode != 0:
+            raise AssertionError(f"eval failed: {out.stderr.strip()[:200]}")
+        return out.stdout.strip()
+
+    assert evaluate(
+        'query("SELECT COUNT(*), SUM(amount), AVG(amount), MIN(amount), MAX(amount) FROM T")'
+    ) == "3|60|20|10|30"
+    assert evaluate(
+        'query("SELECT zone, COUNT(*), SUM(amount) FROM T GROUP BY zone '
+        'ORDER BY count(*) DESC")'
+    ) == "A|2|40\nB|1|20"
+    assert evaluate('query("SELECT COUNT(*) FROM T WHERE amount > 100")') == "0"
+
+
 def case_combiner_batch_parallel():
     """Two batch slots overlap, and the object's busy time is their union."""
     def build(max_content):
@@ -843,6 +876,7 @@ CASES = [
     ("per-port components", case_per_port_components),
     ("combiner multi slot", case_combiner_multi_slot),
     ("combiner batch parallel", case_combiner_batch_parallel),
+    ("sql aggregates", case_sql_aggregates),
     ("combiner pack", case_combiner_pack),
     ("timetable off shift", case_timetable_off_shift),
     ("checkpoint resume", case_checkpoint_matches_straight_run),

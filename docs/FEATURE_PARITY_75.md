@@ -271,7 +271,7 @@
 | Custom Libraries（自定义对象库、Dropscript、自动安装） | 无 | ⛔ | 无用户库机制 |
 | ModelLibraries Node（隐藏定义） | 无 | ⛔ | |
 | Kinematics Concepts / Commands（initkinematics/addkinematic/updatekinematics） | 无 | ⛔ | 无运动学 |
-| SQL Queries（query() 命令、SQL 语法过滤/排序/优先级） | `crates/openflex-model/src/sql.rs`：只读子集 + 表达式里 `query("…")` | 🟡 | 已实现 `SELECT … FROM … [WHERE] [ORDER BY] [LIMIT]` 子集（`query()` 可从表达式调用）；**缺 JOIN / 子查询 / 聚合 / 分组**。证据：`parses_every_clause`、`filters_and_sorts` 等 5 个 sql.rs 单测 |
+| SQL Queries（query() 命令、SQL 语法过滤/排序/优先级） | `crates/openflex-model/src/sql.rs`：只读子集 + 表达式里 `query("…")` | 🟡 | 已实现 `SELECT … FROM … [WHERE] [GROUP BY] [ORDER BY] [LIMIT]` 子集（`query()` 可从表达式调用）；**聚合已支持**：`COUNT(*) / SUM / AVG / MIN / MAX` + `GROUP BY`，`ORDER BY` 可用聚合（`count(*)` 形式）。语义写死：空输入 COUNT=0、SUM=0、AVG/MIN/MAX=**空串**、GROUP BY 无匹配行=0 行；**SUM 遇字符串报错并点名 1-based 行号+列名**（不跳过、不当 0）；聚合混普通列而无 GROUP BY 报错。独立实测：`3|60|20|10|30`、`A|2|40` / `B|1|20`（按 count 降序）、空 WHERE 得 `0`。**仍缺**：JOIN / 子查询。 |
 | Sampler（引用对象/变量/标签/表的可视化取引用工具） | GUI `object_picker`（下拉候选 + 手输 + `unknown` 提示） | 🟡 | `openflex-gui` 的 `object_picker` 定义，7 处调用（setup/process operator、home×2、charger、shaft）；候选按语义过滤（operator 只列 Dispatcher/Resource），名字不存在时琥珀 `unknown`；**只覆盖 5 个对象引用字段**，没有 FlexSim 那样对标签、表格单元格、统计项的取样 |
 | State List（状态号与宏对照表：STOPPED/TRAVEL_LOADED/…） | `StateTimes`：5 个顶层状态 + 6 个明细项 | 🟡 | 实际有 **idle/busy/blocked/down/off_shift** 顶层，加明细 **setup/processing/waiting_for_operator/waiting_for_transport/door_opening/door_closing**（`stats.rs`），比 5 个更细；仍**无状态号↔宏的对照表**，也无 Travel Empty/Travel Loaded/Loading/Unloading 这类执行器状态 |
 | View Attributes Reference（自定义 GUI 的视图属性全集） | 无 | ⛔ | 依赖自建 GUI |
