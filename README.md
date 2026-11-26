@@ -29,9 +29,18 @@ Linux 上安装使用。
 | 报告：终端表格、JSON、CSV、Markdown | ✅ |
 | CLI：validate / run / experiment / report / compare / import / layout / serve / schema / completions | ✅ |
 | macOS / Windows / Linux 安装包与安装脚本 | ✅ |
+| 全局表（Global Table）+ `query()`：`SELECT … WHERE / GROUP BY / ORDER BY / LIMIT`，含 `COUNT/SUM/AVG/MIN/MAX` 聚合 | ✅（无 JOIN / 子查询） |
+| 任务序列：条件分支、优先级、抢占、逐段事件、自定义时长 | 🟡（`append` 模式仍为两段/三段） |
+| 路网与交通控制：互斥 / 不限时、**按占用量分档调速** | ✅ |
+| 故障与维修：MTBF / MTTR + **多个独立故障源**（对象因多个原因停机） | ✅（组是对象属性，非独立组对象） |
+| Process Flow、FlexScript（rhai 沙箱、模型层 + 引擎执行） | ✅ |
+| 流体（11 对象，压差/液位/步进延迟）、人员（network/grid A*）、AGV（电池/充电/路网）、电梯 | 🟡（见矩阵逐行差异） |
+| 模型文档生成 `openflex document`（对象/连接/触发器/校验结果，`--format json`） | ✅ |
+| 检查点与断点续跑、确定性回放（同 seed 逐位相同） | ✅ |
 | 3D 图形界面（FlexSim 的 3D 视图） | ⛔ 规划中；当前提供无界面 CLI 与结构化输出 |
 
-完整的兼容矩阵见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)。
+完整的兼容矩阵见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)；
+**与 FlexSim 7.5 的逐行对照（208 行，✅/🟡/⛔）见 [docs/FEATURE_PARITY_75.md](docs/FEATURE_PARITY_75.md)。**
 
 ## 快速开始
 
