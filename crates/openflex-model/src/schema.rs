@@ -28,6 +28,26 @@ pub fn json_schema() -> Value {
 fn definitions() -> Value {
     let mut defs = Map::new();
     defs.insert("model".into(), model_schema());
+    defs.insert(
+        "traffic_control_params".into(),
+        params_schema(json!({
+            "capacity": { "type": "integer", "minimum": 1, "default": 1 },
+            "mode": { "enum": ["mutual_exclusion", "un_timed"], "default": "mutual_exclusion" },
+            "speed_factor": { "type": "number", "exclusiveMinimum": 0.0, "default": 1.0 },
+            "speed_by_content": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "up_to": { "type": "integer", "minimum": 0 },
+                        "factor": { "type": "number", "exclusiveMinimum": 0.0 }
+                    },
+                    "required": ["up_to", "factor"],
+                    "additionalProperties": false
+                }
+            }
+        })),
+    );
     defs.insert("object".into(), object_schema());
     defs.insert("connection".into(), connection_schema());
     defs.insert(
@@ -1047,6 +1067,7 @@ fn object_schema() -> Value {
         "fluid_sink",
         "fluid_pipe",
         "motor",
+        "traffic_control",
     ];
     let param_defs = [
         "source_params",
@@ -1078,6 +1099,7 @@ fn object_schema() -> Value {
         "fluid_sink_params",
         "fluid_pipe_params",
         "motor_params",
+        "traffic_control_params",
     ];
     let links: Vec<Value> = kinds
         .iter()
@@ -1553,6 +1575,13 @@ mod tests {
             schema["$defs"]["source_params"]["properties"]
                 .get("arrival_schedule_from_table")
                 .is_some()
+        );
+        let traffic = &schema["$defs"]["traffic_control_params"]["properties"];
+        assert!(traffic.get("speed_by_content").is_some());
+        assert!(
+            schema["$defs"]["object"]["properties"]["kind"]["enum"]
+                .as_array()
+                .is_some_and(|kinds| kinds.iter().any(|kind| kind == "traffic_control"))
         );
         assert!(schema["$defs"]["global_table"].get("properties").is_some());
         assert!(schema["$defs"]["table_cell"].get("oneOf").is_some());

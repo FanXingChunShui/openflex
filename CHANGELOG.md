@@ -16,6 +16,17 @@
   逐槽 setup→process、逐槽操作员（setup/process 可用不同 dispatcher，一槽等操作员不阻塞另一槽的 process）。
   独立实测（stop 10、setup 1 + process 2）：完成数都为 4，但 **busy 0.6（单槽顺序）vs 0.3（双槽重叠）**——正是并集而非累加。
 
+- **TrafficControl 按占用量分档调速（`speed_by_content`）**：矩阵 🟡「按含量分档调速度」。
+  两处语义在注释里写死，不留模糊：
+  1. **占用量 = 该 TrafficControl 当前已准入的 traveler 数**（`traffic_occupancy`），在计算该段行程速度时即时读取——
+     不是全局对象数、也不是队列长度；
+  2. **分档因子替换该 control 的单一 `speed_factor`，不相乘**；多个 control 重叠时仍按原有"各 control 因子相乘"。
+     `un_timed` 不做准入、占用量恒为 0，只会命中第一档——已写明。
+  命中规则：第一个 `occupancy <= up_to`；都不命中用最后一档；空表 = 原路径（**3 个交通基准 SHA 逐位不变**）。
+  顺带补了一个 schema 漏登记：`traffic_control` kind 此前**没有在 schema 里登记**。
+  独立实测：乱序 `up_to` 与 `factor: 0` 分别报错并点名 `speed_by_content[1].up_to` / `speed_by_content[0].factor`。
+
+
 ### 工具与 CI
 
 - **冒烟套件 23 → 24 项**：新增 `combiner batch parallel`（单槽顺序 busy 0.6；双槽重叠 busy 0.3 —— 并集而非累加）。

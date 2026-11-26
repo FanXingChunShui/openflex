@@ -1723,6 +1723,24 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                     "must be positive",
                 ));
             }
+            let mut previous = None;
+            for (index, band) in params.speed_by_content.iter().enumerate() {
+                if !band.factor.is_finite() || band.factor <= 0.0 {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("speed_by_content[{index}].factor")),
+                        "must be positive",
+                    ));
+                }
+                if let Some(previous) = previous
+                    && band.up_to <= previous
+                {
+                    issues.push(ValidationIssue::new(
+                        location(&format!("speed_by_content[{index}].up_to")),
+                        "up_to values must be strictly increasing",
+                    ));
+                }
+                previous = Some(band.up_to);
+            }
         }
         crate::model::ObjectParams::VisualTool(params) => {
             if params

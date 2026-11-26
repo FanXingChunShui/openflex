@@ -538,6 +538,8 @@ struct TrafficControlRt {
     /// speed factor.
     mutual_exclusion: bool,
     speed_factor: f64,
+    /// task-213: content → speed factor table; empty keeps `speed_factor`.
+    speed_by_content: Vec<(u32, f64)>,
     /// Network-node names connected to the control object (A connections).
     members: std::collections::HashSet<String>,
 }
@@ -9249,7 +9251,10 @@ impl<'m> Simulation<'m> {
     }
 
     /// task-148: speed multiplier for a leg crossing controlled areas (both
-    /// modes apply it; `un_timed` only applies this factor).
+    /// modes apply it; `un_timed` only applies this factor). task-213: when a
+    /// control has `speed_by_content`, its factor is looked up from the current
+    /// admitted count (`traffic_occupancy`, sampled when the leg speed is
+    /// computed) and replaces that control's single `speed_factor`.
     fn traffic_speed_factor(&self, from: [f64; 2], to: [f64; 2]) -> f64 {
         let (Some(from_node), Some(to_node)) = (
             self.nearest_network_node(from),
@@ -9259,10 +9264,29 @@ impl<'m> Simulation<'m> {
         };
         self.traffic_controls
             .iter()
-            .filter(|control| {
+            .enumerate()
+            .filter(|(_, control)| {
                 control.members.contains(from_node) && control.members.contains(to_node)
             })
-            .map(|control| control.speed_factor)
+            .map(|(index, control)| {
+                if control.speed_by_content.is_empty() {
+                    control.speed_factor
+                } else {
+                    let occupancy = self.traffic_occupancy.get(index).copied().unwrap_or(0);
+                    control
+                        .speed_by_content
+                        .iter()
+                        .find(|(up_to, _)| occupancy <= *up_to)
+                        .map(|(_, factor)| *factor)
+                        .unwrap_or_else(|| {
+                            control
+                                .speed_by_content
+                                .last()
+                                .map(|(_, factor)| *factor)
+                                .unwrap_or(control.speed_factor)
+                        })
+                }
+            })
             .product::<f64>()
             .max(EPS)
     }
@@ -14429,6 +14453,11 @@ fn build_traffic_controls(model: &Model) -> Vec<TrafficControlRt> {
             capacity: params.capacity.max(1),
             mutual_exclusion: params.mode == TrafficMode::MutualExclusion,
             speed_factor: params.speed_factor.max(EPS),
+            speed_by_content: params
+                .speed_by_content
+                .iter()
+                .map(|band| (band.up_to, band.factor.max(EPS)))
+                .collect(),
             members,
         });
     }
@@ -24723,6 +24752,224 @@ mod tests {
                 crate::sha256::hex(text.as_bytes()),
                 expected[index],
                 "combiner slot baseline {index} changed"
+            );
+        }
+    }
+
+    fn traffic_band_model_json(count: u32, capacity: u32, bands: &str) -> String {
+        let mut objects: Vec<String> = Vec::new();
+        let mut connections: Vec<String> = Vec::new();
+        for index in 1..=count {
+            objects.push(format!(
+                r#"{{ "name": "S{index}", "kind": "source", "params": {{
+                    "interarrival": {{ "distribution": "constant", "value": 1.0 }},
+                    "max_arrivals": 1, "first_arrival": {first} }} }}"#,
+                first = (index - 1) as f64
+            ));
+            objects.push(format!(
+                r#"{{ "name": "P{index}", "kind": "processor", "pos": [10.0, 0.0], "params": {{
+                    "process_time": {{ "distribution": "constant", "value": 1.0 }},
+                    "process_operator": "D" }} }}"#
+            ));
+            objects.push(format!(
+                r#"{{ "name": "K{index}", "kind": "sink", "params": {{}} }}"#
+            ));
+            objects.push(format!(
+                r#"{{ "name": "T{index}", "kind": "transporter", "pos": [0.0, 0.0],
+                    "params": {{ "speed": 1.0, "home": "D" }} }}"#
+            ));
+            connections.push(format!(r#"{{ "from": "S{index}", "to": "P{index}" }}"#));
+            connections.push(format!(r#"{{ "from": "P{index}", "to": "K{index}" }}"#));
+            connections.push(format!(r#"{{ "from": "D", "to": "T{index}" }}"#));
+        }
+        objects.push(
+            r#"{ "name": "D", "kind": "dispatcher", "pos": [0.0, 0.0], "params": {} }"#.into(),
+        );
+        objects.push(
+            r#"{ "name": "N1", "kind": "network_node", "pos": [0.0, 0.0],
+                "params": { "edges": [ { "from": "N1", "to": "N2", "distance": 10.0 } ] } }"#
+                .into(),
+        );
+        objects.push(
+            r#"{ "name": "N2", "kind": "network_node", "pos": [10.0, 0.0], "params": {} }"#.into(),
+        );
+        objects.push(format!(
+            r#"{{ "name": "TC", "kind": "traffic_control", "pos": [5.0, 5.0], "params": {{
+                "capacity": {capacity}, "mode": "mutual_exclusion",
+                "speed_by_content": {bands} }} }}"#
+        ));
+        connections.push(r#"{ "from": "TC", "to": "N1" }"#.into());
+        connections.push(r#"{ "from": "TC", "to": "N2" }"#.into());
+        format!(
+            r#"{{ "format": "openflex-model", "version": 1, "name": "traffic-bands",
+                 "run": {{ "stop_time": 100.0, "seed": 1, "replications": 1 }},
+                 "objects": [{}], "connections": [{}] }}"#,
+            objects.join(",\n            "),
+            connections.join(",\n            ")
+        )
+    }
+
+    fn traffic_band_model(count: u32, capacity: u32, bands: &str) -> Model {
+        Model::from_json(&traffic_band_model_json(count, capacity, bands))
+            .expect("traffic band model")
+    }
+
+    fn all_loaded_times(trace: &TraceLog) -> Vec<f64> {
+        trace
+            .events
+            .iter()
+            .filter(|event| event.event == "operator_loaded" && event.object.starts_with('T'))
+            .map(|event| event.time)
+            .collect()
+    }
+
+    /// task-213: the first matching band wins; occupancy 3..5 uses factor 0.5.
+    #[test]
+    fn traffic_bands_pick_the_first_matching_band() {
+        let model = traffic_band_model(
+            6,
+            6,
+            r#"[{ "up_to": 2, "factor": 1.0 }, { "up_to": 5, "factor": 0.5 }]"#,
+        );
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let mut times = all_loaded_times(&trace);
+        times.sort_by(|a, b| a.partial_cmp(b).expect("time"));
+        assert_eq!(times.len(), 6, "{times:?}");
+        assert!((times[0] - 10.0).abs() < 1e-9, "{times:?}");
+        assert!((times[1] - 11.0).abs() < 1e-9, "{times:?}");
+        for (offset, time) in times[2..].iter().enumerate() {
+            assert!(
+                (*time - (22.0 + offset as f64)).abs() < 1e-9,
+                "occupancy 3..5 doubles: {times:?}"
+            );
+        }
+    }
+
+    /// task-213: occupancy above the last band still uses the last factor.
+    #[test]
+    fn traffic_bands_above_the_last_band_use_the_last_factor() {
+        let model = traffic_band_model(
+            6,
+            6,
+            r#"[{ "up_to": 2, "factor": 1.0 }, { "up_to": 5, "factor": 0.5 }]"#,
+        );
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let mut times = all_loaded_times(&trace);
+        times.sort_by(|a, b| a.partial_cmp(b).expect("time"));
+        assert!((times[4] - 24.0).abs() < 1e-9, "{times:?}");
+        assert!((times[5] - 25.0).abs() < 1e-9, "{times:?}");
+        let mut sim = Simulation::new(
+            &model,
+            SimConfig {
+                stop_time: 100.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            false,
+        )
+        .expect("sim");
+        sim.traffic_occupancy[0] = 5;
+        let five = sim.traffic_speed_factor([0.0, 0.0], [10.0, 0.0]);
+        sim.traffic_occupancy[0] = 6;
+        let six = sim.traffic_speed_factor([0.0, 0.0], [10.0, 0.0]);
+        assert!((five - 0.5).abs() < 1e-9);
+        assert!(
+            (six - five).abs() < 1e-9,
+            "occupancy 6 must use the same last factor as 5: {six} vs {five}"
+        );
+    }
+
+    /// task-213: mutual exclusion capacity caps occupancy, so it cannot jump a
+    /// band that lies above capacity.
+    #[test]
+    fn traffic_bands_respect_mutual_exclusion_capacity() {
+        let model = traffic_band_model(
+            3,
+            2,
+            r#"[{ "up_to": 1, "factor": 1.0 }, { "up_to": 2, "factor": 0.5 },
+                { "up_to": 5, "factor": 0.25 }]"#,
+        );
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = crate::simulate_traced(&model, &config, 0).expect("run");
+        let times = all_loaded_times(&trace);
+        assert_eq!(times.len(), 3, "{times:?}");
+        assert!(
+            times.iter().all(|time| *time < 40.0 + 1e-9),
+            "capacity 2 never admits the 0.25 band: {times:?}"
+        );
+    }
+
+    /// task-213: band order and positive factor are validated at the field.
+    #[test]
+    fn traffic_band_validation_names_the_field() {
+        let bad_order = traffic_band_model_json(
+            1,
+            1,
+            r#"[{ "up_to": 5, "factor": 1.0 }, { "up_to": 2, "factor": 0.5 }]"#,
+        );
+        let error = Model::from_json(&bad_order).expect_err("bad order");
+        assert!(
+            error.to_string().contains("speed_by_content[1].up_to"),
+            "{error}"
+        );
+        let bad_factor = traffic_band_model_json(1, 1, r#"[{ "up_to": 2, "factor": 0.0 }]"#);
+        let error = Model::from_json(&bad_factor).expect_err("bad factor");
+        assert!(
+            error.to_string().contains("speed_by_content[0].factor"),
+            "{error}"
+        );
+    }
+
+    /// task-213: banded traffic models are deterministic per seed.
+    #[test]
+    fn traffic_bands_are_deterministic() {
+        let model = traffic_band_model(
+            6,
+            6,
+            r#"[{ "up_to": 2, "factor": 1.0 }, { "up_to": 5, "factor": 0.5 }]"#,
+        );
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
+    }
+
+    /// task-213: empty speed_by_content keeps the three traffic baselines.
+    #[test]
+    fn traffic_controls_without_bands_keep_the_reports() {
+        let models = [
+            traffic_model("mutual_exclusion", 1, 1.0),
+            traffic_model("mutual_exclusion", 2, 0.5),
+            traffic_model("un_timed", 1, 0.5),
+        ];
+        let expected = [
+            "1457477a89d747b9500c8951420a8068101198fb3773ebbcc709d91792cc5ee5",
+            "8d52e6556a21677c034011093b4a959dc66135ed4370366fa6471d8261007212",
+            "8d52e6556a21677c034011093b4a959dc66135ed4370366fa6471d8261007212",
+        ];
+        for (index, model) in models.iter().enumerate() {
+            let report = crate::run_model(model).expect("report");
+            let text = serde_json::to_string(&report).expect("json");
+            assert_eq!(
+                crate::sha256::hex(text.as_bytes()),
+                expected[index],
+                "traffic baseline {index} changed"
             );
         }
     }

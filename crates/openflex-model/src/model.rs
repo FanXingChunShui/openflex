@@ -3470,10 +3470,34 @@ pub struct TrafficControlParams {
     #[serde(default)]
     pub mode: TrafficMode,
     /// Multiplier applied to traveller speed inside the area (1.0 = unchanged).
+    /// Ignored when `speed_by_content` is non-empty: that table's factor
+    /// **replaces** this single factor (they are never multiplied).
     #[serde(default = "one_f64")]
     pub speed_factor: f64,
+    /// task-213: speed factor by current **admitted traveller count**.
+    ///
+    /// The occupancy is `admitted` — the number of travellers this control has
+    /// admitted at the moment the leg's speed is calculated (not global object
+    /// count or queue length). The first band with `occupancy <= up_to` wins;
+    /// above the last band the last factor is used. Each non-empty table
+    /// **replaces** `speed_factor` for that control (no multiplication).
+    /// Empty keeps the historical single `speed_factor`. `un_timed` does not
+    /// admit travellers, so its occupancy is always 0 (only the first band can
+    /// apply there).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub speed_by_content: Vec<SpeedBand>,
     #[serde(default)]
     pub triggers: Triggers,
+}
+
+/// task-213: one row of a TrafficControl's content → speed factor table.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpeedBand {
+    /// Inclusive upper bound of the admitted traveller count.
+    pub up_to: u32,
+    /// Speed multiplier for this band; must be positive.
+    pub factor: f64,
 }
 
 impl Default for TrafficControlParams {
@@ -3482,6 +3506,7 @@ impl Default for TrafficControlParams {
             capacity: 1,
             mode: TrafficMode::MutualExclusion,
             speed_factor: 1.0,
+            speed_by_content: Vec::new(),
             triggers: Triggers::default(),
         }
     }
