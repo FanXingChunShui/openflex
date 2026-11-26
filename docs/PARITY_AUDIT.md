@@ -89,3 +89,49 @@
 - 仿真类行统一可用 `openflex run <model> --format json`；这只是模型级复现，不是对每个引用测试的逐条重放。
 - Model Documentation 用 `openflex document <model> --format json`；Item Trace 用 `openflex run --trace <file>` + `openflex trace --item <id> <file>`；Experimenter 用 `openflex experiment <model>` / `openflex report --compare`。
 - Quick Properties、Find Objects、Table Editor 属于 GUI 交互；当前 CLI 没有等价的面板操作，故不能端到端复现。
+
+---
+
+## 第二轮取证（v1.53.0 起）
+
+第一轮把我自己的数字纠正了，但**它的方法有边界**：只核对"引用的测试名存在"，不核对**测试断言的是行为还是解析**。
+第二轮就是被这个边界教训出来的。
+
+### 1. 一个"标着 ✅ 却完全失效"的功能
+
+矩阵写着"表驱动到达已接线（`engine.rs` 读全局表）"，实测 **`created 0.0`** —— 一个物品都不创建，而 `validate` 通过。
+原引用测试 `source_can_load_its_arrival_schedule_from_a_table` **只验证了 `Model::apply_table_reference` 这个解析器**，
+从没验证引擎用了它；而引擎只读 inline 到达表，表驱动的那条路径在第一行就 `return` 了。
+
+**第一轮为什么没抓到**：它按"测试名存在 = 有证据"判定，而"解析器测试"和"行为测试"在名字上无法区分。
+**已修**（`crates/openflex-core/tests/table_arrivals.rs`），并按新工具的分类规则重审了全部 ✅ 行。
+
+### 2. 把边界变成工具：`scripts/audit-parity-evidence.py`
+
+按测试所在 crate 给证据分级：
+
+| 级别 | 位置 | 含义 |
+|---|---|---|
+| `behaviour` | `openflex-core`（src/tests）、`openflex-cli` tests | 会跑引擎，能证明"行为" |
+| `model` | `openflex-model`（src/tests） | 只证明解析/校验 |
+| `report` | `openflex-report`、`openflex-gui` tests | 证明输出/UI |
+
+**只用 `model` 级证据撑起来的 ✅ 会被报出来**——那正是表驱动到达的失效形态。
+它还会比对台账的结论等级、检查矩阵行内引用的名字是否真是测试函数。
+
+### 3. 抓到了过期引用
+
+矩阵与本文档都还在引用 `mixer_delay_zero_keeps_the_report`，而该测试早已改名。
+`check-doc-evidence.sh` 只查台账、**从不查矩阵行**。现在补了白名单机制
+（`docs/evidence-non-test-names.txt`：字段名/事件名/枚举值），白名单之外"像测试却查无此 fn"的名字会让 CI 失败。
+
+### 4. 剩余两条"表单往返级"证据（已写明等级）
+
+- Quick Properties：面板本身不产生行为，只能测"改完参数后模型里的值正确"。矩阵里已标注该口径。
+- Table Editor：已补 `editing_the_table_changes_the_arrivals`（改单元格 → 到达数 2→4），
+  因为它就是编辑器的数据路径；矩阵里同时写明它不只是表单往返。
+
+### 5. 计数不再手写
+
+上面第一轮的"✅ 50 / 台账 43 / 卡 51"那种漂移不会再发生：
+`scripts/check-parity-counts.py` 从表格本身重算并核对汇总行。**以它为准**，本文档里的历史数字只是当时的快照。
