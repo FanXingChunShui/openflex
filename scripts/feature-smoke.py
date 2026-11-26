@@ -399,6 +399,39 @@ def case_table_driven_arrivals():
     )
 
 
+def case_combiner_batch_parallel():
+    """Two batch slots overlap, and the object's busy time is their union."""
+    def build(max_content):
+        return model(
+            [
+                {"name": "S0", "kind": "source", "params": {
+                    "interarrival": {"distribution": "constant", "value": 1.0},
+                    "items_per_arrival": 2, "max_arrivals": 1, "first_arrival": 0.0}},
+                {"name": "S1", "kind": "source", "params": {
+                    "interarrival": {"distribution": "constant", "value": 1.0},
+                    "items_per_arrival": 2, "max_arrivals": 1, "first_arrival": 0.0}},
+                {"name": "C", "kind": "combiner", "params": {
+                    "mode": "batch", "max_content": max_content,
+                    "components_per_container": 1,
+                    "setup_time": {"distribution": "constant", "value": 1.0},
+                    "process_time": {"distribution": "constant", "value": 2.0}}},
+                {"name": "K", "kind": "sink", "params": {}},
+            ],
+            [{"from": "S0", "to": "C"}, {"from": "S1", "to": "C"},
+             {"from": "C", "to": "K"}],
+            run={"stop_time": 10.0, "seed": 1, "replications": 1},
+        )
+
+    one = report(write("batch_serial", build(1)))
+    two = report(write("batch_parallel", build(2)))
+    busy_one = round(one["objects"]["C"]["busy_fraction"]["mean"], 3)
+    busy_two = round(two["objects"]["C"]["busy_fraction"]["mean"], 3)
+    assert busy_one == 0.6, f"two 3s batches in a row: {busy_one}"
+    assert busy_two == 0.3, (
+        f"overlapping batches must take half the busy time, not double: {busy_two}"
+    )
+
+
 def case_combiner_multi_slot():
     """A combiner can stage two groups at once (batch still processes them in turn)."""
     path = write(
@@ -809,6 +842,7 @@ CASES = [
     ("extra failure source", case_extra_failure_source),
     ("per-port components", case_per_port_components),
     ("combiner multi slot", case_combiner_multi_slot),
+    ("combiner batch parallel", case_combiner_batch_parallel),
     ("combiner pack", case_combiner_pack),
     ("timetable off shift", case_timetable_off_shift),
     ("checkpoint resume", case_checkpoint_matches_straight_run),

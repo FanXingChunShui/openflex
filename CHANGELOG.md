@@ -16,6 +16,10 @@
   逐槽 setup→process、逐槽操作员（setup/process 可用不同 dispatcher，一槽等操作员不阻塞另一槽的 process）。
   独立实测（stop 10、setup 1 + process 2）：完成数都为 4，但 **busy 0.6（单槽顺序）vs 0.3（双槽重叠）**——正是并集而非累加。
 
+### 工具与 CI
+
+- **冒烟套件 23 → 24 项**：新增 `combiner batch parallel`（单槽顺序 busy 0.6；双槽重叠 busy 0.3 —— 并集而非累加）。
+
 
 ## v1.56.0 — 2026-11-26
 
