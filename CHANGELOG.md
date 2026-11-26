@@ -13,6 +13,14 @@
   **明确不做**：`extra_failures` 里的 `group` 被 validate 拒绝——"多源共享组"是另一个数量级的问题，错误信息会点名字段。
   独立实测：单源 down 10.0s；加一个 mtbf 25 / mttr 3 的源后 down 16.0s。
 
+### 工具与 CI
+
+- **冒烟套件 20 → 21 项**：新增 `extra failure source`（单源 down 10.0s；加 mtbf 25 / mttr 3 的源后 16.0s）。
+
+### 桌面 GUI
+
+- **GUI：处理器的额外故障源编辑器**（`+ failure source`，每源 mtbf/mttr；不提供 group——validate 会拒绝）。测试 `extra_failure_sources_round_trip_without_a_group`。GUI **153 项**。
+
 
 ## v1.54.0 — 2026-11-26
 

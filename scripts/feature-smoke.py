@@ -399,6 +399,43 @@ def case_table_driven_arrivals():
     )
 
 
+def case_extra_failure_source():
+    """Two independent failure sources: down time is the union, not the sum."""
+    def build(extra):
+        processor = {
+            "process_time": {"distribution": "constant", "value": 100.0},
+            "failure": {
+                "mtbf": {"distribution": "constant", "value": 10.0},
+                "mttr": {"distribution": "constant", "value": 2.0},
+            },
+        }
+        if extra:
+            processor["extra_failures"] = [{
+                "mtbf": {"distribution": "constant", "value": 25.0},
+                "mttr": {"distribution": "constant", "value": 3.0},
+            }]
+        return model(
+            [
+                {"name": "S", "kind": "source", "params": {
+                    "interarrival": {"distribution": "constant", "value": 1000.0},
+                    "max_arrivals": 1}},
+                {"name": "P", "kind": "processor", "params": processor},
+                {"name": "K", "kind": "sink", "params": {}},
+            ],
+            [{"from": "S", "to": "P"}, {"from": "P", "to": "K"}],
+            run={"stop_time": 60.0, "seed": 1, "replications": 1},
+        )
+
+    single = report(write("fail_one", build(False)))
+    pair = report(write("fail_two", build(True)))
+    down_one = single["objects"]["P"]["down_fraction"]["mean"] * 60.0
+    down_two = pair["objects"]["P"]["down_fraction"]["mean"] * 60.0
+    assert round(down_one, 3) == 10.0, f"five 2s repairs = 10s down: {down_one}"
+    assert round(down_two, 3) == 16.0, (
+        f"the second source adds its own repair windows: {down_two}"
+    )
+
+
 def case_row_number():
     """`on_create` sees the arrival-table row, and -1 when there is no row."""
     table_model = write(
@@ -698,6 +735,7 @@ CASES = [
     ("table driven arrivals", case_table_driven_arrivals),
     ("transporter acceleration", case_transporter_acceleration),
     ("row number", case_row_number),
+    ("extra failure source", case_extra_failure_source),
     ("combiner pack", case_combiner_pack),
     ("timetable off shift", case_timetable_off_shift),
     ("checkpoint resume", case_checkpoint_matches_straight_run),

@@ -1625,6 +1625,46 @@ impl EditForm {
                         changed = true;
                     }
                 }
+                // Additional independent failure sources: the object stays down
+                // while *any* of them is being repaired. Groups are not offered
+                // here — the validator rejects `group` on an extra source.
+                let mut remove_source = None;
+                for (index, source) in p.extra_failures.iter_mut().enumerate() {
+                    ui.push_id(("extra-failure", index), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("source {}", index + 2))
+                                    .size(9.0_f32)
+                                    .monospace()
+                                    .color(palette::TEXT_DIM),
+                            );
+                            if ui
+                                .small_button("x")
+                                .on_hover_text("remove this failure source")
+                                .clicked()
+                            {
+                                remove_source = Some(index);
+                            }
+                        });
+                        changed |= distribution_editor(ui, "  mtbf", &mut source.mtbf);
+                        changed |= distribution_editor(ui, "  mttr", &mut source.mttr);
+                    });
+                }
+                if let Some(index) = remove_source {
+                    p.extra_failures.remove(index);
+                    changed = true;
+                }
+                if ui.small_button("+ failure source").clicked() {
+                    p.extra_failures.push(openflex_model::FailureParams {
+                        mtbf: openflex_model::Distribution::Constant { value: 100.0 },
+                        mttr: openflex_model::Distribution::Constant { value: 10.0 },
+                        repair_operator: None,
+                        first_failure_time: None,
+                        count_time_in_states: Vec::new(),
+                        group: None,
+                    });
+                    changed = true;
+                }
             }
             ObjectParams::Conveyor(p) | ObjectParams::Escalator(p) => {
                 changed |= ui
@@ -15286,6 +15326,36 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn extra_failure_sources_round_trip_without_a_group() {
+        // The form only ever creates sources with `group: None`; the validator
+        // rejects grouping on an extra source, so the editor must not offer it.
+        use openflex_model::{Distribution, FailureParams, ProcessorParams};
+        let params = ProcessorParams {
+            extra_failures: vec![FailureParams {
+                mtbf: Distribution::Constant { value: 25.0 },
+                mttr: Distribution::Constant { value: 3.0 },
+                repair_operator: None,
+                first_failure_time: None,
+                count_time_in_states: Vec::new(),
+                group: None,
+            }],
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&params).expect("json");
+        assert!(json.contains("extra_failures"), "{json}");
+        let back: ProcessorParams = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back.extra_failures.len(), 1);
+        assert!(back.extra_failures[0].group.is_none());
+
+        let plain = ProcessorParams::default();
+        let json = serde_json::to_string(&plain).expect("json");
+        assert!(
+            !json.contains("extra_failures"),
+            "absent stays absent: {json}"
+        );
     }
 
     #[test]

@@ -88,7 +88,7 @@
 | Rack Page（Floor Storage、Shelf Tilt、Pick/Place Y Offset、标记货位） | `rack` 四类 + `aisles`/`bays`/`pick_policy`/`min_dwell` | 🟡 | 无 Floor Storage 模式、无倾斜/Y 偏移视觉量、无"已叫车货位高亮" |
 | Rack SizeTable Page（逐 bay/level 自定义尺寸） | 无 | ⛔ | 只支持均匀网格 |
 | BasicFR Advanced Page（Transport Out Notify/Complete 等专属触发器） | `basic_fr` 通用触发器 | ⛔ | 无运输通知类触发器 |
-| Breakdowns / Breaks Page（MTBF/MTTR 成员列表，一对象可属多个 MTBF 组） | `failure` 在对象上（非独立组对象） | 🟡 | 故障参数已含首次故障与状态计时；**不能表达"一个对象属于多个 MTBF/MTTR 组"**，也无"多个停机请求叠加"的停机栈 |
+| Breakdowns / Breaks Page（MTBF/MTTR 成员列表，一对象可属多个 MTBF 组） | `failure` + **`extra_failures`**（都在对象上，非独立组对象） | 🟡 | **多故障源已支持**：`extra_failures: Vec<FailureParams>`，每源独立 mtbf/mttr/首次故障/状态计时/修理工；对象 down **当且仅当任一源未修复**，一源修完只清自己的停机请求，**重叠期间不重复计入 down**。先把 `failure: Option` 重构为 `failures: Vec`（**4 个基准模型 SHA-256 不变**、既有测试一条未改）再加功能。**仍缺**：独立的 MTBF/MTTR **组对象**（FlexSim 里组是一个可列成员的对象；我们是对象上的属性），且 `extra_failures` 里写 `group` 被 validate 拒绝（多源共享组未实现，错误点名字段）。实测：单源 down 10.0s；加 mtbf 25/mttr 3 的源后 16.0s |
 | Container Page（容器件的打包方法） | 无容器件概念 | ⛔ | Flowitem Bin 的 Container 类型与打包方法未实现 |
 | Container Functionality Page（VisualTool 内含对象时的输入端口代理） | `visual_tool` 存在 | ⛔ | 无"把输入连接动作转交给内部对象"的能力 |
 | Collision Page（碰撞检测球、检查间隔） | 无 | ⛔ | TaskExecuter 无碰撞检测 |
