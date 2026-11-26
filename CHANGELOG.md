@@ -39,6 +39,11 @@
 
 - **冒烟套件 24 → 25 项**：新增 `sql aggregates`（`3|60|20|10|30`、`A|2|40` / `B|1|20` 按 count 降序、空 WHERE 得 `0`）。
 
+### 桌面 GUI
+
+- **GUI：皮带的 `gap by item type` 编辑**（勾选后逐行 `type / gap`，空 = 沿用 `item_spacing`）。
+  测试 `typed_conveyor_gaps_round_trip`。GUI **156 项**。
+
 
 ## v1.57.0 — 2026-11-27
 

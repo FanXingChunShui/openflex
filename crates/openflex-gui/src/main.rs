@@ -1690,6 +1690,67 @@ impl EditForm {
                     )
                     .changed();
                 changed |= optional_u32(ui, "join inputs", &mut p.join_inputs);
+                // Per-item-type spacing: the gap is looked up from the item in
+                // front, so this only matters on an accumulating belt.
+                let mut typed_gaps = !p.gap_by_type.is_empty();
+                if ui
+                    .checkbox(&mut typed_gaps, "gap by item type")
+                    .on_hover_text("space items differently depending on the one in front")
+                    .changed()
+                {
+                    p.gap_by_type = if typed_gaps {
+                        vec![openflex_model::TypeGap {
+                            item_type: 0,
+                            gap: p.item_spacing,
+                        }]
+                    } else {
+                        Vec::new()
+                    };
+                    changed = true;
+                }
+                if typed_gaps {
+                    let mut remove_gap = None;
+                    for (index, entry) in p.gap_by_type.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            changed |= ui
+                                .add(
+                                    egui::DragValue::new(&mut entry.item_type)
+                                        .speed(1.0)
+                                        .range(0..=1_000_000)
+                                        .prefix("type "),
+                                )
+                                .changed();
+                            changed |= ui
+                                .add(
+                                    egui::DragValue::new(&mut entry.gap)
+                                        .speed(0.1)
+                                        .range(0.0..=1_000.0)
+                                        .prefix("gap "),
+                                )
+                                .changed();
+                            if ui.small_button("x").clicked() {
+                                remove_gap = Some(index);
+                            }
+                        });
+                    }
+                    if let Some(index) = remove_gap {
+                        p.gap_by_type.remove(index);
+                        changed = true;
+                    }
+                    if ui.small_button("+ type gap").clicked() {
+                        let next = p
+                            .gap_by_type
+                            .iter()
+                            .map(|entry| entry.item_type + 1)
+                            .max()
+                            .unwrap_or(0);
+                        p.gap_by_type.push(openflex_model::TypeGap {
+                            item_type: next,
+                            gap: p.item_spacing,
+                        });
+                        changed = true;
+                    }
+                }
                 // Photo eyes: one row per eye. Their triggers live in the JSON
                 // editor (they are action lists), but the geometry is edited here.
                 ui.label(
@@ -15455,6 +15516,26 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn typed_conveyor_gaps_round_trip() {
+        use openflex_model::{ConveyorParams, TypeGap};
+        let plain = ConveyorParams::default();
+        let json = serde_json::to_string(&plain).expect("json");
+        assert!(!json.contains("gap_by_type"), "{json}");
+
+        let typed = ConveyorParams {
+            gap_by_type: vec![TypeGap {
+                item_type: 1,
+                gap: 3.0,
+            }],
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&typed).expect("json");
+        let back: ConveyorParams = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back.gap_by_type.len(), 1);
+        assert_eq!(back.gap_by_type[0].gap, 3.0);
     }
 
     #[test]

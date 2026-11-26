@@ -434,7 +434,7 @@ waiting_for_release / release_seen / leg_started_at`。关键同步规则：
 | Decision Point | `conveyor.decision_points`（位置 + 条件 + 动作） | 🟡 | 在感应区内对**该件**求值条件表达式、为真按序执行动作，`once_per_item` 离开感应区后重置；边界穿越复用光电门那套皮带事件（实测 `pos 5.0 − range 0.5 = 4.500` 精确触发）。仍是**参数而非对象**，也没有决策点类型库 |
 | Transfer（Entry/Exit，三种） | 无 | ⛔ | 连接时自动产生的传送点类型未建模 |
 | Motor（开/关控制、同步 dog gap） | `motor` 对象：`params.running` + 触发器，控制所连 conveyor 的启停 | 🟡 | 开/关已实现（4 个行为测试：`stopped_motor_freezes_conveyor_and_acceptance`、`motor_resume_continues_conveyor` 等）；**仍缺 power-and-free 的 dog gap 同步** |
-| Gapping（间隙成型） | `item_spacing` + `batch_size` | 🟡 | 静态最小间距有；缺按类型/按决策点的动态间隙与 gap 控制策略 |
+| Gapping（间隙成型） | `item_spacing` + `batch_size` + **`gap_by_type`** | 🟡 | 静态最小间距有；**按 item type 的动态间隙已支持**：按**前车**的 `item_type` 查 `[{ item_type, gap }]`，未命中回落 `item_spacing`，空表回退原路径（3 个 conveyor 基准 SHA 不变）。slug 交互写死：slug 内部仍用 `slug_min_gap`，slug 之间按前组末件类型查本表。**仍缺**：按决策点（PhotoEye/DecisionPoint 运行时）设置间隙——需要在运行时改表，属于另一层 |
 | Sorting（分拣） | 可用 conveyor + 路由/`split` 表达 | 🟡 | 没有 sorter 对象与分拣策略表 |
 | Power and Free | 无 | ⛔ | 完全未建模 |
 | ConveyorSystemTool（类型作为全局设置） | 每对象参数 | ⛔（有意差异） | FlexSim 用「类型库 + 工具」批量套用；OpenFlex 用每对象参数 + JSON 复用，**不计划实现类型工具** |
