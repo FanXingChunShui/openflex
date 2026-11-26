@@ -506,6 +506,9 @@ jobs:
           files=(scripts/*.sh packaging/*.sh packaging/*/*.sh)
           shellcheck -S warning "${files[@]}"
 
+      - name: docs state which version they describe
+        run: bash scripts/check-doc-baselines.sh
+
       - name: parity evidence is behaviour, not just parsing
         run: python3 scripts/audit-parity-evidence.py --strict
 

@@ -1,7 +1,9 @@
 # OpenFlex 未实现功能清单
 
-> 基线：v0.10.0（2026-11-15）。本文只列**当前代码确实没有**的能力；已在
+> 基线：**v1.56.0（2026-11-27）**。本文只列**当前代码确实没有**的能力；已在
 > [COMPATIBILITY.md](COMPATIBILITY.md) 标注“🟡 简化”的行为差异见该文档。
+> **行级状态以 [`FEATURE_PARITY_75.md`](FEATURE_PARITY_75.md) 为准**（208 行，✅ 51 / 🟡 101 / ⛔ 53），
+> 本文只回答“还缺什么、多大工作量”。两者不一致时，以矩阵为准并修改本文。
 > 工作量口径：S ≤ 1 天，M ≤ 3 天，L > 3 天，XL > 2 周。
 
 ## 1. 对象与运行时
@@ -14,9 +16,9 @@
 | 4 | **电梯门控** | 门开/关时间、超载、井道互斥、召唤/方向 + **门态统计（opening/closing；门开停留未单列）** | 无对向调度/多轿厢群控 | S |
 | 5 | **Conveyor 曲线与完整合流** | 直线带、PhotoEye/Station/Join（入口轮转）；✅ 可选 `curve: {radius, angle}`，按弧长计入行程时间（速度不变） | 无 3D 转弯几何/多段曲线/斜坡、无 Join 的 slug/gap 精细策略、无 Merge Controller、无电机/转盘/Transfers、PhotoEye 无遮挡持续状态/计数 | L |
 | 6 | **Rack 货位精细放置** | (level,aisle,bay) 分配 + 行走时间 + pick_policy | 无空位查表/并发取货、无 SKU/批次策略 | S |
-| 7 | **MultiProcessor 完整语义** | 多槽并行、每槽 setup/process、整批 crew 申请 | 无每槽独立操作员/故障、无槽位选择策略（优先级/最短队列） | M |
+| 7 | **MultiProcessor 完整语义** | 多槽并行、每槽 setup/process、整批 crew 申请；**每工序独立操作员**（`ProcessStep.num_operators`，本步开始前申请、本步结束即释放，多槽各自等待不串锁） | 无**每槽独立故障**、无槽位选择策略（优先级/最短队列） | M |
 | 8 | **缺失对象** | Emptier + Robot/Crane/ASRS/Escalator 最小族 | Conveyor 电机/转盘、Fluid 泵/混合器、独立人员密度/碰撞模型 | M |
-| 9 | **全局表（Global Table）** | schema/校验/访问器 + 表达式 `table(...)` 只读访问 | 写入/表驱动参数更新未支持 | S |
+| 9 | **全局表（Global Table）** | schema/校验/访问器 + 表达式 `table(...)` 只读访问；**表驱动到达已接线**（`arrival_schedule_from_table`，全局表 → 到达行；此前"标着 ✅ 却完全不创建物品"的缺陷已修） | 脚本写入表格未支持；其它"表驱动参数"（按表改速度/时间等）未支持 | S |
 | 10 | **完整任务序列** | `task_sequence` 条件分支/自定义时长/优先级/抢占/恢复延迟/逐段事件；**已知简化：额外段在收尾阶段（`settle_task`）逐段调度，未插入 load/unload 之间**（当前行为由 `crates/openflex-core/tests/task_sequence_timeline.rs` 固定） | 无物理载货量 | S |
 | 11 | **完整触发器集合** | OnCreate/Entry/Exit/Receive/Message/Breakdown/Repair/PhotoEye + OnContentChange/OnStateChange/OnReset/OnStop/OnResume（GUI 可编辑全部触发器 JSON） | OnDraw 仅做 schema/校验（不参与渲染回调） | S |
 | 12 | **A/S 连接与 Pull 细节** | A 连接参与路由、S 连接作为资源链路不占端口；桌面 GUI 新增连接时可选 A/S 并在列表中标注；Pull（strategy/requirement）已实现 | Pull 的按端口条件策略仍缺 | S |
