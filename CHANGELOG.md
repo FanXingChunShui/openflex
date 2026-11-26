@@ -1,6 +1,33 @@
 # Changelog
 
-## Unreleased
+## v1.57.0 — 2026-11-27
+
+这一版把上一版**明确留白**的那块补上了，并且把一份过期文档变成了会自己报警的东西。
+
+**1. Combiner batch 的逐槽并行。** 上一版多槽只能"同时攒、轮流加工"，吞吐与单槽相同；现在
+`max_content > 1` 时每槽有自己的 `phase/token/操作员`，两组 setup/process 可以重叠。
+`max_content == 1` 仍走原对象级路径，**4 个基准 SHA-256 逐位不变**。
+
+**关键是它不是新设计的：照抄 MultiProcessor 的形状。** 对象级 busy 取"任一槽非 idle 的**并集**"，
+与 MP 同口径。独立实测（stop 10、setup 1 + process 2）：完成数相同，但 **busy 0.6（单槽顺序）vs 0.3（双槽重叠）**——
+并集不是累加。冒烟套件把这条钉住了。
+
+**2. `docs/UNIMPLEMENTED.md` 停在"基线 v0.10.0"**，已经落后 46 个版本：它还在说"无每槽独立操作员"（早已实现）、
+"表驱动参数更新未支持"（表驱动到达已修）。**过期的清单比没有更糟**——它告诉读者一个已经存在的能力不存在。
+已刷新到当前版本，并新增 `scripts/check-doc-baselines.sh`（已进 CI）：文档里的基线版本与 `Cargo.toml` 不一致就失败。
+
+发布节奏保持**至少 3 小时一版**。
+
+**3. TrafficControl 按占用量分档调速（`speed_by_content`）。** 路网里车越多越慢，现在可以表达：
+`[{ up_to, factor }]`，占用量 <= up_to 时用该档因子；空表回退单一 `speed_factor`（3 个交通基准 SHA 不变）。
+
+这条路我把**两处语义写死**，因为它们最容易"看起来对、理解错"：
+
+- **占用量 = 该 control 当前已准入的 traveler 数**，在计算该段行程速度时即时读取——不是全局对象数、也不是队列长度；
+- **分档因子替换该 control 的 `speed_factor`，不相乘**；多个 control 重叠时仍按原有"各因子相乘"。
+  `un_timed` 不做准入、占用量恒为 0，只命中第一档——已写明。
+
+顺带补了一个 schema 漏登记：`traffic_control` kind 此前**没有在 schema 里登记**。
 
 ### 文档
 
@@ -41,6 +68,16 @@
 - **GUI：TrafficControl 的 `speed by occupancy` 分档编辑**（勾选后逐档 `up to / factor`，空 = 沿用单一速度因子）。
   测试 `traffic_speed_bands_round_trip`。GUI **155 项**。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**1097 passed / 0 failed**；clippy 0 警告、fmt 干净。
+- GUI **155 项**、`openflex-core --lib` **332 项**；smoke **24/24**；示例 **66/66**。
+- `scripts/acceptance.sh` **all golden checks passed**；`check-parity-counts.py` ✅ 51 / 🟡 101 / ⛔ 53 / 📄 3。
+- `check-dead-params.sh` 0 known；`audit-parity-evidence.py --strict` 通过；
+  **`check-doc-baselines.sh` 通过（UNIMPLEMENTED / BACKLOG 都指向当前版本）**。
+- 独立实测：双槽 batch busy **0.3** vs 单槽 **0.6**（并集非累加）；乱序 `speed_by_content` 与 `factor: 0` 报错点名字段。
+- Windows 交叉编译 0 错误；fuzz 冒烟 PASS；1 万对象基准 run 0.24 s、10.4 万件/秒。
 
 ## v1.56.0 — 2026-11-26
 
