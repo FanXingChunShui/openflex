@@ -1,6 +1,36 @@
 # Changelog
 
-## Unreleased
+## v1.56.0 — 2026-11-26
+
+这一版补的是**装配建模**里最常见的一种形状：一个容器要**不同数量的不同零件**。
+
+**`CombinerParams.components`（逐端口表）**：Pack 模式下每个组件端口可以要自己的数量——
+2 个瓶子 + 1 个盖子不再是"总数 3"。`None` 时沿用 `components_per_container`，
+**3 个 combiner 基准模型（pack/join/batch）报告 SHA-256 逐位不变**。
+实现上把 `ObjectRt.components` 从 `Vec<FlowItem>` 换成保留端口号的 `Vec<(u32, FlowItem)>`。
+
+**一个明确的选择：`join`/`batch` 模式下设 `components` 直接报错**，而不是静默忽略。
+错误信息写明"各自模式有独立端口语义"。留一个能被解析、却被引擎忽略的字段，
+正是我们删过两次字段的原因。
+
+**文档承认了一件容易坑人的事**：`split` 对象用自己的轮询/按类型分流，**会忽略连接上的 `strategy`**
+（实测在连接上写 `by_condition` 不生效）。已在 `COMPATIBILITY.md` 与矩阵里写明，
+并给出"把路由点放在下游 processor/queue"的用法——需要按条件路由时，别把策略挂在 split 的出口上。
+
+GUI 里 Combiner 表单多了 `per-port components`（离开 pack 模式会自动收起该表，避免写出校验会拒绝的模型）；
+冒烟套件扩到 22 项。
+
+**`CombinerParams.max_content`（多槽，pack 模式）**：先做零行为重构——"单容器 + 扁平组件"换成 `Vec<CombinerSlot>`，
+`max_content == 1` 时 **4 个基准模型 SHA-256 逐位不变**（3 个 combiner 基准 + 逐端口 components 模型）。
+`> 1` 时 pack 可同时攒多组、组间不串。
+
+**这里我选择了一个"只做一半并写清楚"的做法。** `batch` 模式下多槽只是"能同时攒多组"，
+**setup/process 仍按对象顺序执行**，吞吐与 `max_content=1` 相同。
+让两个批处理真正并行，必须把 `phase/token/phase_end` 下沉到每个槽，并**重新定义 busy/processing 的统计口径**
+（对象级 busy 会从"累加"变成"并集"）——那是统计语义变更，不是功能卡该顺手做的事。
+所以矩阵和变更日志里都写明"batch 仍顺序处理"，另开卡做。
+
+发布节奏保持**至少 3 小时一版**。
 
 ### 文档
 
@@ -33,6 +63,14 @@
 
 - **冒烟套件 22 → 23 项**：新增 `combiner multi slot`（`max_content: 2` 的 batch：4 件进、4 件出）。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**1084 passed / 0 failed**；clippy 0 警告、fmt 干净。
+- GUI **154 项**、`openflex-core --lib` **320 项**；smoke **23/23**；示例 **66/66**；`acceptance.sh` golden 全过。
+- `check-parity-counts.py` ✅ 51 / 🟡 101 / ⛔ 53 / 📄 3；`audit-parity-evidence.py --strict` 通过。
+- 独立实测：`[2,1]` 逐端口表 → combiner 收 4 件完成 1 个容器；`join` + `components`、`max_content: 0`、
+  `join` + `max_content > 1` 均被 validate 拒绝；`max_content: 2` 的 batch 4 件进 4 件出。
 
 ## v1.55.0 — 2026-11-26
 
