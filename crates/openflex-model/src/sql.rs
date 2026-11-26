@@ -5,44 +5,106 @@
 //! a deliberately small, side-effect-free subset:
 //!
 //! ```text
-//! SELECT <column> [, <column> …] | *
-//! FROM   <table>
-//! [WHERE <condition>]
-//! [ORDER BY <column> [ASC | DESC]]
-//! [LIMIT <n>]
+//! SELECT  COUNT(*) | SUM(<col>) | AVG(<col>) | MIN(<col>) | MAX(<col>)
+//!         | <col> [, …] | *
+//! FROM    <table>
+//! [WHERE  <condition>]
+//! [GROUP BY <col> [, …]]
+//! [ORDER BY <col> | <aggregate> [ASC | DESC]]
+//! [LIMIT  <n>]
 //! ```
 //!
-//! * Only global tables (`model.global_tables`) can be queried; there are no
-//!   joins, sub-queries, grouping or aggregates.
+//! * Only global tables (`model.global_tables`) can be queried; **joins and
+//!   sub-queries are not supported**. Aggregates and `GROUP BY` are.
 //! * `WHERE` is the normal OpenFlex expression language ([`crate::expr::Expr`]):
 //!   a column name resolves to that row's cell value, `$Name` still reads a
 //!   global variable and engine paths (`time`, `item.type`) resolve through the
 //!   caller's [`EvalContext`].
-//! * The result is **text**: the selected cells of every matching row, cells
-//!   joined with `|`, rows joined with `\n`, in `ORDER BY`/insertion order. An
-//!   empty table or a filter with no match yields the empty string (not an
-//!   error), so `len(query("…"))` is a natural character count and
-//!   `query(…) == ""` means "no rows".
+//! * The result is **text**: the selected cells of every output row, cells
+//!   joined with `|`, rows joined with `\n`. Aggregates use the same shortest
+//!   number formatting as table cells. Without `GROUP BY`, a query containing
+//!   aggregates produces exactly one output row; **grouped** output rows follow
+//!   the insertion order of each group's first matching row (unless `ORDER BY`).
+//! * Aggregate and ordinary columns may be mixed only when every ordinary
+//!   selected column is in `GROUP BY`; otherwise the error says
+//!   `aggregate used without GROUP BY` / `column 'x' must appear in GROUP BY`.
+//! * Empty input: `COUNT(*)` is `0`, `SUM` is `0`, `AVG`/`MIN`/`MAX` are the
+//!   empty string. A `GROUP BY` query with no matching rows yields the empty
+//!   string (0 rows).
+//! * `SUM`/`AVG`/`MIN`/`MAX` require numeric cells (booleans count as 0/1);
+//!   a string cell is an error naming the 1-based table row and the column. It
+//!   is never skipped or counted as zero.
+//! * `ORDER BY` accepts a column or an aggregate written in function form
+//!   (`count(*)`, `sum(col)`, …); the aggregate need not appear in `SELECT`.
+//!   Positional `ORDER BY 1` is not supported.
 //!
 //! Every problem is an explicit [`SqlError`] that names the offending fragment
 //! (`unknown table 'Shipments'`, `unknown column 'prio' in table 'Shipments'`,
-//! `expected FROM in "SELECT *"`…). [`check`] runs the same parse and name
-//! resolution for `validate`, so a bad query is reported before a run starts.
+//! `expected FROM in "SELECT *"`…). [`check`] runs the same parse, name
+//! resolution and aggregate rules for `validate`, so a bad query is reported
+//! before a run starts. `check` scans the whole table for a numeric aggregate's
+//! column, which is deliberately conservative with respect to `WHERE`.
 
 use crate::expr::{EvalContext, Expr, PickListLookup, Value};
 use crate::model::{GlobalTable, TableCell};
 
+/// Aggregate functions supported by the SQL subset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregateFunction {
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+impl AggregateFunction {
+    fn name(self) -> &'static str {
+        match self {
+            AggregateFunction::Count => "COUNT",
+            AggregateFunction::Sum => "SUM",
+            AggregateFunction::Avg => "AVG",
+            AggregateFunction::Min => "MIN",
+            AggregateFunction::Max => "MAX",
+        }
+    }
+
+    fn numeric(self) -> bool {
+        !matches!(self, AggregateFunction::Count)
+    }
+}
+
+/// One item in the `SELECT` list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectItem {
+    /// A plain column.
+    Column(String),
+    /// An aggregate; `column` is `None` only for `COUNT(*)`.
+    Aggregate {
+        function: AggregateFunction,
+        column: Option<String>,
+    },
+}
+
 /// A parsed `query()` statement.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SqlQuery {
-    /// Selected column names; `None` means `SELECT *` (every column).
+    /// Simple selected column names. `None` means `SELECT *`; an aggregate-only
+    /// query has `Some(vec![])`. Kept for compatibility with older callers;
+    /// [`SqlQuery::select`] is the authoritative item list.
     pub columns: Option<Vec<String>>,
+    /// Selected items in output order.
+    pub select: Vec<SelectItem>,
     /// Table name after `FROM`.
     pub table: String,
     /// `WHERE` condition source, re-parsed as an expression.
     pub condition: Option<String>,
-    /// `ORDER BY` column and direction (`true` = descending).
+    /// `GROUP BY` columns.
+    pub group_by: Vec<String>,
+    /// Plain `ORDER BY` column and direction (`true` = descending).
     pub order_by: Option<(String, bool)>,
+    /// Aggregate `ORDER BY` expression and direction (`true` = descending).
+    pub order_by_aggregate: Option<(AggregateFunction, Option<String>, bool)>,
     /// `LIMIT` row count.
     pub limit: Option<usize>,
 }
@@ -78,20 +140,23 @@ pub fn parse(source: &str) -> Result<SqlQuery, SqlError> {
             "expected a column list in \"{text}\""
         )));
     }
+    let mut select = Vec::new();
     let columns = if select_list == "*" {
         None
     } else {
-        let mut columns = Vec::new();
-        for part in select_list.split(',') {
+        for part in split_top_level(select_list, ',') {
             let name = part.trim();
-            if !is_identifier(name) {
-                return Err(SqlError::new(format!(
-                    "invalid column name \"{name}\" in \"{text}\""
-                )));
-            }
-            columns.push(name.to_string());
+            select.push(parse_select_item(name, text)?);
         }
-        Some(columns)
+        Some(
+            select
+                .iter()
+                .filter_map(|item| match item {
+                    SelectItem::Column(name) => Some(name.clone()),
+                    SelectItem::Aggregate { .. } => None,
+                })
+                .collect(),
+        )
     };
 
     let after_from = rest[from + "from".len()..].trim_start();
@@ -108,15 +173,19 @@ pub fn parse(source: &str) -> Result<SqlQuery, SqlError> {
 
     let mut query = SqlQuery {
         columns,
+        select,
         table: table.to_string(),
         condition: None,
+        group_by: Vec::new(),
         order_by: None,
+        order_by_aggregate: None,
         limit: None,
     };
 
     if let Some(rest) = strip_keyword(tail, "where") {
-        let end = find_clause_start(rest, "order", Some("by"))
+        let end = find_clause_start(rest, "group", Some("by"))
             .into_iter()
+            .chain(find_clause_start(rest, "order", Some("by")))
             .chain(find_clause_start(rest, "limit", None))
             .min()
             .unwrap_or(rest.len());
@@ -130,6 +199,35 @@ pub fn parse(source: &str) -> Result<SqlQuery, SqlError> {
         tail = rest[end..].trim();
     }
 
+    if let Some(rest) = strip_keyword(tail, "group") {
+        let Some(rest) = strip_keyword(rest, "by") else {
+            return Err(SqlError::new(format!(
+                "expected BY after GROUP in \"{text}\""
+            )));
+        };
+        let end = find_clause_start(rest, "order", Some("by"))
+            .into_iter()
+            .chain(find_clause_start(rest, "limit", None))
+            .min()
+            .unwrap_or(rest.len());
+        let spec = rest[..end].trim();
+        if spec.is_empty() {
+            return Err(SqlError::new(format!(
+                "expected a GROUP BY column in \"{text}\""
+            )));
+        }
+        for part in split_top_level(spec, ',') {
+            let name = part.trim();
+            if !is_identifier(name) {
+                return Err(SqlError::new(format!(
+                    "invalid GROUP BY column \"{name}\" in \"{text}\""
+                )));
+            }
+            query.group_by.push(name.to_string());
+        }
+        tail = rest[end..].trim();
+    }
+
     if let Some(rest) = strip_keyword(tail, "order") {
         let Some(rest) = strip_keyword(rest, "by") else {
             return Err(SqlError::new(format!(
@@ -139,8 +237,8 @@ pub fn parse(source: &str) -> Result<SqlQuery, SqlError> {
         let end = find_clause_start(rest, "limit", None).unwrap_or(rest.len());
         let spec = rest[..end].trim();
         let mut words = spec.split_whitespace();
-        let column = words.next().unwrap_or_default();
-        if !is_identifier(column) {
+        let target = words.next().unwrap_or_default();
+        if target.is_empty() {
             return Err(SqlError::new(format!(
                 "expected an ORDER BY column in \"{text}\""
             )));
@@ -160,7 +258,16 @@ pub fn parse(source: &str) -> Result<SqlQuery, SqlError> {
                 "unexpected input after ORDER BY in \"{text}\""
             )));
         }
-        query.order_by = Some((column.to_string(), descending));
+        if target.contains('(') {
+            let (function, column) = parse_aggregate(target, text)?;
+            query.order_by_aggregate = Some((function, column, descending));
+        } else if is_identifier(target) {
+            query.order_by = Some((target.to_string(), descending));
+        } else {
+            return Err(SqlError::new(format!(
+                "expected an ORDER BY column in \"{text}\""
+            )));
+        }
         tail = rest[end..].trim();
     }
 
@@ -185,17 +292,76 @@ pub fn parse(source: &str) -> Result<SqlQuery, SqlError> {
     Ok(query)
 }
 
-/// Parse the query and check that the table (and every named column) exists.
+fn parse_select_item(text: &str, source: &str) -> Result<SelectItem, SqlError> {
+    if is_identifier(text) {
+        return Ok(SelectItem::Column(text.to_string()));
+    }
+    if text.contains('(') {
+        let (function, column) = parse_aggregate(text, source)?;
+        return Ok(SelectItem::Aggregate { function, column });
+    }
+    Err(SqlError::new(format!(
+        "invalid column name \"{text}\" in \"{source}\""
+    )))
+}
+
+/// Parse `COUNT(*)` or `SUM(col)` / `AVG` / `MIN` / `MAX`.
+fn parse_aggregate(
+    text: &str,
+    source: &str,
+) -> Result<(AggregateFunction, Option<String>), SqlError> {
+    let Some(open) = text.find('(') else {
+        return Err(SqlError::new(format!(
+            "unknown aggregate function \"{text}\" in \"{source}\""
+        )));
+    };
+    let name = text[..open].trim();
+    let rest = text[open + 1..].trim();
+    if !rest.ends_with(')') {
+        return Err(SqlError::new(format!(
+            "invalid aggregate \"{text}\" in \"{source}\""
+        )));
+    }
+    let argument = rest[..rest.len() - 1].trim();
+    let function = match name.to_ascii_uppercase().as_str() {
+        "COUNT" => AggregateFunction::Count,
+        "SUM" => AggregateFunction::Sum,
+        "AVG" => AggregateFunction::Avg,
+        "MIN" => AggregateFunction::Min,
+        "MAX" => AggregateFunction::Max,
+        other => {
+            return Err(SqlError::new(format!(
+                "unknown aggregate function '{other}' in \"{source}\""
+            )));
+        }
+    };
+    if function == AggregateFunction::Count {
+        if argument != "*" {
+            return Err(SqlError::new(format!(
+                "COUNT only supports COUNT(*) in \"{source}\""
+            )));
+        }
+        return Ok((function, None));
+    }
+    if !is_identifier(argument) {
+        return Err(SqlError::new(format!(
+            "invalid aggregate column \"{argument}\" in \"{source}\""
+        )));
+    }
+    Ok((function, Some(argument.to_string())))
+}
+
+/// Parse the query and check that the table, columns, aggregates and
+/// `GROUP BY` rules are valid.
 ///
-/// Used by `validate` so a query over a missing table/column is reported before
-/// the first event; the error text is the same as at run time.
+/// Used by `validate` so a query over a missing table/column, an unknown
+/// aggregate or an aggregate without its `GROUP BY` is reported before the
+/// first event; the error text is the same as at run time.
 pub fn check(globals: &dyn EvalContext, source: &str) -> Result<(), SqlError> {
     let query = parse(source)?;
     let table = table_of(globals, &query)?;
-    select_columns(&query, &query.table, table)?;
-    if let Some((column, _)) = &query.order_by {
-        column_index(table, &query.table, column)?;
-    }
+    let plan = build_plan(&query, &query.table, table)?;
+    validate_order(&query, &plan, &query.table, table)?;
     if let Some(condition) = &query.condition {
         Expr::parse(condition).map_err(|error| {
             SqlError::new(format!(
@@ -203,6 +369,7 @@ pub fn check(globals: &dyn EvalContext, source: &str) -> Result<(), SqlError> {
             ))
         })?;
     }
+    check_numeric_cells(&plan, table, &query.table)?;
     Ok(())
 }
 
@@ -213,7 +380,8 @@ pub fn check(globals: &dyn EvalContext, source: &str) -> Result<(), SqlError> {
 pub fn execute(globals: &dyn EvalContext, source: &str) -> Result<String, SqlError> {
     let query = parse(source)?;
     let table = table_of(globals, &query)?;
-    let columns = select_columns(&query, &query.table, table)?;
+    let plan = build_plan(&query, &query.table, table)?;
+    validate_order(&query, &plan, &query.table, table)?;
     let condition = match &query.condition {
         Some(source) => Some(Expr::parse(source).map_err(|error| {
             SqlError::new(format!(
@@ -223,7 +391,7 @@ pub fn execute(globals: &dyn EvalContext, source: &str) -> Result<String, SqlErr
         None => None,
     };
 
-    let mut rows: Vec<&Vec<TableCell>> = Vec::with_capacity(table.rows.len());
+    let mut rows: Vec<(usize, &Vec<TableCell>)> = Vec::with_capacity(table.rows.len());
     for (row_position, row) in table.rows.iter().enumerate() {
         if let Some(condition) = &condition {
             let context = RowContext {
@@ -247,37 +415,310 @@ pub fn execute(globals: &dyn EvalContext, source: &str) -> Result<String, SqlErr
                 continue;
             }
         }
-        rows.push(row);
+        rows.push((row_position, row));
     }
 
+    let grouped = !plan.group_by.is_empty();
+    let has_aggregate = plan.items.iter().any(|item| match item {
+        ResolvedItem::Aggregate(..) => true,
+        ResolvedItem::Column(_) => false,
+    });
+    let mut groups: Vec<RowGroup<'_>> = if grouped {
+        let mut groups: Vec<KeyedGroup<'_>> = Vec::new();
+        for (row_position, row) in rows {
+            let key: Vec<TableCell> = plan
+                .group_by
+                .iter()
+                .map(|&index| {
+                    row.get(index)
+                        .cloned()
+                        .unwrap_or(TableCell::Str(String::new()))
+                })
+                .collect();
+            if let Some((_, members)) = groups.iter_mut().find(|(existing, _)| *existing == key) {
+                members.push((row_position, row));
+            } else {
+                groups.push((key, vec![(row_position, row)]));
+            }
+        }
+        groups.into_iter().map(|(_, members)| members).collect()
+    } else if has_aggregate {
+        vec![rows]
+    } else {
+        rows.into_iter().map(|row| vec![row]).collect()
+    };
+
     if let Some((column, descending)) = &query.order_by {
+        if grouped {
+            let index = column_index(table, &query.table, column)?;
+            if !plan.group_by.contains(&index) {
+                return Err(SqlError::new(format!(
+                    "ORDER BY column '{column}' must appear in GROUP BY"
+                )));
+            }
+        }
         let index = column_index(table, &query.table, column)?;
-        rows.sort_by(|left, right| {
-            let ordering = compare_cells(left.get(index), right.get(index));
+        groups.sort_by(|left, right| {
+            let left_cell = left.first().and_then(|(_, row)| row.get(index));
+            let right_cell = right.first().and_then(|(_, row)| row.get(index));
+            let ordering = compare_cells(left_cell, right_cell);
             if *descending {
                 ordering.reverse()
             } else {
                 ordering
             }
         });
+    } else if let Some((function, column, descending)) = &query.order_by_aggregate {
+        let column_index = match column {
+            Some(column) => Some(column_index(table, &query.table, column)?),
+            None => None,
+        };
+        let mut keyed: Vec<ScoredGroup<'_>> = Vec::with_capacity(groups.len());
+        for group in groups {
+            let value = aggregate(*function, column_index, &group, table, &query.table)?;
+            let number = value.as_number().unwrap_or(0.0);
+            keyed.push((number, group));
+        }
+        keyed.sort_by(|left, right| {
+            let ordering = left
+                .0
+                .partial_cmp(&right.0)
+                .unwrap_or(std::cmp::Ordering::Equal);
+            if *descending {
+                ordering.reverse()
+            } else {
+                ordering
+            }
+        });
+        groups = keyed.into_iter().map(|(_, group)| group).collect();
     }
+
     if let Some(limit) = query.limit {
-        rows.truncate(limit);
+        groups.truncate(limit);
     }
 
     let mut text = String::new();
-    for (row_position, row) in rows.iter().enumerate() {
-        if row_position > 0 {
+    for (group_position, group) in groups.iter().enumerate() {
+        if group_position > 0 {
             text.push('\n');
         }
-        for (column_position, index) in columns.iter().enumerate() {
+        for (column_position, item) in plan.items.iter().enumerate() {
             if column_position > 0 {
                 text.push('|');
             }
-            text.push_str(&row.get(*index).map(TableCell::as_text).unwrap_or_default());
+            match item {
+                ResolvedItem::Column(index) => {
+                    text.push_str(
+                        group
+                            .first()
+                            .and_then(|(_, row)| row.get(*index))
+                            .map(TableCell::as_text)
+                            .unwrap_or_default()
+                            .as_str(),
+                    );
+                }
+                ResolvedItem::Aggregate(function, column) => {
+                    let value = aggregate(*function, *column, group, table, &query.table)?;
+                    text.push_str(&value.as_text());
+                }
+            }
         }
     }
     Ok(text)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ResolvedItem {
+    Column(usize),
+    Aggregate(AggregateFunction, Option<usize>),
+}
+
+struct QueryPlan {
+    items: Vec<ResolvedItem>,
+    group_by: Vec<usize>,
+}
+
+type RowRef<'a> = (usize, &'a Vec<TableCell>);
+type RowGroup<'a> = Vec<RowRef<'a>>;
+type KeyedGroup<'a> = (Vec<TableCell>, RowGroup<'a>);
+type ScoredGroup<'a> = (f64, RowGroup<'a>);
+
+fn build_plan(
+    query: &SqlQuery,
+    table_name: &str,
+    table: &GlobalTable,
+) -> Result<QueryPlan, SqlError> {
+    let mut items = Vec::new();
+    if query.columns.is_none() && query.select.is_empty() {
+        items.extend((0..table.columns.len()).map(ResolvedItem::Column));
+    } else {
+        for item in &query.select {
+            match item {
+                SelectItem::Column(name) => {
+                    items.push(ResolvedItem::Column(column_index(table, table_name, name)?));
+                }
+                SelectItem::Aggregate { function, column } => {
+                    let index = match column {
+                        Some(column) => Some(column_index(table, table_name, column)?),
+                        None => None,
+                    };
+                    items.push(ResolvedItem::Aggregate(*function, index));
+                }
+            }
+        }
+    }
+
+    let group_by = query
+        .group_by
+        .iter()
+        .map(|column| column_index(table, table_name, column))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let selected_columns: Vec<usize> = items
+        .iter()
+        .filter_map(|item| match item {
+            ResolvedItem::Column(index) => Some(*index),
+            ResolvedItem::Aggregate(..) => None,
+        })
+        .collect();
+    let has_aggregate = items
+        .iter()
+        .any(|item| matches!(item, ResolvedItem::Aggregate(..)));
+
+    if has_aggregate && group_by.is_empty() && !selected_columns.is_empty() {
+        return Err(SqlError::new(
+            "aggregate used without GROUP BY (selected ordinary columns need GROUP BY)",
+        ));
+    }
+    if !group_by.is_empty() {
+        for index in selected_columns {
+            if !group_by.contains(&index) {
+                return Err(SqlError::new(format!(
+                    "column '{}' must appear in GROUP BY",
+                    table.columns.get(index).cloned().unwrap_or_default()
+                )));
+            }
+        }
+    }
+
+    Ok(QueryPlan { items, group_by })
+}
+
+fn validate_order(
+    query: &SqlQuery,
+    plan: &QueryPlan,
+    table_name: &str,
+    table: &GlobalTable,
+) -> Result<Option<(AggregateFunction, Option<usize>, bool)>, SqlError> {
+    if let Some((column, descending)) = &query.order_by {
+        let index = column_index(table, table_name, column)?;
+        if (!plan.group_by.is_empty()
+            || plan
+                .items
+                .iter()
+                .any(|item| matches!(item, ResolvedItem::Aggregate(..))))
+            && !plan.group_by.contains(&index)
+        {
+            return Err(SqlError::new(format!(
+                "ORDER BY column '{column}' must appear in GROUP BY"
+            )));
+        }
+        let _ = (index, descending);
+        return Ok(None);
+    }
+    if let Some((function, column, descending)) = &query.order_by_aggregate {
+        let index = match column {
+            Some(column) => Some(column_index(table, table_name, column)?),
+            None => None,
+        };
+        return Ok(Some((*function, index, *descending)));
+    }
+    Ok(None)
+}
+
+fn check_numeric_cells(
+    plan: &QueryPlan,
+    table: &GlobalTable,
+    table_name: &str,
+) -> Result<(), SqlError> {
+    for item in &plan.items {
+        if let ResolvedItem::Aggregate(function, Some(index)) = item
+            && function.numeric()
+            && let Some(column) = table.columns.get(*index)
+        {
+            for (row_position, row) in table.rows.iter().enumerate() {
+                if let Some(cell) = row.get(*index)
+                    && cell.as_number().is_none()
+                {
+                    return Err(SqlError::new(format!(
+                        "non-numeric cell \"{}\" in column '{column}' at row {} of '{table_name}'",
+                        cell.as_text(),
+                        row_position + 1
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn aggregate(
+    function: AggregateFunction,
+    column: Option<usize>,
+    group: &[(usize, &Vec<TableCell>)],
+    table: &GlobalTable,
+    table_name: &str,
+) -> Result<TableCell, SqlError> {
+    if function == AggregateFunction::Count {
+        return Ok(TableCell::Number(group.len() as f64));
+    }
+    let Some(index) = column else {
+        return Err(SqlError::new(format!(
+            "{} needs a column in '{table_name}'",
+            function.name()
+        )));
+    };
+    if group.is_empty() {
+        return Ok(match function {
+            AggregateFunction::Sum => TableCell::Number(0.0),
+            _ => TableCell::Str(String::new()),
+        });
+    }
+    let column_name = table.columns.get(index).cloned().unwrap_or_default();
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    let mut best: Option<f64> = None;
+    for (row_position, row) in group {
+        let Some(cell) = row.get(index) else {
+            continue;
+        };
+        let Some(value) = cell.as_number() else {
+            return Err(SqlError::new(format!(
+                "non-numeric cell \"{}\" in column '{column_name}' at row {} of '{table_name}'",
+                cell.as_text(),
+                row_position + 1
+            )));
+        };
+        sum += value;
+        count += 1;
+        best = Some(match (function, best) {
+            (AggregateFunction::Min, Some(current)) => current.min(value),
+            (AggregateFunction::Max, Some(current)) => current.max(value),
+            _ => value,
+        });
+    }
+    if count == 0 {
+        return Ok(match function {
+            AggregateFunction::Sum => TableCell::Number(0.0),
+            _ => TableCell::Str(String::new()),
+        });
+    }
+    Ok(match function {
+        AggregateFunction::Sum => TableCell::Number(sum),
+        AggregateFunction::Avg => TableCell::Number(sum / count as f64),
+        AggregateFunction::Min | AggregateFunction::Max => TableCell::Number(best.unwrap_or(0.0)),
+        AggregateFunction::Count => TableCell::Number(count as f64),
+    })
 }
 
 fn table_of<'a>(
@@ -287,20 +728,6 @@ fn table_of<'a>(
     globals
         .global_table(&query.table)
         .ok_or_else(|| SqlError::new(format!("unknown table '{}'", query.table)))
-}
-
-fn select_columns(
-    query: &SqlQuery,
-    table_name: &str,
-    table: &GlobalTable,
-) -> Result<Vec<usize>, SqlError> {
-    match &query.columns {
-        None => Ok((0..table.columns.len()).collect()),
-        Some(columns) => columns
-            .iter()
-            .map(|column| column_index(table, table_name, column))
-            .collect(),
-    }
 }
 
 fn column_index(table: &GlobalTable, table_name: &str, column: &str) -> Result<usize, SqlError> {
@@ -388,6 +815,34 @@ fn is_identifier(text: &str) -> bool {
         _ => return false,
     }
     chars.all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Split on `separator` at paren depth 0 and outside quotes.
+fn split_top_level(text: &str, separator: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    for (index, c) in text.char_indices() {
+        if let Some(open) = quote {
+            if c == open {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => quote = Some(c),
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ if c == separator && depth == 0 => {
+                parts.push(&text[start..index]);
+                start = index + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    parts.push(&text[start..]);
+    parts
 }
 
 /// Strip a leading keyword (case-insensitive) plus the following whitespace.
@@ -600,5 +1055,155 @@ mod tests {
         assert!(syntax.to_string().contains("expected FROM"), "{syntax}");
         let limit = parse("SELECT * FROM Shipments LIMIT two").expect_err("bad limit");
         assert!(limit.to_string().contains("LIMIT needs"), "{limit}");
+    }
+
+    fn empty_table() -> GlobalTable {
+        GlobalTable {
+            columns: vec!["name".into(), "prio".into(), "zone".into()],
+            rows: Vec::new(),
+        }
+    }
+
+    fn mixed_table() -> GlobalTable {
+        GlobalTable {
+            columns: vec!["name".into(), "prio".into()],
+            rows: vec![
+                vec![TableCell::Str("box".into()), TableCell::Number(2.0)],
+                vec![TableCell::Str("tray".into()), TableCell::Str("n/a".into())],
+            ],
+        }
+    }
+
+    #[test]
+    fn count_star_respects_where() {
+        assert_eq!(
+            execute(
+                &ctx(),
+                "SELECT COUNT(*) FROM Shipments WHERE zone == \"north\""
+            )
+            .expect("count"),
+            "2"
+        );
+    }
+
+    #[test]
+    fn sum_avg_min_max_format_numbers() {
+        assert_eq!(
+            execute(&ctx(), "SELECT SUM(prio) FROM Shipments").expect("sum"),
+            "16"
+        );
+        let average = execute(&ctx(), "SELECT AVG(prio) FROM Shipments").expect("avg");
+        assert!((average.parse::<f64>().expect("number") - 16.0 / 3.0).abs() < 1e-12);
+        assert_eq!(
+            execute(&ctx(), "SELECT MIN(prio) FROM Shipments").expect("min"),
+            "2"
+        );
+        assert_eq!(
+            execute(&ctx(), "SELECT MAX(prio) FROM Shipments").expect("max"),
+            "9"
+        );
+    }
+
+    #[test]
+    fn group_by_aggregates_in_first_sighting_order() {
+        assert_eq!(
+            execute(
+                &ctx(),
+                "SELECT zone, COUNT(*), SUM(prio) FROM Shipments GROUP BY zone"
+            )
+            .expect("groups"),
+            "north|2|7\nsouth|1|9"
+        );
+    }
+
+    #[test]
+    fn empty_input_aggregates_use_the_documented_defaults() {
+        let empty = Ctx(BTreeMap::from([("Empty".to_string(), empty_table())]));
+        assert_eq!(
+            execute(&empty, "SELECT COUNT(*) FROM Empty").expect("count"),
+            "0"
+        );
+        assert_eq!(
+            execute(&empty, "SELECT SUM(prio) FROM Empty").expect("sum"),
+            "0"
+        );
+        for function in ["AVG", "MIN", "MAX"] {
+            let sql = format!("SELECT {function}(prio) FROM Empty");
+            assert_eq!(execute(&empty, &sql).expect("empty"), "");
+        }
+        assert_eq!(
+            execute(&empty, "SELECT zone, COUNT(*) FROM Empty GROUP BY zone").expect("groups"),
+            ""
+        );
+        assert_eq!(
+            execute(&ctx(), "SELECT SUM(prio) FROM Shipments WHERE prio > 99").expect("sum"),
+            "0"
+        );
+    }
+
+    #[test]
+    fn aggregate_without_group_by_and_plain_column_is_rejected() {
+        let error =
+            execute(&ctx(), "SELECT zone, COUNT(*) FROM Shipments").expect_err("must reject");
+        assert!(
+            error
+                .to_string()
+                .contains("aggregate used without GROUP BY"),
+            "{error}"
+        );
+        let error = execute(&ctx(), "SELECT name, COUNT(*) FROM Shipments GROUP BY zone")
+            .expect_err("ungrouped column");
+        assert!(
+            error.to_string().contains("must appear in GROUP BY"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn sum_on_a_string_cell_names_row_and_column() {
+        let mixed = Ctx(BTreeMap::from([("Mixed".to_string(), mixed_table())]));
+        let error = execute(&mixed, "SELECT SUM(prio) FROM Mixed").expect_err("string sum");
+        let message = error.to_string();
+        assert!(message.contains("column 'prio'"), "{message}");
+        assert!(message.contains("row 2"), "{message}");
+    }
+
+    #[test]
+    fn unknown_aggregate_function_is_rejected() {
+        let error = parse("SELECT MEDIAN(prio) FROM Shipments").expect_err("unknown aggregate");
+        assert!(
+            error
+                .to_string()
+                .contains("unknown aggregate function 'MEDIAN'"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn order_by_aggregate_sorts_groups() {
+        assert_eq!(
+            execute(
+                &ctx(),
+                "SELECT zone, COUNT(*) FROM Shipments GROUP BY zone ORDER BY count(*) ASC"
+            )
+            .expect("ordered groups"),
+            "south|1\nnorth|2"
+        );
+    }
+
+    #[test]
+    fn check_rejects_bad_aggregates() {
+        let in_ctx = Ctx(BTreeMap::from([
+            ("Shipments".to_string(), table()),
+            ("Mixed".to_string(), mixed_table()),
+        ]));
+        for sql in [
+            "SELECT zone, COUNT(*) FROM Shipments",
+            "SELECT MEDIAN(prio) FROM Shipments",
+            "SELECT SUM(nope) FROM Shipments",
+            "SELECT SUM(prio) FROM Mixed",
+        ] {
+            assert!(check(&in_ctx, sql).is_err(), "check should reject {sql}");
+        }
     }
 }

@@ -9,6 +9,15 @@
   新工具 `audit-parity-evidence.py` 的分级规则、过期引用的白名单机制，以及剩余两条"表单往返级"证据的口径。
   并说明：历史数字只是快照，**计数以 `check-parity-counts.py` 为准**——第一轮那种"✅ 50 / 台账 43 / 卡 51"的漂移不会再发生。
 
+### 模型与引擎
+
+- **SQL 聚合与 GROUP BY（`query()` 子集）**：矩阵 🟡「SQL Queries」此前只有 `SELECT … FROM … [WHERE] [ORDER BY] [LIMIT]`。
+  现在支持 `COUNT(*) / SUM / AVG / MIN / MAX` 与 `GROUP BY`；**JOIN / 子查询仍不做**（注释里继续写明）。
+  几处语义写死在模块注释里：**空输入** COUNT=0、SUM=0、AVG/MIN/MAX=**空串**、`GROUP BY` 无匹配行=0 行；
+  **SUM 遇非数值单元格报错并点名 1-based 行号 + 列名**（不跳过、不当 0）；聚合混普通列而没 `GROUP BY` 直接报错；
+  `ORDER BY` 用函数形式（`count(*)`）；`check()` 在 validate 阶段就能拒绝坏聚合。
+  独立实测：`3|60|20|10|30`（count/sum/avg/min/max）、`A|2|40` 与 `B|1|20`（按 count 降序）、空 WHERE 得 `0`。
+
 
 ## v1.57.0 — 2026-11-27
 
