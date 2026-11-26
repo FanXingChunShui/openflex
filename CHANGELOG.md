@@ -4,8 +4,6 @@
 
 ### 模型与引擎
 
-### 模型与引擎
-
 - **多个独立故障源（`ProcessorParams.extra_failures`）**：矩阵 🟡「一个对象可属多个 MTBF/MTTR 组、多个停机请求可叠加」。
   按既定路径**先做零行为重构**：`ObjectRt.failure: Option<FailureRt>` → `failures: Vec<FailureRt>`，
   **4 个带故障的基准模型（plain / count_time_in_states / repair_operator / MTBF group）报告 SHA-256 逐位不变**，

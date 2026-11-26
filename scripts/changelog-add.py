@@ -34,6 +34,12 @@ def main() -> int:
     bullet = bullet.strip("\n")
     if not bullet:
         return fail("the bullet is empty")
+    # A bullet is content for the section, not the section itself: supplying a
+    # `### heading` here once produced a duplicate empty section.
+    if any(line.startswith("### ") for line in bullet.split("\n")):
+        return fail(
+            "--section names the heading; the bullet file must not contain `###` headings"
+        )
 
     with open(args.path, encoding="utf-8") as handle:
         text = handle.read()
