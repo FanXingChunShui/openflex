@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### 文档
+
+- **「剩余缺口 Top 10」清理**：#7「实验生命周期钩子」写着"只有 on_start/on_reset/on_stop"，而 `ModelTriggers` 早有 9 个时点
+  （含 experiment/scenario/replication 各自首尾）——**这条与 §3 的 Start/End 行矛盾了一年多**，已划掉并写明原因。
+  #4 更新为"光电门 Clear Time / Require Gap 已实现（v1.61.0），仅缺 Block Time 与对象化部分"；
+  #8 更新为"聚合与分组已实现（v1.58.0），仅缺 JOIN / 子查询"。
+  **Top 10 是用户看优先级的入口，它比矩阵正文更容易腐烂**——排期前必须先核。
+
+
 ## v1.62.0 — 2026-11-27
 
 这一版有一件功能、一件工具、和一件**覆盖面上的疏漏**。

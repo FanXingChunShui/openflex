@@ -482,11 +482,11 @@ unloading/ utilize` 均有数值断言）、**Tracked Variable 四类型**、**I
 | 1 | **自定义任务序列的 `explicit` 整链模式**（`createemptytasksequence`/`inserttask` 的等价物） | 现有 `append` 只能在标准链**之后**加腿；表达不了"取货→加工→送回→充电→再取"这类链，也无法在链内换 target。设计草案见 §1a | **大** |
 | 2 | **图表 DSL**（图表对象 + 数据源绑定；Utilization Analysis 按状态堆叠、Financial Objects、Zone/Milestone 模板） | 报告与 GUI 的图是固定几种；用户不能自选"哪条统计×哪种图"，也无法做利用率分解图。FlexSim 的主交付界面就是 Dashboard | **大** |
 | 3 | **调试器**（断点 / 单步 / 调用栈 / 局部变量 / 性能剖析） | 模型逻辑出错时只有 `log()` 与 trace；`FlexSimCoding/Debugging/*` 5 页描述的是完整调试体验 | **大** |
-| 4 | **Conveyor 剩余部分**：Transfer（Entry/Exit）对象、sorter、Power-and-Free、光电门的 Block Time / Clear Time / Require Gap | 基础行为（速度/间距/曲线/迭代积分/slug 组/合流策略）已一致；缺的是**对象化的那部分**与高级光电语义（§17b） | **大** |
+| 4 | **Conveyor 剩余部分**：Transfer（Entry/Exit）对象、sorter、Power-and-Free、光电门的 Block Time | 基础行为（速度/间距/曲线/迭代积分/slug 组/合流策略/`gap_by_type`）已一致；**光电门的 Clear Time / Require Gap 已实现**（v1.61.0），**Block Time 仍缺**；对象化部分（Transfer/sorter/Power-and-Free）仍缺 | **大** |
 | 5 | **MTBF/MTTR 组对象与停机请求栈** | 参数侧（首次故障、只在指定状态计时）已补齐；但一个对象仍不能属多个组、无组级 Down/Up 触发器、多次停止不能叠加 | **中** |
 | 6 | **字符串/复合标签** | `FlowItem.labels` 是 `BTreeMap<String, f64>`，只有数值通道；FlexSim 允许字符串、列表、表，做"按名称分流/记录状态文本"时被迫编码成数字 | **小** |
-| 7 | **实验生命周期钩子**（Start/End of Experiment / Scenario / Replication，6 个） | `model_triggers` 只有 `on_start`/`on_reset`/`on_stop`；实验前后汇总、每场景初始化无从挂载（目前只能逐场景在模型里写） | **小** |
-| 8 | **SQL 的 JOIN / 子查询 / 聚合 / 分组** | 只读子集（SELECT/WHERE/ORDER BY/LIMIT）已够查表，但"按类型汇总取前 3"这类仍需手工循环 | **小–中** |
+| ~~7~~ | ~~实验生命周期钩子（6 个）~~ **已实现** | `ModelTriggers` 已有 `start_of_experiment`/`end_of_experiment`/`start_of_scenario`/`end_of_scenario`/`start_of_replication`/`end_of_replication` 共 9 个时点（连 `on_start`/`on_reset`/`on_stop`），按"实验→场景→复现"分层触发。**本行原措辞"只有 on_start/on_reset/on_stop"是过期的**——与 §3 的 Start/End 行矛盾了一年多才被发现 | — |
+| 8 | **SQL 的 JOIN / 子查询**（聚合与分组**已实现**，v1.58.0） | 只读子集 + `COUNT/SUM/AVG/MIN/MAX` + `GROUP BY` 已够"按列汇总"；仍不能跨表连接或用子查询过滤 | **小–中** |
 | 9 | **PickLists 的模板代码机制**（`/**tag:*/` 双向绑定 + 点选插入代码） | 现在 picklist 是命名列表（表达式取值），不是"点选即生成代码"的编辑体验；影响的是建模效率而非语义 | **中** |
 | 10 | **"已声明但未接线"参数的审计**（`max_travelers` 类） | 本轮发现 `max_travelers` 有字段/GUI/文档但引擎从不读——这类虚标比缺功能更危险。建议 `validate` 对"声明了却零引用"的参数给 warning | **小** |
 
