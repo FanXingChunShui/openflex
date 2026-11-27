@@ -399,6 +399,37 @@ def case_table_driven_arrivals():
     )
 
 
+def case_multiple_stop_times():
+    """stop_times show the state at each stop without changing the run."""
+    def build(stops):
+        run = {"stop_time": 30.0, "seed": 1, "replications": 1}
+        if stops is not None:
+            run["stop_times"] = stops
+        return model(
+            [
+                {"name": "S", "kind": "source", "params": {
+                    "interarrival": {"distribution": "constant", "value": 4.0},
+                    "max_arrivals": 20}},
+                {"name": "P", "kind": "processor", "params": {
+                    "process_time": {"distribution": "constant", "value": 1.0}}},
+                {"name": "K", "kind": "sink", "params": {}},
+            ],
+            [{"from": "S", "to": "P"}, {"from": "P", "to": "K"}],
+            run=run,
+        )
+
+    plain = report(write("stops_plain", build(None)))
+    with_stops = report(write("stops_listed", build([10.0, 20.0])))
+    assert plain.get("stops") in (None, []), "no stop list, no snapshots"
+    stops = with_stops["stops"]
+    assert [stop["time"] for stop in stops] == [10.0, 20.0]
+    assert stops[0]["completed"]["mean"] <= stops[1]["completed"]["mean"]
+    assert stops[1]["completed"]["mean"] <= with_stops["completed"]["mean"]
+    without = dict(with_stops)
+    without.pop("stops")
+    assert without == plain, "snapshots must not change the run itself"
+
+
 def case_process_flow_capacity():
     """A delay block with capacity queues tokens instead of starting them together."""
     def build(capacity):
@@ -948,6 +979,7 @@ CASES = [
     ("sql aggregates", case_sql_aggregates),
     ("start time offset", case_start_time_offset),
     ("process flow capacity", case_process_flow_capacity),
+    ("multiple stop times", case_multiple_stop_times),
     ("combiner pack", case_combiner_pack),
     ("timetable off shift", case_timetable_off_shift),
     ("checkpoint resume", case_checkpoint_matches_straight_run),

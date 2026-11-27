@@ -21,6 +21,10 @@
   证据：`stop_times_snapshot_the_same_state_as_separate_runs`、`stop_times_are_deterministic_for_one_seed`、
   `stop_times_validation_rejects_bad_lists`、`stop_times_and_checkpoints_are_mutually_exclusive`、`stop_times_aggregate_over_replications`。
 
+### 工具与 CI
+
+- **冒烟套件 27 → 28 项**：新增 `multiple stop times`（stop_time 30 + `[10,20]`：快照时间 10/20、completed 单调递增，且整体报告去掉 `stops` 后与不带 `stop_times` 完全相同）。
+
 
 ## v1.62.0 — 2026-11-27
 
