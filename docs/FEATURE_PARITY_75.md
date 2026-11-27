@@ -330,10 +330,10 @@
 > 并把 3 个纯教程/术语页从 🟡 改判为 📄。**权威总数以第 325 行的 ✅39 / 🟡97 / ⛔73 / 📄3 为准**，
 > 下表用来看**缺口集中在哪个目录**，不必逐格对齐。
 
-矩阵共 **208 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 53 行、🟡 100 行、⛔ 52 行、📄 3 行（参考页，不计入缺口）。
+矩阵共 **219 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 61 行、🟡 101 行、⛔ 54 行、📄 3 行（参考页，不计入缺口）。
 > 本行数字由 `scripts/check-parity-counts.py` 从下方表格**自动核对**；改矩阵后若不一致，CI 会失败。
 > 本行数字由 `scripts/check-parity-counts.py` 从下方表格**自动核对**；改矩阵后若不一致，CI 会失败。
-其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行。
+其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行、§17c 的 Process Flow 模块 11 行（不在 326 页清点内，另注）。
 
 | 状态 | 行数 | 占比 |
 |---|---:|---:|
@@ -448,6 +448,28 @@ waiting_for_release / release_seen / leg_started_at`。关键同步规则：
 **结论**：conveyor 的**基础行为**（速度/间距/容量/曲线/迭代积分/精确停位）与**两片深水**（slug 组、
 合流释放策略）已一致；剩下的是**独立对象化的那部分**（Decision Point / Transfer / Motor / sorter /
 Power-and-Free）与类型工具。后者我倾向把「类型工具」记为有意差异，其余按需求优先级逐项补。
+
+## 17c. Process Flow 模块（**不在 326 页清点内**，另注）
+
+> **为什么单独一节**：FlexSim 7.5 中文帮助的 326 个 HTML 页面里**没有 Process Flow 章节**
+> （该模块的文档在 7.5 里随模块单独提供，这套中文包里未收录）。所以本矩阵主表不覆盖它——
+> 但它是 FlexSim 的核心建模工具之一，OpenFlex 已实现了 token 运行时与六个块。
+> **证据等级低于主表**：块清单按已实现的部分登记，未能逐页对照 7.5 版模块帮助；
+> 标 ⛔ 的两行写的是"我们确实没有"，不是"FlexSim 7.5 确定有、只是我们没做"。
+
+| FlexSim 7.5 功能 | OpenFlex 现状 | 状态 | 证据或缺口说明 |
+|---|---|---|---|
+| Process Flow 运行时（token 创建/推进/完成，单模型内） | `process_flow` + `FlowRuntime` | ✅ | 模型级 token 运行时，与对象流共存（`process_flow_and_objects_coexist`）；tokens_created/completed 进报告 |
+| Create 块（`quantity` / `first_arrival` / `interarrival` / `max_creations`） | `FlowBlockKind::Create` | ✅ | 实测 `quantity: 3, max_creations: 1` 生成 3 个 token；`token_flow_reports_each_block` |
+| Delay 块（`time` + **`capacity` 排队**） | `FlowBlockKind::Delay` | ✅ | 容量满时 FIFO 排队、释放同刻进入；`delay_capacity_one_queues_fifo_and_starts_on_the_release_instant`、`delay_capacity_two_starts_the_first_two_together`；实测 3 token+delay5 → cap1 5/10/15、cap2 5/5/10、不限 5/5/5 |
+| Assign 块（token 标签 / type 动作） | `FlowBlockKind::Assign` | ✅ | `token_flow_reports_each_block` |
+| Decision 块（有序条件分支） | `FlowBlockKind::Decision` | ✅ | `token_flow_reports_each_block`（5 分流到 Urgent / Normal 两个 sink） |
+| Sink 块（销毁 token） | `FlowBlockKind::Sink` | ✅ | `token_flow_reports_each_block` |
+| Transfer 块（token ↔ 对象：to_object / from_object） | `FlowBlockKind::Transfer` | ✅ | 两侧都测：`object_level_flow_transfers_tokens_as_items`、`from_object_transfer_pulls_items_into_tokens` |
+| Process Flow 统计 / trace / 检查点 | 报告 `process_flow.blocks` + trace + checkpoint | ✅ | `token_flow_traces_token_events`、`checkpoint_resume_matches_a_direct_flow_run`、`delay_capacity_queue_survives_a_checkpoint` |
+| 可视化块编辑器（拖拽连线） | Studio 里是 JSON 文本 | 🟡 | 有结构校验与错误面板，无拖拽编辑器 |
+| 块级触发器（块进入/退出执行动作） | 无 | ⛔ | 只有对象级触发器与 create/assign 内建动作 |
+| 其它块与共享资产（Acquire/Release/Subflow 等） | 无 | ⛔ | **未核实 7.5 版模块帮助的完整块清单**（该包未收录）；此处只记"我们没有" |
 
 ## 18. 剩余缺口 Top 10（task-185 取证后重排）
 
