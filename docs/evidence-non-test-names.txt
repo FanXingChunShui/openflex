@@ -27,3 +27,8 @@ operator_priority
 process_finish
 tracked_interval
 use_same_num_operators
+
+# report fields cited while describing where the start_time offset applies
+avg_stay_time
+busy_fraction
+first_arrival

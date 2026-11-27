@@ -20,6 +20,11 @@
   独立实测：`start_time: 100` → `final_time` 20→120、trace 首事件 `100.0`，而 `avg_stay` 仍 2.0、`completed` 仍 3。
   CSV 侧确认没有"时间/时长两义"的列：report/replications CSV 只有时长与比例列，故不受影响。
 
+### 桌面 GUI
+
+- **GUI：运行设置里加 `START AT`（显示偏移）**，提示写明"只影响报告时间，时钟仍从 0 起"；测试 `start_time_is_display_only_in_the_file`（缺省 0 不写进文件）。GUI **157 项**。
+- **冒烟套件 25 → 26 项**：新增 `start time offset`（`final_time` 20→120、首事件 100.0，而 `avg_stay_time`/`throughput`/`completed` 不变）。
+
 
 ## v1.58.0 — 2026-11-27
 

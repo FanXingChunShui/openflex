@@ -3507,6 +3507,8 @@ struct OpenFlexApp {
     pl_new_entry: std::collections::HashMap<String, (String, String)>,
     model_stop: f64,
     model_warmup: f64,
+    /// Display-only clock offset written to `run.start_time`.
+    model_start_time: f64,
     model_seed: String,
     model_replications: u32,
     model_unit: u8,
@@ -3660,6 +3662,7 @@ impl OpenFlexApp {
             pl_new_entry: std::collections::HashMap::new(),
             model_stop: 300.0,
             model_warmup: 0.0,
+            model_start_time: 0.0,
             model_seed: "1".into(),
             model_replications: 1,
             model_unit: 0,
@@ -4750,6 +4753,7 @@ impl OpenFlexApp {
                 self.model_description.clear();
                 self.model_stop = 300.0;
                 self.model_warmup = 0.0;
+                self.model_start_time = 0.0;
                 self.model_seed = "1".into();
                 self.model_replications = 1;
                 self.model_unit = 0;
@@ -5062,6 +5066,7 @@ impl OpenFlexApp {
                 self.model_description = model.description.clone();
                 self.model_stop = model.run.stop_time;
                 self.model_warmup = model.run.warmup;
+                self.model_start_time = model.run.start_time;
                 self.model_seed = model.run.seed.to_string();
                 self.model_replications = model.run.replications.max(1);
                 self.model_unit = match model.time_unit {
@@ -6638,6 +6643,7 @@ idle,busy,blocked,down\n",
         copy.description = self.model_description.trim().to_string();
         copy.run.stop_time = self.model_stop.max(1.0);
         copy.run.warmup = self.model_warmup.max(0.0);
+        copy.run.start_time = self.model_start_time;
         copy.run.seed = seed;
         copy.run.replications = self.model_replications.max(1);
         copy.time_unit = match self.model_unit {
@@ -9701,6 +9707,19 @@ impl eframe::App for OpenFlexApp {
                                 egui::DragValue::new(&mut self.model_warmup)
                                     .speed(1.0)
                                     .range(0.0..=1.0e9),
+                            );
+                            ui.label(
+                                egui::RichText::new("START AT")
+                                    .size(9.0_f32)
+                                    .color(palette::TEXT_DIM),
+                            )
+                            .on_hover_text(
+                                "offset added to reported times only; the clock still starts at 0",
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut self.model_start_time)
+                                    .speed(1.0)
+                                    .range(-1.0e9..=1.0e9),
                             );
                         });
                         ui.horizontal(|ui| {
@@ -15516,6 +15535,24 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn start_time_is_display_only_in_the_file() {
+        use openflex_model::RunSettings;
+        let plain = RunSettings::default();
+        let json = serde_json::to_string(&plain).expect("json");
+        assert!(
+            !json.contains("start_time"),
+            "a zero offset stays out of the file: {json}"
+        );
+
+        let shifted = RunSettings {
+            start_time: 80.0,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&shifted).expect("json");
+        assert!(json.contains("\"start_time\":80.0"), "{json}");
     }
 
     #[test]

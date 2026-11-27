@@ -399,6 +399,43 @@ def case_table_driven_arrivals():
     )
 
 
+def case_start_time_offset():
+    """start_time shifts what is reported, not how the model runs."""
+    def build(offset):
+        run = {"stop_time": 20.0, "seed": 1, "replications": 1}
+        if offset is not None:
+            run["start_time"] = offset
+        return model(
+            [
+                {"name": "S", "kind": "source", "params": {
+                    "interarrival": {"distribution": "constant", "value": 5.0},
+                    "max_arrivals": 3}},
+                {"name": "P", "kind": "processor", "params": {
+                    "process_time": {"distribution": "constant", "value": 2.0}}},
+                {"name": "K", "kind": "sink", "params": {}},
+            ],
+            [{"from": "S", "to": "P"}, {"from": "P", "to": "K"}],
+            run=run,
+        )
+
+    plain = report(write("start_plain", build(None)))
+    shifted = report(write("start_shifted", build(100.0)))
+    assert plain["replications"][0]["final_time"] == 20.0
+    assert shifted["replications"][0]["final_time"] == 120.0, (
+        "the reported final time carries the offset"
+    )
+    for name in ("avg_stay_time", "throughput"):
+        assert (
+            plain["objects"]["P"][name]["mean"]
+            == shifted["objects"]["P"][name]["mean"]
+        ), f"{name} is a duration and must not move"
+    assert plain["completed"]["mean"] == shifted["completed"]["mean"]
+
+    events = trace_of(write("start_shifted_trace", build(100.0)))
+    first = next(event for event in events if event["event"] != "flow")
+    assert first["time"] == 100.0, f"the first event sits at the offset: {first}"
+
+
 def case_sql_aggregates():
     """query() can count, sum, group and sort by an aggregate."""
     path = write(
@@ -877,6 +914,7 @@ CASES = [
     ("combiner multi slot", case_combiner_multi_slot),
     ("combiner batch parallel", case_combiner_batch_parallel),
     ("sql aggregates", case_sql_aggregates),
+    ("start time offset", case_start_time_offset),
     ("combiner pack", case_combiner_pack),
     ("timetable off shift", case_timetable_off_shift),
     ("checkpoint resume", case_checkpoint_matches_straight_run),

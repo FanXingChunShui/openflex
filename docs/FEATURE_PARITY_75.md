@@ -54,7 +54,7 @@
 | Model Tree View（树视图浏览全部数据） | Studio 模型树（重命名/复制/删除） | 🟡 | 有树形操作，但底层不是 FlexSim 的通用节点树，无法任意插入数字/字符串/对象/指针节点 |
 | Order of Events（单个对象的固定事件序列） | 引擎内对象状态机 + 触发器时序 | ✅ | `engine.rs`；与 `docs/spec/logic.md` 的时序表一致 |
 | FlexSim Concepts Overview | — | 📄 | 概念索引页，无独立功能可对照 |
-| Simulation Model Units 的"Model Start Time" | 无 | ⛔ | 只支持 `t=0` 起点；文档允许把 0 时刻映射到真实日期时间 |
+| Simulation Model Units 的"Model Start Time" | **`run.start_time`** | ✅ | **显示偏移**：报告与 trace 的每个**时间点**加该常量（`final_time`、事件 `time`、`tracked_series` 时间点、`--paths` CSV 的 `first_time`/`last_time`），用于把 0 时刻映射到班次/真实时间。**内部时钟与调度不动**——`stop_time`/`warmup`/`first_arrival` 仍是 0 起的模型时间，时长/比例/计数逐位不变（`avg_stay_time`、`busy_fraction`、`throughput`、`state_times`、`completed`）。缺省 0 时输出逐字节不变（3 个基准模型 report JSON + CSV 的 SHA-256 证明）；负偏移也可用。实测 `start_time: 100` → `final_time` 20→120、trace 首事件 100.0，而 `avg_stay` 仍 2.0 |
 
 ## 2. FlexSimObjectLibrary（39 页）— 对象库（已由队友对齐，本表仅登记结论）
 
@@ -330,7 +330,7 @@
 > 并把 3 个纯教程/术语页从 🟡 改判为 📄。**权威总数以第 325 行的 ✅39 / 🟡97 / ⛔73 / 📄3 为准**，
 > 下表用来看**缺口集中在哪个目录**，不必逐格对齐。
 
-矩阵共 **208 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 51 行、🟡 101 行、⛔ 53 行、📄 3 行（参考页，不计入缺口）。
+矩阵共 **208 行**（按功能点拆行，不是按页面 1:1；一页常拆 2–6 行，索引类页面合并为 1 行），其中 ✅ 52 行、🟡 101 行、⛔ 52 行、📄 3 行（参考页，不计入缺口）。
 > 本行数字由 `scripts/check-parity-counts.py` 从下方表格**自动核对**；改矩阵后若不一致，CI 会失败。
 > 本行数字由 `scripts/check-parity-counts.py` 从下方表格**自动核对**；改矩阵后若不一致，CI 会失败。
 其中主手册 17 个目录 197 行，另加 §17b 的 Conveyor 模块 10 行。
