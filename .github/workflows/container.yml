@@ -47,7 +47,7 @@ jobs:
     # holds the run for the default 6 hours and looks "pending" from outside.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Resolve version and tag
         id: version
