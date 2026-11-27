@@ -55,7 +55,7 @@
 | FluidToItem | `fluid_to_item` | ✅ |
 | VisualTool | `visual_tool` | ✅ |
 | NetworkNode | `network_node` | ✅ 节点可摆放、节点间用 A 连接成边、最短路绕行 |
-| TrafficControl | `traffic_control` | ✅ 准入互斥生效（见下方说明） |
+| TrafficControl | `traffic_control` | ✅ 准入互斥生效（见下方说明）；**按占用量分档调速**（`speed_by_content`：`[{up_to,factor}]`，占用量 = 该 control 当前已准入 traveler 数；分档因子**替换** `speed_factor`，不相乘） |
 
 > `network_node` 已是一等对象：节点之间用普通 A 连接连成路网，边长默认取两节点直线距离，
 > 可用 `params.edges` 覆盖（FlexSim 的 distance table）；运输腿取「起点→最近节点 → 最短路 →
@@ -75,11 +75,11 @@
 |---|---|---|---|
 | Source | `source` | ✅ | 首件默认 t=0；间隔按“上一批离开 → 下一件到达”计时；每批数量、最大到达数、停止时间、item type、初始标签 |
 | Queue | `queue` | ✅ | 最大容量、FIFO/LIFO/优先级/按标签排序；攒批（`batch_size`）与超时放行（`batch_max_wait`）；批次在释放时刻整体提交 |
-| Processor | `processor` | ✅ | setup + process、容量、故障 MTBF/MTTR（打断加工并补足剩余时间）、操作员请求（Dispatcher 或 Resource 池）；`setup_finish` / `process_finish` 两个时点钩子（在 setup 结束与加工时钟结束触发，早于 `on_exit`） |
+| Processor | `processor` | ✅ | setup + process、容量、故障 MTBF/MTTR（打断加工并补足剩余时间）、操作员请求（Dispatcher 或 Resource 池）；`setup_finish` / `process_finish` 两个时点钩子（在 setup 结束与加工时钟结束触发，早于 `on_exit`）；**多个独立故障源**（`extra_failures`：各有 mtbf/mttr/首次故障/状态计时/修理工，对象 down 当且仅当任一源未修复，重叠不重复计入；`group` 在多源上被拒） |
 | Sink | `sink` | ✅ | 吞吐与停留时间统计 |
-| Combiner | `combiner` | ✅ | pack / join / batch（setup+process）；容器先到、等待组件数 |
+| Combiner | `combiner` | ✅ | pack / join / batch（setup+process）；容器先到、等待组件数；**逐端口 `components` 表**（每个组件端口不同数量，仅 pack；join/batch 拒绝）；**`max_content` 多槽**（pack 可同时攒多组；batch 逐槽 setup/process 可并行，对象 busy 取并集） |
 | Separator | `separator` | ✅ | `separate_mode: unpack`（qty+1 件）/ `split`（qty 件）；0 = 容器内全部组件 |
-| Conveyor | `conveyor` | 🟡 | 速度/长度/间距/容量、`curve` 弧长、`segments` 逐段积分、精确回退、严格最小间距（推挤压缩）；`photo_eyes`/`stations`/`join_inputs`；**slug 组**（`slug` + `slug_min_gap`：组内间隙恒定、组首被挡整组停）与**合流控制器**（`merge_mode` = `round_robin`/`weighted`/`by_item_type` + `merge_weight`，入口被占不吃配额）；仍缺光电门阵列高级语义与 Mass Flow 质量流 |
+| Conveyor | `conveyor` | 🟡 | 速度/长度/间距/容量、**按前车 `item_type` 的动态间距**（`gap_by_type`，未命中回落 `item_spacing`）、`curve` 弧长、`segments` 逐段积分、精确回退、严格最小间距（推挤压缩）；`photo_eyes`/`stations`/`join_inputs`；**slug 组**（`slug` + `slug_min_gap`：组内间隙恒定、组首被挡整组停）与**合流控制器**（`merge_mode` = `round_robin`/`weighted`/`by_item_type` + `merge_weight`，入口被占不吃配额）；仍缺光电门阵列高级语义与 Mass Flow 质量流 |
 | Merge | `merge` | ✅ | 多输入合流；可选等待全部输入 |
 | Split | `split` | ✅ | 轮询或按 item type 分流。**注意**：`split` 用自己的分流逻辑，**忽略连接上的 `strategy`**（实测在连接上写 `by_condition` 不生效）——需要在 split 下游按条件路由时，把路由点放在后面的 processor/queue 上 |
 | Transporter / TaskExecuter | `transporter` | 🟡 | 速度、装载/卸载时间、`network` 最短路、`home` 取货、两段任务；`capacity`=并发任务数（不搬运 flow item）；自定义任务序列为**腿级**扩展（见 Dispatcher 行） |

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### 文档
+
+- **`docs/COMPATIBILITY.md` 补齐最近几个版本的新能力**：Processor 的**多个独立故障源**（`extra_failures`）、
+  Combiner 的**逐端口 `components` 表**与 **`max_content` 多槽**（batch 逐槽并行、busy 取并集）、
+  Conveyor 的**按前车类型的动态间距**（`gap_by_type`）、TrafficControl 的**按占用量分档调速**（`speed_by_content`）。
+  这份表是用户查"FlexSim 的对象对应我们什么"的第一站，落后于实现就等于告诉用户"这个参数不存在"。
+
+
 ## v1.58.0 — 2026-11-27
 
 这一版继续补"模型作者天天会用"的东西，另外把两份最容易被误读的文档改了。
