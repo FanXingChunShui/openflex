@@ -1124,6 +1124,79 @@ mod tests {
         assert!(table.contains("Stay (s)"));
     }
 
+    fn time_baseline_models() -> Vec<openflex_model::Model> {
+        [
+            r#"{"format":"openflex-model","version":1,"name":"base-a","run":{"stop_time":20.0,"seed":1,"replications":2},"objects":[{"name":"S","kind":"source","params":{"interarrival":{"distribution":"constant","value":2.0},"max_arrivals":5}},{"name":"Q","kind":"queue","params":{}},{"name":"K","kind":"sink","params":{}}],"connections":[{"from":"S","to":"Q"},{"from":"Q","to":"K"}]}"#,
+            r#"{"format":"openflex-model","version":1,"name":"base-b","run":{"stop_time":20.0,"seed":1},"objects":[{"name":"S","kind":"source","params":{"interarrival":{"distribution":"constant","value":1.0},"max_arrivals":3}},{"name":"C","kind":"conveyor","params":{"speed":1.0,"length":10.0,"item_spacing":1.0,"accumulating":true,"slug":true,"slug_min_gap":2.0}},{"name":"K","kind":"sink","params":{}}],"connections":[{"from":"S","to":"C"},{"from":"C","to":"K"}]}"#,
+            r#"{"format":"openflex-model","version":1,"name":"base-c","run":{"stop_time":10.0,"seed":1},"objects":[{"name":"S","kind":"source","params":{"interarrival":{"distribution":"constant","value":1.0},"max_arrivals":4}},{"name":"P","kind":"processor","params":{"process_time":{"distribution":"constant","value":2.0}}},{"name":"K","kind":"sink","params":{}}],"connections":[{"from":"S","to":"P"},{"from":"P","to":"K"}]}"#,
+        ]
+        .iter()
+        .map(|json| openflex_model::Model::from_json(json).expect("model"))
+        .collect()
+    }
+
+    /// task-216 #1: default `start_time` keeps three report JSON and CSV
+    /// renderings byte-for-byte identical.
+    #[test]
+    fn start_time_zero_keeps_the_report_and_csv_baselines() {
+        let expected = [
+            (
+                "a5565af88072d66dbbe7eafed9c264bb4281a137bf85a95ccc18c1db8f97968a",
+                "33de8c2f4e2d3ef5b1b019c765b9f5fd7bbf23c3b767b1779db59f683dda09a2",
+            ),
+            (
+                "04f225eab7cd2e780726ea303763c2b07bf4a9e4fca8e6a8e3ec276b446e0dcb",
+                "ba6cd13f2ddcc4e9a46b76e3a1d0527e25f7faa4abee7565bde76751c40d05e4",
+            ),
+            (
+                "4920a6000bf12e3219b556e2936721a0e6158ca06cc46d3376e1de064f421794",
+                "5f2028fe8458ca028ac894e1433bc9b5e938c43a3eca8b89b6039d60eb80e96d",
+            ),
+        ];
+        for (index, model) in time_baseline_models().iter().enumerate() {
+            let report = openflex_core::run_model(model).expect("report");
+            let json = to_json(&report).expect("json");
+            let csv = to_csv(&report);
+            assert_eq!(
+                openflex_core::sha256::hex(json.as_bytes()),
+                expected[index].0,
+                "report JSON baseline {index} changed"
+            );
+            assert_eq!(
+                openflex_core::sha256::hex(csv.as_bytes()),
+                expected[index].1,
+                "report CSV baseline {index} changed"
+            );
+        }
+    }
+
+    /// task-216 #4/#7: a display offset changes report timestamps but never a
+    /// duration column; CSV headers and duration columns stay identical.
+    #[test]
+    fn start_time_does_not_change_csv_durations_or_headers() {
+        let base_json = r#"{"format":"openflex-model","version":1,"name":"offset","run":{"stop_time":20.0,"seed":1,"replications":2},"objects":[{"name":"S","kind":"source","params":{"interarrival":{"distribution":"constant","value":2.0},"max_arrivals":5}},{"name":"Q","kind":"queue","params":{}},{"name":"K","kind":"sink","params":{}}],"connections":[{"from":"S","to":"Q"},{"from":"Q","to":"K"}]}"#;
+        let shifted_json = base_json.replace(
+            r#""stop_time":20.0,"#,
+            r#""stop_time":20.0,"start_time":100.0,"#,
+        );
+        let base =
+            openflex_core::run_model(&openflex_model::Model::from_json(base_json).expect("base"))
+                .expect("base report");
+        let shifted = openflex_core::run_model(
+            &openflex_model::Model::from_json(&shifted_json).expect("shifted"),
+        )
+        .expect("shifted report");
+        assert_eq!(to_csv(&base), to_csv(&shifted));
+        assert_eq!(to_replications_csv(&base), to_replications_csv(&shifted));
+        assert_ne!(
+            to_json(&base).expect("json"),
+            to_json(&shifted).expect("json")
+        );
+        assert!(
+            (shifted.replications[0].final_time - base.replications[0].final_time - 100.0).abs()
+                < 1e-9
+        );
+    }
     #[test]
     fn replications_csv_is_empty_without_samples() {
         let report = sample_report();

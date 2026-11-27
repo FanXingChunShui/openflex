@@ -9,6 +9,17 @@
   Conveyor 的**按前车类型的动态间距**（`gap_by_type`）、TrafficControl 的**按占用量分档调速**（`speed_by_content`）。
   这份表是用户查"FlexSim 的对象对应我们什么"的第一站，落后于实现就等于告诉用户"这个参数不存在"。
 
+### 模型与引擎
+
+- **Model Start Time（`run.start_time`，显示偏移）**：矩阵 ⛔「Simulation Model Units 的 Model Start Time」。
+  **只做输出层偏移**：`final_time`、trace 每条事件的 `time`、`tracked_series` 时间点、
+  `--paths` CSV 的 `first_time`/`last_time` 加该常量；**内部时钟、调度、采样、`stop_time`/`warmup` 的含义一律不动**，
+  时长/比例/计数（`avg_stay_time`、`busy_fraction`、`throughput`、`state_times`、`completed`）逐位不变。
+  原因写在 `RunSettings` 注释里：把偏移推进调度器，`first_arrival`/`warmup`/`stop_time` 的语义全要跟着改。
+  `start_time` 缺省为 0 时输出逐字节不变（3 个基准模型 report JSON + CSV 的 SHA-256 证明）；负偏移也正确。
+  独立实测：`start_time: 100` → `final_time` 20→120、trace 首事件 `100.0`，而 `avg_stay` 仍 2.0、`completed` 仍 3。
+  CSV 侧确认没有"时间/时长两义"的列：report/replications CSV 只有时长与比例列，故不受影响。
+
 
 ## v1.58.0 — 2026-11-27
 

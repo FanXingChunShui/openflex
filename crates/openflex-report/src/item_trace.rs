@@ -826,6 +826,36 @@ mod tests {
         value
     }
 
+    /// task-216 #7: the trace-based paths CSV inherits the display offset;
+    /// header stays `count,path,items,first_time,last_time`.
+    #[test]
+    fn path_csv_uses_the_shifted_trace_timestamps() {
+        let json = r#"{"format":"openflex-model","version":1,"name":"trace-offset",
+            "run":{"stop_time":5.0,"seed":1,"start_time":100.0},
+            "objects":[
+              {"name":"S","kind":"source","params":{"interarrival":{"distribution":"constant","value":1.0},"max_arrivals":2}},
+              {"name":"K","kind":"sink","params":{}}],
+            "connections":[{"from":"S","to":"K"}]}"#;
+        let model = openflex_model::Model::from_json(json).expect("model");
+        let config = openflex_core::SimConfig {
+            stop_time: 5.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, trace) = openflex_core::simulate_traced(&model, &config, 0).expect("trace");
+        let csv = render_path_groups(&trace, Format::Csv).expect("csv");
+        let mut lines = csv.lines();
+        assert_eq!(lines.next(), Some("count,path,items,first_time,last_time"));
+        let row = lines.next().expect("a path");
+        let first_time: f64 = row
+            .split(',')
+            .nth(3)
+            .expect("first_time")
+            .parse()
+            .expect("number");
+        assert!(first_time >= 100.0, "{row}");
+    }
+
     #[test]
     fn extracts_paths_per_item_in_time_order() {
         let mut log = TraceLog::default();

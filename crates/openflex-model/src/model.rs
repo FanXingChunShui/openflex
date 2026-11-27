@@ -59,6 +59,13 @@ pub struct RunSettings {
     /// Model time at which the run stops.
     #[serde(default = "default_stop_time")]
     pub stop_time: f64,
+    /// task-216: **display-only** offset added to timestamps in reports and
+    /// traces. The internal clock, event scheduling, distributions,
+    /// `stop_time`, `warmup` and every duration stay model-time based from 0.
+    /// Default 0 keeps the historical output byte-for-byte identical.
+    /// Negative values are allowed (the display clock starts before 0).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub start_time: f64,
     /// Transient phase ignored by the statistics.
     #[serde(default)]
     pub warmup: f64,
@@ -74,11 +81,16 @@ impl Default for RunSettings {
     fn default() -> Self {
         Self {
             stop_time: default_stop_time(),
+            start_time: 0.0,
             warmup: 0.0,
             seed: default_seed(),
             replications: default_replications(),
         }
     }
+}
+
+fn is_zero(value: &f64) -> bool {
+    *value == 0.0
 }
 
 fn is_false(value: &bool) -> bool {

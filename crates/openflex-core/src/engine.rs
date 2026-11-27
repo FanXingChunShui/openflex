@@ -1769,6 +1769,21 @@ pub fn run_model(model: &Model) -> Result<SimReport, SimError> {
     Ok(SimReport::from_replications(model, results))
 }
 
+/// task-216: apply the display-only offset to a replication result's
+/// **timestamps** (`final_time` and tracked-series sample times). Durations,
+/// ratios and counts are deliberately untouched; the engine clock stays at 0.
+fn apply_result_start_time(result: &mut ReplicationResult, offset: f64) {
+    if offset == 0.0 {
+        return;
+    }
+    result.final_time += offset;
+    for samples in result.tracked_series.values_mut() {
+        for sample in samples {
+            sample.0 += offset;
+        }
+    }
+}
+
 /// task-59: run every replication on `workers` threads.
 ///
 /// The replications are independent (each has its own seed and engine), so the
@@ -1834,7 +1849,9 @@ pub fn simulate(
     config: &SimConfig,
     index: u32,
 ) -> Result<ReplicationResult, SimError> {
-    simulate_run(model, config, index, false, None, false).map(|(result, _, _)| result)
+    let (mut result, _, _) = simulate_run(model, config, index, false, None, false)?;
+    apply_result_start_time(&mut result, model.run.start_time);
+    Ok(result)
 }
 
 /// Run one replication and record every processed event (B12).
@@ -1847,7 +1864,16 @@ pub fn simulate_traced(
     config: &SimConfig,
     index: u32,
 ) -> Result<(ReplicationResult, TraceLog), SimError> {
-    let (result, _, trace) = simulate_run(model, config, index, true, None, false)?;
+    let (mut result, _, mut trace) = simulate_run(model, config, index, true, None, false)?;
+    // task-216: display-only offset; the engine clock and event scheduling keep
+    // running from 0. `seq` ordering is preserved because adding a constant to
+    // every timestamp does not reorder events.
+    if model.run.start_time != 0.0 {
+        for event in &mut trace.events {
+            event.time += model.run.start_time;
+        }
+        apply_result_start_time(&mut result, model.run.start_time);
+    }
     Ok((result, trace))
 }
 
@@ -25204,6 +25230,120 @@ mod tests {
             serde_json::to_string(&first).expect("json"),
             serde_json::to_string(&second).expect("json")
         );
+    }
+
+    fn start_time_model(start_time: f64, replications: u32) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "start-time",
+          "run": {{ "stop_time": 12.0, "start_time": {start_time},
+                    "seed": 1, "replications": {replications} }},
+          "tracked_variables": [{{ "name": "Clock", "expression": "time" }}],
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1.0 }},
+                "max_arrivals": 5, "first_arrival": 0.0 }} }},
+            {{ "name": "P", "kind": "processor", "params": {{
+                "process_time": {{ "distribution": "constant", "value": 2.0 }} }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [{{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }}]
+        }}"#
+        ))
+        .expect("start-time model")
+    }
+
+    /// task-216 #2: every trace timestamp shifts by the same display offset.
+    #[test]
+    fn start_time_offsets_every_trace_event() {
+        let base = start_time_model(0.0, 1);
+        let shifted = start_time_model(100.0, 1);
+        let config = SimConfig {
+            stop_time: 12.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, plain) = crate::simulate_traced(&base, &config, 0).expect("plain");
+        let (_, moved) = crate::simulate_traced(&shifted, &config, 0).expect("shifted");
+        assert_eq!(plain.events.len(), moved.events.len());
+        for (plain, moved) in plain.events.iter().zip(&moved.events) {
+            assert!((moved.time - plain.time - 100.0).abs() < 1e-9, "{moved:?}");
+            assert_eq!(moved.seq, plain.seq);
+            assert_eq!(moved.event, plain.event);
+            assert_eq!(moved.object, plain.object);
+            assert_eq!(moved.data, plain.data);
+            assert_eq!(moved.message, plain.message);
+        }
+    }
+
+    /// task-216 #3/#4/#6: the report's final_time and tracked-series times
+    /// shift, durations and counts do not; every replication shifts the same.
+    #[test]
+    fn start_time_offsets_report_timestamps_only() {
+        let base = crate::run_model(&start_time_model(0.0, 2)).expect("base");
+        let shifted = crate::run_model(&start_time_model(100.0, 2)).expect("shifted");
+        assert_eq!(base.replications.len(), shifted.replications.len());
+        for (base, shifted) in base.replications.iter().zip(&shifted.replications) {
+            assert!((shifted.final_time - base.final_time - 100.0).abs() < 1e-9);
+            assert_eq!(shifted.items_completed, base.items_completed);
+            assert_eq!(shifted.items_created, base.items_created);
+            for (name, stats) in &base.objects {
+                let other = &shifted.objects[name];
+                assert_eq!(other.avg_stay_time, stats.avg_stay_time);
+                assert_eq!(other.utilization, stats.utilization);
+                assert_eq!(other.throughput, stats.throughput);
+                assert_eq!(other.state_times, stats.state_times);
+            }
+            let base_series = &base.tracked_series["Clock"];
+            let shifted_series = &shifted.tracked_series["Clock"];
+            assert_eq!(base_series.len(), shifted_series.len());
+            for (base, shifted) in base_series.iter().zip(shifted_series) {
+                assert!((shifted.0 - base.0 - 100.0).abs() < 1e-9);
+                assert_eq!(shifted.1, base.1);
+            }
+        }
+        assert_eq!(base.stop_time, 12.0);
+        assert_eq!(shifted.stop_time, 12.0);
+        assert_eq!(base.warmup, shifted.warmup);
+        assert_eq!(
+            &base.replications[0].objects,
+            &shifted.replications[0].objects
+        );
+        // The report aggregate for every replication's final time is identical.
+        let finals: Vec<f64> = shifted.replications.iter().map(|r| r.final_time).collect();
+        assert!((finals[0] - 112.0).abs() < 1e-9, "{finals:?}");
+        assert!(finals.iter().all(|time| (*time - finals[0]).abs() < 1e-9));
+    }
+
+    /// task-216 #8: offset output is deterministic for one seed.
+    #[test]
+    fn start_time_output_is_deterministic() {
+        let model = start_time_model(100.0, 2);
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
+    }
+
+    /// task-216 #5: negative offsets are allowed and are simple additions.
+    #[test]
+    fn start_time_accepts_a_negative_offset() {
+        let config = SimConfig {
+            stop_time: 12.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, plain) =
+            crate::simulate_traced(&start_time_model(0.0, 1), &config, 0).expect("plain");
+        let (_, moved) =
+            crate::simulate_traced(&start_time_model(-50.0, 1), &config, 0).expect("negative");
+        for (plain, moved) in plain.events.iter().zip(&moved.events) {
+            assert!((moved.time - plain.time + 50.0).abs() < 1e-9);
+        }
+        let report = crate::run_model(&start_time_model(-50.0, 1)).expect("report");
+        assert!((report.replications[0].final_time + 38.0).abs() < 1e-9);
     }
 
     /// task-215: empty gap_by_type keeps the three conveyor baselines.
