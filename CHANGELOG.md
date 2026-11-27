@@ -1,6 +1,49 @@
 # Changelog
 
-## Unreleased
+## v1.60.0 — 2026-11-27
+
+这一版补的是**任务序列里最常用的两个逐任务参数**：`end_speed` 和 `force_travel`。
+
+**1. `end_speed`：到达时只减速到某个速度，而不是停住。** 用于"边移动边作业"的场景（叉车不停车取货、
+AGV 通过站点不刹停）。加减速开启时，这不是比例缩放——**按运动学重新推导**：
+
+```text
+D_trap(e) = v²/(2a) + (v²-e²)/(2b)      D_min(e) = e²/(2a)
+梯形 d >= D_trap(e):  t = v/a + (v-e)/b + (d - D_trap(e))/v
+三角 D_min(e) <= d < D_trap(e):  p = √(a(2bd+e²)/(a+b)),  t = p/a + (p-e)/b
+```
+
+手算与实现一致：`d=10, v=2, a=1, b=2, e=1` → **6.125**（`e=0` 时 6.5）；append 模式下 pickup `4.0 → 3.625`、delivery `6.5 → 6.125`。
+
+**2. `force_travel`：距离为 0 也执行这段 travel**（否则任务序列会"塌陷"掉这一段）。时长仍然是 0——**不臆造时间**。
+
+**3. 不可行区选择报错，而不是近似。** 当 `e > 0` 且 `d < D_min(e)`，物理上到不了这个速度（减速段会变成负时间）。
+我们选择 `SimError::Config`，点名 `end_speed`、实际距离、**最短距离**。
+
+备选方案是"把 `end_speed` 当成可达上限，短距离只加速到 `√(2ad)`"——那会**静默交付低于用户要求的到达速度**，
+正是我们这几次最想避免的"看起来对、实际不是那个意思"。**报错比一个语义漂移的数字好。**
+
+**边界都写死**：`e == 0` 直接委托原函数（保证逐位一致，不走通式以免浮点末位浮动）；无加减速时 `end_speed` 不影响时长；
+`d == 0` 且无 `force_travel` 不报错；`force_travel && d == 0 && e > 0` 报错。append 模式下 duration-only 的 extra travel 设这两个字段会被 validate 拒绝。
+
+**4. 一处流程说明。** 这个字段加在 `TaskStep::Detailed` 上会强制更新所有 struct-variant 字面量，GUI 里 12 行必须机械补齐。
+规则的边界是：**"不要动 GUI"指的是不改行为与界面，不是不许改到编译不过的地方**。diff 里只有 12 行字段补齐，没有别的。
+
+**5. DELAY 任务类型**（矩阵「Task Types」最后一项）。三者的差别是**统计口径**：`utilize` 是 busy 占用，
+`delay` 是原地等待、**时间落进 `idle` 而不进 busy/utilize**，`break` 是下班。
+
+实现前先读了 `ExecutorActivity` 才动手——新增 `ExecutorActivity::Delay` + `state_times.delay` + 报告 `delay` 字段
+（非零才出现，缺省 JSON 逐字节不变），**没有改 busy 口径**。实测同 d=5 对照：
+
+| 腿型 | idle | busy | delay | utilize | 完成时刻 |
+|---|---:|---:|---:|---:|---:|
+| 无额外腿 | 74 | 21 | 0 | 1 | 21 |
+| delay | 79 | 21 | 5 | 1 | 26 |
+| utilize | 74 | 26 | 0 | 6 | 26 |
+
+delay 与 utilize 完成时刻相同、统计不同——这正是三者该有的样子。
+
+发布节奏保持**至少 3 小时一版**。
 
 ### 模型与引擎
 
@@ -23,6 +66,16 @@
   **完成时刻都是 26**——同语义、不同统计，这正是三者该有的样子。
   `duration <= 0` validate 报错点名字段；append 与 explicit 两种任务序列都支持。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**1132 passed / 0 failed**；clippy 0 警告、fmt 干净。
+- GUI **157 项**、`openflex-core --lib` **338 项**；smoke **26/26**；示例 **66/66**；golden 全过。
+- 矩阵：✅ **53** / 🟡 **100** / ⛔ 52 / 📄 3（Task Types 升 ✅）；`audit-parity-evidence.py --strict` 通过
+  （它当场抓到我手写的两个**不存在的测试名**，已改为实际名称）。
+- `check-dead-params.sh` 0 known；`check-doc-baselines.sh`、`check-changelog.sh`、`check-parity-counts.py` 通过。
+- 独立实测：`end_speed: 3`（executor 速度 1）→ validate 点名最快的 executor 速度；`-1` → `must be a finite, non-negative speed`；
+  delay vs utilize 同 d=5：完成时刻都 26，`busy` 21 vs 26、`delay` 5 vs 0。
 
 ## v1.59.0 — 2026-11-27
 
