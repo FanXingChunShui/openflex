@@ -399,6 +399,38 @@ def case_table_driven_arrivals():
     )
 
 
+def case_process_flow_capacity():
+    """A delay block with capacity queues tokens instead of starting them together."""
+    def build(capacity):
+        delay = {"id": "D", "kind": "delay",
+                 "time": {"distribution": "constant", "value": 5.0}}
+        if capacity is not None:
+            delay["capacity"] = capacity
+        return model(
+            [],
+            [],
+            run={"stop_time": 40.0, "seed": 1, "replications": 1},
+            process_flow={
+                "blocks": [
+                    {"id": "C", "kind": "create", "first_arrival": 0.0,
+                     "quantity": 3, "max_creations": 1},
+                    delay,
+                    {"id": "S", "kind": "sink"},
+                ],
+                "connections": [{"from": "C", "to": "D"}, {"from": "D", "to": "S"}],
+            },
+        )
+
+    def delays(capacity):
+        path = write(f"flow_capacity_{capacity}", build(capacity))
+        return [round(event["time"], 2)
+                for event in trace_of(path) if event["event"] == "token_delay"]
+
+    assert delays(None) == [5.0, 5.0, 5.0], "no capacity runs three tokens at once"
+    assert delays(1) == [5.0, 10.0, 15.0], "capacity one serialises them"
+    assert delays(2) == [5.0, 5.0, 10.0], "capacity two starts the first two together"
+
+
 def case_start_time_offset():
     """start_time shifts what is reported, not how the model runs."""
     def build(offset):
@@ -915,6 +947,7 @@ CASES = [
     ("combiner batch parallel", case_combiner_batch_parallel),
     ("sql aggregates", case_sql_aggregates),
     ("start time offset", case_start_time_offset),
+    ("process flow capacity", case_process_flow_capacity),
     ("combiner pack", case_combiner_pack),
     ("timetable off shift", case_timetable_off_shift),
     ("checkpoint resume", case_checkpoint_matches_straight_run),

@@ -9,6 +9,9 @@
   脚本按"缺口短语提到某个 backticked 标识符 + 它确实在 `model.rs` 里 + 存在以它开头的测试"判定可疑，
   误报进 `docs/stale-gap-allowlist.txt`（现在 2 条，都写了理由；第一版把 `group` 误判成 `groups_steps_...`，已收紧为整词前缀匹配）。
 
+- **冒烟套件 26 → 27 项**：新增 `process flow capacity`（3 token + delay 5：不限 5/5/5、cap1 5/10/15、cap2 5/5/10）。
+
+
 ### 模型与引擎
 
 - **Process Flow 的块级排队容量（`FlowDelayParams.capacity`）**：矩阵 🟡「Process Flow 块容量」此前所有到达的 token 同时计时。
