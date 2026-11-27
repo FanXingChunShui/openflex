@@ -1823,6 +1823,8 @@ impl EditForm {
                         name: String::new(),
                         range: None,
                         triggers: openflex_model::PhotoEyeTriggers::default(),
+                        clear_time: 0.0,
+                        require_gap: 0.0,
                     });
                     changed = true;
                 }
@@ -15122,6 +15124,8 @@ mod tests {
             name: "PE1".into(),
             range: Some(0.75),
             triggers: PhotoEyeTriggers::default(),
+            clear_time: 0.0,
+            require_gap: 0.0,
         };
         let json = serde_json::to_string(&eye).expect("json");
         assert!(json.contains("\"position\":7.5"), "{json}");
@@ -15135,6 +15139,8 @@ mod tests {
             name: String::new(),
             range: None,
             triggers: PhotoEyeTriggers::default(),
+            clear_time: 0.0,
+            require_gap: 0.0,
         };
         let json = serde_json::to_string(&bare).expect("json");
         assert!(

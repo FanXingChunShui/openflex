@@ -1001,6 +1001,17 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                         "must be positive",
                     ));
                 }
+                for (field, value) in [
+                    ("clear_time", eye.clear_time),
+                    ("require_gap", eye.require_gap),
+                ] {
+                    if !value.is_finite() || value < 0.0 {
+                        issues.push(ValidationIssue::new(
+                            location(&format!("photo_eyes[{i}].{field}")),
+                            "must be finite and non-negative",
+                        ));
+                    }
+                }
                 for (trigger, actions) in [
                     ("on_blocked", &eye.triggers.on_blocked),
                     ("on_cleared", &eye.triggers.on_cleared),
@@ -1112,6 +1123,17 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                         location(&format!("photo_eyes[{i}].position")),
                         "must be inside the belt (0 < position < length)",
                     ));
+                }
+                for (field, value) in [
+                    ("clear_time", eye.clear_time),
+                    ("require_gap", eye.require_gap),
+                ] {
+                    if !value.is_finite() || value < 0.0 {
+                        issues.push(ValidationIssue::new(
+                            location(&format!("photo_eyes[{i}].{field}")),
+                            "must be finite and non-negative",
+                        ));
+                    }
                 }
             }
             if let Some(inputs) = params.join_inputs

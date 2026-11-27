@@ -514,6 +514,8 @@ fn definitions() -> Value {
                         "position": { "type": "number", "exclusiveMinimum": 0 },
                         "name": { "type": "string", "default": "" },
                         "range": { "type": "number", "exclusiveMinimum": 0, "default": 1.0 },
+                        "clear_time": { "type": "number", "minimum": 0, "default": 0 },
+                        "require_gap": { "type": "number", "minimum": 0, "default": 0 },
                         "triggers": {
                             "type": "object",
                             "properties": {

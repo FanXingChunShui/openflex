@@ -1785,6 +1785,22 @@ pub struct PhotoEye {
     /// task-179: four-state photo-eye triggers (on_photo_eye stays unchanged).
     #[serde(default, skip_serializing_if = "PhotoEyeTriggers::is_empty")]
     pub triggers: PhotoEyeTriggers,
+    /// task-219: keep the beam unobstructed this long before declaring Clear.
+    /// `0` clears immediately (historical behaviour). While the timer runs,
+    /// an item entering the beam cancels it and the eye stays Blocked; no new
+    /// Block transition is emitted.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub clear_time: f64,
+    /// task-219: minimum centre-to-centre belt gap between the previous
+    /// blocked item and the next one. When the gap is smaller, the items are
+    /// treated as one continuous occlusion: the eye stays Blocked and the
+    /// second item emits no Block transition. `0` disables the check.
+    ///
+    /// Relationship: `require_gap` is evaluated first; only when it says
+    /// "not a continuous occlusion" (or there is no follower) does
+    /// `clear_time` start counting.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub require_gap: f64,
 }
 
 /// task-179: Photo Eye state transitions: only Blocked and Cleared have hooks.

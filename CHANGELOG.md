@@ -9,6 +9,16 @@
   报告与不中断运行**逐字节相同**（排除 final_time）。explicit 链早在 task-183 有测试，而 append 链的 `pending_steps`
   此前**只有手工验证**——现在钉住了。这条也提醒：矩阵里的"缺"同样需要证据，否则会把已经修好的东西再记一遍。
 
+- **光电门 `clear_time`（去抖）与 `require_gap`（连续遮挡）**：矩阵 🟡「Photo Eye」缺 FlexSim 的 Clear Time / Require Gap。
+  `clear_time`：无遮挡后进入 `Clearing` 并调度 `PhotoEyeClear` 定时事件，到期仍无件才发 Clear；计时期间来件 → 取消、回 `Blocked`，
+  **不发 Clear 也不发 Block**。`require_gap`：**先**判定连续遮挡——上一遮挡件离开门后，若后一件与它的同刻皮带中心距
+  `< require_gap`，门保持 `Blocked`、不启动 clear 计时、第二件不产生 Block 跃迁；间距足够或无后件才让 `clear_time` 起算。
+  间距直接取 `Belt.positions`（front-first）同一时刻做差，**未改皮带几何模型**。缺省 0 走历史立即转换路径，
+  **3 个基准模型的 report + trace SHA-256 逐字节不变**。
+  **检查点**：`photo_eye_clear_at` 进检查点（全 None 时省略，旧 checkpoint 兼容），
+  新增 `photo_eye_clear_time_survives_a_checkpoint`（计时中 t=11 取检查点，续跑后 Clear 仍为 12.5）——
+  音箱门+检查点最容易丢的就是这种"已排定的定时器"。实测：`clear_time: 2` 的 Clear 由立即延到 7.5（该模型几何下的值）。
+
 
 ## v1.60.0 — 2026-11-27
 

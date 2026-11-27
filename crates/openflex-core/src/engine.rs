@@ -275,6 +275,8 @@ pub(crate) enum EventKind {
     Message(usize),
     /// The next conveyor movement boundary is reached.
     BeltTick(usize),
+    /// task-219: a Photo Eye clear-time timer expired (`index`, `eye`, deadline).
+    PhotoEyeClear(usize, usize, f64),
     /// One slot of a multiprocessor finished its setup/process step (B1).
     MpDone(usize, usize, u64),
     /// task-212: a combiner batch slot finished its setup.
@@ -947,6 +949,10 @@ impl<'de> Deserialize<'de> for OperatorRequest {
 
 /// task-217: per-task travel overrides mapped from the first two travel steps
 /// of an append-mode task sequence (pickup, delivery).
+fn photo_eye_clear_at_is_empty(deadlines: &[Option<f64>]) -> bool {
+    deadlines.iter().all(Option::is_none)
+}
+
 fn is_default_travel_overrides(overrides: &[TravelLegOverrides; 2]) -> bool {
     overrides
         .iter()
@@ -1099,6 +1105,10 @@ pub(crate) struct ObjectRt {
     /// task-179: sensing half-width for each Photo Eye.
     #[serde(default)]
     photo_eye_ranges: Vec<f64>,
+    /// task-219: pending Clear deadline of each Photo Eye (checkpointed so a
+    /// resumed run keeps the timer).
+    #[serde(default, skip_serializing_if = "photo_eye_clear_at_is_empty")]
+    photo_eye_clear_at: Vec<Option<f64>>,
     /// task-184: motor power flag (true for non-motors).
     #[serde(default = "true_bool")]
     motor_running: bool,
@@ -1271,6 +1281,7 @@ impl ObjectRt {
             belt_handled: Vec::new(),
             photo_eye_states: Vec::new(),
             photo_eye_ranges: Vec::new(),
+            photo_eye_clear_at: Vec::new(),
             motor_running: true,
             item_transport: None,
             queue_transport: None,
@@ -1385,6 +1396,7 @@ impl ObjectRt {
                     .iter()
                     .map(|eye| eye.range.unwrap_or(0.5).max(EPS))
                     .collect();
+                runtime.photo_eye_clear_at = vec![None; params.photo_eyes.len()];
                 runtime.decision_point_ranges = params
                     .decision_points
                     .iter()
@@ -3326,6 +3338,25 @@ fn operators_needed(params: &openflex_model::ProcessorParams, phase: OperatorPha
     count.unwrap_or(1).max(1)
 }
 
+/// task-219: true when the next item is closer than `require_gap` to the
+/// previous item that occupied a photo-eye span `[lower, upper)`.
+fn photo_eye_gap_insufficient(positions: &[f64], lower: f64, upper: f64, require_gap: f64) -> bool {
+    let previous = positions
+        .iter()
+        .copied()
+        .filter(|position| *position >= upper - EPS)
+        .min_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    let next = positions
+        .iter()
+        .copied()
+        .filter(|position| *position < lower - EPS)
+        .max_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    match (previous, next) {
+        (Some(previous), Some(next)) => previous - next < require_gap - EPS,
+        _ => false,
+    }
+}
+
 /// task-207: trapezoidal/triangular travel time with acceleration and
 /// deceleration. With `accel = None` this is exactly the old `distance / speed`.
 fn travel_time(distance: f64, speed: f64, accel: Option<f64>, decel: Option<f64>) -> f64 {
@@ -4132,6 +4163,9 @@ impl<'m> Simulation<'m> {
                 self.handle_combiner_slot_process_done(index, slot, token)
             }
             EventKind::BeltTick(index) => self.handle_belt_tick(index),
+            EventKind::PhotoEyeClear(index, eye, deadline) => {
+                self.handle_photo_eye_clear(index, eye, deadline)
+            }
             EventKind::BatchTimeout(index) => self.handle_batch_timeout(index),
             EventKind::DwellDone(index) => self.handle_dwell_done(index),
             EventKind::EmptierSweep(index) => self.handle_emptier_sweep(index),
@@ -12044,29 +12078,56 @@ impl<'m> Simulation<'m> {
 
     /// task-179: update the four-state Photo Eye machine after a belt tick.
     ///
-    /// The beam is blocked while an item sits exactly on the eye (the normal
-    /// stop-clamping path or a station hold). Blocking/Clearing are the transient
-    /// entry states; with no Block Time / Clear Time settings yet they resolve
-    /// immediately, so only entering Blocked and Cleared fires hooks. This is
-    /// deliberately additive: the legacy per-item `on_photo_eye` is unchanged.
+    /// The beam is blocked while an item sits inside `[position-range,
+    /// position+range)`; Blocked/Cleared are the observable transitions.
+    ///
+    /// task-219: two per-eye parameters refine that machine:
+    /// 1. `require_gap` is evaluated **first**. When the previous blocked item
+    ///    has left the beam and the next item's centre is closer than
+    ///    `require_gap` (belt distance, same-instant positions), the eye is
+    ///    treated as continuously occluded: it stays `Blocked`, starts no clear
+    ///    timer and emits no second Block transition.
+    /// 2. Only when `require_gap` accepts the gap (or there is no follower) does
+    ///    `clear_time` start. A covering item during that timer cancels it and
+    ///    keeps `Blocked` without emitting Block/Clear; otherwise the timer
+    ///    emits `Cleared` after the full unobstructed interval.
+    ///
+    /// Both defaults (0) take the historical immediate transition path.
     fn update_photo_eyes(&mut self, index: usize) -> Result<(), SimError> {
-        let stops: Vec<(usize, f64, f64)> = self.objects[index]
-            .belt_stops
-            .iter()
-            .filter_map(|stop| match stop.kind {
-                BeltStopKind::PhotoEye(eye) => Some((
-                    eye,
-                    stop.position,
-                    self.objects[index]
-                        .photo_eye_ranges
-                        .get(eye)
-                        .copied()
-                        .unwrap_or(0.5)
-                        .max(EPS),
-                )),
-                BeltStopKind::Station(_) => None,
-            })
-            .collect();
+        let (stops, clear_times, require_gaps) = {
+            let params = match &self.model.objects[index].params {
+                ObjectParams::Conveyor(params) => params,
+                _ => return Ok(()),
+            };
+            let stops: Vec<(usize, f64, f64)> = self.objects[index]
+                .belt_stops
+                .iter()
+                .filter_map(|stop| match stop.kind {
+                    BeltStopKind::PhotoEye(eye) => Some((
+                        eye,
+                        stop.position,
+                        self.objects[index]
+                            .photo_eye_ranges
+                            .get(eye)
+                            .copied()
+                            .unwrap_or(0.5)
+                            .max(EPS),
+                    )),
+                    BeltStopKind::Station(_) => None,
+                })
+                .collect();
+            let clear_times = params
+                .photo_eyes
+                .iter()
+                .map(|eye| eye.clear_time.max(0.0))
+                .collect::<Vec<_>>();
+            let require_gaps = params
+                .photo_eyes
+                .iter()
+                .map(|eye| eye.require_gap.max(0.0))
+                .collect::<Vec<_>>();
+            (stops, clear_times, require_gaps)
+        };
         if stops.is_empty() {
             return Ok(());
         }
@@ -12075,26 +12136,28 @@ impl<'m> Simulation<'m> {
             .as_ref()
             .map(|belt| belt.positions.clone())
             .unwrap_or_default();
-        let eye_count = match &self.model.objects[index].params {
-            ObjectParams::Conveyor(params) => params.photo_eyes.len(),
-            _ => 0,
-        };
+        let eye_count = clear_times.len();
         if self.objects[index].photo_eye_states.len() < eye_count {
             self.objects[index]
                 .photo_eye_states
                 .resize(eye_count, PhotoEyeState::Cleared);
         }
+        if self.objects[index].photo_eye_clear_at.len() < eye_count {
+            self.objects[index]
+                .photo_eye_clear_at
+                .resize(eye_count, None);
+        }
         for (eye, position, range) in stops {
-            // Our own sensing granularity: `range` is a half-width around the
-            // eye (default 0.5 distance units). This is an OpenFlex choice, not
-            // a published FlexSim value; it keeps a contiguous slug inside the
-            // beam so the state does not jitter per item.
+            let lower = position - range;
+            let upper = position + range;
             let covered = positions
                 .iter()
-                .any(|item| *item >= position - range - EPS && *item < position + range - EPS);
+                .any(|item| *item >= lower - EPS && *item < upper - EPS);
+            let gap_insufficient = require_gaps.get(eye).copied().unwrap_or(0.0) > EPS
+                && photo_eye_gap_insufficient(&positions, lower, upper, require_gaps[eye]);
             if std::env::var_os("OPENFLEX_DEBUG_EYE").is_some() {
                 eprintln!(
-                    "eye {eye} at {} pos={positions:?} range={range} covered={covered}",
+                    "eye {eye} at {} pos={positions:?} range={range} covered={covered} gap_short={gap_insufficient}",
                     self.now
                 );
             }
@@ -12103,22 +12166,123 @@ impl<'m> Simulation<'m> {
                 .get(eye)
                 .copied()
                 .unwrap_or(PhotoEyeState::Cleared);
+            let clear_time = clear_times.get(eye).copied().unwrap_or(0.0);
             match (state, covered) {
-                (PhotoEyeState::Cleared | PhotoEyeState::Clearing, true) => {
-                    // Enter Blocking then Blocked (zero transition time).
+                (PhotoEyeState::Cleared, true) => {
                     self.objects[index].photo_eye_states[eye] = PhotoEyeState::Blocking;
                     self.objects[index].photo_eye_states[eye] = PhotoEyeState::Blocked;
+                    self.objects[index].photo_eye_clear_at[eye] = None;
                     self.fire_photo_eye_state(index, eye, PhotoEyeState::Blocked)?;
                 }
-                (PhotoEyeState::Blocked | PhotoEyeState::Blocking, false) => {
-                    self.objects[index].photo_eye_states[eye] = PhotoEyeState::Clearing;
-                    self.objects[index].photo_eye_states[eye] = PhotoEyeState::Cleared;
-                    self.fire_photo_eye_state(index, eye, PhotoEyeState::Cleared)?;
+                (PhotoEyeState::Cleared, false) => {}
+                (PhotoEyeState::Clearing, true) => {
+                    // An item arrived during the clear timer: cancel it and stay
+                    // Blocked; no Block transition is observable.
+                    self.objects[index].photo_eye_states[eye] = PhotoEyeState::Blocked;
+                    self.objects[index].photo_eye_clear_at[eye] = None;
                 }
-                _ => {}
+                (PhotoEyeState::Clearing, false) => {
+                    // The scheduled PhotoEyeClear event resolves the timer.
+                }
+                (PhotoEyeState::Blocked | PhotoEyeState::Blocking, true) => {
+                    self.objects[index].photo_eye_states[eye] = PhotoEyeState::Blocked;
+                }
+                (PhotoEyeState::Blocked | PhotoEyeState::Blocking, false) => {
+                    if gap_insufficient {
+                        // Continuous occlusion: no Clear, no new Block.
+                        self.objects[index].photo_eye_states[eye] = PhotoEyeState::Blocked;
+                        self.objects[index].photo_eye_clear_at[eye] = None;
+                    } else if clear_time > EPS {
+                        let deadline = self.now + clear_time;
+                        self.objects[index].photo_eye_states[eye] = PhotoEyeState::Clearing;
+                        self.objects[index].photo_eye_clear_at[eye] = Some(deadline);
+                        self.schedule(deadline, EventKind::PhotoEyeClear(index, eye, deadline));
+                    } else {
+                        self.objects[index].photo_eye_states[eye] = PhotoEyeState::Clearing;
+                        self.objects[index].photo_eye_states[eye] = PhotoEyeState::Cleared;
+                        self.objects[index].photo_eye_clear_at[eye] = None;
+                        self.fire_photo_eye_state(index, eye, PhotoEyeState::Cleared)?;
+                    }
+                }
             }
         }
         Ok(())
+    }
+
+    /// task-219: `require_gap` check. `positions` are front-first centres; the
+    /// previous item at/after `upper` and the next item before `lower` define
+    /// the current centre distance. Missing neighbours mean "no continuous
+    /// occlusion".
+    fn photo_eye_clear_deadline(&self, index: usize, eye: usize) -> Option<f64> {
+        self.objects[index]
+            .photo_eye_clear_at
+            .get(eye)
+            .copied()
+            .flatten()
+    }
+
+    fn handle_photo_eye_clear(
+        &mut self,
+        index: usize,
+        eye: usize,
+        deadline: f64,
+    ) -> Result<(), SimError> {
+        if self.photo_eye_clear_deadline(index, eye) != Some(deadline) {
+            return Ok(());
+        }
+        let (state, covered, gap_insufficient, clear_time, position, range) = {
+            let params = match &self.model.objects[index].params {
+                ObjectParams::Conveyor(params) => params,
+                _ => return Ok(()),
+            };
+            let Some(photo_eye) = params.photo_eyes.get(eye) else {
+                return Ok(());
+            };
+            let state = self.objects[index]
+                .photo_eye_states
+                .get(eye)
+                .copied()
+                .unwrap_or(PhotoEyeState::Cleared);
+            let positions = self.objects[index]
+                .belt
+                .as_ref()
+                .map(|belt| belt.positions.clone())
+                .unwrap_or_default();
+            let range = self.objects[index]
+                .photo_eye_ranges
+                .get(eye)
+                .copied()
+                .unwrap_or(0.5)
+                .max(EPS);
+            let lower = photo_eye.position - range;
+            let upper = photo_eye.position + range;
+            let covered = positions
+                .iter()
+                .any(|item| *item >= lower - EPS && *item < upper - EPS);
+            let gap_insufficient = photo_eye.require_gap > EPS
+                && photo_eye_gap_insufficient(&positions, lower, upper, photo_eye.require_gap);
+            (
+                state,
+                covered,
+                gap_insufficient,
+                photo_eye.clear_time.max(0.0),
+                photo_eye.position,
+                range,
+            )
+        };
+        let _ = (clear_time, position, range);
+        if state != PhotoEyeState::Clearing {
+            self.objects[index].photo_eye_clear_at[eye] = None;
+            return Ok(());
+        }
+        if covered || gap_insufficient {
+            self.objects[index].photo_eye_states[eye] = PhotoEyeState::Blocked;
+            self.objects[index].photo_eye_clear_at[eye] = None;
+            return Ok(());
+        }
+        self.objects[index].photo_eye_states[eye] = PhotoEyeState::Cleared;
+        self.objects[index].photo_eye_clear_at[eye] = None;
+        self.fire_photo_eye_state(index, eye, PhotoEyeState::Cleared)
     }
 
     fn fire_photo_eye_state(
@@ -13947,6 +14111,7 @@ fn describe_event(kind: &EventKind) -> (Option<usize>, &'static str, Option<(&'s
             Some(("slot", *slot as f64)),
         ),
         EventKind::BeltTick(index) => (Some(*index), "belt_tick", None),
+        EventKind::PhotoEyeClear(index, _, _) => (Some(*index), "photo_eye_clear", None),
         EventKind::BatchTimeout(index) => (Some(*index), "batch_timeout", None),
         EventKind::DwellDone(index) => (Some(*index), "dwell_done", None),
         EventKind::EmptierSweep(index) => (Some(*index), "emptier_sweep", None),
@@ -19503,6 +19668,54 @@ mod tests {
         Model::parse_json(&json).expect("model")
     }
 
+    fn photo_eye_clear_json(
+        clear_time: f64,
+        require_gap: f64,
+        max_arrivals: u32,
+        interval: f64,
+        stop_time: f64,
+    ) -> String {
+        format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "eye-clear",
+          "run": {{ "stop_time": {stop_time}, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": {interval} }},
+                "max_arrivals": {max_arrivals}, "first_arrival": 0.0 }} }},
+            {{ "name": "C", "kind": "conveyor", "params": {{
+                "speed": 1.0, "length": 20.0, "item_spacing": 1.0,
+                "accumulating": true,
+                "photo_eyes": [{{ "position": 10.0, "name": "PE",
+                    "clear_time": {clear_time}, "require_gap": {require_gap},
+                    "triggers": {{
+                        "on_blocked": [{{ "action": "script", "source": "log(\"blocked\");" }}],
+                        "on_cleared": [{{ "action": "script", "source": "log(\"cleared\");" }}]
+                    }} }}] }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [{{ "from": "S", "to": "C" }}, {{ "from": "C", "to": "K" }}]
+        }}"#
+        )
+    }
+
+    fn photo_eye_clear_model(
+        clear_time: f64,
+        require_gap: f64,
+        max_arrivals: u32,
+        interval: f64,
+        stop_time: f64,
+    ) -> Model {
+        Model::from_json(&photo_eye_clear_json(
+            clear_time,
+            require_gap,
+            max_arrivals,
+            interval,
+            stop_time,
+        ))
+        .expect("eye clear model")
+    }
+
     fn photo_logs(trace: &TraceLog, message: &str) -> usize {
         trace
             .events
@@ -19839,6 +20052,311 @@ mod tests {
         );
     }
 
+    fn photo_eye_static_model(clear_time: f64, require_gap: f64) -> Model {
+        Model::from_json(&format!(
+            r#"{{"format":"openflex-model","version":1,"name":"eye-static",
+              "run":{{"stop_time":10.0,"seed":1,"replications":1}},
+              "objects":[
+                {{"name":"S","kind":"source","params":{{
+                  "interarrival":{{"distribution":"constant","value":1000.0}},
+                  "max_arrivals":1,"first_arrival":1000.0}}}},
+                {{"name":"C","kind":"conveyor","params":{{
+                  "speed":1.0,"length":20.0,"item_spacing":1.0,"accumulating":true,
+                  "photo_eyes":[{{"position":10.0,"name":"PE",
+                    "clear_time":{clear_time},"require_gap":{require_gap},
+                    "triggers":{{
+                      "on_blocked":[{{"action":"script","source":"log(\"blocked\");"}}],
+                      "on_cleared":[{{"action":"script","source":"log(\"cleared\");"}}]
+                    }}}}]}}}},
+                {{"name":"K","kind":"sink","params":{{}}}}
+              ],
+              "connections":[{{"from":"S","to":"C"}},{{"from":"C","to":"K"}}]}}"#
+        ))
+        .expect("static eye model")
+    }
+
+    fn set_eye_positions(sim: &mut Simulation<'_>, c: usize, positions: &[f64], now: f64) {
+        if let Some(belt) = sim.objects[c].belt.as_mut() {
+            belt.positions = positions.to_vec();
+            belt.holds = vec![0.0; positions.len()];
+        }
+        sim.now = now;
+        sim.update_photo_eyes(c).expect("update eye");
+    }
+
+    fn eye_logs(sim: &Simulation<'_>) -> Vec<(f64, String)> {
+        sim.trace
+            .as_ref()
+            .expect("trace")
+            .events
+            .iter()
+            .filter(|event| event.event == "script_log")
+            .map(|event| (event.time, event.message.clone()))
+            .collect()
+    }
+
+    /// task-219: clear_time/require_gap default to 0; three photo-eye baseline
+    /// reports and traces stay byte-identical, and a second run with the same
+    /// seed is identical too.
+    #[test]
+    fn photo_eye_default_parameters_keep_the_baselines() {
+        let models = [
+            photo_eye_model("", "", 1, 5.0),
+            photo_eye_model(
+                "",
+                r#", "triggers": {
+                    "on_blocked": [{ "action": "script", "source": "log(\"blocked\");" }],
+                    "on_cleared": [{ "action": "script", "source": "log(\"cleared\");" }]
+                }"#,
+                2,
+                1.0,
+            ),
+            photo_eye_timing_model(20.0, 10.0, None, 1, 5.0, false),
+        ];
+        let expected = [
+            (
+                "6dde90fcca62c2a5194ba3805c651a4ac4b73bec1865f630dc9ce45f0e73d633",
+                "c6f8f3bee13638058d0f7dd3e2f568c98ee12d82dd3b080234ef64f5553445f8",
+            ),
+            (
+                "a41597fff92c57d4e20cafe33f4546dbc39042f2d51d0b2de08d9be5718d3c84",
+                "841ebf7693eebcdefe1873c38713e45828dd1f8d78db6f5a909e2696e973c374",
+            ),
+            (
+                "83a72121b865647e8677e534fe722f4c53ca6d75b234e5f414fedb86c27f96ce",
+                "b5be2dbc74768cfc1e8925b267eb07d0398d02f945ad5014eec9a447576c95e4",
+            ),
+        ];
+        let config = SimConfig {
+            stop_time: 30.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        for (index, model) in models.iter().enumerate() {
+            let (result, trace) = crate::simulate_traced(model, &config, 0).expect("run");
+            let report = serde_json::to_string(&result).expect("result json");
+            let trace = serde_json::to_string(&trace).expect("trace json");
+            assert_eq!(
+                crate::sha256::hex(report.as_bytes()),
+                expected[index].0,
+                "report baseline {index}"
+            );
+            assert_eq!(
+                crate::sha256::hex(trace.as_bytes()),
+                expected[index].1,
+                "trace baseline {index}"
+            );
+            let (second_result, second_trace) =
+                crate::simulate_traced(model, &config, 0).expect("second");
+            assert_eq!(result, second_result);
+            assert_eq!(
+                trace,
+                serde_json::to_string(&second_trace).expect("second trace json")
+            );
+        }
+    }
+
+    /// task-219: Clear Time debounces the unobstructed interval; an item that
+    /// arrives during the timer cancels it and emits no Clear.
+    #[test]
+    fn photo_eye_clear_time_delays_and_cancels_clear() {
+        let config = SimConfig {
+            stop_time: 20.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let single = photo_eye_clear_model(2.0, 0.0, 1, 5.0, 20.0);
+        let (_, trace) = crate::simulate_traced(&single, &config, 0).expect("single");
+        assert!((photo_time(&trace, "blocked").expect("blocked") - 9.5).abs() < 0.01);
+        assert!((photo_time(&trace, "cleared").expect("cleared") - 12.5).abs() < 0.01);
+        assert_eq!(photo_logs(&trace, "cleared"), 1);
+
+        let interrupted = photo_eye_clear_model(2.0, 0.0, 2, 2.0, 12.0);
+        let (_, interrupted_trace) = crate::simulate_traced(
+            &interrupted,
+            &SimConfig {
+                stop_time: 12.0,
+                ..config
+            },
+            0,
+        )
+        .expect("interrupted");
+        assert_eq!(photo_logs(&interrupted_trace, "blocked"), 1);
+        assert_eq!(
+            photo_logs(&interrupted_trace, "cleared"),
+            0,
+            "an item during the clear timer must cancel it"
+        );
+
+        let immediate = photo_eye_clear_model(0.0, 0.0, 1, 5.0, 20.0);
+        let (_, immediate_trace) =
+            crate::simulate_traced(&immediate, &config, 0).expect("immediate");
+        assert!((photo_time(&immediate_trace, "cleared").expect("clear") - 10.5).abs() < 0.01);
+    }
+
+    /// task-219: Require Gap suppresses a second Block when items are closer
+    /// than the threshold, while a wide gap emits a second Block.
+    #[test]
+    fn photo_eye_require_gap_suppresses_close_blocks() {
+        let model = photo_eye_static_model(0.0, 3.0);
+        let config = SimConfig {
+            stop_time: 10.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut close = Simulation::new(&model, config.clone(), true).expect("close sim");
+        let c = close.by_name["C"];
+        set_eye_positions(&mut close, c, &[10.4, 9.4], 0.0);
+        set_eye_positions(&mut close, c, &[10.6, 9.6], 0.1);
+        set_eye_positions(&mut close, c, &[11.6, 10.6], 0.2);
+        assert_eq!(
+            eye_logs(&close)
+                .iter()
+                .filter(|(_, message)| message == "blocked")
+                .count(),
+            1
+        );
+        assert_eq!(
+            eye_logs(&close)
+                .iter()
+                .filter(|(_, message)| message == "cleared")
+                .count(),
+            1
+        );
+
+        let mut wide = Simulation::new(&model, config, true).expect("wide sim");
+        let c = wide.by_name["C"];
+        set_eye_positions(&mut wide, c, &[10.4, 5.4], 0.0);
+        set_eye_positions(&mut wide, c, &[10.6, 5.6], 0.1);
+        set_eye_positions(&mut wide, c, &[10.4], 0.2);
+        assert_eq!(
+            eye_logs(&wide)
+                .iter()
+                .filter(|(_, message)| message == "blocked")
+                .count(),
+            2
+        );
+        assert_eq!(
+            eye_logs(&wide)
+                .iter()
+                .filter(|(_, message)| message == "cleared")
+                .count(),
+            1
+        );
+    }
+
+    /// task-219: require_gap is decided first, so a contiguous pair does not
+    /// start the clear timer until the *last* contiguous item leaves the span.
+    #[test]
+    fn photo_eye_require_gap_starts_clear_after_the_last_contiguous_item() {
+        let model = photo_eye_static_model(2.0, 3.0);
+        let config = SimConfig {
+            stop_time: 10.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut sim = Simulation::new(&model, config, true).expect("combined sim");
+        let c = sim.by_name["C"];
+        set_eye_positions(&mut sim, c, &[10.4, 9.4], 0.0);
+        // First item out of the beam, but the second is only 1.2 behind it:
+        // continuous occlusion, so no clear timer at all.
+        set_eye_positions(&mut sim, c, &[11.6, 10.6, 9.4], 0.1);
+        assert_eq!(sim.objects[c].photo_eye_states[0], PhotoEyeState::Blocked);
+        assert_eq!(sim.objects[c].photo_eye_clear_at[0], None);
+        // The last contiguous item is out; the gap is now free, so the 2 s
+        // clear timer starts (deadline 2.2), not at the first item's exit.
+        set_eye_positions(&mut sim, c, &[11.6, 10.6], 0.2);
+        assert_eq!(sim.objects[c].photo_eye_states[0], PhotoEyeState::Clearing);
+        assert_eq!(sim.objects[c].photo_eye_clear_at[0], Some(2.2));
+        sim.now = 2.2;
+        sim.handle_photo_eye_clear(c, 0, 2.2).expect("clear timer");
+        let logs = eye_logs(&sim);
+        assert_eq!(
+            logs.iter()
+                .filter(|(_, message)| message == "blocked")
+                .count(),
+            1
+        );
+        assert_eq!(
+            logs.iter()
+                .filter(|(_, message)| message == "cleared")
+                .count(),
+            1
+        );
+        assert!((logs.last().expect("clear").0 - 2.2).abs() < 1e-9);
+    }
+
+    /// task-219: both parameters reject negative and non-finite values by name.
+    #[test]
+    fn photo_eye_clear_time_and_gap_validate() {
+        let negative = photo_eye_clear_json(-1.0, -1.0, 1, 5.0, 20.0);
+        let error = Model::from_json(&negative).expect_err("negative");
+        let message = error.to_string();
+        assert!(message.contains("photo_eyes[0].clear_time"), "{message}");
+        assert!(message.contains("photo_eyes[0].require_gap"), "{message}");
+        let mut infinite = photo_eye_clear_model(0.0, 0.0, 1, 5.0, 20.0);
+        if let ObjectParams::Conveyor(params) = &mut infinite.objects[1].params {
+            params.photo_eyes[0].clear_time = f64::INFINITY;
+            params.photo_eyes[0].require_gap = f64::INFINITY;
+        }
+        let error = infinite.validate().expect_err("non-finite");
+        let message = error.to_string();
+        assert!(message.contains("photo_eyes[0].clear_time"), "{message}");
+        assert!(message.contains("photo_eyes[0].require_gap"), "{message}");
+    }
+
+    /// task-219: the clear timer is checkpointed: a snapshot taken while it is
+    /// pending resumes and fires Clear at the same instant as the direct run.
+    #[test]
+    fn photo_eye_clear_time_survives_a_checkpoint() {
+        let model = photo_eye_clear_model(2.0, 0.0, 1, 5.0, 20.0);
+        let config = SimConfig {
+            stop_time: 20.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let mut direct = Simulation::new(&model, config.clone(), true).expect("direct sim");
+        direct.start().expect("start");
+        direct.pause_at = Some(11.0);
+        direct.run_events().expect("run to 11");
+        let c = direct.by_name["C"];
+        assert_eq!(
+            direct.objects[c].photo_eye_states[0],
+            PhotoEyeState::Clearing
+        );
+        assert_eq!(direct.objects[c].photo_eye_clear_at[0], Some(12.5));
+        let checkpoint = direct.snapshot();
+        let json = checkpoint.to_json().expect("checkpoint json");
+        let checkpoint = crate::checkpoint::Checkpoint::from_json(&json).expect("checkpoint load");
+        assert_eq!(checkpoint.objects[c].photo_eye_clear_at[0], Some(12.5));
+
+        direct.pause_at = Some(20.0);
+        direct.run_events().expect("direct finish");
+        let direct_clear = direct
+            .trace
+            .as_ref()
+            .and_then(|trace| photo_time(trace, "cleared"))
+            .expect("direct clear");
+
+        let mut resumed = Simulation::new(&model, config, true).expect("resumed sim");
+        resumed.restore(&checkpoint).expect("restore");
+        // A resumed run starts with tracing disabled; enable it for the test so
+        // the delayed Clear trigger can be observed.
+        resumed.trace = Some(TraceLog::default());
+        resumed.pause_at = Some(20.0);
+        resumed.run_events().expect("resume finish");
+        let resumed_clear = resumed
+            .trace
+            .as_ref()
+            .and_then(|trace| photo_time(trace, "cleared"))
+            .expect("resumed clear");
+        assert!((resumed_clear - direct_clear).abs() < 1e-9);
+        assert!(
+            direct_clear > 12.0,
+            "the clear event must be the delayed one, got {direct_clear}"
+        );
+    }
+
     /// task-180: photo-eye timing is deterministic for one seed.
     #[test]
     fn photo_eye_boundary_events_are_deterministic() {
@@ -20072,6 +20590,8 @@ mod tests {
                     }],
                     on_cleared: Vec::new(),
                 },
+                clear_time: 0.0,
+                require_gap: 0.0,
             });
         }
         let config = SimConfig {
