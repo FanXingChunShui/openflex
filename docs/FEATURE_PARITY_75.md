@@ -378,7 +378,12 @@
 **3DMedia（100%，全属有意差异）、MiscellaneousConcepts（62%，节点树/运动学/自建 GUI）、
 ModelingTools（55%，调试器/编辑器类）**。
 
-### 1a. `explicit` 整链模式：设计草案（未实现，下一轮照此做）
+### 1a. `explicit` 整链模式：设计草案（**已实现，本节留作设计记录**）
+
+> **状态更新**：本节写于实现之前。**该模式后来已落地**：`task_sequence_mode: "explicit"`、`TravelTarget`、链状态与检查点都有测试
+> （`explicit_chain_supports_pickup_requester_and_operator_sync`、`explicit_chain_runs_utilize_and_break_after_unload`、
+> `explicit_chain_checkpoint_matches_uninterrupted_run`）。下面的"为什么本轮不做"只反映当时的取舍，**不是现状**。
+> 保留它是为了让后来者看清这套同步规则是怎么设计出来的。
 
 第 1 项「自定义任务序列构造 API」本轮只落地了 **`utilize` / `break` 两种额外腿**（append 机制内）。
 真正的 `explicit` 整链模式**未实现**，原因与设计如下——记录在此，避免下一轮重新踩坑。
@@ -479,7 +484,7 @@ unloading/ utilize` 均有数值断言）、**Tracked Variable 四类型**、**I
 
 | # | 缺口 | 为什么重要 | 工作量 |
 |---|---|---|---|
-| 1 | **自定义任务序列的 `explicit` 整链模式**（`createemptytasksequence`/`inserttask` 的等价物） | 现有 `append` 只能在标准链**之后**加腿；表达不了"取货→加工→送回→充电→再取"这类链，也无法在链内换 target。设计草案见 §1a | **大** |
+| ~~1~~ | ~~自定义任务序列的 explicit 整链模式~~ **已实现** | `task_sequence_mode: "explicit"` + 每腿 `target`（pickup/requester/home/object/position）已落地：`TaskSequenceMode::Explicit`、`explicit_routes`、链状态进检查点。证据 `explicit_chain_supports_pickup_requester_and_operator_sync`、`explicit_chain_runs_utilize_and_break_after_unload`、`explicit_chain_checkpoint_matches_uninterrupted_run`。**本行原措辞"未实现"是 §1a 草案遗留的过期描述**——设计草案落地后没人回来划掉它 | — |
 | 2 | **图表 DSL**（图表对象 + 数据源绑定；Utilization Analysis 按状态堆叠、Financial Objects、Zone/Milestone 模板） | 报告与 GUI 的图是固定几种；用户不能自选"哪条统计×哪种图"，也无法做利用率分解图。FlexSim 的主交付界面就是 Dashboard | **大** |
 | 3 | **调试器**（断点 / 单步 / 调用栈 / 局部变量 / 性能剖析） | 模型逻辑出错时只有 `log()` 与 trace；`FlexSimCoding/Debugging/*` 5 页描述的是完整调试体验 | **大** |
 | 4 | **Conveyor 剩余部分**：Transfer（Entry/Exit）对象、sorter、Power-and-Free、光电门的 Block Time | 基础行为（速度/间距/曲线/迭代积分/slug 组/合流策略/`gap_by_type`）已一致；**光电门的 Clear Time / Require Gap 已实现**（v1.61.0），**Block Time 仍缺**；对象化部分（Transfer/sorter/Power-and-Free）仍缺 | **大** |

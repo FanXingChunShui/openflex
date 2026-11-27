@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### 文档
+
+- **又清一条 Top 10 过期项：#1「explicit 整链模式」**。它写着"未实现，设计草案见 §1a"，
+  但 `TaskSequenceMode::Explicit`、`explicit_routes` 与 `explicit_chain_supports_pickup_requester_and_operator_sync` 等
+  三个测试都在——**§1a 的设计草案落地后没人回来划掉它**。已把 #1 划掉并附证据，§1a 标注"已实现，留作设计记录"。
+  连续两轮在 Top 10 里发现"已实现却仍列为缺口"，说明**优先榜需要和矩阵正文一样定期对账**。
+
+
 ## v1.63.0 — 2026-11-27
 
 **1. 多停止时间（`run.stop_times`）。** 之前只有单个 `stop_time`。现在可以写 `[t1, t2, …]`，
