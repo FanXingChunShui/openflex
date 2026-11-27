@@ -10,3 +10,7 @@ extra_failures
 # FailureParams, and `group_processors` is an engine helper. The row's claim is
 # about a separate *object kind*, which really is absent.
 group
+
+# "无 Automatically Reset Labels 开关；标签复位只能靠 `on_reset` 手动写" — the
+# row names the trigger as the *workaround*, not as something absent.
+on_reset

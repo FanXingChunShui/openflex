@@ -9,8 +9,9 @@ something that already runs.
 
 The check is deliberately narrow (low false positives, some false negatives):
 
-    a 🟡 row's 缺-phrase mentions a backticked identifier, that identifier is a
-    `pub` field in model.rs, and a test function's name contains it.
+    a 🟡 row's 缺-phrase (or a ⛔ row's 无-phrase) mentions a backticked
+    identifier, that identifier is a `pub` field in model.rs, and a test
+    function's name starts with it.
 
 The last condition is what makes it actionable: a field with *behaviour tests
 named after it* is very likely implemented, not missing. Identifiers that are
@@ -55,13 +56,14 @@ def main():
 
     suspects = []
     for number, line in enumerate(MATRIX.read_text(encoding="utf-8").splitlines(), 1):
-        if not line.startswith("|") or "🟡" not in line:
+        if not line.startswith("|") or ("🟡" not in line and "⛔" not in line):
             continue
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
         if len(cells) < 3:
             continue
         feature, gap = cells[0], cells[-1]
-        for chunk in re.finditer(r"缺[^|。]{0,120}", gap):
+        # 🟡 rows say 缺, ⛔ rows say 无; both are claims of absence.
+        for chunk in re.finditer(r"[缺无][^|。]{0,120}", gap):
             for name in re.findall(r"`([a-zA-Z_][a-zA-Z0-9_]*)`", chunk.group(0)):
                 if name not in fields or name in allow:
                     continue
