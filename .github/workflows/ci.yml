@@ -506,6 +506,9 @@ jobs:
           files=(scripts/*.sh packaging/*.sh packaging/*/*.sh)
           shellcheck -S warning "${files[@]}"
 
+      - name: no matrix gap has already been closed
+        run: python3 scripts/check-stale-gaps.py
+
       - name: docs state which version they describe
         run: bash scripts/check-doc-baselines.sh
 

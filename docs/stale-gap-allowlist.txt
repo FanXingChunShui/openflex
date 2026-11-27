@@ -1,0 +1,12 @@
+# Identifiers that appear in 🟡 gap text but are not claims of absence.
+# Keep this list short: each entry is a sentence that the scanner would
+# otherwise call stale. Add a short reason.
+
+# "缺 group 语义：组是对象属性…实测 … 的 `extra_failures` 源" — the row cites the
+# implemented field while explaining why groups are not separate objects.
+extra_failures
+
+# "缺 group 语义：组是对象属性，不是独立组对象" — `group` is a field on
+# FailureParams, and `group_processors` is an engine helper. The row's claim is
+# about a separate *object kind*, which really is absent.
+group
