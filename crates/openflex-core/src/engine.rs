@@ -20128,6 +20128,66 @@ mod tests {
         );
     }
 
+    fn append_checkpoint_model() -> Model {
+        Model::from_json(
+            r#"{
+          "format": "openflex-model", "version": 1, "name": "append-checkpoint",
+          "run": { "stop_time": 45.0, "seed": 1, "replications": 1 },
+          "objects": [
+            { "name": "S", "kind": "source", "pos": [10, 0], "params": {
+                "interarrival": { "distribution": "constant", "value": 5.0 },
+                "max_arrivals": 6, "first_arrival": 0.0 } },
+            { "name": "P", "kind": "processor", "pos": [10, 0], "params": {
+                "process_time": { "distribution": "constant", "value": 2.0 },
+                "process_operator": "D" } },
+            { "name": "K", "kind": "sink", "pos": [10, 0], "params": {} },
+            { "name": "T", "kind": "transporter", "pos": [0, 0], "params": {
+                "speed": 1.0, "capacity": 1 } },
+            { "name": "D", "kind": "dispatcher", "pos": [0, 0], "params": {
+                "task_sequence": ["travel", "travel", "load", "unload",
+                  { "kind": "travel",
+                    "duration": { "distribution": "constant", "value": 25.0 } }] } }
+          ],
+          "connections": [
+            { "from": "S", "to": "P" }, { "from": "P", "to": "K" },
+            { "from": "D", "to": "T" }
+          ]
+        }"#,
+        )
+        .expect("append checkpoint model")
+    }
+
+    /// A checkpoint taken mid-chain in `append` mode (the shorthand sequence, not
+    /// an explicit route) must resume to the same report as an uninterrupted run.
+    ///
+    /// The explicit-route equivalent was covered by `task-183`; the append chain
+    /// lives in `pending_steps`, a different piece of state, and was verified only
+    /// by hand (a CLI checkpoint at t=10 resumed to a byte-identical report) until
+    /// this test pinned it.
+    #[test]
+    fn append_chain_checkpoint_matches_uninterrupted_run() {
+        let model = append_checkpoint_model();
+        let save = SimConfig {
+            stop_time: 10.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, checkpoint) =
+            crate::simulate_with_checkpoint(&model, &save, 0, None).expect("checkpoint");
+        let resume = SimConfig {
+            stop_time: 45.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let resumed =
+            crate::resume_from_checkpoint(&model, &resume, 0, &checkpoint, 45.0).expect("resume");
+        let direct = crate::simulate(&model, &resume, 0).expect("direct");
+        assert_eq!(
+            serde_json::to_string(&direct).expect("json"),
+            serde_json::to_string(&resumed).expect("json")
+        );
+    }
+
     /// task-183: a checkpoint taken while waiting for OperatorReleased restores
     /// that wait state (and does not leave early).
     #[test]

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### 模型与引擎
+
+- **补测：append 链的检查点续跑**（`append_chain_checkpoint_matches_uninterrupted_run`）。
+  矩阵原文说「仍缺 checkpoint 保存链状态」，实测是**过期**的：`--stop-time 20 --save-checkpoint` 后 `--resume`，
+  报告与不中断运行**逐字节相同**（排除 final_time）。explicit 链早在 task-183 有测试，而 append 链的 `pending_steps`
+  此前**只有手工验证**——现在钉住了。这条也提醒：矩阵里的"缺"同样需要证据，否则会把已经修好的东西再记一遍。
+
+
 ## v1.60.0 — 2026-11-27
 
 这一版补的是**任务序列里最常用的两个逐任务参数**：`end_speed` 和 `force_travel`。
