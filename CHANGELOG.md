@@ -1,6 +1,32 @@
 # Changelog
 
-## Unreleased
+## v1.61.0 — 2026-11-27
+
+这一版补光电门的两个逐门参数，并且**发现矩阵里的一条"缺"其实早就修好了**。
+
+**1. 光电门 `clear_time` 与 `require_gap`。**
+
+- **`clear_time`（去抖）**：眼睛从"有件"变"无件"**不立即**发 Clear，进入 `Clearing` 并调度一个定时事件，
+  到期仍无件才发 Clear；计时期间又来件 → 取消本次计时、回到 `Blocked`，**既不发现 Clear 也不发新的 Block**。
+- **`require_gap`（连续遮挡）**：**先**判定连续遮挡——上一遮挡件离开门后，若后一件与它的同刻皮带中心距
+  `< require_gap`，门保持 `Blocked`、不启动 clear 计时、第二件不产生 Block 跃迁；间距足够（或无后件）才让 `clear_time` 起算。
+
+间距直接取 `Belt.positions`（front-first）同一时刻做差，**没有改皮带几何模型**。
+缺省 0 走历史立即转换路径，**3 个基准模型的 report + trace SHA-256 逐字节不变**。
+
+**2. 检查点连"已排定的定时器"也要存住。** 光电门的 Clear 定时是一个排定事件，续跑时最容易丢的就是它。
+新增 `photo_eye_clear_time_survives_a_checkpoint`：在计时进行中（t=11，到期 12.5）取检查点、做一次 JSON roundtrip、
+恢复后续跑，Clear 时刻仍是 **12.5**，与不中断运行一致。
+
+**3. 矩阵里一条"缺"是过期的——如果不去核，我们会花一周实现一个已经存在的东西。**
+
+「Task Sequence Concepts」写着"仍缺 checkpoint 保存链状态"。实测：`--stop-time 20 --save-checkpoint` 后 `--resume`，
+报告与不中断运行**逐字节相同**（排除 final_time）。explicit 链在 task-183 就有测试，append 链的 `pending_steps`
+也进检查点——**这条不是要做的功能，是要补的证据**。已新增 `append_chain_checkpoint_matches_uninterrupted_run`。
+
+**教训**：矩阵里的 ✅ 需要证据，**🟡 里的"缺"同样需要证据**。我顺手扫了全部 🟡 行，没有再发现同类过期。
+
+发布节奏保持**至少 3 小时一版**。
 
 ### 模型与引擎
 
@@ -19,6 +45,14 @@
   新增 `photo_eye_clear_time_survives_a_checkpoint`（计时中 t=11 取检查点，续跑后 Clear 仍为 12.5）——
   光电门+检查点最容易丢的就是这种"已排定的定时器"。实测：`clear_time: 2` 的 Clear 由立即延到 7.5（该模型几何下的值）。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**1139 passed / 0 failed**；clippy 0 警告、fmt 干净。
+- GUI **157 项**（本轮 GUI 只补 6 行机械字段）、`openflex-core --lib` 见上；smoke **26/26**；示例 **66/66**；golden 全过。
+- 矩阵：✅ 53 / 🟡 **100** / ⛔ 52 / 📄 3；`audit-parity-evidence.py --strict` 通过。
+- 独立实测：`clear_time: 2` 时 Clear 由立即变为 7.5（该模型几何），`clear_time: 0` 无延迟事件；
+  append 链检查点续跑报告与不中断运行一致；`photo_eye_clear_time_survives_a_checkpoint` 续跑 Clear=12.5。
 
 ## v1.60.0 — 2026-11-27
 
