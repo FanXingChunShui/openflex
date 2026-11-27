@@ -4002,11 +4002,20 @@ pub struct FlowDelayParams {
     /// How long a token stays in the block.
     #[serde(default = "one_dist")]
     pub time: Distribution,
+    /// Maximum number of tokens inside the delay at the same time. Tokens that
+    /// arrive while full wait at the block entrance in FIFO order and start
+    /// their `time` only when a slot frees. `None` and `0` both mean unlimited
+    /// (the historical behaviour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity: Option<u32>,
 }
 
 impl Default for FlowDelayParams {
     fn default() -> Self {
-        Self { time: one_dist() }
+        Self {
+            time: one_dist(),
+            capacity: None,
+        }
     }
 }
 

@@ -7162,6 +7162,28 @@ impl<'m> Simulation<'m> {
                     self.flow_route(block, entry.token)?;
                 }
                 FlowBlockKind::Delay(params) => {
+                    // task-220: block-level capacity. `None`/0 is unlimited;
+                    // otherwise when every slot is occupied the loop exits with
+                    // the remaining tokens left in `ready_at: None` at the
+                    // block entrance (FIFO, because `tokens` is arrival order).
+                    let capacity = params.capacity.unwrap_or(0) as usize;
+                    if capacity > 0 {
+                        let active = self
+                            .process_flow
+                            .as_ref()
+                            .and_then(|flow| flow.blocks.get(block))
+                            .map(|state| {
+                                state
+                                    .tokens
+                                    .iter()
+                                    .filter(|entry| entry.ready_at.is_some())
+                                    .count()
+                            })
+                            .unwrap_or(0);
+                        if active >= capacity {
+                            break;
+                        }
+                    }
                     let delay = self.sample(&params.time).max(0.0);
                     let token_id = {
                         let Some(flow) = self.process_flow.as_mut() else {
@@ -7322,6 +7344,17 @@ impl<'m> Simulation<'m> {
             return Ok(());
         };
         self.record_token_trace("token_delay", block, token);
+        // task-220: the occupied slot is free now; wake the delay block at the
+        // same instant so the first queued token starts without extra latency.
+        // Only capped blocks can have a queue, so an uncapped delay keeps the
+        // exact historical event calendar.
+        let capacity = match self.flow_block_kind(block) {
+            Some(FlowBlockKind::Delay(params)) => params.capacity.unwrap_or(0),
+            _ => 0,
+        };
+        if capacity > 0 {
+            self.flow_schedule_advance(block);
+        }
         self.flow_route(block, entry.token)
     }
 

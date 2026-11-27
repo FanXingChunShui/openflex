@@ -923,6 +923,7 @@ fn definitions() -> Value {
                 "item_type": { "type": "integer", "minimum": 0, "default": 0 },
                 "labels": { "type": "object" },
                 "time": { "$ref": "#/$defs/distribution" },
+                "capacity": { "type": ["integer", "null"], "minimum": 0 },
                 "actions": { "type": "array", "items": { "$ref": "#/$defs/action" } },
                 "conditions": {
                     "type": "array",

@@ -9,6 +9,15 @@
   脚本按"缺口短语提到某个 backticked 标识符 + 它确实在 `model.rs` 里 + 存在以它开头的测试"判定可疑，
   误报进 `docs/stale-gap-allowlist.txt`（现在 2 条，都写了理由；第一版把 `group` 误判成 `groups_steps_...`，已收紧为整词前缀匹配）。
 
+### 模型与引擎
+
+- **Process Flow 的块级排队容量（`FlowDelayParams.capacity`）**：矩阵 🟡「Process Flow 块容量」此前所有到达的 token 同时计时。
+  现在 token 到达 delay 块先占槽位：有空位立即进入并开始计时；满则按到达顺序在**块入口 FIFO 排队**（不采样、不计 delay 时间）。
+  完成离开时释放槽位并在**同一 `now`** 调度队列首 token 进入，**无额外延迟**；只有 `capacity > 0` 才增加这次同刻调度，
+  所以不限制时的事件日历与历史完全一致（基准报告 SHA-256 不变）。`None` 与 `0` 都定义为不限制（注释写死）。
+  检查点也覆盖：`delay_capacity_queue_survives_a_checkpoint`（stop 6 时取检查点，续跑与不中断一致）。
+  独立实测：3 个 token + delay 5 → capacity 1 离开 **5/10/15**、capacity 2 为 **5/5/10**、不限制为 **5/5/5**。
+
 
 ## v1.61.0 — 2026-11-27
 

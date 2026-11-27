@@ -396,3 +396,147 @@ fn from_object_requires_a_buffer_source() {
     let error = Model::from_json(json).expect_err("processor source");
     assert!(error.to_string().contains("queue or rack"), "{error}");
 }
+
+// ---------------------------------------------------------------------------
+// task-220: delay block capacity
+// ---------------------------------------------------------------------------
+
+fn capacity_model(capacity: &str) -> Model {
+    let block = format!(
+        r#"{{"id":"C","kind":"create","first_arrival":0.0,"max_creations":1,"quantity":3}},
+           {{"id":"D","kind":"delay","time":{{"distribution":"constant","value":5.0}}{capacity}}},
+           {{"id":"S","kind":"sink"}}"#
+    );
+    Model::from_json(&flow_model(
+        &block,
+        r#"{"from":"C","to":"D"},{"from":"D","to":"S"}"#,
+    ))
+    .expect("capacity model")
+}
+
+fn delay_exits(trace: &openflex_core::TraceLog) -> Vec<(f64, u64)> {
+    trace
+        .events
+        .iter()
+        .filter(|event| event.event == "token_delay")
+        .map(|event| {
+            (
+                event.time,
+                event.data.get("token").copied().unwrap_or(0.0) as u64,
+            )
+        })
+        .collect()
+}
+
+fn run_capacity(capacity: &str) -> Vec<(f64, u64)> {
+    let model = capacity_model(capacity);
+    let config = SimConfig {
+        stop_time: 20.0,
+        warmup: 0.0,
+        seed: 1,
+    };
+    let (_, trace) = simulate_traced(&model, &config, 0).expect("traced");
+    delay_exits(&trace)
+}
+
+#[test]
+fn delay_capacity_one_queues_fifo_and_starts_on_the_release_instant() {
+    let exits = run_capacity(r#","capacity":1"#);
+    assert_eq!(
+        exits,
+        vec![(5.0, 1), (10.0, 2), (15.0, 3)],
+        "one slot: 5/10/15 in arrival order"
+    );
+    // Entry of token 2 is the exit instant of token 1 (no extra latency):
+    // its own exit is exactly one delay later.
+    assert!((exits[1].0 - exits[0].0 - 5.0).abs() < 1e-9);
+    assert!((exits[2].0 - exits[1].0 - 5.0).abs() < 1e-9);
+}
+
+#[test]
+fn delay_capacity_two_starts_the_first_two_together() {
+    let exits = run_capacity(r#","capacity":2"#);
+    assert_eq!(exits, vec![(5.0, 1), (5.0, 2), (10.0, 3)]);
+}
+
+#[test]
+fn delay_capacity_zero_and_none_are_unlimited() {
+    assert_eq!(
+        run_capacity(""),
+        vec![(5.0, 1), (5.0, 2), (5.0, 3)],
+        "None is unlimited"
+    );
+    assert_eq!(
+        run_capacity(r#","capacity":0"#),
+        vec![(5.0, 1), (5.0, 2), (5.0, 3)],
+        "0 is unlimited too"
+    );
+}
+
+#[test]
+fn delay_capacity_queues_tokens_without_losing_them_at_stop_time() {
+    let model = capacity_model(r#","capacity":1"#);
+    let config = SimConfig {
+        stop_time: 7.0,
+        warmup: 0.0,
+        seed: 1,
+    };
+    let result = openflex_core::simulate(&model, &config, 0).expect("run");
+    let flow = result.process_flow.as_ref().expect("flow");
+    // Token 1 finished at 5; token 2 is in the delay and token 3 is queued.
+    assert_eq!(flow.tokens_created, 3);
+    assert_eq!(flow.tokens_completed, 1);
+    assert_eq!(flow.tokens_created - flow.tokens_completed, 2);
+}
+
+#[test]
+fn delay_capacity_is_deterministic_for_one_seed() {
+    let model = capacity_model(r#","capacity":1"#);
+    let config = SimConfig {
+        stop_time: 20.0,
+        warmup: 0.0,
+        seed: 7,
+    };
+    let (first, first_trace) = simulate_traced(&model, &config, 0).expect("first");
+    let (second, second_trace) = simulate_traced(&model, &config, 0).expect("second");
+    assert_eq!(
+        serde_json::to_string(&first).expect("json"),
+        serde_json::to_string(&second).expect("json")
+    );
+    assert_eq!(
+        serde_json::to_string(&first_trace).expect("json"),
+        serde_json::to_string(&second_trace).expect("json")
+    );
+}
+
+/// task-220: `capacity: None` keeps the process-flow baseline report
+/// byte-identical (the executable token model has no capacity set).
+#[test]
+fn delay_capacity_none_keeps_the_flow_baseline() {
+    let report = run_model(&token_model()).expect("run");
+    let json = serde_json::to_string(&report).expect("json");
+    assert_eq!(
+        openflex_core::sha256::hex(json.as_bytes()),
+        "9931c670b1fdfd97597789552ec917206dc778b17f3b256ed4bac487f7cd8d9c"
+    );
+}
+
+#[test]
+fn delay_capacity_queue_survives_a_checkpoint() {
+    use openflex_core::simulate_with_checkpoint;
+    let model = capacity_model(r#","capacity":1"#);
+    let first = SimConfig {
+        stop_time: 6.0,
+        warmup: 0.0,
+        seed: 1,
+    };
+    let (_, checkpoint) = simulate_with_checkpoint(&model, &first, 0, None).expect("save");
+    let second = SimConfig {
+        stop_time: 20.0,
+        ..first
+    };
+    let (resumed, _) =
+        simulate_with_checkpoint(&model, &second, 0, Some(&checkpoint)).expect("resume");
+    let (direct, _) = simulate_with_checkpoint(&model, &second, 0, None).expect("direct");
+    assert_eq!(resumed, direct, "queued tokens must resume in FIFO order");
+}
