@@ -1,6 +1,40 @@
 # Changelog
 
-## Unreleased
+## v1.58.0 — 2026-11-27
+
+这一版继续补"模型作者天天会用"的东西，另外把两份最容易被误读的文档改了。
+
+**1. `query()` 能聚合了。** 之前只有 `SELECT … FROM … [WHERE] [ORDER BY] [LIMIT]`，
+而 `query()` 最常见的用法恰恰是"按列汇总"。现在支持 `COUNT(*) / SUM / AVG / MIN / MAX` 与 `GROUP BY`，
+`ORDER BY` 可以用聚合（`count(*)` 形式）。JOIN / 子查询仍然明确不做。
+
+**几处语义写死**，因为空值和坏数据最容易"看起来对、算错了"：
+
+- **空输入**：`COUNT`=0、`SUM`=0、`AVG/MIN/MAX`=**空串**、`GROUP BY` 无匹配行 = 0 行；
+- **`SUM` 遇到非数值单元格报错**，点名 1-based 行号 + 列名——不跳过、不当 0；
+- 聚合混普通列而没有 `GROUP BY` → 报错；
+- `check()`（validate 用）在**跑之前**就能拒绝坏聚合。
+
+**2. 坏查询不会把整次跑挂掉。** 新增 `malformed_queries_never_panic`：24 条畸形/恶意语句
+（空串、`SELECT COUNT(`、未闭合引号、`; DROP TABLE`、NUL 字符、负 LIMIT…）走 `parse`/`check`/`execute` 三条路径都不得 panic。
+`query()` 是从模型表达式里调的，panic 会把整次运行带走，而不是报一条坏查询。
+
+**3. README 的能力表补全了。** 原来只列 13 行，缺全局表/`query()`、任务序列、路网与交通、多故障源、
+流体/人员/AGV/电梯、模型文档生成、检查点——这些都已经有了。现在按 ✅/🟡/⛔ 如实标注，并指向 208 行的逐行矩阵。
+**README 是用户第一眼看到的功能列表，不能比矩阵旧。**
+
+**4. `PARITY_AUDIT.md` 补了第二轮取证。** 第一轮的方法边界（"测试名存在 = 有证据"）正是
+表驱动到达那个"标着 ✅ 却完全失效"的功能躲过审计的原因。文档现在写清三级证据、新工具的分级规则、
+白名单机制，以及"历史数字只是快照、计数以 `check-parity-counts.py` 为准"。
+
+**5. 皮带按 item type 的动态间距。** 之前只有静态 `item_spacing`；现在可按**前车**的 `item_type`
+覆盖间距（`gap_by_type: [{ item_type, gap }]`），未命中回落 `item_spacing`，空表 = 原路径（3 个 conveyor 基准 SHA 不变）。
+
+**slug 的交互写死**：slug 内部仍按 `slug_min_gap`，slug **之间**的下一组首件按前一组末件的类型查本表。
+实现上给 `Belt` 增加了与 follower 对齐的 gaps，`limit`/`compress`/time-to-next-event 全按 follower gap——
+**没有改推进模型**，那是 slug/accumulating 共用的核心路径。GUI 里皮带表单多了 `gap by item type`。
+
+发布节奏保持**至少 3 小时一版**。
 
 ### 文档
 
@@ -44,6 +78,15 @@
 - **GUI：皮带的 `gap by item type` 编辑**（勾选后逐行 `type / gap`，空 = 沿用 `item_spacing`）。
   测试 `typed_conveyor_gaps_round_trip`。GUI **156 项**。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**1115 passed / 0 failed**；clippy 0 警告、fmt 干净。
+- GUI **156 项**、`openflex-core --lib` **338 项**；smoke **25/25**；示例 **66/66**；golden 全过。
+- `check-parity-counts.py` ✅ 51 / 🟡 101 / ⛔ 53 / 📄 3；`audit-parity-evidence.py --strict` 通过；
+  `check-doc-baselines.sh` 通过（UNIMPLEMENTED / BACKLOG 指向当前版本）。
+- 独立实测：`3|60|20|10|30`、`A|2|40` / `B|1|20`（按 count 降序）、空 WHERE 得 `0`；
+  重复 `gap_by_type.item_type`、负 `gap` 报错并点名字段。
 
 ## v1.57.0 — 2026-11-27
 
