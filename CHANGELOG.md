@@ -1,6 +1,30 @@
 # Changelog
 
-## Unreleased
+## v1.63.0 — 2026-11-27
+
+**1. 多停止时间（`run.stop_times`）。** 之前只有单个 `stop_time`。现在可以写 `[t1, t2, …]`，
+引擎在每个时刻出一份**与正常报告同义**的快照（`report.stops`），然后**继续跑**到下一个，最后仍按 `stop_time` 结束。
+
+关键约束都写死了：
+
+- **同一次运行内只采样一次随机流**——不重跑、不重置 seed，否则确定性就毁了；
+- 严格递增、`> warmup`、`<= stop_time`，否则 validate 点名 `run.stop_times[i]`；
+- **与 checkpoint/resume 互斥**（validate 拒绝，注释写明）。
+
+实测 stop_time 30、`[10, 20]`：快照为 (10, completed 3)、(20, completed 5)，
+而**整体报告去掉 `stops` 后与不带 `stop_times` 的运行逐字节相同**——快照不改变运行本身。
+
+**2. 顺手清理了「剩余缺口 Top 10」的三条过期项。**
+
+- #7「实验生命周期钩子」写着"只有 on_start/on_reset/on_stop"，而 `ModelTriggers` 早有 **9 个时点**
+  （含 experiment / scenario / replication 各自首尾）。**这条与 §3 的 Start/End 行矛盾了一年多**。
+- #4 更新为"光电门 Clear Time / Require Gap 已实现（v1.61.0），仅缺 Block Time 与对象化部分"；
+- #8 更新为"聚合与分组已实现（v1.58.0），仅缺 JOIN / 子查询"。
+
+**Top 10 是用户看优先级的入口，它比矩阵正文更容易腐烂**——排期前必须先核，
+这也是 `check-stale-gaps.py` 之后我们要盯的第二类文档。
+
+发布节奏保持**至少 3 小时一版**。
 
 ### 文档
 
@@ -25,6 +49,15 @@
 
 - **冒烟套件 27 → 28 项**：新增 `multiple stop times`（stop_time 30 + `[10,20]`：快照时间 10/20、completed 单调递增，且整体报告去掉 `stops` 后与不带 `stop_times` 完全相同）。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**1152 passed / 0 failed**；clippy 0 警告、fmt 干净。
+- smoke **28/28**（新增 `multiple stop times`）；示例 **66/66**；golden 全过。
+- 矩阵 219 行：✅ 61 / 🟡 101 / ⛔ 54 / 📄 3；`check-parity-counts.py`、`check-stale-gaps.py`、
+  `audit-parity-evidence.py --strict`、`check-doc-baselines.sh` 全部通过。
+- 独立实测：stop_time 30 + `[10,20]` → 快照 (10,3)/(20,5)，整体报告去掉 `stops` 与不带 `stop_times` **逐字节相同**；
+  非递增列表 → `run.stop_times[1]: stop times must be strictly increasing`。
 
 ## v1.62.0 — 2026-11-27
 

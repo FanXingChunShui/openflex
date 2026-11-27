@@ -1,6 +1,6 @@
 # OpenFlex 未完成功能清单（Backlog）
 
-> 基线：**v1.62.0（2026-11-27）**。本文档按“与 FlexSim 语义一致性 → 功能广度 → 工程质量”排序，
+> 基线：**v1.63.0（2026-11-27）**。本文档按“与 FlexSim 语义一致性 → 功能广度 → 工程质量”排序，
 > 每项给出**现状、缺口、验收标准、工作量**（S ≤ 1 天，M ≤ 3 天，L > 3 天）。
 > 证据编号（E01…）见 [research/evidence.md](research/evidence.md)，规格见 [spec/](spec/)。
 > **行级状态以 [`FEATURE_PARITY_75.md`](FEATURE_PARITY_75.md) 为准**（208 行，✅ 51 / 🟡 101 / ⛔ 53）。
