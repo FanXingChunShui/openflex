@@ -17,7 +17,7 @@
   **3 个基准模型的 report + trace SHA-256 逐字节不变**。
   **检查点**：`photo_eye_clear_at` 进检查点（全 None 时省略，旧 checkpoint 兼容），
   新增 `photo_eye_clear_time_survives_a_checkpoint`（计时中 t=11 取检查点，续跑后 Clear 仍为 12.5）——
-  音箱门+检查点最容易丢的就是这种"已排定的定时器"。实测：`clear_time: 2` 的 Clear 由立即延到 7.5（该模型几何下的值）。
+  光电门+检查点最容易丢的就是这种"已排定的定时器"。实测：`clear_time: 2` 的 Clear 由立即延到 7.5（该模型几何下的值）。
 
 
 ## v1.60.0 — 2026-11-27
