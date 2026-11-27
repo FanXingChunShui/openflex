@@ -1,6 +1,32 @@
 # Changelog
 
-## Unreleased
+## v1.59.0 — 2026-11-27
+
+这一版把一个 ⛔ 变成 ✅，而且**故意只做了一半的功能**——这是最重要的一点。
+
+**1. `run.start_time`：报告可以从"早上八点"开始。** 矩阵原来把 Model Start Time 列为 ⛔：只支持 `t=0`，
+而文档允许把 0 时刻映射到真实时间。
+
+现在的实现是**纯显示偏移**：`final_time`、trace 的每条事件 `time`、`tracked_series` 时间点、
+`--paths` CSV 的 `first_time`/`last_time` 一律加这个常量；而**内部时钟、事件调度、分布采样、
+`stop_time`/`warmup` 的含义一个字没动**，`avg_stay_time`/`busy_fraction`/`throughput`/`completed` 逐位不变。
+
+为什么不做"真把时钟推到 8 点"？因为那会连带改变 `first_arrival`、`warmup`、`stop_time` 的语义——
+不是加一个字段，是重新定义模型时间轴。**我们宁可交付一个边界清楚的显示偏移，也不交付一个半懂的时间语义。**
+
+实测：`start_time: 100` → `final_time` 20→120、trace 首事件 100.0，而 `avg_stay` 仍 2.0、`completed` 仍 3；
+缺省 0 时输出逐字节不变（3 个基准模型 report JSON + CSV 的 SHA-256 证明）。
+
+**2. 顺带确认了 CSV 里没有"时间/时长两义"的列**：`report.csv`/`replications.csv` 只有时长与比例列，
+所以不用猜——这也正是先停手条款要防的情况。
+
+**3. `docs/COMPATIBILITY.md` 补齐了最近三个版本的新能力**：多故障源、逐端口 components、多槽 batch、
+按前车类型的皮带间距、按占用量分档调速。这份表是用户查"FlexSim 的对象对应我们什么"的第一站，
+落后于实现就等于告诉用户"这个参数不存在"。
+
+**4. 稳定性复核**：800 轮 fuzz 全过；10 万对象基准 run 通过（12.8 万事件/秒）。
+
+发布节奏保持**至少 3 小时一版**。
 
 ### 文档
 
@@ -25,6 +51,15 @@
 - **GUI：运行设置里加 `START AT`（显示偏移）**，提示写明"只影响报告时间，时钟仍从 0 起"；测试 `start_time_is_display_only_in_the_file`（缺省 0 不写进文件）。GUI **157 项**。
 - **冒烟套件 25 → 26 项**：新增 `start time offset`（`final_time` 20→120、首事件 100.0，而 `avg_stay_time`/`throughput`/`completed` 不变）。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**1123 passed / 0 failed**；clippy 0 警告、fmt 干净。
+- GUI **157 项**、`openflex-core --lib` **338 项**；smoke **26/26**；示例 **66/66**；golden 全过。
+- 矩阵：✅ **52** / 🟡 101 / ⛔ **52** / 📄 3（Model Start Time 由 ⛔ 升 ✅）；`audit-parity-evidence.py --strict` 通过。
+- `check-dead-params.sh` 0 known；`check-doc-baselines.sh` 通过；`check-changelog.sh`、`check-parity-counts.py` 通过。
+- 独立实测：`start_time: 100` → `final_time` 20→120、trace 首事件 100.0，`avg_stay_time`/`completed` 不变；负偏移 `-50` 正确。
+- 稳定性：fuzz 800 轮 PASS；10 万对象基准 PASS（12.8 万事件/秒）。
 
 ## v1.58.0 — 2026-11-27
 
