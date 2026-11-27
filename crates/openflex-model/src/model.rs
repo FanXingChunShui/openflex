@@ -2349,6 +2349,13 @@ pub enum TaskStep {
         /// task-173: destination for explicit-route `travel` legs.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<TravelTarget>,
+        /// task-217: decelerate only to this speed instead of 0. `None`/`0`
+        /// keeps the historical stop; requires acceleration to change time.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end_speed: Option<f64>,
+        /// task-217: execute this travel leg even when its distance is zero.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force_travel: bool,
         /// task-196: how many executors must be present before the transport
         /// task runs (default 1). Only 1 and 2 are supported.
         ///
@@ -2429,6 +2436,23 @@ impl TaskStep {
             TaskStep::Detailed { condition, .. } | TaskStep::Extra { condition, .. } => {
                 condition.as_ref()
             }
+        }
+    }
+
+    /// task-217: requested arrival speed; `None` and `Some(0.0)` both mean a
+    /// full stop (bit-identical to the historical travel time).
+    pub fn end_speed(&self) -> Option<f64> {
+        match self {
+            TaskStep::Detailed { end_speed, .. } => *end_speed,
+            TaskStep::Simple(_) | TaskStep::Extra { .. } => None,
+        }
+    }
+
+    /// task-217: run a zero-distance travel leg instead of skipping it.
+    pub fn force_travel(&self) -> bool {
+        match self {
+            TaskStep::Detailed { force_travel, .. } => *force_travel,
+            TaskStep::Simple(_) | TaskStep::Extra { .. } => false,
         }
     }
 }

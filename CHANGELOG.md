@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### 模型与引擎
+
+- **travel 逐任务参数：`end_speed` 与 `force_travel`**（矩阵 🟡「Task Types」）。`TaskStep::Detailed` 新增
+  `end_speed: Option<f64>`（到达只减速到该速度）与 `force_travel: bool`（距离 0 也执行该腿）。
+  加减速按**运动学重新推导**（不是比例缩放）：`D_trap(e)=v²/2a+(v²-e²)/2b`、`D_min(e)=e²/2a`；
+  梯形 `t=v/a+(v-e)/b+(d-D_trap)/v`；三角 `p=√(a(2bd+e²)/(a+b))`、`t=p/a+(p-e)/b`。
+  手算与实现一致：`d=10,v=2,a=1,b=2,e=1` → **6.125**（`e=0` 为 6.5）；append 实测 pickup 4.0→3.625、delivery 6.5→6.125。
+  **不可行区 `d < D_min(e)` 选择报错**（`SimError::Config`，点名 `end_speed`、实际距离、最短距离）——
+  B 方案（把 `end_speed` 当"可达上限"）会静默交付低于用户要求的到达速度，正是我们最想避免的语义漂移；C 更糟。
+  边界写死：`e==0` 直接委托原函数（保证逐位一致）；无加减速时 `end_speed` 不影响时长；`d==0` 且无 `force_travel` 不报错；
+  `force_travel` + `d==0` + `e>0` 报错，`e=0` 则时长 0 但腿仍然发生。append 的 duration-only extra travel 设这两字段被 validate 拒绝。
+  上界校验分层：validate 静态拒绝负数/非有限、可解析 executor 时拒绝超速；dispatch 时再按实际 executor 校验。
+
+
 ## v1.59.0 — 2026-11-27
 
 这一版把一个 ⛔ 变成 ✅，而且**故意只做了一半的功能**——这是最重要的一点。

@@ -2197,6 +2197,8 @@ impl EditForm {
                                                 condition: condition.clone(),
                                                 target: target.clone(),
                                                 involved: *involved,
+                                                end_speed: None,
+                                                force_travel: false,
                                             },
                                             TaskStep::Simple(_) => TaskStep::Simple(kind),
                                             // task-169: extra-only legs are not
@@ -2239,6 +2241,8 @@ impl EditForm {
                                             _ => None,
                                         },
                                         involved: if needs_two { 2 } else { 1 },
+                                        end_speed: None,
+                                        force_travel: false,
                                     }
                                 }
                                 TaskStep::Extra { .. } => step.clone(),
@@ -15900,6 +15904,8 @@ mod tests {
             condition: None,
             target: None,
             involved: 2,
+            end_speed: None,
+            force_travel: false,
         };
         assert_eq!(coordinated.involved(), 2);
         assert_eq!(coordinated.kind(), TaskStepKind::Load, "kind survives");
@@ -15920,6 +15926,8 @@ mod tests {
             condition,
             target,
             involved: 1,
+            end_speed: None,
+            force_travel: false,
         };
         let json = serde_json::to_string(&plain).expect("json");
         assert!(!json.contains("involved"), "{json}");
@@ -17582,6 +17590,8 @@ mod tests {
             duration: Some(Distribution::Constant { value: 2.0 }),
             condition: None,
             target: None,
+            end_speed: None,
+            force_travel: false,
         };
         let switched = match step {
             TaskStep::Detailed {
@@ -17595,6 +17605,8 @@ mod tests {
                 duration,
                 condition,
                 target,
+                end_speed: None,
+                force_travel: false,
             },
             TaskStep::Simple(_) => TaskStep::Simple(TaskStepKind::Load),
             // The combo box shows extra-only legs read-only, so this arm is not

@@ -2406,13 +2406,35 @@ fn validate_user_commands(model: &Model) -> Vec<ValidationIssue> {
     issues
 }
 
+/// task-217: statically known speed of an executor (None for non-executors).
+fn executor_speed(params: &crate::model::ObjectParams) -> Option<f64> {
+    use crate::model::ObjectParams;
+    match params {
+        ObjectParams::Transporter(params)
+        | ObjectParams::Person(params)
+        | ObjectParams::Robot(params)
+        | ObjectParams::Crane(params)
+        | ObjectParams::AsrsVehicle(params) => Some(params.speed.max(f64::EPSILON)),
+        ObjectParams::Agv(params) => Some(params.speed.max(f64::EPSILON)),
+        ObjectParams::Elevator(params) => Some(params.speed.max(f64::EPSILON)),
+        _ => None,
+    }
+}
+
 /// task-193: named task sequences must be unique and every reference must
 /// resolve; a dispatcher cannot set both the inline sequence and a reference.
 fn validate_task_sequences(model: &Model) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
     // task-196: only 1 or 2 executors per step are supported.
-    let check_steps = |steps: &[crate::model::TaskStep], location: &str| -> Vec<ValidationIssue> {
+    // task-217: travel overrides are checked here; `max_speed` is the fastest
+    // executor statically connected to the dispatcher (None = unknown).
+    let check_steps = |steps: &[crate::model::TaskStep],
+                       location: &str,
+                       mode: crate::model::TaskSequenceMode,
+                       max_speed: Option<f64>|
+     -> Vec<ValidationIssue> {
         let mut issues = Vec::new();
+        let mut travels_seen = 0usize;
         for (position, step) in steps.iter().enumerate() {
             let involved = match step {
                 crate::model::TaskStep::Detailed { involved, .. } => *involved,
@@ -2426,8 +2448,67 @@ fn validate_task_sequences(model: &Model) -> Vec<ValidationIssue> {
                     ),
                 ));
             }
+            let is_travel =
+                step.kind() == crate::model::TaskStepKind::Travel && step.extra_kind().is_none();
+            let mut is_extra_append_travel = false;
+            if is_travel {
+                if mode == crate::model::TaskSequenceMode::Append {
+                    is_extra_append_travel = travels_seen >= 2;
+                }
+                travels_seen += 1;
+            }
+            let end_speed = step.end_speed();
+            let force_travel = step.force_travel();
+            if (end_speed.is_some() || force_travel) && !is_travel {
+                issues.push(ValidationIssue::new(
+                    format!("{location}.{position}.end_speed"),
+                    "`end_speed` and `force_travel` are only valid on travel legs",
+                ));
+            }
+            if is_extra_append_travel && (end_speed.is_some() || force_travel) {
+                issues.push(ValidationIssue::new(
+                    format!("{location}.{position}.end_speed"),
+                    "append-mode extra travel legs are duration-only and have no real distance; `end_speed`/`force_travel` are not supported here",
+                ));
+            }
+            if let Some(end_speed) = end_speed {
+                if !end_speed.is_finite() || end_speed < 0.0 {
+                    issues.push(ValidationIssue::new(
+                        format!("{location}.{position}.end_speed"),
+                        "must be a finite, non-negative speed",
+                    ));
+                } else if let Some(max_speed) = max_speed
+                    && end_speed > max_speed + 1e-9
+                {
+                    issues.push(ValidationIssue::new(
+                        format!("{location}.{position}.end_speed"),
+                        format!(
+                            "must not exceed the dispatcher's fastest executor speed ({max_speed}), found {end_speed}"
+                        ),
+                    ));
+                }
+            }
         }
         issues
+    };
+    let dispatcher_max_speed = |object: &crate::model::Object| -> Option<f64> {
+        let speeds = model.connections.iter().filter_map(|connection| {
+            let other = if connection.from == object.name {
+                &connection.to
+            } else if connection.to == object.name {
+                &connection.from
+            } else {
+                return None;
+            };
+            model
+                .objects
+                .iter()
+                .find(|candidate| candidate.name == *other)
+                .and_then(|candidate| executor_speed(&candidate.params))
+        });
+        speeds.fold(None, |best: Option<f64>, speed| {
+            Some(best.map_or(speed, |best| best.max(speed)))
+        })
     };
     // task-197: `involved: 2` drives the normal dispatch path while `explicit`
     // uses a different one; combining them is undefined, so it must fail to
@@ -2441,6 +2522,8 @@ fn validate_task_sequences(model: &Model) -> Vec<ValidationIssue> {
         issues.extend(check_steps(
             &sequence.steps,
             &format!("task_sequences.{position}.steps"),
+            sequence.mode,
+            None,
         ));
         if sequence.mode == crate::model::TaskSequenceMode::Explicit && has_two(&sequence.steps) {
             issues.push(ValidationIssue::new(
@@ -2454,7 +2537,33 @@ fn validate_task_sequences(model: &Model) -> Vec<ValidationIssue> {
             issues.extend(check_steps(
                 &params.task_sequence,
                 &format!("objects.{}.task_sequence", object.name),
+                params.task_sequence_mode,
+                dispatcher_max_speed(object),
             ));
+            if let Some(name) = params.task_sequence_ref.as_ref()
+                && let Some((position, sequence)) = model
+                    .task_sequences
+                    .iter()
+                    .enumerate()
+                    .find(|(_, sequence)| sequence.name == *name)
+                && let Some(max_speed) = dispatcher_max_speed(object)
+            {
+                for (step_position, step) in sequence.steps.iter().enumerate() {
+                    if let Some(end_speed) = step.end_speed()
+                        && end_speed.is_finite()
+                        && end_speed > max_speed + 1e-9
+                    {
+                        issues.push(ValidationIssue::new(
+                            format!(
+                                "task_sequences.{position}.steps.{step_position}.end_speed"
+                            ),
+                            format!(
+                                "must not exceed the dispatcher's fastest executor speed ({max_speed}), found {end_speed}"
+                            ),
+                        ));
+                    }
+                }
+            }
             if params.task_sequence_mode == crate::model::TaskSequenceMode::Explicit {
                 let inline_two = has_two(&params.task_sequence);
                 let referenced_two = params

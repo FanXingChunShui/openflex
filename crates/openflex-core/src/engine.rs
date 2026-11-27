@@ -607,6 +607,12 @@ pub(crate) struct ExplicitLeg {
     pub(crate) kind: PendingLeg,
     pub(crate) target: Option<([f64; 2], f64)>,
     pub(crate) duration: Option<f64>,
+    /// task-217: per-travel arrival speed (None/0 = full stop).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) end_speed: Option<f64>,
+    /// task-217: run this leg even when its distance is zero.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) force_travel: bool,
 }
 
 /// task-202: one queue item handed to a transporter. The item stays in the
@@ -632,6 +638,11 @@ pub(crate) struct ExplicitState {
     /// Destination of the current travel leg (rebuilt into `explicit_target`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) current_target: Option<([f64; 2], f64)>,
+    /// task-217: overrides of the current explicit travel leg.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) current_end_speed: Option<f64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) current_force_travel: bool,
     /// Absolute deadline of the current leg; not serialized, rebuilt from
     /// `remaining` on restore.
     #[serde(skip)]
@@ -929,11 +940,28 @@ impl<'de> Deserialize<'de> for OperatorRequest {
     }
 }
 
+/// task-217: per-task travel overrides mapped from the first two travel steps
+/// of an append-mode task sequence (pickup, delivery).
+fn is_default_travel_overrides(overrides: &[TravelLegOverrides; 2]) -> bool {
+    overrides
+        .iter()
+        .all(|override_| override_.end_speed.is_none() && !override_.force_travel)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct TravelLegOverrides {
+    pub(crate) end_speed: Option<f64>,
+    pub(crate) force_travel: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ObjectRt {
     name: String,
     kind: ObjectKind,
     content: Vec<FlowItem>,
+    /// task-217: pickup/delivery overrides from the append task sequence.
+    #[serde(default, skip_serializing_if = "is_default_travel_overrides")]
+    leg_overrides: [TravelLegOverrides; 2],
     /// Items that finished processing etc. but could not be delivered yet.
     out_pending: Vec<FlowItem>,
     /// `out_pending` items already counted in the object's output statistics
@@ -1177,6 +1205,7 @@ impl ObjectRt {
             name: object.name.clone(),
             kind: object.kind,
             content: Vec::new(),
+            leg_overrides: [TravelLegOverrides::default(); 2],
             out_pending: Vec::new(),
             out_pending_accounted: false,
             state: State::Idle,
@@ -3301,6 +3330,55 @@ fn travel_time(distance: f64, speed: f64, accel: Option<f64>, decel: Option<f64>
     } else {
         let peak = (2.0 * distance * accel * decel / (accel + decel)).sqrt();
         peak / accel + peak / decel
+    }
+}
+
+/// task-217: the confirmed piecewise travel time with a non-zero arrival
+/// speed. `end_speed == 0` (or `None`) delegates to [`travel_time`] so the
+/// historical durations stay bit-identical. Without acceleration the result is
+/// plain `distance / speed` (an arrival speed cannot change a constant-speed
+/// leg).
+fn travel_time_with_end_speed(
+    distance: f64,
+    speed: f64,
+    accel: Option<f64>,
+    decel: Option<f64>,
+    end_speed: Option<f64>,
+) -> Result<f64, SimError> {
+    let Some(end_speed) = end_speed else {
+        return Ok(travel_time(distance, speed, accel, decel));
+    };
+    if end_speed == 0.0 {
+        return Ok(travel_time(distance, speed, accel, decel));
+    }
+    let distance = distance.max(0.0);
+    let speed = speed.max(EPS);
+    let Some(accel) = accel else {
+        return Ok(distance / speed);
+    };
+    if !end_speed.is_finite() || end_speed < 0.0 || end_speed > speed + 1e-9 {
+        return Err(SimError::Config(format!(
+            "end_speed {end_speed} must be within [0, {speed}] (the executor's speed)"
+        )));
+    }
+    let end_speed = end_speed.min(speed);
+    let accel = accel.max(EPS);
+    let decel = decel.unwrap_or(accel).max(EPS);
+    let min_distance = end_speed * end_speed / (2.0 * accel);
+    if distance < min_distance - EPS {
+        return Err(SimError::Config(format!(
+            "end_speed {end_speed} is unreachable over distance {distance}: at least {min_distance} is required"
+        )));
+    }
+    let accel_distance = speed * speed / (2.0 * accel);
+    let decel_distance = (speed * speed - end_speed * end_speed) / (2.0 * decel);
+    let trap = accel_distance + decel_distance;
+    if distance >= trap {
+        Ok(speed / accel + (speed - end_speed) / decel + (distance - trap) / speed)
+    } else {
+        let peak =
+            (accel * (2.0 * decel * distance + end_speed * end_speed) / (accel + decel)).sqrt();
+        Ok(peak / accel + (peak - end_speed) / decel)
     }
 }
 
@@ -6141,6 +6219,7 @@ impl<'m> Simulation<'m> {
         self.objects[transporter].item_transport = Some(job);
         self.objects[transporter].tasks += 1;
         self.objects[transporter].serving_requester = Some(index);
+        self.set_task_leg_overrides(transporter, dispatcher_index);
         self.objects[transporter].acc.input += 1;
         self.objects[transporter].task_distance =
             self.transport_estimate_distance(transporter, index);
@@ -6148,7 +6227,18 @@ impl<'m> Simulation<'m> {
         self.set_executor_activity(transporter, ExecutorActivity::TravelEmpty);
         let distance = self.transport_object_distance(transporter, transporter, index);
         let (accel, decel) = self.transport_acceleration(transporter);
-        let travel = travel_time(distance, self.transport_speed(transporter), accel, decel);
+        let overrides = self.objects[transporter].leg_overrides[0];
+        let travel = if distance <= EPS && !overrides.force_travel {
+            0.0
+        } else {
+            travel_time_with_end_speed(
+                distance,
+                self.transport_speed(transporter),
+                accel,
+                decel,
+                overrides.end_speed,
+            )?
+        };
         self.schedule(self.now + travel, EventKind::ItemPickup(transporter, index));
         Ok(())
     }
@@ -6196,7 +6286,18 @@ impl<'m> Simulation<'m> {
         self.set_executor_activity(transporter, ExecutorActivity::TravelLoaded);
         let distance = self.transport_object_distance(transporter, queue, job.destination);
         let (accel, decel) = self.transport_acceleration(transporter);
-        let travel = travel_time(distance, self.transport_speed(transporter), accel, decel);
+        let overrides = self.objects[transporter].leg_overrides[1];
+        let travel = if distance <= EPS && !overrides.force_travel {
+            0.0
+        } else {
+            travel_time_with_end_speed(
+                distance,
+                self.transport_speed(transporter),
+                accel,
+                decel,
+                overrides.end_speed,
+            )?
+        };
         self.schedule(
             self.now + travel,
             EventKind::ItemDropoff(transporter, queue),
@@ -8533,6 +8634,7 @@ impl<'m> Simulation<'m> {
                         self.objects[dispatcher].dispatcher_active.saturating_add(1);
                     self.objects[transporter].tasks += 1;
                     self.objects[transporter].serving_requester = Some(requester);
+                    self.set_task_leg_overrides(transporter, dispatcher);
                     self.objects[transporter].task_group = Some(group);
                     if let Some(item) = self.sole_item_id(requester) {
                         self.transport_item_hints.insert(transporter, item);
@@ -8563,6 +8665,7 @@ impl<'m> Simulation<'m> {
                 self.objects[dispatcher].dispatcher_active.saturating_add(1);
             self.objects[transporter].tasks += 1;
             self.objects[transporter].serving_requester = Some(requester);
+            self.set_task_leg_overrides(transporter, dispatcher);
             if let Some(item) = self.sole_item_id(requester) {
                 self.transport_item_hints.insert(transporter, item);
             }
@@ -8602,6 +8705,8 @@ impl<'m> Simulation<'m> {
                         leg_in_progress: false,
                         current: None,
                         current_target: None,
+                        current_end_speed: None,
+                        current_force_travel: false,
                         leg_deadline: None,
                         remaining: None,
                     },
@@ -8654,6 +8759,7 @@ impl<'m> Simulation<'m> {
             self.objects[dispatcher].requests.remove(position);
             self.objects[executor].tasks += 1;
             self.objects[executor].serving_requester = Some(requester);
+            self.set_task_leg_overrides(executor, dispatcher);
             self.objects[executor].acc.input += 1;
             self.claim_shaft(executor);
             let delta = self.objects[requester].z - self.objects[executor].z;
@@ -9281,7 +9387,7 @@ impl<'m> Simulation<'m> {
                 return Ok(());
             }
             let speed_scale = self.traffic_speed_factor(from, to).max(EPS);
-            let travel = self.transport_pickup_travel_scaled(transporter, speed_scale);
+            let travel = self.transport_pickup_travel_scaled(transporter, speed_scale)?;
             self.schedule(
                 self.now + travel,
                 EventKind::TransportPickup(transporter, requester),
@@ -9537,17 +9643,27 @@ impl<'m> Simulation<'m> {
         )
     }
 
-    fn transport_pickup_travel_scaled(&self, transporter: usize, scale: f64) -> f64 {
+    fn transport_pickup_travel_scaled(
+        &self,
+        transporter: usize,
+        scale: f64,
+    ) -> Result<f64, SimError> {
         let (accel, decel) = self.transport_acceleration(transporter);
+        let overrides = self.objects[transporter].leg_overrides[0];
+        let distance = self.transport_pickup_distance(transporter);
+        if distance <= EPS && !overrides.force_travel {
+            return Ok(0.0);
+        }
         if accel.is_some() {
-            travel_time(
-                self.transport_pickup_distance(transporter),
+            travel_time_with_end_speed(
+                distance,
                 self.transport_speed(transporter) * scale,
                 accel,
                 decel,
+                overrides.end_speed,
             )
         } else {
-            self.transport_pickup_travel(transporter) / scale
+            Ok(self.transport_pickup_travel(transporter) / scale)
         }
     }
 
@@ -9918,7 +10034,7 @@ impl<'m> Simulation<'m> {
         let speed_scale = self
             .traffic_speed_factor(from_position, to_position)
             .max(EPS);
-        let travel = self.transport_leg_travel_scaled(transporter, requester, speed_scale);
+        let travel = self.transport_leg_travel_scaled(transporter, requester, speed_scale)?;
         self.schedule(
             self.now + travel,
             EventKind::TransportArrive(transporter, requester),
@@ -10282,17 +10398,28 @@ impl<'m> Simulation<'m> {
         )
     }
 
-    fn transport_leg_travel_scaled(&self, transporter: usize, requester: usize, scale: f64) -> f64 {
+    fn transport_leg_travel_scaled(
+        &self,
+        transporter: usize,
+        requester: usize,
+        scale: f64,
+    ) -> Result<f64, SimError> {
         let (accel, decel) = self.transport_acceleration(transporter);
+        let overrides = self.objects[transporter].leg_overrides[1];
+        let distance = self.transport_leg_distance(transporter, requester);
+        if distance <= EPS && !overrides.force_travel {
+            return Ok(0.0);
+        }
         if accel.is_some() {
-            travel_time(
-                self.transport_leg_distance(transporter, requester),
+            travel_time_with_end_speed(
+                distance,
                 self.transport_speed(transporter) * scale,
                 accel,
                 decel,
+                overrides.end_speed,
             )
         } else {
-            self.transport_leg_travel(transporter, requester) / scale
+            Ok(self.transport_leg_travel(transporter, requester) / scale)
         }
     }
 
@@ -10544,6 +10671,34 @@ impl<'m> Simulation<'m> {
         (params.task_sequence.clone(), params.task_sequence_mode)
     }
 
+    /// task-217: map the first two travel steps of an append-mode task
+    /// sequence onto the standard pickup/delivery legs.
+    fn dispatcher_leg_overrides(&self, dispatcher: usize) -> [TravelLegOverrides; 2] {
+        let (steps, mode) = self.dispatcher_task_sequence(dispatcher);
+        if mode == TaskSequenceMode::Explicit {
+            return [TravelLegOverrides::default(); 2];
+        }
+        let mut overrides = [TravelLegOverrides::default(); 2];
+        let mut slot = 0usize;
+        for step in &steps {
+            if slot >= 2 {
+                break;
+            }
+            if step.kind() == TaskStepKind::Travel && step.extra_kind().is_none() {
+                overrides[slot] = TravelLegOverrides {
+                    end_speed: step.end_speed(),
+                    force_travel: step.force_travel(),
+                };
+                slot += 1;
+            }
+        }
+        overrides
+    }
+
+    fn set_task_leg_overrides(&mut self, transporter: usize, dispatcher: usize) {
+        self.objects[transporter].leg_overrides = self.dispatcher_leg_overrides(dispatcher);
+    }
+
     fn explicit_route_legs(
         &mut self,
         dispatcher: usize,
@@ -10578,6 +10733,8 @@ impl<'m> Simulation<'m> {
                     kind,
                     target: None,
                     duration: Some(duration),
+                    end_speed: None,
+                    force_travel: false,
                 });
                 continue;
             }
@@ -10632,17 +10789,23 @@ impl<'m> Simulation<'m> {
                         kind: PendingLeg::Travel,
                         target: Some((destination, z)),
                         duration: None,
+                        end_speed: step.end_speed(),
+                        force_travel: step.force_travel(),
                     });
                 }
                 TaskStepKind::Load => legs.push_back(ExplicitLeg {
                     kind: PendingLeg::Load,
                     target: None,
                     duration: None,
+                    end_speed: None,
+                    force_travel: false,
                 }),
                 TaskStepKind::Unload => legs.push_back(ExplicitLeg {
                     kind: PendingLeg::Unload,
                     target: None,
                     duration: None,
+                    end_speed: None,
+                    force_travel: false,
                 }),
             }
         }
@@ -10658,9 +10821,14 @@ impl<'m> Simulation<'m> {
                     from = destination;
                 }
             }
-            if !legs.is_empty() && total <= EPS {
+            if !legs.is_empty()
+                && total <= EPS
+                && !legs
+                    .iter()
+                    .any(|leg| leg.force_travel && leg.target.is_some())
+            {
                 return Err(SimError::Config(
-                    "explicit travel route has zero total distance; add a non-zero target".into(),
+                    "explicit travel route has zero total distance; add a non-zero target or force_travel".into(),
                 ));
             }
         }
@@ -10716,6 +10884,8 @@ impl<'m> Simulation<'m> {
                 state.leg_in_progress = true;
                 state.current = Some(leg.kind);
                 state.current_target = None;
+                state.current_end_speed = leg.end_speed;
+                state.current_force_travel = leg.force_travel;
                 state.leg_deadline = None;
                 (leg, state.requester, state.loaded)
             };
@@ -10744,12 +10914,12 @@ impl<'m> Simulation<'m> {
                     let speed_scale = self.traffic_speed_factor(from, destination).max(EPS);
                     let speed = self.transport_speed(transporter).max(EPS) * speed_scale;
                     let (accel, decel) = self.transport_acceleration(transporter);
-                    let travel = travel_time(
-                        route_distance(self.model, from, destination),
-                        speed,
-                        accel,
-                        decel,
-                    );
+                    let distance = route_distance(self.model, from, destination);
+                    let travel = if distance <= EPS && !leg.force_travel {
+                        0.0
+                    } else {
+                        travel_time_with_end_speed(distance, speed, accel, decel, leg.end_speed)?
+                    };
                     self.set_state(transporter, State::Busy);
                     self.set_executor_activity(
                         transporter,
@@ -10760,7 +10930,7 @@ impl<'m> Simulation<'m> {
                         },
                     );
                     self.record_route_leg("transport_route_depart", transporter, destination);
-                    if travel > EPS {
+                    if travel > EPS || (distance <= EPS && leg.force_travel) {
                         self.schedule(self.now + travel, EventKind::ExplicitLegDone(transporter));
                         return Ok(());
                     }
@@ -10869,12 +11039,18 @@ impl<'m> Simulation<'m> {
         let speed_scale = self.traffic_speed_factor(from, destination).max(EPS);
         let speed = self.transport_speed(transporter).max(EPS) * speed_scale;
         let (accel, decel) = self.transport_acceleration(transporter);
-        let travel = travel_time(
-            route_distance(self.model, from, destination),
-            speed,
-            accel,
-            decel,
-        );
+        let (end_speed, force_travel) = self
+            .explicit_routes
+            .get(&transporter)
+            .map_or((None, false), |state| {
+                (state.current_end_speed, state.current_force_travel)
+            });
+        let distance = route_distance(self.model, from, destination);
+        let travel = if distance <= EPS && !force_travel {
+            0.0
+        } else {
+            travel_time_with_end_speed(distance, speed, accel, decel, end_speed)?
+        };
         self.set_state(transporter, State::Busy);
         self.set_executor_activity(
             transporter,
@@ -10885,7 +11061,7 @@ impl<'m> Simulation<'m> {
             },
         );
         self.record_route_leg("transport_route_depart", transporter, destination);
-        if travel > EPS {
+        if travel > EPS || (distance <= EPS && force_travel) {
             if let Some(state) = self.explicit_routes.get_mut(&transporter) {
                 state.leg_deadline = Some(self.now + travel);
             }
@@ -10914,6 +11090,8 @@ impl<'m> Simulation<'m> {
         let kind = state.current.take();
         state.leg_in_progress = false;
         state.current_target = None;
+        state.current_end_speed = None;
+        state.current_force_travel = false;
         state.leg_deadline = None;
         let requester = state.requester;
         match kind {
@@ -23782,6 +23960,353 @@ mod tests {
         assert!((travel_time(d, v, Some(a), Some(b)) - trapezoid).abs() < 1e-9);
         assert!((triangle - trapezoid).abs() < 1e-9);
         assert!(travel_time(d, v, Some(a), Some(b)) > d / v);
+    }
+
+    fn travel_with_end_speed_formula(d: f64, v: f64, a: f64, b: f64, e: f64) -> f64 {
+        travel_time_with_end_speed(d, v, Some(a), Some(b), Some(e)).expect("travel")
+    }
+
+    /// task-217: the two closed forms match the confirmed derivation.
+    #[test]
+    fn travel_end_speed_trapezoid_and_triangle_formulas() {
+        // Trapezoid: v=2, a=1, b=2, e=1 -> D_trap=2.75, D_min=0.5.
+        let trapezoid = travel_with_end_speed_formula(10.0, 2.0, 1.0, 2.0, 1.0);
+        assert!((trapezoid - 6.125).abs() < 1e-9, "{trapezoid}");
+        // Triangle: p=sqrt(3), t=p/1 + (p-1)/2.
+        let triangle = travel_with_end_speed_formula(2.0, 2.0, 1.0, 2.0, 1.0);
+        let peak = 3.0_f64.sqrt();
+        let expected = peak + (peak - 1.0) / 2.0;
+        assert!(
+            (triangle - expected).abs() < 1e-9,
+            "{triangle} != {expected}"
+        );
+        // Boundary: d=D_min -> p=e, decel 0, t=e/a.
+        let at_min = travel_with_end_speed_formula(0.5, 2.0, 1.0, 2.0, 1.0);
+        assert!((at_min - 1.0).abs() < 1e-9, "{at_min}");
+        // e=0 is exactly the historical formula, and no acceleration ignores e.
+        let d = 3.0;
+        assert_eq!(
+            travel_time_with_end_speed(d, 2.0, Some(1.0), Some(2.0), Some(0.0)).expect("zero"),
+            travel_time(d, 2.0, Some(1.0), Some(2.0))
+        );
+        assert_eq!(
+            travel_time_with_end_speed(d, 2.0, None, None, Some(1.0)).expect("constant"),
+            d / 2.0
+        );
+    }
+
+    /// task-217: the unreachable end speed is a config error, while a skipped
+    /// zero-distance leg is not.
+    #[test]
+    fn travel_end_speed_rejects_unreachable_distances() {
+        let error = travel_time_with_end_speed(0.1, 2.0, Some(1.0), Some(2.0), Some(1.0))
+            .expect_err("0.1 < D_min");
+        let message = error.to_string();
+        assert!(message.contains("end_speed 1"), "{message}");
+        assert!(message.contains("0.5"), "{message}");
+        assert_eq!(
+            travel_time_with_end_speed(0.0, 2.0, Some(1.0), Some(2.0), Some(0.0)).expect("zero"),
+            0.0
+        );
+    }
+
+    fn explicit_travel_model(end_speed: Option<f64>, accel: bool) -> Model {
+        let end = end_speed.map_or_else(String::new, |value| format!(r#", "end_speed": {value}"#));
+        let acceleration = if accel {
+            r#", "acceleration": 1.0, "deceleration": 2.0"#
+        } else {
+            ""
+        };
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "end-speed",
+          "run": {{ "stop_time": 30.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "P", "kind": "processor", "pos": [10.0, 0.0], "params": {{
+                "process_time": {{ "distribution": "constant", "value": 1.0 }},
+                "process_operator": "D" }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }},
+            {{ "name": "D", "kind": "dispatcher", "pos": [0.0, 0.0], "params": {{
+                "task_sequence_mode": "explicit",
+                "task_sequence": [{{ "kind": "travel",
+                    "target": {{ "position": [10.0, 0.0] }}{end} }}] }} }},
+            {{ "name": "T", "kind": "transporter", "pos": [0.0, 0.0], "params": {{
+                "speed": 2.0{acceleration}, "home": "D" }} }}
+          ],
+          "connections": [
+            {{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }},
+            {{ "from": "D", "to": "T" }}
+          ]
+        }}"#
+        ))
+        .expect("explicit travel model")
+    }
+
+    fn route_leg_times(model: &Model) -> (f64, f64) {
+        let (_, trace) = crate::simulate_traced(
+            model,
+            &SimConfig {
+                stop_time: 30.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect("trace");
+        let depart = trace
+            .events
+            .iter()
+            .find(|event| event.event == "transport_route_depart")
+            .expect("depart")
+            .time;
+        let arrive = trace
+            .events
+            .iter()
+            .find(|event| event.event == "transport_route_arrive")
+            .expect("arrive")
+            .time;
+        (depart, arrive)
+    }
+
+    /// task-217: explicit travel uses the new piecewise duration and `Some(0)`
+    /// is bit-identical to the absent field.
+    #[test]
+    fn explicit_travel_end_speed_changes_the_leg_duration() {
+        let none = route_leg_times(&explicit_travel_model(None, true));
+        let zero = route_leg_times(&explicit_travel_model(Some(0.0), true));
+        assert_eq!(none, zero);
+        let end_one = route_leg_times(&explicit_travel_model(Some(1.0), true));
+        // v=2, a=1, b=2, d=10, e=1 -> 6.125; e=0 -> 6.5.
+        assert!((end_one.1 - end_one.0 - 6.125).abs() < 1e-9, "{end_one:?}");
+        assert!((none.1 - none.0 - 6.5).abs() < 1e-9, "{none:?}");
+        // Constant speed: end_speed is documented as time-neutral.
+        let fast_none = route_leg_times(&explicit_travel_model(None, false));
+        let fast_end = route_leg_times(&explicit_travel_model(Some(1.0), false));
+        assert_eq!(fast_none, fast_end);
+        assert!((fast_none.1 - fast_none.0 - 5.0).abs() < 1e-9);
+    }
+
+    /// task-217: validation names `end_speed` for negative and over-speed values.
+    #[test]
+    fn explicit_travel_end_speed_validation_names_the_field() {
+        let base = serde_json::to_string(&explicit_travel_model(None, true)).expect("json");
+        let negative = base.replace(
+            r#""target":{"position":[10.0,0.0]}"#,
+            r#""target":{"position":[10.0,0.0]},"end_speed":-1.0"#,
+        );
+        let error = Model::from_json(&negative).expect_err("negative");
+        assert!(
+            error.to_string().contains("task_sequence.0.end_speed"),
+            "{error}"
+        );
+        let over = base.replace(
+            r#""target":{"position":[10.0,0.0]}"#,
+            r#""target":{"position":[10.0,0.0]},"end_speed":3.0"#,
+        );
+        let error = Model::from_json(&over).expect_err("over speed");
+        assert!(error.to_string().contains("end_speed"), "{error}");
+    }
+
+    fn task_baseline_model(sequence: &str, explicit: bool) -> Model {
+        let mode = if explicit {
+            r#""task_sequence_mode": "explicit","#
+        } else {
+            ""
+        };
+        Model::from_json(&format!(
+            r#"{{
+      "format": "openflex-model", "version": 1, "name": "task-baseline",
+      "run": {{ "stop_time": 300.0, "warmup": 0.0, "seed": 1, "replications": 1 }},
+      "objects": [
+        {{ "name": "S", "kind": "source", "pos": [10, 0], "params": {{
+            "interarrival": {{ "distribution": "constant", "value": 20.0 }}, "first_arrival": 0.0 }} }},
+        {{ "name": "P", "kind": "processor", "pos": [10, 0], "params": {{
+            "process_time": {{ "distribution": "constant", "value": 4.0 }},
+            "process_operator": "Dispatcher1" }} }},
+        {{ "name": "K", "kind": "sink", "params": {{}} }},
+        {{ "name": "Dispatcher1", "kind": "dispatcher", "pos": [0, 0], "params": {{ {mode}
+            "task_sequence": [{sequence}] }} }},
+        {{ "name": "E", "kind": "transporter", "pos": [0, 0], "params": {{
+            "capacity": 1, "speed": 1.0, "home": "Dispatcher1" }} }}
+      ],
+      "connections": [
+        {{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }},
+        {{ "from": "Dispatcher1", "to": "E" }}
+      ]
+    }}"#
+        ))
+        .expect("task baseline model")
+    }
+
+    fn explicit_zero_travel_model(force: bool) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "force-travel",
+          "run": {{ "stop_time": 30.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 1000.0 }},
+                "max_arrivals": 1, "first_arrival": 0.0 }} }},
+            {{ "name": "P", "kind": "processor", "pos": [0.0, 0.0], "params": {{
+                "process_time": {{ "distribution": "constant", "value": 1.0 }},
+                "process_operator": "D" }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }},
+            {{ "name": "D", "kind": "dispatcher", "pos": [0.0, 0.0], "params": {{
+                "task_sequence_mode": "explicit",
+                "task_sequence": [{{ "kind": "travel", "force_travel": {force},
+                    "target": {{ "position": [0.0, 0.0] }} }}] }} }},
+            {{ "name": "T", "kind": "transporter", "pos": [0.0, 0.0], "params": {{
+                "speed": 2.0, "acceleration": 1.0, "deceleration": 2.0, "home": "D" }} }}
+          ],
+          "connections": [
+            {{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }},
+            {{ "from": "D", "to": "T" }}
+          ]
+        }}"#
+        ))
+        .expect("force travel model")
+    }
+
+    /// task-217: a forced zero-distance travel leg still produces its events
+    /// and consumes zero duration; without force the pure zero route is rejected.
+    #[test]
+    fn force_travel_zero_distance_executes_the_leg_without_time() {
+        let model = explicit_zero_travel_model(true);
+        let (_, trace) = crate::simulate_traced(
+            &model,
+            &SimConfig {
+                stop_time: 30.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect("force");
+        let depart = trace
+            .events
+            .iter()
+            .find(|event| event.event == "transport_route_depart")
+            .expect("depart");
+        let arrive = trace
+            .events
+            .iter()
+            .find(|event| event.event == "transport_route_arrive")
+            .expect("arrive");
+        assert_eq!(depart.time, arrive.time, "zero-distance duration is 0");
+        assert_eq!(depart.time, 0.0);
+        let error = crate::simulate(
+            &explicit_zero_travel_model(false),
+            &SimConfig {
+                stop_time: 30.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect_err("without force a pure zero route is rejected");
+        assert!(error.to_string().contains("zero total distance"), "{error}");
+    }
+
+    fn append_override_model(first: Option<f64>, second: Option<f64>) -> Model {
+        let step = |value: Option<f64>| {
+            value.map_or_else(
+                || r#"{"kind":"travel"}"#.to_string(),
+                |value| format!(r#"{{"kind":"travel","end_speed":{value}}}"#),
+            )
+        };
+        let first = step(first);
+        let second = step(second);
+        Model::from_json(&format!(
+            r#"{{"format":"openflex-model","version":1,"name":"append-override",
+          "run":{{"stop_time":30.0,"seed":1,"replications":1}},
+          "objects":[
+            {{"name":"S","kind":"source","pos":[10,0],"params":{{"interarrival":{{"distribution":"constant","value":1000.0}},"max_arrivals":1,"first_arrival":0.0}}}},
+            {{"name":"P","kind":"processor","pos":[10,0],"params":{{"process_time":{{"distribution":"constant","value":1.0}},"process_operator":"D"}}}},
+            {{"name":"K","kind":"sink","params":{{}}}},
+            {{"name":"D","kind":"dispatcher","pos":[0,0],"params":{{"task_sequence":[
+              {first},{second},{{"kind":"load"}},{{"kind":"unload"}}]}}}},
+            {{"name":"E","kind":"transporter","pos":[5,0],"params":{{"speed":2.0,"acceleration":1.0,"deceleration":2.0,"home":"D"}}}}
+          ],
+          "connections":[{{"from":"S","to":"P"}},{{"from":"P","to":"K"}},{{"from":"D","to":"E"}}]}}"#
+        ))
+        .expect("append override model")
+    }
+
+    fn transporter_times(model: &Model) -> Vec<(String, f64)> {
+        let (_, trace) = crate::simulate_traced(
+            model,
+            &SimConfig {
+                stop_time: 30.0,
+                warmup: 0.0,
+                seed: 1,
+            },
+            0,
+        )
+        .expect("trace");
+        trace
+            .events
+            .iter()
+            .filter(|event| event.object == "E")
+            .map(|event| (event.event.clone(), event.time))
+            .collect()
+    }
+
+    /// task-217: append mode maps the first two travel steps onto the standard
+    /// pickup and delivery legs, using the same piecewise formula.
+    #[test]
+    fn append_mode_maps_travel_overrides_to_baseline_legs() {
+        let plain = transporter_times(&append_override_model(None, None));
+        let moved = transporter_times(&append_override_model(Some(1.0), Some(1.0)));
+        let at = |events: &[(String, f64)], name: &str| {
+            events
+                .iter()
+                .find(|(event, _)| event == name)
+                .map(|(_, time)| *time)
+                .unwrap_or_else(|| panic!("{name} missing"))
+        };
+        // Pickup d=5: e=0 -> 4.0, e=1 -> 3.625.
+        assert!((at(&plain, "transport_pickup") - 4.0).abs() < 1e-9);
+        assert!((at(&moved, "transport_pickup") - 3.625).abs() < 1e-9);
+        // Delivery d=10: e=0 -> 6.5, e=1 -> 6.125.
+        let plain_delivery = at(&plain, "transport_arrive") - at(&plain, "transport_depart");
+        let moved_delivery = at(&moved, "transport_arrive") - at(&moved, "transport_depart");
+        assert!((plain_delivery - 6.5).abs() < 1e-9, "{plain_delivery}");
+        assert!((moved_delivery - 6.125).abs() < 1e-9, "{moved_delivery}");
+    }
+
+    /// task-217: default `end_speed`/`force_travel` keep three task-sequence
+    /// baseline reports bit-identical.
+    #[test]
+    fn task_sequence_travel_overrides_keep_the_baselines() {
+        let expected = [
+            "b86cf18e95ed78dfff855fa80eac0d4db2637d69bd3dce1c6a0c342abf06392d",
+            "622c63ef226148437461a3a12ca1a3e2f9a714e610e8430bf54943cd90248551",
+            "4dc121a4a3c0f51787f9303cb1d4ebc457115d662f39d4bfe5f7f39a45930eed",
+        ];
+        let models = [
+            task_baseline_model(r#""travel", "travel", "load", "unload""#, false),
+            task_baseline_model(
+                r#""travel", "travel", "load", "unload",
+                { "kind": "travel", "duration": { "distribution": "constant", "value": 10.0 } },
+                { "kind": "load", "duration": { "distribution": "constant", "value": 5.0 } }"#,
+                false,
+            ),
+            explicit_travel_model(None, true),
+        ];
+        for (index, model) in models.iter().enumerate() {
+            let report = crate::run_model(model).expect("report");
+            let text = serde_json::to_string(&report).expect("json");
+            assert_eq!(
+                crate::sha256::hex(text.as_bytes()),
+                expected[index],
+                "task baseline {index} changed"
+            );
+            let second = crate::run_model(model).expect("second");
+            assert_eq!(report, second, "same seed must be deterministic");
+        }
     }
 
     /// task-207: acceleration is actually applied to a use_transport leg.

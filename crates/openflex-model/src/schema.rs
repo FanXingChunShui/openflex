@@ -664,6 +664,8 @@ fn definitions() -> Value {
                                 "duration": { "$ref": "#/$defs/distribution" },
                                 "condition": { "type": "string" },
                                 "involved": { "enum": [1, 2], "default": 1 },
+                                "end_speed": { "type": "number", "minimum": 0 },
+                                "force_travel": { "type": "boolean", "default": false },
                                 "target": {
                                     "oneOf": [
                                         { "enum": ["home", "pickup", "requester"] },
