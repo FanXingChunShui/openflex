@@ -10,6 +10,17 @@
   #8 更新为"聚合与分组已实现（v1.58.0），仅缺 JOIN / 子查询"。
   **Top 10 是用户看优先级的入口，它比矩阵正文更容易腐烂**——排期前必须先核。
 
+### 模型与引擎
+
+- **多停止时间（`run.stop_times`）**：矩阵 🟡「Execute…多停止时间」此前只有单个 `stop_time`。
+  现在 `run.stop_times: [t1, t2, …]` 会在每个时刻**出一份与正常报告同义的快照**（`report.stops`），然后**继续跑**到下一个，
+  最后仍按 `stop_time` 结束。**同一次运行内只采样一次随机流**（不重跑、不重置 seed）。
+  与 checkpoint/resume **互斥**（validate 拒绝，注释写明）。严格递增、`> warmup`、`<= stop_time`，否则点名 `run.stop_times[i]`。
+  独立实测：stop_time 30、stops [10,20] → `stops` 为 (10, completed 3)、(20, completed 5)，
+  而**整体报告去掉 `stops` 后与不带 stop_times 的运行逐字节相同**——快照不改变运行。
+  证据：`stop_times_snapshot_the_same_state_as_separate_runs`、`stop_times_are_deterministic_for_one_seed`、
+  `stop_times_validation_rejects_bad_lists`、`stop_times_and_checkpoints_are_mutually_exclusive`、`stop_times_aggregate_over_replications`。
+
 
 ## v1.62.0 — 2026-11-27
 

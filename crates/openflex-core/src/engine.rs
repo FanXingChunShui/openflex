@@ -1966,6 +1966,11 @@ pub fn simulate_until(
     stop_at: f64,
 ) -> Result<(ReplicationResult, Checkpoint), SimError> {
     model.validate()?;
+    if !model.run.stop_times.is_empty() {
+        return Err(SimError::Config(
+            "run.stop_times is mutually exclusive with checkpoint/resume".into(),
+        ));
+    }
     if stop_at <= 0.0 {
         return Err(SimError::Config("stop_at must be positive".into()));
     }
@@ -2700,6 +2705,11 @@ fn simulate_run(
     if config.stop_time <= 0.0 {
         return Err(SimError::Config("stop_time must be positive".into()));
     }
+    if !model.run.stop_times.is_empty() && (resume.is_some() || save_checkpoint) {
+        return Err(SimError::Config(
+            "run.stop_times is mutually exclusive with checkpoint/resume".into(),
+        ));
+    }
     let mut sim = Simulation::new(model, config.clone(), trace)?;
     if let Some(checkpoint) = resume {
         sim.restore(checkpoint)?;
@@ -2711,6 +2721,33 @@ fn simulate_run(
             return Err(error);
         }
     }
+    // task-221: snapshot at each intermediate stop without touching the live
+    // random stream or the live accumulators (the snapshot runs on a restored
+    // copy of the state), then continue to the next stop / final stop_time.
+    let mut stops = Vec::new();
+    for &time in &model.run.stop_times {
+        if time > config.stop_time + EPS {
+            break;
+        }
+        sim.pause_at = Some(time);
+        sim.run_events()?;
+        // A normal run stopped at `time` would stop *before* events exactly at
+        // `time`; reproduce that instant before snapshotting.
+        sim.now = time;
+        let snapshot = sim.snapshot_result(index, time)?;
+        stops.push(crate::stats::ReplicationStop {
+            time,
+            completed: snapshot.items_completed,
+            created: snapshot.items_created,
+            items_in_system: snapshot.items_in_system,
+            objects: snapshot
+                .objects
+                .into_iter()
+                .filter(|(_, stats)| stats.kind != ObjectKind::VisualTool)
+                .collect(),
+        });
+    }
+    sim.pause_at = None;
     sim.run_events()?;
     sim.advance_to_stop();
     let stop_actions = sim.model.model_triggers.on_stop.clone();
@@ -2759,6 +2796,7 @@ fn simulate_run(
         performance_measures: sim.evaluate_performance_measures()?,
         tracked_series: sim.tracked_series.clone(),
         tracked_summaries: sim.tracked_summaries(elapsed),
+        stops,
     };
     Ok((result, checkpoint, sim.trace.unwrap_or_default()))
 }
@@ -3810,6 +3848,7 @@ impl<'m> Simulation<'m> {
             performance_measures,
             tracked_series: self.tracked_series.clone(),
             tracked_summaries: self.tracked_summaries(elapsed),
+            stops: Vec::new(),
         }
     }
 
@@ -3970,6 +4009,17 @@ impl<'m> Simulation<'m> {
             self.schedule(next, EventKind::TrackedSample);
         }
         Ok(())
+    }
+
+    /// task-221: a report at an arbitrary intermediate time, computed on a
+    /// restored copy so the live simulation (RNG, accumulators, event calendar)
+    /// is untouched. The copy is finalised exactly like a normal stop.
+    fn snapshot_result(&self, index: u32, final_time: f64) -> Result<ReplicationResult, SimError> {
+        let checkpoint = self.snapshot();
+        let mut snapshot = Simulation::new(self.model, self.config.clone(), false)?;
+        snapshot.restore(&checkpoint)?;
+        snapshot.finalize_stats()?;
+        snapshot.replication_result(index, final_time)
     }
 
     fn finalize_stats(&mut self) -> Result<(), SimError> {
@@ -25024,6 +25074,172 @@ mod tests {
             "{error}"
         );
         assert!(error.to_string().contains("positive"), "{error}");
+    }
+
+    fn stop_times_json(stop_times: &str, stop_time: f64, warmup: f64) -> String {
+        format!(
+            r#"{{"format":"openflex-model","version":1,"name":"multi-stop",
+              "run":{{"stop_time":{stop_time},"warmup":{warmup},"seed":1,
+                     "replications":1{stop_times}}},
+              "objects":[
+                {{"name":"S","kind":"source","params":{{
+                  "interarrival":{{"distribution":"constant","value":3.0}},
+                  "max_arrivals":10,"first_arrival":0.0}}}},
+                {{"name":"Q","kind":"queue","params":{{"max_content":100}}}},
+                {{"name":"P","kind":"processor","params":{{
+                  "process_time":{{"distribution":"constant","value":2.0}}}}}},
+                {{"name":"K","kind":"sink","params":{{}}}}
+              ],
+              "connections":[{{"from":"S","to":"Q"}},{{"from":"Q","to":"P"}},
+                             {{"from":"P","to":"K"}}]}}"#
+        )
+    }
+
+    fn stop_times_model(stop_times: &str, stop_time: f64, warmup: f64) -> Model {
+        Model::from_json(&stop_times_json(stop_times, stop_time, warmup)).expect("multi-stop model")
+    }
+
+    /// task-221: intermediate snapshots are the same statistics as a separate
+    /// run stopped at that time, and they do not change the final run.
+    #[test]
+    fn stop_times_snapshot_the_same_state_as_separate_runs() {
+        let with_stops = stop_times_model(r#","stop_times":[10.0,20.0]"#, 30.0, 0.0);
+        let report = crate::run_model(&with_stops).expect("with stops");
+        assert_eq!(report.stops.len(), 2);
+        assert_eq!(report.stops[0].time, 10.0);
+        assert_eq!(report.stops[1].time, 20.0);
+        assert!(report.stops[0].completed.mean <= report.stops[1].completed.mean);
+
+        for (index, time) in [10.0, 20.0].into_iter().enumerate() {
+            let separate =
+                crate::run_model(&stop_times_model("", time, 0.0)).expect("separate report");
+            let stop = &report.stops[index];
+            assert_eq!(
+                stop.completed, separate.completed,
+                "completed at {time} must match a run stopped there"
+            );
+            assert_eq!(stop.created, separate.created);
+            let separate_wip = crate::Aggregate::from_samples(
+                &separate
+                    .replications
+                    .iter()
+                    .map(|result| result.items_in_system as f64)
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(stop.wip, separate_wip, "wip is aggregated per replication");
+            assert_eq!(
+                serde_json::to_string(&stop.objects).expect("stop objects"),
+                serde_json::to_string(&separate.objects).expect("separate objects"),
+                "object statistics at {time}"
+            );
+        }
+
+        // The final report is unchanged once its extra `stops` payload is
+        // removed; the run itself sampled the same random stream and produced
+        // identical final replication statistics.
+        let mut without_payload = report.clone();
+        without_payload.stops.clear();
+        for replication in &mut without_payload.replications {
+            replication.stops.clear();
+        }
+        let plain = crate::run_model(&stop_times_model("", 30.0, 0.0)).expect("plain");
+        assert_eq!(
+            serde_json::to_string(&without_payload).expect("with stops json"),
+            serde_json::to_string(&plain).expect("plain json")
+        );
+    }
+
+    /// task-221: a warm-up snapshot only covers `[warmup, time]`.
+    #[test]
+    fn stop_time_snapshot_respects_warmup() {
+        let report = crate::run_model(&stop_times_model(r#","stop_times":[10.0]"#, 20.0, 5.0))
+            .expect("warmup report");
+        let separate =
+            crate::run_model(&stop_times_model("", 10.0, 5.0)).expect("separate warmup report");
+        assert_eq!(report.stops[0].completed, separate.completed);
+        assert_eq!(
+            serde_json::to_string(&report.stops[0].objects).expect("snapshot objects"),
+            serde_json::to_string(&separate.objects).expect("separate objects")
+        );
+    }
+
+    /// task-221: stop_times validation names the exact list position.
+    #[test]
+    fn stop_times_validation_rejects_bad_lists() {
+        for (list, field, message) in [
+            (
+                r#","stop_times":[20.0,10.0]"#,
+                "run.stop_times[1]",
+                "strictly increasing",
+            ),
+            (
+                r#","stop_times":[5.0]"#,
+                "run.stop_times[0]",
+                "greater than warmup",
+            ),
+            (
+                r#","stop_times":[31.0]"#,
+                "run.stop_times[0]",
+                "must not exceed stop_time",
+            ),
+        ] {
+            let model = Model::parse_json(&stop_times_json(list, 30.0, 5.0))
+                .expect("parse without validation");
+            let error = model.validate().expect_err("invalid stop_times");
+            let text = error.to_string();
+            assert!(text.contains(field), "{text}");
+            assert!(text.contains(message), "{text}");
+        }
+    }
+
+    /// task-221: snapshots aggregate over every replication like the final
+    /// report does.
+    #[test]
+    fn stop_times_aggregate_over_replications() {
+        let json = stop_times_json(r#","stop_times":[10.0,20.0]"#, 30.0, 0.0)
+            .replace("\"replications\":1", "\"replications\":2");
+        let model = Model::from_json(&json).expect("multi replication model");
+        let report = crate::run_model(&model).expect("multi replication");
+        assert_eq!(report.stops.len(), 2);
+        for stop in &report.stops {
+            assert_eq!(stop.completed.n, 2);
+            assert_eq!(stop.created.n, 2);
+            assert_eq!(stop.wip.n, 2);
+            assert!(
+                stop.objects
+                    .values()
+                    .all(|object| object.input_count.n == 2)
+            );
+        }
+    }
+
+    /// task-221: stop_times and checkpoint/resume are mutually exclusive.
+    #[test]
+    fn stop_times_and_checkpoints_are_mutually_exclusive() {
+        let model = stop_times_model(r#","stop_times":[10.0]"#, 20.0, 0.0);
+        let config = SimConfig {
+            stop_time: 20.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let error = crate::simulate_with_checkpoint(&model, &config, 0, None)
+            .expect_err("checkpoint with stop_times");
+        assert!(error.to_string().contains("mutually exclusive"), "{error}");
+        let error = crate::simulate_until(&model, &config, 0, 20.0)
+            .expect_err("simulate_until with stop_times");
+        assert!(error.to_string().contains("mutually exclusive"), "{error}");
+    }
+
+    /// task-221: one seed twice is bit-identical, including the snapshots.
+    #[test]
+    fn stop_times_are_deterministic_for_one_seed() {
+        let model = stop_times_model(r#","stop_times":[10.0,20.0]"#, 30.0, 0.0);
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("first json"),
+            serde_json::to_string(&second).expect("second json")
+        );
     }
 
     /// task-217: default `end_speed`/`force_travel` keep three task-sequence

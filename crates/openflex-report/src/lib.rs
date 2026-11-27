@@ -554,6 +554,7 @@ mod tests {
             performance_measures: BTreeMap::new(),
             tracked_series: BTreeMap::new(),
             tracked_summaries: BTreeMap::new(),
+            stops: Vec::new(),
         }
     }
 

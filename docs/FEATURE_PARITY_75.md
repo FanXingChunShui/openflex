@@ -243,7 +243,7 @@
 | Edit：Undo / Redo | Studio 撤销 | 🟡 | 有撤销；无重做栈深控制、无"高级聚合撤销"API |
 | Edit：Resize/Rotate Object、Set Spline Tension、Set Number Precision、Set Conveyor Angle | 无 | ⛔ | 均为 GUI/渲染参数 |
 | Build：Build FlexScript / Compile Model / Compile Session / Open Visual Studio / Make All Code C++ | 无 | ⛔ | 无 C++ 编译管线（有意差异） |
-| Execute：Reset / Run / Stop / Step / Increase/Decrease Run Speed / 多停止时间 | `run`（reset→run）+ `step_event`/`next_event`（Studio）+ `--stop-time` | 🟡 | 有等价命令；**无运行速度控制**（无实时时钟）、无多停止时间列表（只有单个 `stop_time`） |
+| Execute：Reset / Run / Stop / Step / Increase/Decrease Run Speed / 多停止时间 | `run`（reset→run）+ `step_event`/`next_event`（Studio）+ `--stop-time`；`run.stop_times` 逐站快照 + `report.stops` | 🟡 | 有等价命令与多停止时间；**无运行速度控制**（无实时时钟） |
 | Statistics：Reports and Statistics / Experimenter / Repeat Random Streams / ExpertFit | `report`/`experiment`/`run.seed`；**无 ExpertFit** | 🟡 | 无分布拟合（ExpertFit 曲线拟合） |
 | View：Model View / Model Tree / Model Control GUI / Start Page / Default Workspace / 显示项 | Studio 视图与树 | 🟡 | 有视图与树；无"模型控制 GUI"与工作区保存 |
 | Debug：Output/System/Compiler/Script Console、Breakpoints、Code Profile、Event List、Event Log | `--trace`；Studio 事件；**无调试器** | 🟡 | 无断点/单步/调用栈/局部变量/性能分析器（见 §11） |

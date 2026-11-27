@@ -77,6 +77,11 @@ fn definitions() -> Value {
                 "stop_time": { "type": "number", "exclusiveMinimum": 0, "default": 1000.0 },
                 "start_time": { "type": "number", "default": 0.0, "description": "Display-only timestamp offset; internal model time still starts at 0." },
                 "warmup": { "type": "number", "minimum": 0, "default": 0.0 },
+                "stop_times": {
+                    "type": "array",
+                    "items": { "type": "number", "exclusiveMinimum": 0 },
+                    "description": "Strictly increasing snapshot times, all > warmup and <= stop_time."
+                },
                 "seed": { "type": "integer", "minimum": 0, "default": 1 },
                 "replications": { "type": "integer", "minimum": 1, "default": 1 }
             },

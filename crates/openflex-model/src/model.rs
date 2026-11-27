@@ -69,6 +69,13 @@ pub struct RunSettings {
     /// Transient phase ignored by the statistics.
     #[serde(default)]
     pub warmup: f64,
+    /// task-221: model times at which the engine also emits an intermediate
+    /// snapshot, then keeps running. Strictly increasing, all `> warmup` and
+    /// `<= stop_time`; empty keeps the historical single final report.
+    /// `stop_times` is mutually exclusive with checkpoint/resume: checkpoint
+    /// entry points reject a model that uses it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop_times: Vec<f64>,
     /// Base random seed; replication `i` uses a deterministic derivation of it.
     #[serde(default = "default_seed")]
     pub seed: u64,
@@ -83,6 +90,7 @@ impl Default for RunSettings {
             stop_time: default_stop_time(),
             start_time: 0.0,
             warmup: 0.0,
+            stop_times: Vec::new(),
             seed: default_seed(),
             replications: default_replications(),
         }

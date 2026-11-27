@@ -63,6 +63,34 @@ pub fn validate_collect(model: &Model) -> Vec<ValidationIssue> {
             "warmup must be shorter than stop_time",
         ));
     }
+    for (position, time) in model.run.stop_times.iter().enumerate() {
+        if !time.is_finite() {
+            issues.push(ValidationIssue::new(
+                format!("run.stop_times[{position}]"),
+                "stop time must be finite",
+            ));
+            continue;
+        }
+        if position == 0 {
+            if *time <= model.run.warmup {
+                issues.push(ValidationIssue::new(
+                    "run.stop_times[0]",
+                    "stop time must be greater than warmup",
+                ));
+            }
+        } else if *time <= model.run.stop_times[position - 1] {
+            issues.push(ValidationIssue::new(
+                format!("run.stop_times[{position}]"),
+                "stop times must be strictly increasing",
+            ));
+        }
+        if *time > model.run.stop_time {
+            issues.push(ValidationIssue::new(
+                format!("run.stop_times[{position}]"),
+                "stop time must not exceed stop_time",
+            ));
+        }
+    }
     if model.run.replications == 0 {
         issues.push(ValidationIssue::new(
             "run.replications",

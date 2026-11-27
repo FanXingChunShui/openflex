@@ -290,6 +290,18 @@ pub struct ReplicationFluid {
     pub total_inflow: f64,
 }
 
+/// task-221: statistics at one intermediate `run.stop_times` instant. It has
+/// the same object/flow semantics as a normal `stop_time` report, taken at
+/// `[warmup, time]`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplicationStop {
+    pub time: f64,
+    pub completed: u64,
+    pub created: u64,
+    pub items_in_system: u64,
+    pub objects: BTreeMap<String, ObjectStats>,
+}
+
 /// Result of one replication.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReplicationResult {
@@ -320,6 +332,11 @@ pub struct ReplicationResult {
     /// Model-declared tracked-variable summaries (`state`/`staytime`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tracked_summaries: BTreeMap<String, TrackedSummary>,
+    /// task-221: per-`stop_times` snapshots. Transport-only: the public report
+    /// exposes the aggregated top-level `stops`, so per-replication JSON stays
+    /// byte-identical to a run without intermediate stops.
+    #[serde(default, skip)]
+    pub stops: Vec<ReplicationStop>,
 }
 
 /// Aggregated metric across replications.
@@ -561,6 +578,18 @@ pub struct FlowReport {
     pub blocks: Vec<FlowBlockReport>,
 }
 
+/// task-221: one aggregated intermediate snapshot of the report. Field names
+/// match the final `SimReport` where they mean the same thing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportStop {
+    pub time: f64,
+    pub completed: Aggregate,
+    pub created: Aggregate,
+    /// Items in the system at the snapshot (`wip` in the task description).
+    pub wip: Aggregate,
+    pub objects: BTreeMap<String, ObjectAggregate>,
+}
+
 /// The full report produced by `openflex run` / `openflex experiment`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SimReport {
@@ -595,6 +624,10 @@ pub struct SimReport {
     /// hand that do not want the check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub little_check: Option<LittleCheck>,
+    /// task-221: aggregated snapshots at `run.stop_times`; empty (and omitted
+    /// from JSON) when the model does not request intermediate stops.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stops: Vec<ReportStop>,
 }
 
 impl SimReport {
@@ -628,6 +661,7 @@ impl SimReport {
             .first()
             .map(|replication| replication.tracked_summaries.clone())
             .unwrap_or_default();
+        let stops = aggregate_stops(&replications);
         Self {
             model: model.name.clone(),
             description: model.description.clone(),
@@ -645,6 +679,7 @@ impl SimReport {
             tracked_series,
             tracked_summaries,
             little_check,
+            stops,
         }
     }
 }
@@ -793,11 +828,17 @@ fn is_task_executer(kind: ObjectKind) -> bool {
 }
 
 fn aggregate_objects(replications: &[ReplicationResult]) -> BTreeMap<String, ObjectAggregate> {
-    // Group the per-replication statistics once instead of scanning every
-    // replication for every object name (O(objects x reps) -> O(objects+reps)).
+    aggregate_object_maps(replications.iter().map(|replication| &replication.objects))
+}
+
+/// Group and aggregate object statistics from any number of maps (final
+/// replications or task-221 intermediate snapshots).
+fn aggregate_object_maps<'a>(
+    maps: impl IntoIterator<Item = &'a BTreeMap<String, ObjectStats>>,
+) -> BTreeMap<String, ObjectAggregate> {
     let mut grouped: HashMap<&str, Vec<&ObjectStats>> = HashMap::new();
-    for replication in replications {
-        for (name, stats) in &replication.objects {
+    for objects in maps {
+        for (name, stats) in objects {
             grouped.entry(name.as_str()).or_default().push(stats);
         }
     }
@@ -869,6 +910,42 @@ fn aggregate_objects(replications: &[ReplicationResult]) -> BTreeMap<String, Obj
         );
     }
     aggregates
+}
+
+fn aggregate_stops(replications: &[ReplicationResult]) -> Vec<ReportStop> {
+    let Some(count) = replications
+        .first()
+        .map(|replication| replication.stops.len())
+    else {
+        return Vec::new();
+    };
+    if count == 0 {
+        return Vec::new();
+    }
+    (0..count)
+        .filter_map(|index| {
+            let mut completed = Vec::new();
+            let mut created = Vec::new();
+            let mut wip = Vec::new();
+            let mut maps = Vec::new();
+            let mut time = None;
+            for replication in replications {
+                let stop = replication.stops.get(index)?;
+                time = Some(stop.time);
+                completed.push(stop.completed as f64);
+                created.push(stop.created as f64);
+                wip.push(stop.items_in_system as f64);
+                maps.push(&stop.objects);
+            }
+            Some(ReportStop {
+                time: time?,
+                completed: Aggregate::from_samples(&completed),
+                created: Aggregate::from_samples(&created),
+                wip: Aggregate::from_samples(&wip),
+                objects: aggregate_object_maps(maps),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
