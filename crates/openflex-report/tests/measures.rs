@@ -40,6 +40,7 @@ fn base_report(name: &str, replications: u32) -> SimReport {
             loading: None,
             unloading: None,
             utilize: None,
+            delay: None,
         },
     );
     SimReport {

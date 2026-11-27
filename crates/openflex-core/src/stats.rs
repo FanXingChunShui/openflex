@@ -91,6 +91,10 @@ pub struct StateTimes {
     /// task-166: task-executer detail — on-site task time (waiting/serving).
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub utilize: f64,
+    /// task-218: task-executer detail — DELAY task time. It is a detail of
+    /// `idle`, never of `busy`, so `busy_fraction`/`utilize` do not move.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub delay: f64,
 }
 
 fn is_zero_f64(value: &f64) -> bool {
@@ -122,6 +126,7 @@ impl StateTimes {
             "loading" => self.loading,
             "unloading" => self.unloading,
             "utilize" => self.utilize,
+            "delay" => self.delay,
             _ => 0.0,
         }
     }
@@ -422,6 +427,10 @@ pub struct ObjectAggregate {
     pub unloading: Option<Aggregate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub utilize: Option<Aggregate>,
+    /// task-218: DELAY detail mean; `None` until a delay leg actually occurs,
+    /// which keeps default reports byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay: Option<Aggregate>,
 }
 
 /// Little's law check for one object: `L = λW`.
@@ -810,6 +819,7 @@ fn aggregate_objects(replications: &[ReplicationResult]) -> BTreeMap<String, Obj
         let mut loading = Vec::new();
         let mut unloading = Vec::new();
         let mut utilize = Vec::new();
+        let mut delay = Vec::new();
         let mut kind = ObjectKind::BasicFr;
         for stats in samples {
             kind = stats.kind;
@@ -818,6 +828,7 @@ fn aggregate_objects(replications: &[ReplicationResult]) -> BTreeMap<String, Obj
             loading.push(stats.state_times.loading);
             unloading.push(stats.state_times.unloading);
             utilize.push(stats.state_times.utilize);
+            delay.push(stats.state_times.delay);
             input.push(stats.input_count as f64);
             output.push(stats.output_count as f64);
             content.push(stats.avg_content);
@@ -852,6 +863,8 @@ fn aggregate_objects(replications: &[ReplicationResult]) -> BTreeMap<String, Obj
                 loading: is_task_executer(kind).then(|| Aggregate::from_samples(&loading)),
                 unloading: is_task_executer(kind).then(|| Aggregate::from_samples(&unloading)),
                 utilize: is_task_executer(kind).then(|| Aggregate::from_samples(&utilize)),
+                delay: (is_task_executer(kind) && delay.iter().any(|value| *value > 0.0))
+                    .then(|| Aggregate::from_samples(&delay)),
             },
         );
     }
@@ -898,6 +911,7 @@ mod tests {
             loading: 0.0,
             unloading: 0.0,
             utilize: 0.0,
+            delay: 0.0,
         };
         let sum = states.fraction("idle")
             + states.fraction("busy")
@@ -939,6 +953,7 @@ mod tests {
             loading: 0.0,
             unloading: 0.0,
             utilize: 0.0,
+            delay: 0.0,
         };
         assert!(states.setup + states.processing <= states.busy);
         assert!(states.waiting_for_operator + states.waiting_for_transport <= states.blocked);
@@ -1002,6 +1017,7 @@ mod tests {
             loading: None,
             unloading: None,
             utilize: None,
+            delay: None,
         }
     }
 

@@ -15,6 +15,14 @@
   `force_travel` + `d==0` + `e>0` 报错，`e=0` 则时长 0 但腿仍然发生。append 的 duration-only extra travel 设这两字段被 validate 拒绝。
   上界校验分层：validate 静态拒绝负数/非有限、可解析 executor 时拒绝超速；dispatch 时再按实际 executor 校验。
 
+- **DELAY 任务类型（`ExtraTaskLegKind::Delay`）**：矩阵 🟡「Task Types」最后一项。
+  三者的差别是**统计口径**：`utilize` 是 **busy** 占用，`delay` 是原地等待、**时间落进 `idle` 而不进 busy/utilize**，
+  `break` 是下班。实现时先读了 `ExecutorActivity` 才动手：新增 `ExecutorActivity::Delay` + `StateTimes.delay`
+  与报告聚合 `ObjectAggregate.delay`（非零才出现，**缺省 JSON 逐字节不变**），**没有改 busy 口径**。
+  实测同 d=5 对照：delay 腿 `idle=79 busy=21 delay=5`；utilize 腿 `idle=74 busy=26 delay=0`；
+  **完成时刻都是 26**——同语义、不同统计，这正是三者该有的样子。
+  `duration <= 0` validate 报错点名字段；append 与 explicit 两种任务序列都支持。
+
 
 ## v1.59.0 — 2026-11-27
 

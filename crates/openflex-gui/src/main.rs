@@ -2149,6 +2149,7 @@ impl EditForm {
                                     match kind {
                                         openflex_model::ExtraTaskLegKind::Utilize => "utilize",
                                         openflex_model::ExtraTaskLegKind::Break => "break",
+                                        openflex_model::ExtraTaskLegKind::Delay => "delay",
                                     },
                                     duration
                                         .as_ref()

@@ -599,6 +599,7 @@ struct StateDetail {
     loading: f64,
     unloading: f64,
     utilize: f64,
+    delay: f64,
 }
 
 /// task-169: one dispatched task leg (old append kinds plus utilize/break).
@@ -660,6 +661,8 @@ pub(crate) enum PendingLeg {
     Unload,
     Utilize,
     Break,
+    /// task-218: DELAY leg (idle wait, not busy).
+    Delay,
 }
 
 /// task-166: sub-state of a task executer, subdividing the busy state.
@@ -673,6 +676,8 @@ enum ExecutorActivity {
     Loading,
     Unloading,
     Utilize,
+    /// task-218: DELAY leg; recorded in `detail.delay`, not in busy/utilize.
+    Delay,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1538,6 +1543,7 @@ impl ObjectRt {
             ExecutorActivity::Loading => self.acc.detail.loading += dt,
             ExecutorActivity::Unloading => self.acc.detail.unloading += dt,
             ExecutorActivity::Utilize => self.acc.detail.utilize += dt,
+            ExecutorActivity::Delay => self.acc.detail.delay += dt,
         }
         self.executor_since = now;
     }
@@ -1702,7 +1708,12 @@ impl ObjectRt {
                 ExecutorActivity::Loading => detail.loading += activity_dt,
                 ExecutorActivity::Unloading => detail.unloading += activity_dt,
                 ExecutorActivity::Utilize => detail.utilize += activity_dt,
+                ExecutorActivity::Delay => detail.delay += activity_dt,
             }
+        } else if self.executor_activity == ExecutorActivity::Delay {
+            // DELAY runs in the `idle` state; `stats_at` adds its still-open
+            // interval even though the busy-only block above does not run.
+            detail.delay += (now - self.executor_since).max(0.0);
         }
         states.setup = detail.setup;
         states.processing = detail.processing;
@@ -1715,6 +1726,7 @@ impl ObjectRt {
         states.loading = detail.loading;
         states.unloading = detail.unloading;
         states.utilize = detail.utilize;
+        states.delay = detail.delay;
         let content_dt = (now - self.last_content_change).max(0.0);
         let content_integral = self.acc.content_integral + self.held() as f64 * content_dt;
         ObjectStats {
@@ -1755,6 +1767,7 @@ impl ObjectRt {
         state_times.loading = self.acc.detail.loading;
         state_times.unloading = self.acc.detail.unloading;
         state_times.utilize = self.acc.detail.utilize;
+        state_times.delay = self.acc.detail.delay;
         ObjectStats {
             kind: self.kind,
             input_count: self.acc.input,
@@ -10725,6 +10738,7 @@ impl<'m> Simulation<'m> {
                 let kind = match extra {
                     ExtraTaskLegKind::Utilize => PendingLeg::Utilize,
                     ExtraTaskLegKind::Break => PendingLeg::Break,
+                    ExtraTaskLegKind::Delay => PendingLeg::Delay,
                 };
                 let duration = step
                     .duration()
@@ -10867,7 +10881,10 @@ impl<'m> Simulation<'m> {
                 };
                 if state.waiting_release && !state.release_seen {
                     let may_run = state.legs.front().is_some_and(|leg| {
-                        matches!(leg.kind, PendingLeg::Utilize | PendingLeg::Break)
+                        matches!(
+                            leg.kind,
+                            PendingLeg::Utilize | PendingLeg::Break | PendingLeg::Delay
+                        )
                     });
                     if !may_run {
                         // Stay at the requester until the processor releases the
@@ -11015,6 +11032,13 @@ impl<'m> Simulation<'m> {
                     self.schedule(self.now + duration, EventKind::ExplicitLegDone(transporter));
                     return Ok(());
                 }
+                PendingLeg::Delay => {
+                    let duration = leg.duration.unwrap_or(0.0).max(0.0);
+                    self.set_state(transporter, State::Idle);
+                    self.set_executor_activity(transporter, ExecutorActivity::Delay);
+                    self.schedule(self.now + duration, EventKind::ExplicitLegDone(transporter));
+                    return Ok(());
+                }
             }
         }
     }
@@ -11115,7 +11139,7 @@ impl<'m> Simulation<'m> {
                     self.schedule(self.now, EventKind::OperatorLoaded(transporter, requester));
                 }
             }
-            Some(PendingLeg::Utilize | PendingLeg::Break) | None => {}
+            Some(PendingLeg::Utilize | PendingLeg::Break | PendingLeg::Delay) | None => {}
         }
         self.advance_explicit_route(transporter)
     }
@@ -11174,6 +11198,7 @@ impl<'m> Simulation<'m> {
             let (kind, baseline) = match step.extra_kind() {
                 Some(ExtraTaskLegKind::Utilize) => (PendingLeg::Utilize, None),
                 Some(ExtraTaskLegKind::Break) => (PendingLeg::Break, None),
+                Some(ExtraTaskLegKind::Delay) => (PendingLeg::Delay, None),
                 None => match step.kind() {
                     TaskStepKind::Travel => (PendingLeg::Travel, Some(&mut base_travels)),
                     TaskStepKind::Load => (PendingLeg::Load, Some(&mut base_loads)),
@@ -11184,8 +11209,8 @@ impl<'m> Simulation<'m> {
                 PendingLeg::Travel => trip,
                 PendingLeg::Load => load,
                 PendingLeg::Unload => unload,
-                // utilize/break have no default; validation requires duration.
-                PendingLeg::Utilize | PendingLeg::Break => 0.0,
+                // utilize/break/delay have no default; validation requires duration.
+                PendingLeg::Utilize | PendingLeg::Break | PendingLeg::Delay => 0.0,
             };
             let duration = match step.duration() {
                 Some(distribution) => self.sample(distribution).max(0.0),
@@ -11217,6 +11242,12 @@ impl<'m> Simulation<'m> {
                     // this executer a new task while the break runs.
                     self.clear_executor_activity(transporter);
                     self.set_state(transporter, State::Idle);
+                }
+                PendingLeg::Delay => {
+                    // task-218: DELAY is an in-place wait that stays idle and
+                    // is accounted separately from busy/utilize.
+                    self.set_state(transporter, State::Idle);
+                    self.set_executor_activity(transporter, ExecutorActivity::Delay);
                 }
                 PendingLeg::Travel
                 | PendingLeg::Load
@@ -24275,6 +24306,111 @@ mod tests {
         let moved_delivery = at(&moved, "transport_arrive") - at(&moved, "transport_depart");
         assert!((plain_delivery - 6.5).abs() < 1e-9, "{plain_delivery}");
         assert!((moved_delivery - 6.125).abs() < 1e-9, "{moved_delivery}");
+    }
+
+    fn delay_sequence_model(extra: &str) -> Model {
+        Model::from_json(&format!(
+            r#"{{"format":"openflex-model","version":1,"name":"delay-test",
+              "run":{{"stop_time":100.0,"seed":1,"replications":1}},
+              "objects":[
+                {{"name":"S","kind":"source","pos":[10,0],"params":{{"interarrival":{{"distribution":"constant","value":1000.0}},"max_arrivals":1,"first_arrival":0.0}}}},
+                {{"name":"P","kind":"processor","pos":[10,0],"params":{{"process_time":{{"distribution":"constant","value":1.0}},"process_operator":"D"}}}},
+                {{"name":"K","kind":"sink","params":{{}}}},
+                {{"name":"D","kind":"dispatcher","pos":[0,0],"params":{{"task_sequence":["travel","travel","load","unload"{extra}]}}}},
+                {{"name":"E","kind":"transporter","pos":[0,0],"params":{{"speed":1.0,"home":"D"}}}}
+              ],
+              "connections":[{{"from":"S","to":"P"}},{{"from":"P","to":"K"}},{{"from":"D","to":"E"}}]}}"#
+        ))
+        .expect("delay sequence model")
+    }
+
+    fn delay_leg(duration: f64) -> String {
+        format!(
+            r#",{{"kind":"delay","duration":{{"distribution":"constant","value":{duration}}}}}"#
+        )
+    }
+
+    fn utilize_leg(duration: f64) -> String {
+        format!(
+            r#",{{"kind":"utilize","duration":{{"distribution":"constant","value":{duration}}}}}"#
+        )
+    }
+
+    fn last_trace_time(result: &crate::ReplicationResult, trace: &crate::TraceLog) -> f64 {
+        assert_eq!(result.items_completed, 1);
+        trace
+            .events
+            .iter()
+            .map(|event| event.time)
+            .fold(0.0, f64::max)
+    }
+
+    /// task-218: DELAY adds its duration to the task timeline, stays idle, does
+    /// not add busy/utilize, and is reported in `state_times.delay`.
+    #[test]
+    fn delay_is_idle_time_not_busy_time() {
+        let config = SimConfig {
+            stop_time: 100.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let base = delay_sequence_model("");
+        let delayed = delay_sequence_model(&delay_leg(5.0));
+        let utilized = delay_sequence_model(&utilize_leg(5.0));
+        let (base_result, base_trace) = crate::simulate_traced(&base, &config, 0).expect("base");
+        let (delay_result, delay_trace) =
+            crate::simulate_traced(&delayed, &config, 0).expect("delay");
+        let (utilize_result, utilize_trace) =
+            crate::simulate_traced(&utilized, &config, 0).expect("utilize");
+        // Both 5 s legs move the completion instant by exactly d.
+        let base_last = last_trace_time(&base_result, &base_trace);
+        let delay_last = last_trace_time(&delay_result, &delay_trace);
+        let utilize_last = last_trace_time(&utilize_result, &utilize_trace);
+        assert!((delay_last - base_last - 5.0).abs() < 1e-9);
+        assert!((utilize_last - delay_last).abs() < 1e-9);
+
+        let delay_states = &delay_result.objects["E"].state_times;
+        let utilize_states = &utilize_result.objects["E"].state_times;
+        assert!((delay_states.delay - 5.0).abs() < 1e-9, "{delay_states:?}");
+        assert_eq!(utilize_states.delay, 0.0);
+        // `delay` stays idle; `utilize` is busy. The busy fraction must not
+        // absorb the delay time.
+        assert!((utilize_states.busy - delay_states.busy - 5.0).abs() < 1e-9);
+        assert!((delay_states.idle - utilize_states.idle - 5.0).abs() < 1e-9);
+        assert!((delay_states.busy - base_result.objects["E"].state_times.busy).abs() < 1e-9);
+        assert_eq!(delay_result.items_completed, 1);
+        assert_eq!(delay_result.items_in_system, 0);
+
+        // The aggregated report exposes the new detail only when it is non-zero,
+        // so default reports stay byte-identical.
+        let base_report = crate::run_model(&base).expect("base report");
+        let delay_report = crate::run_model(&delayed).expect("delay report");
+        assert!(base_report.objects["E"].delay.is_none());
+        let delay_aggregate = delay_report.objects["E"]
+            .delay
+            .as_ref()
+            .expect("delay mean");
+        assert!((delay_aggregate.mean - 5.0).abs() < 1e-9);
+    }
+
+    /// task-218: delay duration must be positive and the error names the field.
+    #[test]
+    fn delay_duration_must_be_positive() {
+        let error = Model::from_json(
+            r#"{"format":"openflex-model","version":1,"name":"delay-zero",
+              "run":{"stop_time":10.0,"seed":1},
+              "objects":[
+                {"name":"D","kind":"dispatcher","params":{"task_sequence":["travel","travel","load","unload",{"kind":"delay","duration":{"distribution":"constant","value":0.0}}]}},
+                {"name":"E","kind":"transporter","params":{"speed":1.0,"home":"D"}}
+              ],
+              "connections":[{"from":"D","to":"E"}]}"#,
+        )
+        .expect_err("zero delay duration");
+        assert!(
+            error.to_string().contains("task_sequence[4].duration"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("positive"), "{error}");
     }
 
     /// task-217: default `end_speed`/`force_travel` keep three task-sequence

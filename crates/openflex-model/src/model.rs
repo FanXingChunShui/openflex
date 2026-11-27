@@ -2611,6 +2611,10 @@ pub enum ExtraTaskLegKind {
     Utilize,
     /// Off-duty extra time; requires a positive duration.
     Break,
+    /// task-218: in-place wait that is *not* busy time. The executor stays
+    /// `idle`, the new `state_times.delay` detail records the wait, and
+    /// `busy_fraction`/`utilize` stay unchanged. Requires a positive duration.
+    Delay,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

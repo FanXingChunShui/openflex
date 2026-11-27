@@ -534,6 +534,7 @@ mod tests {
                 loading: None,
                 unloading: None,
                 utilize: None,
+                delay: None,
             },
         );
         SimReport {

@@ -660,7 +660,7 @@ fn definitions() -> Value {
                         {
                             "type": "object",
                             "properties": {
-                                "kind": { "enum": ["travel", "load", "unload", "utilize", "break"] },
+                                "kind": { "enum": ["travel", "load", "unload", "utilize", "break", "delay"] },
                                 "duration": { "$ref": "#/$defs/distribution" },
                                 "condition": { "type": "string" },
                                 "involved": { "enum": [1, 2], "default": 1 },

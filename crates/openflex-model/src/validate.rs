@@ -1797,7 +1797,7 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                 for (position, step) in params.task_sequence.iter().enumerate() {
                     let at = format!("task_sequence[{position}]");
                     if step.extra_kind().is_some() {
-                        // utilize/break: duration checked by the generic block below.
+                        // utilize/break/delay: duration checked by the generic block below.
                         if step.target().is_some() {
                             issues.push(ValidationIssue::new(
                                 location(&format!("{at}.target")),
@@ -1869,7 +1869,7 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                     let Some(duration) = step.duration() else {
                         issues.push(ValidationIssue::new(
                             location(&field),
-                            "utilize/break legs require an explicit duration",
+                            "utilize/break/delay legs require an explicit duration",
                         ));
                         continue;
                     };
@@ -1878,7 +1878,7 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                     } else if duration.mean().is_none_or(|mean| mean <= 0.0) {
                         issues.push(ValidationIssue::new(
                             location(&field),
-                            "utilize/break duration must be positive",
+                            "utilize/break/delay duration must be positive",
                         ));
                     }
                 } else if let Some(duration) = step.duration()
