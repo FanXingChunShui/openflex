@@ -9,6 +9,17 @@
   三个测试都在——**§1a 的设计草案落地后没人回来划掉它**。已把 #1 划掉并附证据，§1a 标注"已实现，留作设计记录"。
   连续两轮在 Top 10 里发现"已实现却仍列为缺口"，说明**优先榜需要和矩阵正文一样定期对账**。
 
+### 模型与引擎
+
+- **Combiner `recycle_to` / Separator `recycle_from`**（矩阵里最后两个"只差一项"的行，现已升 ✅）。
+  **语义由我们定义并写死**：容器件**不销毁、也不走正常输出连接**，而是送到指定对象；目标不接受时
+  combiner/separator 停在 `Blocked`（阻塞式），目标腾出容量时同刻被唤醒继续。
+  容器件走**单件 `recycle_pending` 槽**而不是 `out_pending`——因为它不参与 `route` 路由（回收目标可以不在输出连接里），
+  硬塞进 `out_pending` 会送错对象。`recycle_pending` 与 `recycle_waiters` 随 `ObjectRt` 进检查点。
+  独立实测：pack 3 批 → 不回收时 Sink 收 3、回收时目标收 3 而 Sink 收 0（pack 模式下容器**就是**成品，这点已写进注释与矩阵）；
+  unpack 3 次（split 2）→ 不回收时下游 9、回收时下游 6 + 目标 3（只有空容器被送走）。
+  validate 拒绝不存在的目标名并点名 `recycle_to`/`recycle_from`。
+
 
 ## v1.63.0 — 2026-11-27
 

@@ -376,6 +376,13 @@ pub(crate) struct FlowTokenRt {
     pub ready_at: Option<f64>,
 }
 
+/// task-222: one container item waiting to be handed to a recycle target.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct RecyclePending {
+    pub target: usize,
+    pub item: FlowItem,
+}
+
 /// Runtime state and statistics of one process-flow block.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct FlowBlockRt {
@@ -978,6 +985,13 @@ pub(crate) struct ObjectRt {
     /// `out_pending` items already counted in the object's output statistics
     /// (used by queue batching, where a batch is released at once).
     out_pending_accounted: bool,
+    /// task-222: a container produced by a combiner/separator but not yet
+    /// accepted by its recycle target. It is not part of normal output routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recycle_pending: Option<RecyclePending>,
+    /// task-222: objects blocked waiting for a container to be accepted here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    recycle_waiters: Vec<usize>,
     state: State,
     phase: Phase,
     /// Model time the current phase began; feeds the setup/processing detail.
@@ -1223,6 +1237,8 @@ impl ObjectRt {
             leg_overrides: [TravelLegOverrides::default(); 2],
             out_pending: Vec::new(),
             out_pending_accounted: false,
+            recycle_pending: None,
+            recycle_waiters: Vec::new(),
             state: State::Idle,
             phase: Phase::Idle,
             phase_start: now,
@@ -5279,6 +5295,7 @@ impl<'m> Simulation<'m> {
         // Some handlers (combiner, merge, separator) produce output into
         // `out_pending`; deliver it in the same step.
         self.drain_out_pending(index)?;
+        self.drain_recycle_pending(index)?;
         // A3: an object that pulls asks its upstream for more work whenever it
         // may have room again.
         self.schedule_pull(index);
@@ -5815,6 +5832,10 @@ impl<'m> Simulation<'m> {
             .unwrap_or_default();
         for block in blocks {
             self.flow_schedule_advance(block);
+        }
+        // task-222: a combiner/separator waiting to hand a container here.
+        for waiter in self.objects[index].recycle_waiters.clone() {
+            self.schedule(self.now, EventKind::Flow(waiter));
         }
         Ok(())
     }
@@ -6845,11 +6866,17 @@ impl<'m> Simulation<'m> {
     fn handle_combiner_process_done(&mut self, index: usize) -> Result<(), SimError> {
         let now = self.now;
         self.objects[index].note_content(now);
+        let recycle_target = self.recycle_target(index);
         let mut items: Vec<FlowItem> = Vec::new();
+        let mut recycled_container: Option<FlowItem> = None;
         let batch_slot = self.objects[index].active_batch_slot.take().unwrap_or(0);
         if let Some(slot) = self.objects[index].combiner_slots.get_mut(batch_slot) {
             if let Some(container) = slot.container.take() {
-                items.push(container);
+                if recycle_target.is_some() {
+                    recycled_container = Some(container);
+                } else {
+                    items.push(container);
+                }
             }
             items.extend(
                 std::mem::take(&mut slot.components)
@@ -6857,16 +6884,21 @@ impl<'m> Simulation<'m> {
                     .map(|(_, item)| item),
             );
         }
-        let count = items.len();
+        let count = items.len() + usize::from(recycled_container.is_some());
         for mut item in items {
             item.labels.insert("batch".to_string(), count as f64);
             self.objects[index].out_pending.push(item);
+        }
+        if let (Some(target), Some(mut container)) = (recycle_target, recycled_container) {
+            container.labels.insert("batch".to_string(), count as f64);
+            self.queue_recycle(index, target, container);
         }
         self.objects[index].touch();
         self.set_phase(index, Phase::WaitingForOutput);
         self.release_operator(index)?;
         self.flow(index)?;
         if self.objects[index].out_pending.is_empty()
+            && self.objects[index].recycle_pending.is_none()
             && self.objects[index]
                 .combiner_slots
                 .iter()
@@ -7406,6 +7438,48 @@ impl<'m> Simulation<'m> {
             self.flow_schedule_advance(block);
         }
         self.flow_route(block, entry.token)
+    }
+
+    /// task-222: queue a container in the owner's single recycle slot. The
+    /// slot is deliberately separate from `out_pending`: it never goes through
+    /// `route`, because the recycle target need not be an output connection.
+    fn recycle_target(&self, owner: usize) -> Option<usize> {
+        let name = match &self.model.objects[owner].params {
+            ObjectParams::Combiner(params) => params.recycle_to.as_ref(),
+            ObjectParams::Separator(params) => params.recycle_from.as_ref(),
+            _ => None,
+        }?;
+        self.by_name.get(name).copied()
+    }
+
+    fn queue_recycle(&mut self, owner: usize, target: usize, item: FlowItem) {
+        self.objects[owner].recycle_pending = Some(RecyclePending { target, item });
+        self.set_state(owner, State::Blocked);
+    }
+
+    /// Try to hand a pending recycled container to its target. On success the
+    /// owner is woken at the same instant to continue; on failure the owner
+    /// stays Blocked and registers as a waiter on the target.
+    fn drain_recycle_pending(&mut self, owner: usize) -> Result<(), SimError> {
+        let Some(pending) = self.objects[owner].recycle_pending.clone() else {
+            return Ok(());
+        };
+        if self.receive_item(pending.target, 0, pending.item)? {
+            self.objects[owner].recycle_pending = None;
+            self.objects[pending.target]
+                .recycle_waiters
+                .retain(|waiter| *waiter != owner);
+            self.schedule(self.now, EventKind::Flow(owner));
+        } else {
+            if !self.objects[pending.target]
+                .recycle_waiters
+                .contains(&owner)
+            {
+                self.objects[pending.target].recycle_waiters.push(owner);
+            }
+            self.set_state(owner, State::Blocked);
+        }
+        Ok(())
     }
 
     /// Send a token to the first outgoing connection of a block.
@@ -12662,6 +12736,12 @@ impl<'m> Simulation<'m> {
             ObjectParams::Combiner(params) => params.clone(),
             _ => return Ok(()),
         };
+        // task-222 (a): a container waiting for its recycle target blocks the
+        // next pack/join/batch cycle.
+        if self.objects[index].recycle_pending.is_some() {
+            self.set_state(index, State::Blocked);
+            return Ok(());
+        }
         match self.objects[index].combine_mode {
             CombinerMode::Pack => self.flow_combiner_pack(index, &params),
             CombinerMode::Join => self.flow_combiner_join(index),
@@ -12704,6 +12784,14 @@ impl<'m> Simulation<'m> {
                 }
             })
             .collect();
+        let recycle_target = self.recycle_target(index);
+        // task-222 (a): one container at a time; the next completed slot waits
+        // until the recycle target accepted the previous container.
+        let completed: Vec<usize> = if recycle_target.is_some() {
+            completed.into_iter().take(1).collect()
+        } else {
+            completed
+        };
         if completed.is_empty() {
             // Waiting for the remaining components.
             self.set_state(index, State::Blocked);
@@ -12727,13 +12815,18 @@ impl<'m> Simulation<'m> {
             container
                 .labels
                 .insert(COMPONENTS_LABEL.to_string(), count as f64);
-            self.objects[index].out_pending.push(container);
+            if let Some(target) = recycle_target {
+                self.queue_recycle(index, target, container);
+            } else {
+                self.objects[index].out_pending.push(container);
+            }
         }
         self.objects[index].touch();
-        if self.objects[index]
-            .combiner_slots
-            .iter()
-            .any(|slot| slot.container.is_some())
+        if self.objects[index].recycle_pending.is_some()
+            || self.objects[index]
+                .combiner_slots
+                .iter()
+                .any(|slot| slot.container.is_some())
         {
             self.set_state(index, State::Blocked);
         } else {
@@ -12772,10 +12865,21 @@ impl<'m> Simulation<'m> {
             merged
                 .labels
                 .insert(COMPONENTS_LABEL.to_string(), count as f64);
-            self.objects[index].out_pending.push(merged);
+            // task-222: join has no separate container slot, so the merged base
+            // item is the item treated as the container; it is recycled instead
+            // of being emitted on the normal output.
+            if let Some(target) = self.recycle_target(index) {
+                self.queue_recycle(index, target, merged);
+            } else {
+                self.objects[index].out_pending.push(merged);
+            }
         }
         self.objects[index].touch();
-        self.set_state(index, State::Idle);
+        if self.objects[index].recycle_pending.is_some() {
+            self.set_state(index, State::Blocked);
+        } else {
+            self.set_state(index, State::Idle);
+        }
         Ok(())
     }
 
@@ -13040,10 +13144,16 @@ impl<'m> Simulation<'m> {
         self.objects[index].note_content(now);
         self.fire_lifecycle_trigger(index, SimTrigger::ProcessFinish);
         self.release_combiner_slot_operator(index, slot_index)?;
+        let recycle_target = self.recycle_target(index);
         let slot = &mut self.objects[index].combiner_slots[slot_index];
         let mut items: Vec<FlowItem> = Vec::new();
+        let mut recycled_container: Option<FlowItem> = None;
         if let Some(container) = slot.container.take() {
-            items.push(container);
+            if recycle_target.is_some() {
+                recycled_container = Some(container);
+            } else {
+                items.push(container);
+            }
         }
         items.extend(
             std::mem::take(&mut slot.components)
@@ -13052,10 +13162,14 @@ impl<'m> Simulation<'m> {
         );
         slot.phase = Phase::Idle;
         slot.token += 1;
-        let count = items.len();
+        let count = items.len() + usize::from(recycled_container.is_some());
         for mut item in items {
             item.labels.insert("batch".to_string(), count as f64);
             self.objects[index].out_pending.push(item);
+        }
+        if let (Some(target), Some(mut container)) = (recycle_target, recycled_container) {
+            container.labels.insert("batch".to_string(), count as f64);
+            self.queue_recycle(index, target, container);
         }
         self.objects[index].touch();
         self.refresh_combiner_batch_slots(index)?;
@@ -13162,6 +13276,12 @@ impl<'m> Simulation<'m> {
             ObjectParams::Separator(params) => params.clone(),
             _ => return Ok(()),
         };
+        // task-222 (a): the empty container waiting for its recycle target
+        // blocks the next unpack.
+        if self.objects[index].recycle_pending.is_some() {
+            self.set_state(index, State::Blocked);
+            return Ok(());
+        }
         if self.objects[index].pending_parts.is_empty() && !self.objects[index].content.is_empty() {
             let now = self.now;
             let Some(container) = self.take_content(index, 0) else {
@@ -13201,10 +13321,24 @@ impl<'m> Simulation<'m> {
                 } else {
                     self.derive_item(&container, part)
                 };
+                // task-222: in unpack mode part 0 is the empty container; send
+                // it to `recycle_from` instead of the normal output. Split mode
+                // has no separate container (A6), so it ignores recycle_from.
+                if part == 0
+                    && params.separate_mode == SeparateMode::Unpack
+                    && let Some(target) = self.recycle_target(index)
+                {
+                    self.queue_recycle(index, target, item);
+                    continue;
+                }
                 let port = (part % outputs) as u32;
                 self.objects[index].pending_parts.push((item, port));
             }
             self.objects[index].touch();
+        }
+        if self.objects[index].recycle_pending.is_some() {
+            self.set_state(index, State::Blocked);
+            return Ok(());
         }
         let now = self.now;
         while let Some((item, port)) = self.objects[index].pending_parts.first().cloned() {
@@ -25762,6 +25896,172 @@ mod tests {
             let error = Model::from_json(&json).expect_err("mode must be rejected");
             assert!(error.to_string().contains("components"), "{error}");
         }
+    }
+
+    fn recycle_combiner_model(recycle: &str) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "combiner-recycle",
+          "run": {{ "stop_time": 60.0, "warmup": 0.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "T", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 10.0 }},
+                "max_arrivals": 3, "first_arrival": 1.0 }} }},
+            {{ "name": "B", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 5.0 }},
+                "max_arrivals": 20, "first_arrival": 0.0 }} }},
+            {{ "name": "C", "kind": "combiner", "params": {{
+                "mode": "pack", "components_per_container": 2{recycle} }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }},
+            {{ "name": "R", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [
+            {{ "from": "T", "to": "C" }}, {{ "from": "B", "to": "C" }},
+            {{ "from": "C", "to": "K" }}
+          ]
+        }}"#
+        ))
+        .expect("combiner recycle model")
+    }
+
+    fn recycle_separator_model(recycle: &str) -> Model {
+        Model::from_json(&format!(
+            r#"{{
+          "format": "openflex-model", "version": 1, "name": "separator-recycle",
+          "run": {{ "stop_time": 40.0, "warmup": 0.0, "seed": 1, "replications": 1 }},
+          "objects": [
+            {{ "name": "S", "kind": "source", "params": {{
+                "interarrival": {{ "distribution": "constant", "value": 10.0 }},
+                "max_arrivals": 3, "first_arrival": 1.0 }} }},
+            {{ "name": "P", "kind": "separator", "params": {{
+                "separate_mode": "unpack", "split_count": 2{recycle} }} }},
+            {{ "name": "K", "kind": "sink", "params": {{}} }},
+            {{ "name": "R", "kind": "sink", "params": {{}} }}
+          ],
+          "connections": [
+            {{ "from": "S", "to": "P" }}, {{ "from": "P", "to": "K" }}
+          ]
+        }}"#
+        ))
+        .expect("separator recycle model")
+    }
+
+    /// task-222: `recycle_to` sends the container to the named object instead of
+    /// the normal output; without it the container follows the connection.
+    ///
+    /// In `pack` mode the container *is* the finished pack, so recycling it takes
+    /// the pack out of normal routing — that is the semantics we documented.
+    #[test]
+    fn combiner_recycle_to_diverts_the_container() {
+        let plain = crate::run_model(&recycle_combiner_model("")).expect("plain");
+        let recycled =
+            crate::run_model(&recycle_combiner_model(r#", "recycle_to": "R""#)).expect("recycled");
+        assert_eq!(plain.replications[0].objects["K"].input_count, 3);
+        assert_eq!(plain.replications[0].objects["R"].input_count, 0);
+        assert_eq!(recycled.replications[0].objects["K"].input_count, 0);
+        assert_eq!(recycled.replications[0].objects["R"].input_count, 3);
+    }
+
+    /// task-222: `recycle_from` sends the emptied container on, while the split
+    /// parts still follow the normal output.
+    #[test]
+    fn separator_recycle_from_diverts_only_the_container() {
+        let plain = crate::run_model(&recycle_separator_model("")).expect("plain");
+        let recycled = crate::run_model(&recycle_separator_model(r#", "recycle_from": "R""#))
+            .expect("recycled");
+        assert_eq!(plain.replications[0].objects["K"].input_count, 9);
+        assert_eq!(plain.replications[0].objects["R"].input_count, 0);
+        assert_eq!(recycled.replications[0].objects["K"].input_count, 6);
+        assert_eq!(recycled.replications[0].objects["R"].input_count, 3);
+    }
+
+    /// task-222: an unknown recycle target is a validation error naming the field.
+    #[test]
+    fn recycle_targets_must_exist() {
+        // `Model::from_json` validates, so a bad target never reaches the engine.
+        for (json, field) in [
+            (
+                r#"{ "format": "openflex-model", "version": 1, "name": "bad-recycle",
+                     "objects": [
+                       { "name": "C", "kind": "combiner", "params": { "recycle_to": "Missing" } },
+                       { "name": "K", "kind": "sink", "params": {} } ],
+                     "connections": [{ "from": "C", "to": "K" }] }"#,
+                "recycle_to",
+            ),
+            (
+                r#"{ "format": "openflex-model", "version": 1, "name": "bad-recycle",
+                     "objects": [
+                       { "name": "P", "kind": "separator", "params": { "recycle_from": "Missing" } },
+                       { "name": "K", "kind": "sink", "params": {} } ],
+                     "connections": [{ "from": "P", "to": "K" }] }"#,
+                "recycle_from",
+            ),
+        ] {
+            let error = Model::from_json(json).expect_err("unknown target");
+            assert!(error.to_string().contains(field), "{error}");
+        }
+    }
+
+    /// task-222: a container waiting for its recycle target is checkpointed; a
+    /// resumed run retires it exactly like an uninterrupted one.
+    #[test]
+    fn recycle_pending_survives_a_checkpoint() {
+        // A one-slot queue accepts one container, then blocks the second: the
+        // combiner keeps it in the recycle slot across the checkpoint.
+        let model = Model::from_json(
+            r#"{
+              "format": "openflex-model", "version": 1, "name": "recycle-checkpoint",
+              "run": { "stop_time": 80.0, "warmup": 0.0, "seed": 1, "replications": 1 },
+              "objects": [
+                { "name": "T", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 10.0 },
+                    "max_arrivals": 4, "first_arrival": 1.0 } },
+                { "name": "B", "kind": "source", "params": {
+                    "interarrival": { "distribution": "constant", "value": 5.0 },
+                    "max_arrivals": 40, "first_arrival": 0.0 } },
+                { "name": "C", "kind": "combiner", "params": {
+                    "mode": "pack", "components_per_container": 2,
+                    "recycle_to": "R" } },
+                { "name": "K", "kind": "sink", "params": {} },
+                { "name": "R", "kind": "queue", "params": { "max_content": 1 } }
+              ],
+              "connections": [
+                { "from": "T", "to": "C" }, { "from": "B", "to": "C" },
+                { "from": "C", "to": "K" }
+              ]
+            }"#,
+        )
+        .expect("checkpoint recycle model");
+        let save = SimConfig {
+            stop_time: 15.0,
+            warmup: 0.0,
+            seed: 1,
+        };
+        let (_, checkpoint) =
+            crate::simulate_with_checkpoint(&model, &save, 0, None).expect("checkpoint");
+        let resume = SimConfig {
+            stop_time: 80.0,
+            ..save
+        };
+        let resumed =
+            crate::resume_from_checkpoint(&model, &resume, 0, &checkpoint, 80.0).expect("resume");
+        let direct = crate::simulate(&model, &resume, 0).expect("direct");
+        assert_eq!(
+            serde_json::to_string(&direct).expect("json"),
+            serde_json::to_string(&resumed).expect("json")
+        );
+    }
+
+    /// task-222: recycle models are deterministic for one seed.
+    #[test]
+    fn recycle_is_deterministic() {
+        let model = recycle_combiner_model(r#", "recycle_to": "R""#);
+        let first = crate::run_model(&model).expect("first");
+        let second = crate::run_model(&model).expect("second");
+        assert_eq!(
+            serde_json::to_string(&first).expect("json"),
+            serde_json::to_string(&second).expect("json")
+        );
     }
 
     /// task-210: invalid component tables are rejected at the field name.

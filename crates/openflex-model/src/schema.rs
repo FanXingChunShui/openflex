@@ -479,14 +479,16 @@ fn definitions() -> Value {
             "setup_time": { "$ref": "#/$defs/distribution" },
             "process_time": { "$ref": "#/$defs/distribution" },
             "setup_operator": { "type": ["string", "null"] },
-            "process_operator": { "type": ["string", "null"] }
+            "process_operator": { "type": ["string", "null"] },
+            "recycle_to": { "type": ["string", "null"] }
         })),
     );
     defs.insert(
         "separator_params".into(),
         params_schema(json!({
             "split_count": { "type": "integer", "minimum": 0, "default": 0 },
-            "separate_mode": { "enum": ["unpack", "split"], "default": "unpack" }
+            "separate_mode": { "enum": ["unpack", "split"], "default": "unpack" },
+            "recycle_from": { "type": ["string", "null"] }
         })),
     );
     defs.insert(

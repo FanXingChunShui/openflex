@@ -1315,6 +1315,7 @@ impl Default for CombinerParams {
             process_time: Distribution::default(),
             setup_operator: None,
             process_operator: None,
+            recycle_to: None,
             shifts: Vec::new(),
             process_flow: None,
             timetable: None,
@@ -1701,6 +1702,13 @@ pub struct CombinerParams {
     /// Dispatcher asked for a resource during processing.
     #[serde(default)]
     pub process_operator: Option<String>,
+    /// task-222: container item is sent to this object instead of being
+    /// discarded after packing. When the target is full/closed/Hold, the
+    /// combiner blocks (option (a)) until the container is accepted; the
+    /// container keeps its item_type and labels. `None` keeps the historical
+    /// behaviour byte-for-byte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recycle_to: Option<String>,
 
     /// Optional object-level process flow (B7). Its `create` blocks can run at
     /// t = 0 or whenever this object receives an item (`on_entry`), and its
@@ -1753,6 +1761,11 @@ pub struct SeparatorParams {
     /// `unpack` (default) or `split`.
     #[serde(default)]
     pub separate_mode: SeparateMode,
+    /// task-222: in unpack mode the empty container is sent to this object
+    /// instead of being discarded. The separator blocks (option (a)) while the
+    /// target cannot accept it; item_type and labels are preserved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recycle_from: Option<String>,
 
     /// Optional object-level process flow (B7). Its `create` blocks can run at
     /// t = 0 or whenever this object receives an item (`on_entry`), and its

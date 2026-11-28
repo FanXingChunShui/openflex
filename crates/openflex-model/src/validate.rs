@@ -1209,6 +1209,14 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                     "must be at least 1",
                 ));
             }
+            if let Some(target) = &params.recycle_to
+                && !model.objects.iter().any(|object| object.name == *target)
+            {
+                issues.push(ValidationIssue::new(
+                    location("recycle_to"),
+                    "recycle target must be an existing object name",
+                ));
+            }
             if params.mode == CombinerMode::Join && params.max_content > 1 {
                 issues.push(ValidationIssue::new(
                     location("max_content"),
@@ -1432,6 +1440,14 @@ fn validate_object(model: &Model, object: &Object) -> Vec<ValidationIssue> {
                 issues.push(ValidationIssue::new(
                     location("split_count"),
                     "split mode needs at least one item (split_count >= 1)",
+                ));
+            }
+            if let Some(target) = &params.recycle_from
+                && !model.objects.iter().any(|object| object.name == *target)
+            {
+                issues.push(ValidationIssue::new(
+                    location("recycle_from"),
+                    "recycle target must be an existing object name",
                 ));
             }
         }
