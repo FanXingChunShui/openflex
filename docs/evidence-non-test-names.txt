@@ -32,3 +32,7 @@ use_same_num_operators
 avg_stay_time
 busy_fraction
 first_arrival
+
+# model/engine field names cited while describing the recycle support
+components_per_container
+recycle_pending

@@ -1,6 +1,33 @@
 # Changelog
 
-## Unreleased
+## v1.64.0 — 2026-11-27
+
+这一版把矩阵里**最后两个"只差一项"的行**补齐了，现在都升到 ✅。
+
+**1. Combiner 的 `recycle_to` 与 Separator 的 `recycle_from`。**
+
+**语义由我们定义并写死**（不是猜 FlexSim 内部实现）：容器件**不销毁、也不走正常输出连接**，而是送到指定对象；
+目标不接受时 combiner/separator 停在 `Blocked`，目标腾出容量时同刻被唤醒继续。
+
+一个关键实现选择：容器件走**单件 `recycle_pending` 槽**，而不是复用 `out_pending`。
+原因是 `out_pending` 会被 `drain_out_pending` 用 `route()` 走正常连接，而回收目标**可以不在输出连接里**——
+硬塞进去就会送错对象。这个槽不参与路由，只等目标接收，并随 `ObjectRt` 进检查点。
+
+**一处必须说清的语义**：`pack` 模式下容器**就是**成品，所以 `recycle_to` 会把成品送到回收目标、不流向正常下游；
+`unpack` 模式则只有空容器被送走，拆出的零件照常走下游。已写进注释、矩阵与 CHANGELOG。
+
+实测：pack ×3 → 不回收时 Sink 收 3；回收时目标收 3、Sink 收 0。unpack ×3（split 2）→ 不回收下游 9；回收时下游 6 + 目标 3。
+`recycle_pending` 检查点续跑与不中断运行逐字节相同（`recycle_pending_survives_a_checkpoint`）。
+
+**2. 又清了一条 Top 10 过期项。**
+
+#1「explicit 整链模式」写着"未实现，设计草案见 §1a"，但 `TaskSequenceMode::Explicit`、`explicit_routes` 与
+`explicit_chain_*` 三个测试都在——**§1a 的设计草案落地后没人回来划掉它**。已把 #1 划掉并附证据，
+§1a 标注"已实现，留作设计记录"。
+
+连续两轮在 Top 10 里发现"已实现却仍列为缺口"：**优先榜需要和矩阵正文一样定期对账**。
+
+发布节奏保持**至少 3 小时一版**。
 
 ### 文档
 
@@ -20,6 +47,15 @@
   unpack 3 次（split 2）→ 不回收时下游 9、回收时下游 6 + 目标 3（只有空容器被送走）。
   validate 拒绝不存在的目标名并点名 `recycle_to`/`recycle_from`。
 
+
+### 验证
+
+- `cargo test --workspace --locked`：**1157 passed / 0 failed**；clippy 0 警告、fmt 干净。
+- smoke **28/28**；示例 **66/66**；golden 全过；GUI **157 项**。
+- 矩阵 219 行：✅ **63** / 🟡 **99** / ⛔ 54 / 📄 3（Combiner、Separator 两行升 ✅）；
+  `check-parity-counts.py`、`check-stale-gaps.py`、`audit-parity-evidence.py --strict`、`check-doc-baselines.sh` 全部通过。
+- 独立实测：pack ×3 不回收 Sink=3 / 回收 目标=3、Sink=0；unpack ×3 不回收下游=9 / 回收 下游=6、目标=3；
+  不存在的目标名 → validate 点名 `recycle_to` / `recycle_from`。
 
 ## v1.63.0 — 2026-11-27
 
